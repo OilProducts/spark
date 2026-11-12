@@ -16,13 +16,13 @@ export function RuntimeSettingsEditor() {
                 {(['runs_dir', 'ui_dir'] as const).map((key) => <Field key={key}>
                     <FieldLabel htmlFor={`runtime-${key}`}>{({ runs_dir: 'Runs directory', ui_dir: 'UI directory' })[key]}</FieldLabel>
                     <Input id={`runtime-${key}`} disabled={pending} value={draft[key] ?? ''} onChange={(event) => { setDraft({ ...draft, [key]: event.target.value || null }); setMessage('') }} />
-                    <p className="text-xs text-muted-foreground">Effective: {saved.effective ? saved.effective[key] ?? ({ runs_dir: "Each project's private storage", ui_dir: 'Not configured' })[key] : 'Unavailable'} · {saved.sources?.[key]} · Requires restart</p>
+                    <p className="text-xs text-muted-foreground">In use: {saved.effective ? saved.effective[key] ?? ({ runs_dir: "Each project's private storage", ui_dir: 'Not configured' })[key] : 'Unavailable'} · {saved.sources?.[key]} · Requires restart</p>
                 </Field>)}
                 <Field>
                     <FieldLabel htmlFor="runtime-project-roots">Project roots (one absolute path per line)</FieldLabel>
                     <textarea id="runtime-project-roots" className="min-h-20 rounded border p-2 text-sm" disabled={pending} aria-invalid={invalidRoots} aria-describedby={invalidRoots ? 'runtime-roots-error' : undefined} value={draft.project_roots.join('\n')} onChange={(event) => { setDraft({ ...draft, project_roots: event.target.value ? event.target.value.split('\n') : [] }); setMessage('') }} />
                     {invalidRoots && <p id="runtime-roots-error" role="alert">Each project root must be an absolute path.</p>}
-                    <p className="text-xs text-muted-foreground">Effective: {saved.effective ? saved.effective.project_roots.join(', ') || 'Default roots' : 'Unavailable'} · {saved.sources?.project_roots} · Requires restart</p>
+                    <p className="text-xs text-muted-foreground">In use: {saved.effective ? saved.effective.project_roots.join(', ') || 'Default roots' : 'Unavailable'} · {saved.sources?.project_roots} · Requires restart</p>
                 </Field>
                 <div className="flex flex-wrap gap-2">
                     <Button size="sm" aria-label="Save runtime paths" disabled={!dirty || pending || invalidRoots} onClick={() => void save()}>Save</Button>

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildRunContextOverview,
   classifyRunFailure,
+  describeFailure,
   errorVisits,
   runTitle,
   formatRunDate,
@@ -120,6 +121,25 @@ describe('classifyRunFailure', () => {
     ['', 'flow'],
   ])('%s is a %s failure', (lastError, kind) => {
     expect(classifyRunFailure({ last_error: lastError })).toBe(kind)
+  })
+})
+
+describe('describeFailure', () => {
+  it.each([
+    ['tool exited with unmapped code 1; stderr: lint broke', 'The command failed (exit code 1).'],
+    ['tool exited with code 2 instead of 0 with a JSON verdict decision', 'The command failed (exit code 2).'],
+    ['tool returned undeclared decision "maybe"', 'The command’s output did not name a decision this step can take.'],
+    ['codergen backend failed: codex app-server error: codex app-server turn timed out waiting for activity', 'The agent could not run: it stopped responding.'],
+    ['codergen backend failed: usage limit reached', 'The agent could not run: its usage limit was reached.'],
+    ['codergen backend failed: codex app-server exited unexpectedly', 'The agent could not run.'],
+    ['stage_failed', 'The step failed without giving a reason.'],
+  ])('rewords %s and keeps it as the detail', (reason, summary) => {
+    expect(describeFailure(reason)).toEqual({ summary, detail: reason })
+  })
+
+  it("keeps a flow's or tool's own words as they are", () => {
+    expect(describeFailure(' tsc exited 2 ')).toEqual({ summary: 'tsc exited 2', detail: null })
+    expect(describeFailure("Command 'just test' timed out after 60 seconds")).toEqual({ summary: "Command 'just test' timed out after 60 seconds", detail: null })
   })
 })
 

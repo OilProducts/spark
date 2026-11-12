@@ -77,7 +77,7 @@ test('badges leave room for a role\'s title and meta, and for a flow\'s name', a
         list.items.find((item: { kind: string; name: string }) => item.kind === 'role' && item.name === 'adversarial-reviewer').layer = 'project_copy'
         const first = list.items.find((item: { kind: string }) => item.kind === 'flow')
         flow = first.name
-        first.layer = 'project'
+        first.layer = 'project_copy'
         await route.fulfill({ response, json: list })
     })
     await gotoWithRegisteredProject(page, project)
@@ -97,8 +97,9 @@ test('badges leave room for a role\'s title and meta, and for a flow\'s name', a
     await page.screenshot({ path: screenshotPath('roles-view-badges.png') })
 
     await page.getByTestId('activity-flows').click()
-    const flowRow = page.getByTestId('editor-flow-tree').getByRole('button', { name: flow, exact: true })
-    await expect(flowRow.getByTestId('definition-badge')).toHaveText(['project'])
+    // A flow row is named by the flow's title; its file name is on hover.
+    const flowRow = page.getByTestId('editor-flow-tree').locator(`button[title="${flow}"]`)
+    await expect(flowRow.getByTestId('definition-badge')).toHaveText(['customized'])
     const name = flowRow.locator('span.truncate').first()
     expect(await name.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
     await page.screenshot({ path: screenshotPath('flows-view-badges.png') })

@@ -10,6 +10,7 @@ import {
     extractHttpError,
     parseJsonPayload,
 } from './shared'
+import { notifyAttentionChanged } from './attentionApi'
 import { fetchWorkspaceJsonValidated, workspaceUrl } from './apiClient'
 
 /** An uploaded conversation file; sent user turns carry these references. */
@@ -1304,7 +1305,7 @@ export async function submitConversationRequestUserInputValidated(
         },
         '/workspace/api/conversations/{id}/request-user-input/{requestId}/answer',
         parseConversationMutationAckResponse,
-    )
+    ).then(notifyAttentionChanged)
 }
 
 export async function reviewFlowRunRequestValidated(
@@ -1330,7 +1331,7 @@ export async function reviewFlowRunRequestValidated(
         },
         '/workspace/api/conversations/{id}/flow-run-requests/{requestId}/review',
         parseConversationMutationAckResponse,
-    )
+    ).then(notifyAttentionChanged)
 }
 
 export async function reviewProposedPlanValidated(
@@ -1351,7 +1352,7 @@ export async function reviewProposedPlanValidated(
         },
         '/workspace/api/conversations/{id}/proposed-plans/{planId}/review',
         parseConversationMutationAckResponse,
-    )
+    ).then(notifyAttentionChanged)
 }
 
 export async function interruptConversationTurnValidated(conversationId: string, projectPath: string): Promise<boolean> {

@@ -22,7 +22,7 @@ it('validates preferences and retains the draft and original revision after live
     vi.mocked(fetchClientPreferences).mockResolvedValue(view)
     render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
     const user = userEvent.setup()
-    const width = await screen.findByLabelText('Editor sidebar width (pixels)')
+    const width = await screen.findByLabelText('Flow editor panel width')
     await user.clear(width)
     await user.type(width, '12')
     expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
@@ -41,29 +41,26 @@ it('validates preferences and retains the draft and original revision after live
     expect(width).toHaveValue(500)
 })
 
-it('validates and explicitly saves the home split, with Discard restoring the document', async () => {
+it('Reset layout clears dragged sizes in the draft, and Save applies it', async () => {
     const view: ClientPreferencesView = { client_id: 'browser-one', revision: 'first',
-        stored: { editor_mode: null, editor_sidebar_width: null, home_sidebar_primary_split_ratio: 0.5 },
-        effective: { editor_mode: 'structured', editor_sidebar_width: 288, home_sidebar_primary_split_ratio: 0.5 } }
+        stored: { editor_mode: null, editor_sidebar_width: 400, run_presentation: { sort: 'oldest', graph_height: 700 } },
+        effective: { editor_mode: 'structured', editor_sidebar_width: 400, run_presentation: { sort: 'oldest', graph_height: 700 } } }
     vi.mocked(fetchClientPreferences).mockResolvedValue(view)
     vi.mocked(saveClientPreferences).mockImplementation(async (_, preferences) => ({ ...view, revision: 'second', stored: preferences }))
     render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
     const user = userEvent.setup()
-    const split = await screen.findByLabelText('Home sidebar primary split (0–1)')
-    await user.clear(split)
-    await user.type(split, '1.5')
-    expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
-    expect(screen.getByText('Choose a number from 0 to 1.')).toBeVisible()
-    await user.clear(split)
-    await user.type(split, '0.7')
+    const width = await screen.findByLabelText('Flow editor panel width')
+    const height = screen.getByLabelText('Run graph height')
+    expect(width).toHaveValue(400)
+    expect(height).toHaveValue(700)
+    await user.click(screen.getByRole('button', { name: 'Reset layout' }))
+    expect(width).toHaveValue(null)
+    expect(height).toHaveValue(null)
+    expect(screen.getByRole('button', { name: 'Reset layout' })).toBeDisabled()
     expect(saveClientPreferences).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: /^Discard/ }))
-    expect(split).toHaveValue(0.5)
-    await user.clear(split)
-    await user.type(split, '0.6')
     await user.click(screen.getByRole('button', { name: /^Save/ }))
     await screen.findByText('Saved.')
-    expect(saveClientPreferences).toHaveBeenCalledWith(view, { ...view.stored, home_sidebar_primary_split_ratio: 0.6 })
+    expect(saveClientPreferences).toHaveBeenCalledWith(view, { ...view.stored, editor_sidebar_width: null, run_presentation: { sort: 'oldest', graph_height: null } })
 })
 
 it('defaults Show thinking on and offers it in the settings editor', async () => {

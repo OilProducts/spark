@@ -173,7 +173,7 @@ export function SettingsPanel() {
                         <h2 className="text-base font-semibold">Model defaults (workspace)</h2>
                     </CardHeader>
                     <CardContent className="space-y-3 px-4 pt-0">
-                        <p className="text-sm text-muted-foreground">Workspace-wide defaults for inheriting projects and conversations. Changes apply on their next message.</p>
+                        <p className="text-sm text-muted-foreground">Used by projects and chats that don’t choose their own model. Changes apply from their next message.</p>
                         <fieldset disabled={!models.saved || models.pending} className="space-y-3">
                         {models.pending ? <p role="status">Updating…</p> : !models.saved && !models.error ? <p role="status">Loading settings…</p> : null}
                         {/* The workspace has no parent: its default is the stored Codex group, whose effort can still be set. */}
@@ -198,9 +198,9 @@ export function SettingsPanel() {
                 <ExecutionProfilesEditor />
                 <AgentSettingsEditor />
                 <Card className="gap-4 py-4">
-                    <CardHeader className="px-4"><h2 className="text-base font-semibold">Scoped configuration</h2></CardHeader>
+                    <CardHeader className="px-4"><h2 className="text-base font-semibold">Flow and trigger settings</h2></CardHeader>
                     <CardContent className="space-y-3 px-4">
-                        <p className="text-sm text-muted-foreground">Edit flow launch permissions and execution locks in the flow editor’s graph settings. Manage automation in the trigger editor.</p>
+                        <p className="text-sm text-muted-foreground">Who can launch a flow and which runs wait for each other (execution locks) are set in the flow editor’s graph settings. Automations are set up in Triggers.</p>
                         <div className="flex flex-wrap gap-2">
                             <Button variant="outline" onClick={() => useStore.getState().setViewMode('editor')}>Open flow editor</Button>
                             <Button variant="outline" onClick={() => useStore.getState().setViewMode('triggers')}>Edit triggers</Button>

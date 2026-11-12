@@ -86,6 +86,32 @@ export function finishedSince(runs: RunRecord[], missions: Mission[], watermark:
         .sort((left, right) => right.at - left.at)
 }
 
+/**
+ * What the Overview lists as finished: the last day, reaching back to the last look when that was
+ * earlier, so a result stays listed after a glance and nothing is skipped after a weekend away.
+ * `isNew` marks what finished after the last look.
+ */
+export function recentlyFinished(runs: RunRecord[], missions: Mission[], watermark: number | null, now: number) {
+    const after = Math.min(watermark ?? now, now - DAY_MS)
+    const newAfter = watermark ?? now - DAY_MS
+    return {
+        sinceLastLook: watermark !== null && watermark < now - DAY_MS,
+        items: finishedSince(runs, missions, after, now).map((item) => ({ ...item, isNew: item.at > newAfter })),
+    }
+}
+
+/** Top-level runs and missions still working, and chats with a turn in flight, newest start first. */
+export function inProgress(runs: RunRecord[], missions: Mission[], chats: Chat[]) {
+    return [
+        ...runs.filter((run) => !run.parent_run_id && runMark(run) === 'running')
+            .map((run) => ({ kind: 'run' as const, id: run.run_id, run, mark: 'running' as Mark, at: timeOf(run.started_at) })),
+        ...missions.filter((mission) => mission.status === 'running')
+            .map((mission) => ({ kind: 'mission' as const, id: mission.id, mission, mark: 'running' as Mark, at: timeOf(mission.started_at) || missionAt(mission) })),
+        ...chats.filter((chat) => chat.running)
+            .map((chat) => ({ kind: 'chat' as const, id: chat.conversation_id, chat, mark: 'running' as Mark, at: timeOf(chat.updated_at) })),
+    ].sort((left, right) => right.at - left.at)
+}
+
 const finished = (runs: RunRecord[], missions: Mission[]) => [
     ...runs.filter((run) => !run.parent_run_id)
         .map((run): Started => ({ kind: 'run', id: run.run_id, run, mark: runMark(run), at: timeOf(run.ended_at) }))

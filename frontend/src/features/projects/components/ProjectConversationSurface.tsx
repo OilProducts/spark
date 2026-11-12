@@ -27,6 +27,8 @@ import { ContextMeter, type ContextUsage } from './ContextMeter'
 interface ProjectConversationSurfaceProps {
     activeProjectLabel: string | null
     activeProjectPath: string | null
+    /** A chat is open; otherwise the first message starts one in the project. */
+    hasOpenChat?: boolean
     activeConversationTitle?: string | null
     activeConversationHandle?: string | null
     activeConversationUpdatedAt?: string | null
@@ -78,6 +80,7 @@ const MODEL_SOURCE_LABELS = {
 export function ProjectConversationSurface({
     activeProjectLabel,
     activeProjectPath,
+    hasOpenChat = true,
     activeConversationTitle = null,
     activeConversationHandle = null,
     activeConversationUpdatedAt = null,
@@ -121,10 +124,10 @@ export function ProjectConversationSurface({
             data-testid="project-ai-conversation-surface"
             className={cn('flex flex-col', !isNarrowViewport && 'h-full min-h-0')}
         >
-            <header className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-border px-6 py-4">
-                <div className="min-w-0">
-                    <h1 data-testid="chat-title" className="truncate text-xl font-semibold text-foreground">
-                        {activeConversationTitle || 'Chat'}
+            <header className="flex items-center justify-between gap-x-6 border-b border-border px-6 py-4">
+                <div className="min-w-0 flex-1">
+                    <h1 data-testid="chat-title" title={activeConversationTitle ?? undefined} className="line-clamp-2 break-words text-xl font-semibold text-foreground">
+                        {activeConversationTitle || (hasOpenChat ? 'Chat' : 'New chat')}
                     </h1>
                     {hasProject ? (
                         <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
@@ -154,24 +157,7 @@ export function ProjectConversationSurface({
                         </p>
                     ) : null}
                 </div>
-                <div className="flex items-center gap-2">
-                    {hasThinking ? <ShowThinkingToggle pressed={showThinking} onPressedChange={onShowThinkingChange} /> : null}
-                    {activeProjectPath && activeChatMode ? (
-                        <NativeSelect
-                            data-testid="project-active-chat-mode-badge"
-                            aria-label="Mode"
-                            size="sm"
-                            value={activeChatMode}
-                            // Same guard as the /plan command: no switching mid-turn or before the model list is ready.
-                            disabled={controlsDisabled || isChatSendDisabled || !onChatModeChange}
-                            onChange={(event) => onChatModeChange?.(event.target.value === 'plan' ? 'plan' : 'chat')}
-                            className="rounded-lg"
-                        >
-                            <NativeSelectOption value="chat">Chat</NativeSelectOption>
-                            <NativeSelectOption value="plan">Plan</NativeSelectOption>
-                        </NativeSelect>
-                    ) : null}
-                </div>
+                {hasThinking ? <ShowThinkingToggle pressed={showThinking} onPressedChange={onShowThinkingChange} className="shrink-0" /> : null}
             </header>
             <div className={cn('flex flex-col', !isNarrowViewport && 'min-h-0 flex-1')}>
                 {panelError ? (
@@ -200,7 +186,7 @@ export function ProjectConversationSurface({
                             <InlineError data-testid="project-chat-model-availability" dense>{chatModelAvailabilityMessage}</InlineError>
                         ) : null}
                         composer={{
-                            placeholder: 'Reply, or describe a change to work on',
+                            placeholder: hasOpenChat ? 'Reply, or describe a change to work on' : `Start a new chat in ${activeProjectLabel}`,
                             draft: chatDraft,
                             onDraftChange: onChatDraftChange,
                             onSubmit: onChatComposerSubmit,
@@ -232,6 +218,21 @@ export function ProjectConversationSurface({
                                     {onStopTurn ? <Button type="button" variant="outline" size="sm" onClick={onStopTurn} data-testid="project-chat-stop">Stop</Button> : null}
                                     {modelSettingsSource === 'conversation' && onUseModelDefaults ? (
                                         <Button type="button" size="sm" variant="ghost" disabled={controlsDisabled} onClick={onUseModelDefaults}>Use defaults</Button>
+                                    ) : null}
+                                    {activeChatMode ? (
+                                        <NativeSelect
+                                            data-testid="project-active-chat-mode-badge"
+                                            aria-label="Mode"
+                                            size="sm"
+                                            value={activeChatMode}
+                                            // Same guard as the /plan command: no switching mid-turn or before the model list is ready.
+                                            disabled={controlsDisabled || isChatSendDisabled || !onChatModeChange}
+                                            onChange={(event) => onChatModeChange?.(event.target.value === 'plan' ? 'plan' : 'chat')}
+                                            className="rounded-lg"
+                                        >
+                                            <NativeSelectOption value="chat">Chat mode</NativeSelectOption>
+                                            <NativeSelectOption value="plan">Plan mode</NativeSelectOption>
+                                        </NativeSelect>
                                     ) : null}
                                     <ModelChooser inherited={inheritedModelSettings} value={modelSettings} onChange={onModelSettingsChange}
                                         projectPath={activeProjectPath} inheritLabel="Provider default"

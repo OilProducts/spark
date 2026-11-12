@@ -13,13 +13,15 @@ import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
 import { flowTitle, formatRunDate, runTitle } from '@/features/runs/model/runOverviewModel'
 import { formatDuration } from '@/features/runs/model/shared'
+import { openRunFlowDialog } from '@/features/launch'
 import { useOverviewChats } from './hooks/useOverviewChats'
 import {
-    finishedSince,
+    inProgress,
     lastChat,
     markAttentionSeen,
     markFinishedSeen,
     readFinishedWatermark,
+    recentlyFinished,
     sourceOf,
     tally,
     type Mark,
@@ -137,8 +139,9 @@ export function OverviewPanel() {
 
     const last = lastChat(chats, runs, missions)
     const counts = last ? tally(last.started) : {}
-    const finished = finishedSince(runs, missions, finishedWatermark, now)
+    const { items: finished, sinceLastLook } = recentlyFinished(runs, missions, finishedWatermark, now)
     const failures = finished.filter((item) => item.mark === 'failed').length
+    const running = inProgress(runs, missions, chats)
 
     return (
         <div data-testid="overview-view" className="h-full overflow-y-auto">
@@ -149,7 +152,7 @@ export function OverviewPanel() {
                         <p className="mt-1 text-sm text-muted-foreground">Across all projects</p>
                     </div>
                     <div data-testid="overview-start" className="flex flex-wrap gap-2">
-                        <Button type="button" variant="ghost" data-testid="overview-run-flow" onClick={() => useStore.getState().setViewMode('editor')}>Run a flow…</Button>
+                        <Button type="button" variant="outline" data-testid="overview-run-flow" onClick={() => openRunFlowDialog()}>Run a flow…</Button>
                         <ProjectPicker
                             heading="New mission in"
                             testId="overview-new-mission-picker"
@@ -199,6 +202,37 @@ export function OverviewPanel() {
                                         </span>
                                         <span data-testid="overview-needs-you-time" className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{formatRunDate(item.updated_at, now)}</span>
                                     </button>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </Section>
+
+                <Section testId="overview-running" heading="Running now" count={running.length}>
+                    {running.length === 0 ? (
+                        <EmptyWell check={false} data-testid="overview-running-empty">Nothing is running.</EmptyWell>
+                    ) : (
+                        <ul className={listPanelClass}>
+                            {running.map((item) => (
+                                <li key={`${item.kind}:${item.id}`} data-testid="overview-running-item" data-item-id={item.id} className="relative flex items-center gap-3 px-4 py-3">
+                                    <MarkDot mark="running" />
+                                    <span className="flex min-w-0 flex-1 flex-col gap-px">
+                                        {item.kind === 'chat' ? (
+                                            <TitleLink onClick={() => openChat(item.chat.project_path, item.chat.conversation_id)}>{item.chat.title}</TitleLink>
+                                        ) : (
+                                            <TitleLink onClick={() => openItem(item)}>{itemTitle(item)}</TitleLink>
+                                        )}
+                                        <span className="truncate text-xs text-muted-foreground">
+                                            {(item.kind === 'chat'
+                                                ? ['Chat, replying', projectLabel(registry, item.chat.project_path)]
+                                                : [item.kind === 'run' ? 'Run' : 'Mission', item.kind === 'run' ? distinctFlowTitle(item) : null, projectLabel(registry, itemProject(item))]
+                                            ).filter(Boolean).join(' · ')}
+                                        </span>
+                                    </span>
+                                    {item.kind === 'run' ? (
+                                        <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground" title="Running for">{formatDuration(item.run.started_at, null, 'running', now)}</span>
+                                    ) : null}
+                                    <span className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{when(item.at, now)}</span>
                                 </li>
                             ))}
                         </ul>
@@ -255,11 +289,11 @@ export function OverviewPanel() {
 
                 <Section
                     testId="overview-finished"
-                    heading={`Finished ${finishedWatermark === null ? 'in the last day' : 'since you last looked'}`}
+                    heading={`Finished ${sinceLastLook ? 'since you last looked' : 'in the last day'}`}
                     count={<>{finished.length}{failures ? <span data-testid="overview-failure-count" className="text-destructive"> · {failures} failed</span> : null}</>}
                 >
                     {finished.length === 0 ? (
-                        <EmptyWell>Nothing has finished since.</EmptyWell>
+                        <EmptyWell>{sinceLastLook ? 'Nothing has finished since you last looked.' : 'Nothing has finished in the last day.'}</EmptyWell>
                     ) : (
                         <ul className={listPanelClass}>
                             {finished.map((item) => (
@@ -275,6 +309,7 @@ export function OverviewPanel() {
                                             <ExceptionWord mark={item.mark} />
                                         </span>
                                     </span>
+                                    {item.isNew ? <span data-testid="overview-finished-new" className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">New</span> : null}
                                     <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{itemDuration(item)}</span>
                                     <span className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{when(item.at, now)}</span>
                                 </li>

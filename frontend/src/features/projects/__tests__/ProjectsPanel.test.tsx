@@ -454,11 +454,10 @@ describe('ProjectsPanel', () => {
       expect(useStore.getState().projectRegistry['/tmp/quick-switch-project']).toBeDefined()
     })
 
-    expect(
-      within(screen.getByTestId('project-ai-conversation-surface')).getByText(
-        'Pick a chat, or start a new one.',
-      ),
-    ).toBeVisible()
+    // The only project opens, and says a first message starts a chat there.
+    const surface = screen.getByTestId('project-ai-conversation-surface')
+    expect(await within(surface).findByText('New chat in quick-switch-project')).toBeVisible()
+    expect(within(surface).getByTestId('chat-title')).toHaveTextContent('New chat')
   })
 
   it('shows the chat\'s project in its composer and a new-chat control', async () => {

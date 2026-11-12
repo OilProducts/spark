@@ -512,6 +512,30 @@ async fn workspace_project_routes_persist_records_and_return_json_errors() {
         .join(register.1["project_id"].as_str().expect("project id"));
     assert!(!project_root.join("project.toml").exists());
 
+    // The open chat is recorded, a patch without it keeps it, and null clears it.
+    for (patch, open) in [
+        (
+            json!({"active_conversation_id": "conversation-a"}),
+            json!("conversation-a"),
+        ),
+        (json!({"is_favorite": true}), json!("conversation-a")),
+        (json!({"active_conversation_id": null}), Value::Null),
+    ] {
+        let mut body = json!({"project_path": project_dir});
+        body.as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        let updated = request_json(
+            app.clone(),
+            "PATCH",
+            "/workspace/api/projects/state",
+            Some(body),
+        )
+        .await;
+        assert_eq!(updated.0, StatusCode::OK, "{}", updated.1);
+        assert_eq!(updated.1["active_conversation_id"], open, "{}", updated.1);
+    }
+
     let missing = request_json(app, "GET", "/workspace/api/missing", None).await;
     assert_eq!(missing.0, StatusCode::NOT_FOUND);
     assert_eq!(missing.1, json!({"detail": "Not Found"}));

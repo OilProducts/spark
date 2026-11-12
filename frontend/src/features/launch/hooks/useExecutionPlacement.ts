@@ -12,6 +12,8 @@ export interface ExecutionPlacementState {
     setSelectedProfileId: (profileId: string) => void
     effectiveProfileId: string
     effectiveProfile: ExecutionPlacementProfile | null
+    /** What the "default" choice means here: the project's profile, else the runtime's. */
+    defaultProfileLabel: string
     enabledProfiles: ExecutionPlacementProfile[]
     validationMessage: string | null
     statusMessage: string | null
@@ -55,10 +57,12 @@ export function useExecutionPlacement(enabled: boolean, projectPath: string | nu
     const projectDefaultProfileId = projectPath
         ? projectRegistry[projectPath]?.executionProfileId || null
         : null
-    const effectiveProfileId = selectedProfileId
-        || projectDefaultProfileId
+    const defaultProfileId = projectDefaultProfileId
         || executionPlacement?.default_execution_profile_id
         || 'native'
+    const effectiveProfileId = selectedProfileId || defaultProfileId
+    const defaultProfile = executionPlacement?.profiles.find((profile) => profile.id === defaultProfileId)
+    const defaultProfileLabel = defaultProfile?.label || defaultProfileId
     const effectiveProfile = executionPlacement?.profiles.find((profile) => profile.id === effectiveProfileId) ?? null
     const enabledProfiles = executionPlacement?.profiles.filter((profile) => profile.enabled && profile.id) ?? []
     const validationMessage = (executionPlacement?.validation_errors.length ? 'Execution profile settings are invalid.' : null)
@@ -75,6 +79,7 @@ export function useExecutionPlacement(enabled: boolean, projectPath: string | nu
         setSelectedProfileId,
         effectiveProfileId,
         effectiveProfile,
+        defaultProfileLabel,
         enabledProfiles,
         validationMessage,
         statusMessage,

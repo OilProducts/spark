@@ -56,7 +56,9 @@ export function TriggersPanel() {
     externalChange,
     discard,
     editTriggerForm,
+    editTriggerErrors,
     newTriggerForm,
+    newTriggerErrors,
     onCreateTrigger,
     onDeleteSelectedTrigger,
     onSaveSelectedTrigger,
@@ -116,7 +118,7 @@ export function TriggersPanel() {
   }
   const triggerGroups = [
     { title: 'Custom', note: null, triggers: customTriggers, loadingTestId: 'triggers-custom-list-loading', emptyText: 'No custom triggers yet.' },
-    { title: 'System', note: 'Protected approval and review routing.', triggers: systemTriggers, loadingTestId: 'triggers-system-list-loading', emptyText: 'No protected triggers.' },
+    { title: 'System', note: 'Built in: they route approvals and reviews, and cannot be deleted.', triggers: systemTriggers, loadingTestId: 'triggers-system-list-loading', emptyText: 'No protected triggers.' },
   ]
 
   const panel = (
@@ -132,6 +134,7 @@ export function TriggersPanel() {
           ) : null}
           {group.triggers.map((trigger) => {
             const unregistered = isUnregisteredTarget(projectRegistry, trigger.project_path)
+            const activationError = trigger.state.activation_error
             return (
               <SidePanelRow
                 key={triggerKey(trigger)}
@@ -139,11 +142,14 @@ export function TriggersPanel() {
                 data-unregistered-target={unregistered ? 'true' : undefined}
                 selected={selectedTriggerId === triggerKey(trigger) && !createFormOpen}
                 // A disabled trigger is the exception: hollow dot plus the word.
-                tone="neutral"
-                hollow={!trigger.enabled}
+                // One the server could not turn on is a problem: red dot plus why.
+                tone={activationError ? 'danger' : 'neutral'}
+                hollow={!trigger.enabled && !activationError}
                 title={trigger.name}
                 meta={(
                   <>
+                    {/* First, so a narrow row never truncates it away. */}
+                    {activationError ? <span className="text-destructive" title={activationError}>Not running · </span> : null}
                     <span
                       data-testid="trigger-row-project"
                       title={trigger.project_path}
@@ -152,7 +158,7 @@ export function TriggersPanel() {
                       {triggerProjectSummary(trigger, projectRegistry)}
                     </span>
                     {' · '}{triggerSourceSummary(trigger)}
-                    {trigger.enabled ? null : ' · Disabled'}
+                    {trigger.enabled || activationError ? null : ' · Disabled'}
                   </>
                 )}
                 onClick={() => {
@@ -195,11 +201,11 @@ export function TriggersPanel() {
         ) : null}
 
         {issues.length > 0 ? (
-          <InlineError title="Definitions that cannot run" data-testid="trigger-issues">
+          <InlineError title="Some triggers can't be loaded" data-testid="trigger-issues">
             <ul className="space-y-1">
               {issues.map((issue) => (
                 <li key={`${issue.project_path}\u0000${issue.trigger_id ?? ''}`}>
-                  {issue.trigger_id ?? 'Definitions'} in {issue.project_path}: {issue.error}
+                  {issue.trigger_id ?? 'Trigger files'} in {issue.project_path}: {issue.error}
                 </li>
               ))}
             </ul>
@@ -217,6 +223,7 @@ export function TriggersPanel() {
                   onChange={setNewTriggerForm}
                   mode="create"
                   protectedTrigger={false}
+                  errors={newTriggerErrors}
                 />
                 <div className="mt-6 flex flex-wrap gap-2">
                   <Button
@@ -267,22 +274,29 @@ export function TriggersPanel() {
               </CardHeader>
 
               <CardContent className="px-0 pt-0">
+                {selectedTrigger.state.activation_error ? (
+                  <InlineError title="Not running: Spark couldn't turn this trigger on" data-testid="trigger-activation-error" className="mb-6">
+                    <p>{selectedTrigger.state.activation_error}</p>
+                    <p>To try again, fix the problem, turn on Enabled and save.</p>
+                  </InlineError>
+                ) : null}
                 <TriggerEditor
                   form={editTriggerForm}
                   onChange={setEditTriggerForm}
                   mode="edit"
                   protectedTrigger={selectedTrigger.protected}
+                  errors={editTriggerErrors}
                 />
 
                 {selectedTrigger.source_type === 'webhook' ? (
                   <Well className="mt-6 space-y-2 text-sm">
-                    <SectionHeading>Shared webhook ingress</SectionHeading>
-                    <div className="text-muted-foreground">POST JSON to <code>{SHARED_WEBHOOK_ENDPOINT}</code> with:</div>
+                    <SectionHeading>Calling this webhook</SectionHeading>
+                    <div className="text-muted-foreground">Send a POST request with a JSON body to <code>{SHARED_WEBHOOK_ENDPOINT}</code> and these headers:</div>
                     <div className="font-mono text-xs text-foreground">
                       X-Spark-Webhook-Key: {String(selectedTrigger.source.webhook_key ?? '')}
                     </div>
                     <div className="font-mono text-xs text-foreground">
-                      X-Spark-Webhook-Secret: {revealedWebhookSecrets[triggerKey(selectedTrigger)] ?? 'Hidden after creation'}
+                      X-Spark-Webhook-Secret: {revealedWebhookSecrets[triggerKey(selectedTrigger)] ?? <span className="font-sans text-muted-foreground">shown only once, when created. Regenerate it to get a new one.</span>}
                     </div>
                     <Button
                       type="button"
@@ -298,14 +312,11 @@ export function TriggersPanel() {
 
                 <div className="mt-6 grid gap-4 sm:grid-cols-2">
                   <Well className="text-sm">
-                    <SectionHeading>Runtime</SectionHeading>
+                    <SectionHeading>Status</SectionHeading>
                     <div className="mt-2 text-muted-foreground">{triggerProjectSummary(selectedTrigger, projectRegistry)}</div>
-                    <div className="mt-2 text-muted-foreground">Last fired: {formatTriggerTimestamp(selectedTrigger.state.last_fired_at)}</div>
+                    <div className="mt-2 text-muted-foreground">Last triggered: {formatTriggerTimestamp(selectedTrigger.state.last_fired_at)}</div>
                     <div className="text-muted-foreground">Next run: {formatTriggerTimestamp(selectedTrigger.state.next_run_at)}</div>
                     <div className="text-muted-foreground">Last result: {selectedTrigger.state.last_result ?? 'Never'}</div>
-                    {selectedTrigger.state.activation_error ? (
-                      <div className="mt-2 text-destructive">Not activated: {selectedTrigger.state.activation_error}</div>
-                    ) : null}
                     {selectedTrigger.state.last_error ? (
                       <div className="mt-2 text-destructive">{selectedTrigger.state.last_error}</div>
                     ) : null}

@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useSyncExternalStore } from 'react'
 
 import { useStore } from '@/store'
 import { requestNavigation } from '@/state/workspaceSlice'
-import { fetchPendingAttention, type AttentionItem } from '@/lib/api/attentionApi'
+import { ATTENTION_CHANGED_EVENT, fetchPendingAttention, type AttentionItem } from '@/lib/api/attentionApi'
 import { runTitle } from '@/features/runs/model/runOverviewModel'
 import type { RunRecord } from '@/features/runs/model/shared'
 
-const ATTENTION_POLL_MS = 30_000
+const ATTENTION_POLL_MS = 15_000
 
 export const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
     run_gate: 'Run waiting for input',
@@ -27,32 +27,57 @@ export function attentionTitle(item: AttentionItem, runs: Pick<RunRecord, 'run_i
     return item.title || item.run_id || item.id
 }
 
-/** Pending attention, polled; null until the first fetch resolves. */
-export function useAttentionItems() {
-    const [items, setItems] = useState<AttentionItem[] | null>(null)
-    useEffect(() => {
-        let disposed = false
-        const refresh = () => {
-            fetchPendingAttention()
-                .then((next) => {
-                    if (!disposed) {
-                        setItems(next)
-                    }
-                })
-                .catch(() => {
-                    // Transient poll failures keep the last known items.
-                })
-        }
-        refresh()
-        const interval = window.setInterval(refresh, ATTENTION_POLL_MS)
-        const onFocus = () => refresh()
-        window.addEventListener('focus', onFocus)
-        return () => {
-            disposed = true
+// One shared list for every view that shows it, so the Inbox and the Overview never disagree.
+let attentionItems: AttentionItem[] | null = null
+const attentionListeners = new Set<() => void>()
+let attentionRequest = 0
+
+/** Fetches pending attention now; anything that answers or resolves an item calls this so the Inbox clears at once. */
+export function refreshAttention() {
+    const request = ++attentionRequest
+    fetchPendingAttention()
+        .then((next) => {
+            if (request !== attentionRequest) return
+            attentionItems = next
+            attentionListeners.forEach((listener) => listener())
+        })
+        .catch(() => {
+            // Transient poll failures keep the last known items.
+        })
+}
+
+function subscribeAttention(listener: () => void) {
+    attentionListeners.add(listener)
+    if (attentionListeners.size === 1) {
+        refreshAttention()
+        const interval = window.setInterval(refreshAttention, ATTENTION_POLL_MS)
+        window.addEventListener('focus', refreshAttention)
+        window.addEventListener(ATTENTION_CHANGED_EVENT, refreshAttention)
+        stopAttentionPolling = () => {
             window.clearInterval(interval)
-            window.removeEventListener('focus', onFocus)
+            window.removeEventListener('focus', refreshAttention)
+            window.removeEventListener(ATTENTION_CHANGED_EVENT, refreshAttention)
         }
-    }, [])
+    }
+    return () => {
+        attentionListeners.delete(listener)
+        if (attentionListeners.size === 0) stopAttentionPolling()
+    }
+}
+let stopAttentionPolling = () => {}
+
+/** Pending attention, polled and refreshed when a run's status changes; null until the first fetch resolves. */
+export function useAttentionItems() {
+    const items = useSyncExternalStore(subscribeAttention, () => attentionItems)
+    // A run or mission leaving or reaching a question changes what waits on you; don't wait for the next poll.
+    const runStatuses = useStore((state) => [
+        ...state.runsListSession.runs.map((run) => `${run.run_id}:${run.status}`),
+        ...state.missionBoard.map((mission) => `${mission.id}:${mission.status ?? ''}`),
+    ].join(','))
+    const firstStatuses = useRef(runStatuses)
+    useEffect(() => {
+        if (runStatuses !== firstStatuses.current) refreshAttention()
+    }, [runStatuses])
     return items
 }
 

@@ -326,7 +326,7 @@ test('the project page shows its chats and settings, marks a missing folder, and
     await expect(group(page, beta)).toHaveAttribute('data-folder-missing', 'true')
     await expect(group(page, beta).getByTestId('chats-project-missing')).toHaveText('folder missing')
 
-    await group(page, alpha).getByTestId('chats-project-name').click()
+    await group(page, alpha).getByTestId('chats-project-settings').click()
     const projectPage = page.getByTestId('project-page')
     await expect(projectPage.getByTestId('project-page-path')).toHaveText(alpha)
     await expect(projectPage.locator('[data-testid="project-page-chat"]:not([data-standing-role])')).toHaveCount(1)
@@ -338,7 +338,7 @@ test('the project page shows its chats and settings, marks a missing folder, and
     await expect(page.getByRole('heading', { name: 'Project model defaults' })).toHaveCount(0)
 
     await page.getByTestId('activity-chats').click()
-    await group(page, home).getByTestId('chats-project-name').click()
+    await group(page, home).getByTestId('chats-project-settings').click()
     await expect(projectPage.getByTestId('project-page-title')).toHaveText('Home')
     await expect(projectPage.getByTestId('project-page-remove')).toBeDisabled()
     await expect(projectPage.getByTestId('project-page-remove-refused')).toHaveText("Home is Spark's default project and can't be removed.")
@@ -348,7 +348,7 @@ test('the project page shows its chats and settings, marks a missing folder, and
 
     // Removing an ordinary project works from its page.
     await page.getByTestId('activity-chats').click()
-    await group(page, beta).getByTestId('chats-project-name').click()
+    await group(page, beta).getByTestId('chats-project-settings').click()
     await projectPage.getByTestId('project-page-remove').click()
     await page.getByTestId('shared-dialog-confirm').click()
     await expect(group(page, beta)).toHaveCount(0)
@@ -434,7 +434,7 @@ test('removing a project while one of its missions is selected drops it from Mis
     await expect(missions.getByRole('button', { name: `Alpha mission ${stamp}` })).toHaveAttribute('aria-current', 'true')
 
     await page.getByTestId('activity-chats').click()
-    await group(page, alpha).getByTestId('chats-project-name').click()
+    await group(page, alpha).getByTestId('chats-project-settings').click()
     await page.getByTestId('project-page').getByTestId('project-page-remove').click()
     await page.getByTestId('shared-dialog-confirm').click()
     await expect(group(page, alpha)).toHaveCount(0)

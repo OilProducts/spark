@@ -2283,7 +2283,7 @@ useStore.getState().setRunsSelectedRunId(runId);
       }))
     })
 
-    await user.click(await screen.findByRole('button', { name: 'non-git-existing' }))
+    await user.click(await screen.findByRole('button', { name: 'Project settings for non-git-existing' }))
     expect(useStore.getState().projectPagePath).toBe('/tmp/non-git-existing')
     expect(screen.queryByTestId('project-browser-error')).not.toBeInTheDocument()
   })
@@ -4183,20 +4183,20 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(reviewItems[1]).toHaveTextContent('Policy reminder: include rollback evidence.')
     expect(reviewItems[2]).toHaveTextContent('Why this strategy?')
 
+    // The question id stays on hover beside the full received time, out of the reading path.
+    const askedTitle = (audit: HTMLElement) => within(audit).getByText(/^Asked /).getAttribute('title')
     const firstAudit = within(reviewItems[0]).getByTestId('run-pending-human-gate-item-audit')
     expect(firstAudit).toHaveTextContent('Order #1')
-    expect(firstAudit).toHaveTextContent('Question ID: gate-review-1')
-    expect(firstAudit).toHaveTextContent('Received:')
+    expect(firstAudit).not.toHaveTextContent('gate-review-1')
+    expect(askedTitle(firstAudit)).toContain('Question ID: gate-review-1')
 
     const secondAudit = within(reviewItems[1]).getByTestId('run-pending-human-gate-item-audit')
     expect(secondAudit).toHaveTextContent('Order #2')
-    expect(secondAudit).toHaveTextContent('Question ID: —')
-    expect(secondAudit).toHaveTextContent('Received:')
+    expect(askedTitle(secondAudit)).not.toContain('Question ID')
 
     const thirdAudit = within(reviewItems[2]).getByTestId('run-pending-human-gate-item-audit')
     expect(thirdAudit).toHaveTextContent('Order #3')
-    expect(thirdAudit).toHaveTextContent('Question ID: gate-review-2')
-    expect(thirdAudit).toHaveTextContent('Received:')
+    expect(askedTitle(thirdAudit)).toContain('Question ID: gate-review-2')
   })
 
   it('[CID:10.3.02] renders accepted and skipped human-gate provenance in run timeline summaries', async () => {

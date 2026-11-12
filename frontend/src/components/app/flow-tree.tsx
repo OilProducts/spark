@@ -11,8 +11,18 @@ import {
 } from '@/components/ui/collapsible'
 import { buildFlowTree, type FlowTreeNode } from '@/lib/flowPaths'
 
+/** What a flow is called and does, shown in place of its file name. */
+export interface FlowLabel {
+    title: string
+    description: string
+}
+
 interface FlowTreeProps {
     flows: string[]
+    /** Titles and descriptions by flow name; a flow without one shows its file name. */
+    flowLabels?: Record<string, FlowLabel>
+    /** The project the list is for, naming its own flows' heading. */
+    projectLabel?: string
     /** The project's own flows (its new and customized ones): when any are listed, they come first under
      *  "This project", and the rest under "Bundled". */
     projectFlows?: ReadonlySet<string>
@@ -25,6 +35,8 @@ interface FlowTreeProps {
 
 export function FlowTree({
     flows,
+    flowLabels,
+    projectLabel,
     projectFlows,
     selectedFlow,
     onSelectFlow,
@@ -38,10 +50,10 @@ export function FlowTree({
             return [{ label: null, tree: buildFlowTree(flows) }]
         }
         return [
-            { label: 'This project', tree: buildFlowTree(own) },
-            { label: 'Bundled', tree: buildFlowTree(flows.filter((flow) => !projectFlows?.has(flow))) },
+            { label: projectLabel ? `${projectLabel}'s flows` : 'This project', tree: buildFlowTree(own) },
+            { label: 'Bundled with Spark', tree: buildFlowTree(flows.filter((flow) => !projectFlows?.has(flow))) },
         ].filter((section) => section.tree.length > 0)
-    }, [flows, projectFlows])
+    }, [flows, projectFlows, projectLabel])
 
     return (
         <div data-testid={dataTestId} className="space-y-4">
@@ -53,6 +65,7 @@ export function FlowTree({
                             key={node.path}
                             node={node}
                             depth={0}
+                            flowLabels={flowLabels}
                             selectedFlow={selectedFlow}
                             onSelectFlow={onSelectFlow}
                             onDeleteFlow={onDeleteFlow}
@@ -67,6 +80,7 @@ export function FlowTree({
 
 interface FlowTreeNodeRowProps {
     node: FlowTreeNode
+    flowLabels?: Record<string, FlowLabel>
     depth: number
     selectedFlow: string | null
     onSelectFlow: (flowName: string) => void
@@ -77,6 +91,7 @@ interface FlowTreeNodeRowProps {
 function FlowTreeNodeRow({
     node,
     depth,
+    flowLabels,
     selectedFlow,
     onSelectFlow,
     onDeleteFlow,
@@ -89,6 +104,7 @@ function FlowTreeNodeRow({
             <FlowTreeDirectoryRow
                 node={node}
                 depth={depth}
+                flowLabels={flowLabels}
                 selectedFlow={selectedFlow}
                 onSelectFlow={onSelectFlow}
                 onDeleteFlow={onDeleteFlow}
@@ -97,11 +113,14 @@ function FlowTreeNodeRow({
         )
     }
 
+    const label = flowLabels?.[node.path]
+    const title = label?.title.trim() || null
+    const description = label?.description.trim() || null
     return (
         <div className="group relative">
             <Button
                 type="button"
-                aria-label={node.path}
+                aria-label={title ? `${title} (${node.path})` : node.path}
                 title={node.path}
                 onClick={() => onSelectFlow(node.path)}
                 variant="ghost"
@@ -115,9 +134,12 @@ function FlowTreeNodeRow({
                 <span className="flex w-full min-w-0 items-start gap-2">
                     <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     {/* The indicator wraps under the name only when both don't fit, so the name keeps the row's width. */}
-                    <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="min-w-0 max-w-full truncate">{node.name}</span>
-                        {renderFlowIndicator?.(node.path)}
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="min-w-0 max-w-full truncate">{title ?? node.name}</span>
+                            {renderFlowIndicator?.(node.path)}
+                        </span>
+                        {description ? <span data-testid="flow-tree-description" className="block w-full truncate text-xs font-normal text-muted-foreground">{description}</span> : null}
                     </span>
                 </span>
             </Button>
@@ -144,6 +166,7 @@ function FlowTreeNodeRow({
 function FlowTreeDirectoryRow({
     node,
     depth,
+    flowLabels,
     selectedFlow,
     onSelectFlow,
     onDeleteFlow,
@@ -182,6 +205,7 @@ function FlowTreeDirectoryRow({
                         key={child.path}
                         node={child}
                         depth={depth + 1}
+                        flowLabels={flowLabels}
                         selectedFlow={selectedFlow}
                         onSelectFlow={onSelectFlow}
                         onDeleteFlow={onDeleteFlow}

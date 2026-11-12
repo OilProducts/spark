@@ -36,7 +36,9 @@ import {
     type VisitFlowNode,
     type VisitMark,
 } from '../model/visitModel'
+import { describeFailure, formatRunTime } from '../model/runOverviewModel'
 import { useRunActions, type SteerResult } from '../hooks/useRunActions'
+import { FailureDetail } from './RunStatusItem'
 
 // Colour marks exceptions: a completed visit carries no icon, a visit that was sent
 // back a warning return arrow, an error a warning cross, a failure a destructive cross.
@@ -407,12 +409,14 @@ function RunVisitView({
     const hasThinking = entries.some(isThinkingEntry)
     const { writes, systemCount } = visitContextWrites(visit)
     const duration = formatVisitDuration(visitDurationMs(visit, now))
-    const errorKind = formatVisitErrorKind(visit)
+    // Only a fork tolerates errors, so tolerance is said only of a branch's visit.
+    const errorKind = formatVisitErrorKind(visit.parentKey === null ? { ...visit, tolerable: null } : visit)
     const branchResults = parallelBranchResults(visit)
     const outcomeLabel = VISIT_OUTCOME_LABELS[visit.outcome]
     const returned = visit.outcome !== 'running' && visit.outcome !== 'waiting'
     // A tool's notes are its stdout, which shows once, under its command.
     const reason = visit.kind === 'tool' && visit.reason === visitToolResult(visit).output ? null : visit.reason
+    const failure = reason ? describeFailure(reason) : null
     const headerMeta = [visit.count > 1 ? `Visit ${visit.number} of ${visit.count}` : null, duration || null]
         .filter((part): part is string => part !== null)
         .join(' · ')
@@ -485,9 +489,6 @@ function RunVisitView({
                                 Decision <code className="font-mono text-foreground">{visit.decision}</code>
                             </span>
                         ) : null}
-                        {errorKind ? (
-                            <span data-testid="run-visit-error-kind" className="text-sm text-muted-foreground">{errorKind}</span>
-                        ) : null}
                         {next ? (
                             <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
                                 {visit.next?.loopBack ? 'Sent back to' : 'Next'}
@@ -504,8 +505,16 @@ function RunVisitView({
                             </span>
                         ) : null}
                     </div>
-                    {reason ? (
-                        <p data-testid="run-visit-reason" className="max-w-[72ch] whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{reason}</p>
+                    {failure ? (
+                        <p data-testid="run-visit-reason" className="max-w-[72ch] whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{failure.summary}</p>
+                    ) : null}
+                    {/* The error's kind and the runtime's own words are for whoever debugs the flow. */}
+                    {errorKind || failure?.detail ? (
+                        <FailureDetail data-testid="run-visit-reason-detail" className="max-w-[72ch]">
+                            {errorKind ? <span data-testid="run-visit-error-kind">{errorKind}</span> : null}
+                            {errorKind && failure?.detail ? ': ' : ''}
+                            {failure?.detail}
+                        </FailureDetail>
                     ) : null}
                     {branchResults.length > 0 ? <BranchResults results={branchResults} /> : null}
                     {writes.length > 0 ? (
@@ -668,10 +677,11 @@ function BranchResults({ results }: { results: ReturnType<typeof parallelBranchR
                 const status = BRANCH_STATUS[branch.status] ?? { label: branch.status, tone: 'muted' as StatusTone }
                 const error = branch.error
                 const terminal = branch.terminal
+                const errorKind = error ? formatVisitErrorKind({ failureKind: error.kind, tolerable: error.tolerable }) : null
+                const failure = error?.reason ? describeFailure(error.reason) : null
                 const evidence = error
                     ? [
                         error.node ? `at ${error.node}` : null,
-                        [error.kind ? `${error.kind} error` : null, error.tolerable === true ? 'tolerable' : error.tolerable === false ? 'not tolerable' : null].filter(Boolean).join(', ') || null,
                         error.attempts !== null ? `${error.attempts} ${error.attempts === 1 ? 'attempt' : 'attempts'}` : null,
                     ].filter(Boolean).join(' · ')
                     : terminal
@@ -684,8 +694,13 @@ function BranchResults({ results }: { results: ReturnType<typeof parallelBranchR
                             <StatusPill tone={status.tone}>{status.label}</StatusPill>
                             {evidence ? <span data-testid="run-visit-branch-evidence" className="text-muted-foreground">{evidence}</span> : null}
                         </span>
-                        {error?.reason ? (
-                            <span data-testid="run-visit-branch-reason" className="whitespace-pre-wrap break-words text-foreground/90">{error.reason}</span>
+                        {failure ? (
+                            <span data-testid="run-visit-branch-reason" className="whitespace-pre-wrap break-words text-foreground/90">{failure.summary}</span>
+                        ) : null}
+                        {errorKind || failure?.detail ? (
+                            <FailureDetail data-testid="run-visit-branch-reason-detail">
+                                {[errorKind, failure?.detail].filter(Boolean).join(': ')}
+                            </FailureDetail>
                         ) : null}
                     </li>
                 )
@@ -787,9 +802,8 @@ function ToolWork({ visit, command }: { visit: RunVisit; command: string | null 
     )
 }
 
-// The journal names the day once and each entry by its time of day.
+// The journal names the day once and each entry by its time of day, as the run list does.
 const JOURNAL_DAY = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
-const JOURNAL_TIME = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })
 
 function RunJournal({ journal, flowNodes, timelineError }: {
     journal: TimelineEventEntry[]
@@ -819,7 +833,7 @@ function RunJournal({ journal, flowNodes, timelineError }: {
                             ) : null}
                             <li data-testid="run-journal-row" className="flex gap-3">
                                 <span className="w-20 shrink-0 text-xs leading-5 tabular-nums text-muted-foreground" title={formatTimestamp(event.receivedAt)}>
-                                    {valid ? JOURNAL_TIME.format(date) : '—'}
+                                    {valid ? formatRunTime(event.receivedAt) : '—'}
                                 </span>
                                 <span className={cn(
                                     'min-w-0 break-words',

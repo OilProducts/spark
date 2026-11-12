@@ -1,6 +1,13 @@
 import { asOptionalString, expectObjectRecord, expectString } from './shared'
 import { fetchWorkspaceJsonValidated } from './apiClient'
 
+/** Dispatched on window after anything that answers or resolves an attention item. */
+export const ATTENTION_CHANGED_EVENT = 'spark:attention-changed'
+export const notifyAttentionChanged = <T,>(value: T): T => {
+    window.dispatchEvent(new Event(ATTENTION_CHANGED_EVENT))
+    return value
+}
+
 export type AttentionKind = 'run_gate' | 'flow_run_request' | 'proposed_plan' | 'mission'
 
 export interface AttentionItem {

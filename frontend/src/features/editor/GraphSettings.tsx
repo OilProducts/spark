@@ -234,12 +234,6 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
             entityValue={activeFlow || undefined}
         >
             <div data-testid="graph-structured-form" className="space-y-4">
-                <GraphRunConfigurationSection
-                    model={model}
-                    workingDir={workingDir}
-                    setModel={setModel}
-                    setWorkingDir={setWorkingDir}
-                />
                 <GraphMetadataSection
                     flowMetadata={flowMetadata}
                     updateFlowMetadata={updateFlowMetadata}
@@ -253,6 +247,12 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     flowMetadata={flowMetadata}
                     nodes={flowNodes}
                     updateFlowMetadata={updateFlowMetadata}
+                />
+                <GraphRunConfigurationSection
+                    model={model}
+                    workingDir={workingDir}
+                    setModel={setModel}
+                    setWorkingDir={setWorkingDir}
                 />
                 <GraphExecutionDefaultsSection
                     flowMetadata={flowMetadata}

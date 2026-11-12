@@ -2,7 +2,7 @@ import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
-import { fetchProviderSettings, saveProviderSettings, fetchAgentSettings, saveAgentSettings } from '../services/executionSettings'
+import { fetchProviderSettings, saveProviderSettings, fetchAgentSettings, saveAgentSettings, msToUnit, unitToMs, agentLimitError } from '../services/executionSettings'
 import { ProviderSettingsEditor } from '../ProviderSettingsEditor'
 import { AgentSettingsEditor } from '../AgentSettingsEditor'
 
@@ -39,10 +39,18 @@ it('validates session limits and saves with the section revision', async () => {
     vi.mocked(saveAgentSettings).mockImplementation(async (_, value) => ({ revision: 'two', stored: value, effective: value }))
     render(<DialogProvider><AgentSettingsEditor /></DialogProvider>)
     const user = userEvent.setup()
-    const timeout = await screen.findByLabelText('Default command timeout (milliseconds)')
+    // Shown in seconds and minutes, saved in milliseconds.
+    const timeout = await screen.findByLabelText('Command time limit')
+    expect(timeout).toHaveValue(10)
+    expect(screen.getByLabelText('Longest command time')).toHaveValue(10)
     await user.clear(timeout)
     expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
-    await user.type(timeout, '500')
+    expect(timeout).toHaveAccessibleDescription(expect.stringContaining('Enter a time longer than 0 seconds.'))
+    await user.type(timeout, '900')
+    expect(screen.getByLabelText('Longest command time')).toHaveAccessibleDescription(expect.stringContaining('Must be at least the command time limit (900 seconds).'))
+    expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
+    await user.clear(timeout)
+    await user.type(timeout, '0.5')
     expect(saveAgentSettings).not.toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: /^Save/ }))
     await screen.findByRole('status')
@@ -54,16 +62,34 @@ it('collapses agent advanced groups, opens invalid paths and output limits, and 
     vi.mocked(fetchAgentSettings).mockResolvedValue({ revision: 'one', stored, effective: stored })
     const user = userEvent.setup()
     render(<DialogProvider><AgentSettingsEditor /></DialogProvider>)
-    const path = await screen.findByLabelText('Codex binary')
+    const path = await screen.findByLabelText('Codex program')
     expect(path).toBeVisible()
     expect(path).toHaveAccessibleDescription('Enter a nonempty path or leave blank for the default.')
-    expect(screen.getByText('Runtime paths').closest('details')).toHaveAttribute('open')
-    expect(screen.getByText('Tool-output limits').closest('details')).toHaveAttribute('open')
-    for (const name of ['Permissions and environment', 'Tracing']) expect(screen.getByText(name).closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByText('Codex and Claude paths').closest('details')).toHaveAttribute('open')
+    expect(screen.getByText('Tool output limits').closest('details')).toHaveAttribute('open')
+    for (const name of ['Permissions and environment', 'Debug logs']) expect(screen.getByText(name).closest('details')).not.toHaveAttribute('open')
     expect(screen.getByRole('button', { name: /^Save/ }).closest('details')).toBeNull()
     expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
     await user.clear(path)
     const limit = screen.getByLabelText('shell')
     await user.clear(limit); await user.type(limit, '10')
     expect(screen.getByRole('button', { name: /^Save/ })).toBeEnabled()
+})
+
+it('converts command time limits between milliseconds and the shown unit', () => {
+    expect(msToUnit(10_000, 'seconds')).toBe(10)
+    expect(msToUnit(1234, 'seconds')).toBe(1.234)
+    expect(msToUnit(600_000, 'minutes')).toBe(10)
+    expect(msToUnit(10_000, 'minutes')).toBe(0.167)
+    expect(msToUnit(NaN, 'seconds')).toBe('')
+    expect(unitToMs('1.5', 'seconds')).toBe(1500)
+    expect(unitToMs('0.25', 'minutes')).toBe(15_000)
+    expect(unitToMs('', 'minutes')).toBeNaN()
+    const limits = { max_turns: 0, max_tool_rounds_per_input: 0, default_command_timeout_ms: 10_000, max_command_timeout_ms: 600_000, tool_output_limits: {}, line_limits: {}, enable_loop_detection: true, loop_detection_window: 10, max_subagent_depth: 1 }
+    expect(agentLimitError(limits, 'max_command_timeout_ms')).toBe('')
+    expect(agentLimitError({ ...limits, max_command_timeout_ms: 5000 }, 'max_command_timeout_ms')).toBe('Must be at least the command time limit (10 seconds).')
+    expect(agentLimitError({ ...limits, default_command_timeout_ms: NaN }, 'default_command_timeout_ms')).toBe('Enter a time longer than 0 seconds.')
+    expect(agentLimitError({ ...limits, max_turns: 1.5 }, 'max_turns')).toBe('Enter a whole number, 0 or more.')
+    expect(agentLimitError({ ...limits, loop_detection_window: 0 }, 'loop_detection_window')).toBe('Enter at least 1 while loop warnings are on.')
+    expect(agentLimitError({ ...limits, loop_detection_window: 0, enable_loop_detection: false }, 'loop_detection_window')).toBe('')
 })

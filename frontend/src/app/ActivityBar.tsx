@@ -85,7 +85,7 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
             <button
                 type="button"
                 data-testid="attention-bell"
-                aria-label={items.length > 0 ? `${items.length} items waiting on you` : 'Nothing waiting on you'}
+                aria-label={items.length > 0 ? `Inbox: ${items.length} ${items.length === 1 ? 'item' : 'items'} waiting on you` : 'Inbox: nothing waiting on you'}
                 title="Waiting on you"
                 onClick={() => setOpen((previous) => !previous)}
                 className={ITEM_CLASS}

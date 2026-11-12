@@ -8,6 +8,7 @@ import {
     cancelRunActionLabel,
     formatDuration,
     formatRunStatusLabel,
+    formatTimestamp,
     runRecordTone,
 } from '../model/shared'
 import { formatCompactCount, formatRunDate, flowTitle as flowTitleFromName, runTitle } from '../model/runOverviewModel'
@@ -89,7 +90,11 @@ export function RunHeaderBar({
                         {formatRunStatusLabel(run)}
                     </StatusPill>
                 </div>
-                <p data-testid="run-header-facts" className="truncate text-sm text-muted-foreground">
+                <p
+                    data-testid="run-header-facts"
+                    className="truncate text-sm text-muted-foreground"
+                    title={run.started_at ? `Started ${formatTimestamp(run.started_at)}` : undefined}
+                >
                     {facts.join(' · ')}
                 </p>
             </div>
@@ -99,6 +104,7 @@ export function RunHeaderBar({
                         type="button"
                         data-testid="run-summary-retry-button"
                         onClick={() => onRequestRetry(run.run_id, run.status)}
+                        title="Pick this run up again from the step where it failed, with the same flow and its results so far"
                         variant={continuationOpen ? 'outline' : 'default'}
                         size="sm"
                     >
@@ -123,8 +129,8 @@ export function RunHeaderBar({
                         data-testid="run-summary-continue-button"
                         onClick={() => onContinueFromRun(run)}
                         title={selectedVisitLabel
-                            ? `Start a new run from ${selectedVisitLabel}`
-                            : 'Start a new run from a node you pick on the graph'}
+                            ? `Start a new run from ${selectedVisitLabel}, reusing this run’s results so far`
+                            : 'Start a new run from a step you pick on the graph, reusing this run’s results so far'}
                         variant="outline"
                         size="sm"
                     >
@@ -136,7 +142,7 @@ export function RunHeaderBar({
                         type="button"
                         data-testid="run-summary-rerun-button"
                         onClick={() => onRerunRun(run)}
-                        title="Launch a new run of this flow with the same inputs"
+                        title="Start a new run of the flow as it is now, from the beginning, with the same inputs"
                         variant="outline"
                         size="sm"
                     >

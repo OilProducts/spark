@@ -485,7 +485,7 @@ const openProjectPage = async (user: ReturnType<typeof userEvent.setup>, project
     expect(found).toBeDefined()
     return found!
   })
-  await user.click(within(group).getByTestId('chats-project-name'))
+  await user.click(within(group).getByTestId('chats-project-settings'))
 }
 
 describe('App shell behavior', () => {

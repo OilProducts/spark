@@ -15,7 +15,7 @@ export function ProviderSettingsEditor() {
         <CardHeader><h2 className="text-base font-semibold">Provider connections</h2></CardHeader>
         <CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
-            <p className="text-sm text-muted-foreground">Credentials stay in environment variables.</p>
+            <p className="text-sm text-muted-foreground">Spark reads API keys from environment variables. Enter a variable’s name, not the key itself.</p>
             {editor.draft && providers.map((provider) => <details key={provider} ref={(node) => { if (node && (Object.entries(editor.draft?.[provider] ?? {}).some(([key, value]) => !!providerFieldError(key as keyof ProviderConnection, value ?? '')))) node.open = true }}>
                 <SettingsSummary>{providerNames[provider]} · {editor.saved?.credential_status[provider] ? 'Configured' : 'Missing credentials'}</SettingsSummary>
                 <fieldset disabled={editor.pending} className="space-y-2">
@@ -27,7 +27,7 @@ export function ProviderSettingsEditor() {
                     return <Field key={key}><FieldLabel htmlFor={id}>{({ base_url: 'Base URL', api_key_env: 'Credential environment variable', organization: 'Organization', project: 'Project', http_referer: 'HTTP referrer', title: 'Application title' })[key]}</FieldLabel>
                         <Input id={id} value={value} aria-invalid={!!error} aria-describedby={error ? `${id}-error` : undefined} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, [provider]: { ...draft[provider], [key]: event.target.value || null } }))} />
                         {error && <p id={`${id}-error`} role="alert">{error}</p>}
-                        <p className="text-xs text-muted-foreground">Effective: {editor.saved?.effective ? editor.saved.effective[provider]?.[key] ?? 'Provider default' : 'Unavailable'} · {editor.saved?.sources?.[`${provider}.${key}`]}{key === 'api_key_env' && ` · ${editor.saved?.credential_status[provider] ? 'Configured' : 'Missing'}`}</p>
+                        <p className="text-xs text-muted-foreground">In use: {editor.saved?.effective ? editor.saved.effective[provider]?.[key] ?? 'Provider default' : 'Unavailable'} · {editor.saved?.sources?.[`${provider}.${key}`]}{key === 'api_key_env' && ` · ${editor.saved?.credential_status[provider] ? 'Configured' : 'Missing'}`}</p>
                     </Field>
                 })}
             </fieldset></details>)}

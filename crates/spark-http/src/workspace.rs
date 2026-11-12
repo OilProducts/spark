@@ -248,7 +248,11 @@ struct ProjectStateUpdateBody {
     is_favorite: Option<Option<bool>>,
     #[serde(default)]
     last_accessed_at: Option<Option<String>>,
-    #[serde(default)]
+    // null clears the open chat, as when it is deleted; absent leaves it.
+    #[serde(
+        default,
+        deserialize_with = "spark_common::settings::deserialize_nullable_patch"
+    )]
     active_conversation_id: Option<Option<String>>,
     #[serde(
         default,

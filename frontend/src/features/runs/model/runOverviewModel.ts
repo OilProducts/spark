@@ -110,6 +110,36 @@ export function classifyRunFailure(run: Pick<RunRecord, 'last_error' | 'outcome_
     return INFRASTRUCTURE_ERROR.test(run.last_error ?? '') ? 'infrastructure' : 'flow'
 }
 
+// The runtime's own failure texts, said plainly. Anything else is the flow's,
+// the tool's or the agent's own words and reads as written.
+const FAILURE_WORDINGS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
+    [/^tool exited with (?:unmapped )?code (-?\d+)/, ([, code]) => `The command failed (exit code ${code}).`],
+    [/^tool command timed out/, () => 'The command timed out.'],
+    [/^tool command could not be launched/, () => 'The command could not start.'],
+    [/^tool command stopped by cancellation/, () => 'The command was stopped by a cancel.'],
+    [/^tool pre-hook blocked execution/, () => 'The hook that runs before the command blocked it.'],
+    [/^tool (?:JSON|stdout|returned undeclared)/, () => 'The command’s output did not name a decision this step can take.'],
+    [/^codergen backend failed:[\s\S]*usage limit/i, () => 'The agent could not run: its usage limit was reached.'],
+    [/^codergen backend failed:[\s\S]*rate limit/i, () => 'The agent could not run: its provider is limiting requests.'],
+    [/^codergen backend failed:[\s\S]*timed out/i, () => 'The agent could not run: it stopped responding.'],
+    [/^codergen backend failed/i, () => 'The agent could not run.'],
+    [/^visit_limit_reached/, () => 'A step ran more times than the flow allows.'],
+    [/^no_matching_route/, () => 'The step’s decision matched none of its routes.'],
+    [/^stage_failed$/, () => 'The step failed without giving a reason.'],
+]
+
+/** A failure reason in plain words, with the runtime's own text as the detail when it was reworded. */
+export function describeFailure(reason: string): { summary: string; detail: string | null } {
+    const text = reason.trim()
+    for (const [pattern, words] of FAILURE_WORDINGS) {
+        const match = text.match(pattern)
+        if (match) {
+            return { summary: words(match), detail: text }
+        }
+    }
+    return { summary: text, detail: null }
+}
+
 /** Visits that ended in an error the run continued past, in run order. */
 export const errorVisits = (visits: RunVisit[]): RunVisit[] => (
     visits.filter((visit) => visit.outcome === 'error')

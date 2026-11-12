@@ -39,6 +39,9 @@ describe('Inspector and node authoring behavior', () => {
     expect(codergenVisibility.showPrompt).toBe(true)
     expect(codergenVisibility.showLlmSettings).toBe(true)
     expect(codergenVisibility.showAdvanced).toBe(true)
+
+    // A human gate's question is its prompt.
+    expect(getNodeFieldVisibility('wait.human').showPrompt).toBe(true)
   })
 
   it('maps node diagnostics to actionable inspector fields', () => {

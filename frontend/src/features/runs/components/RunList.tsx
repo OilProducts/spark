@@ -13,7 +13,7 @@ import {
 import { useStore } from '@/store'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import type { RunRecord } from '../model/shared'
-import { formatDuration, runRecordTone } from '../model/shared'
+import { formatDuration, formatTimestamp, runRecordTone } from '../model/shared'
 import { flowTitle, formatRunDate, formatRunTime, runDayLabel, runTitle } from '../model/runOverviewModel'
 
 const ACTIVE_LIST_STATUSES = new Set([
@@ -168,7 +168,7 @@ export function RunList({
                             // The time, duration and status word lead and always show; the project
                             // and flow follow and give way at the line's end when it is short.
                             <span data-testid="run-history-row-meta" className="flex min-w-0">
-                                <span className="shrink-0 whitespace-pre">
+                                <span className="shrink-0 whitespace-pre" title={run.started_at ? `Started ${formatTimestamp(run.started_at)}` : undefined}>
                                     {metaParts.join(' · ')}
                                     {attention ? (
                                         <span data-testid="run-history-row-status" className={attention.className}>

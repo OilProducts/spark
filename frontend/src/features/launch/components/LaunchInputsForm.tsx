@@ -8,41 +8,7 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 
-const launchInputTypeLabel = (type: string) => {
-    switch (type) {
-        case 'string':
-            return 'Text'
-        case 'string[]':
-            return 'List'
-        case 'number':
-            return 'Number'
-        case 'boolean':
-            return 'Boolean'
-        default:
-            return 'JSON'
-    }
-}
-
-const launchInputDesktopSpanClass = (
-    type: string,
-    index: number,
-    totalEntries: number,
-    required: boolean,
-) => {
-    if (totalEntries === 1) {
-        return 'lg:col-span-12'
-    }
-    if (type === 'boolean' || type === 'number') {
-        return 'lg:col-span-4'
-    }
-    if (index === 0 && required && type === 'string' && totalEntries <= 3) {
-        return 'lg:col-span-12'
-    }
-    return 'lg:col-span-6'
-}
-
 interface LaunchInputsFormProps {
-    isNarrowViewport: boolean
     flowName: string | null
     parsedLaunchInputs: ParsedLaunchInputDefinitions
     launchInputValues: LaunchInputFormValues
@@ -51,8 +17,8 @@ interface LaunchInputsFormProps {
     onInputChange: (entry: LaunchInputDefinition, value: string) => void
 }
 
+/** One field per row, label and description above the control, so the panel's width never squeezes them. */
 export function LaunchInputsForm({
-    isNarrowViewport,
     flowName,
     parsedLaunchInputs,
     launchInputValues,
@@ -60,12 +26,11 @@ export function LaunchInputsForm({
     onToggleCollapsed,
     onInputChange,
 }: LaunchInputsFormProps) {
-    const launchInputCount = parsedLaunchInputs.entries.length
-    const canCollapseLaunchInputs = launchInputCount > 0
+    const canCollapseLaunchInputs = parsedLaunchInputs.entries.length > 0
     return (
         <div
             data-testid="execution-launch-inputs"
-            className="mb-3 w-full"
+            className="w-full"
         >
             <div
                 data-testid="execution-launch-inputs-toolbar"
@@ -75,23 +40,24 @@ export function LaunchInputsForm({
                     data-testid="execution-launch-inputs-title"
                     className="text-sm font-semibold text-foreground"
                 >
-                    Launch inputs
+                    What this run needs
                 </p>
                 {canCollapseLaunchInputs ? (
                     <Button
                         type="button"
                         data-testid="execution-launch-inputs-toggle"
-                        aria-label={launchInputsCollapsed ? 'Expand launch inputs' : 'Collapse launch inputs'}
-                        title={launchInputsCollapsed ? 'Expand launch inputs' : 'Collapse launch inputs'}
+                        aria-label={launchInputsCollapsed ? 'Show run inputs' : 'Hide run inputs'}
+                        title={launchInputsCollapsed ? 'Show run inputs' : 'Hide run inputs'}
+                        aria-expanded={!launchInputsCollapsed}
                         onClick={onToggleCollapsed}
                         variant="ghost"
                         size="icon-xs"
                         className="h-7 w-7 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
                     >
                         {launchInputsCollapsed ? (
-                            <ChevronUp className="h-3.5 w-3.5" />
-                        ) : (
                             <ChevronDown className="h-3.5 w-3.5" />
+                        ) : (
+                            <ChevronUp className="h-3.5 w-3.5" />
                         )}
                     </Button>
                 ) : null}
@@ -101,59 +67,45 @@ export function LaunchInputsForm({
             ) : null}
             {!launchInputsCollapsed ? (
                 <div
-                    data-testid="execution-launch-inputs-body"
-                    className="max-h-[min(42vh,20rem)] overflow-y-auto overscroll-contain"
+                    data-testid="execution-launch-inputs-grid"
+                    className="space-y-4"
                 >
-                    <div
-                        data-testid="execution-launch-inputs-grid"
-                        className={`grid gap-x-4 gap-y-3 ${isNarrowViewport ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-12'}`}
-                    >
-                        {parsedLaunchInputs.entries.map((entry, index) => (
+                    {parsedLaunchInputs.entries.map((entry) => {
+                        const id = `launch-input-${flowName || 'flow'}-${entry.key}`.replace(/[^\w-]/g, '-')
+                        const descriptionId = entry.description ? `${id}-description` : undefined
+                        const common = {
+                            id,
+                            'data-testid': `execution-launch-input-${entry.key}`,
+                            'aria-describedby': descriptionId,
+                            'aria-required': entry.required || undefined,
+                            value: launchInputValues[entry.key] ?? '',
+                        }
+                        return (
                             <div
                                 key={`${flowName || 'flow'}-${entry.key}`}
                                 data-testid={`execution-launch-input-field-${entry.key}`}
-                                className={`space-y-1.5 ${
-                                    isNarrowViewport
-                                        ? 'col-span-1'
-                                        : launchInputDesktopSpanClass(
-                                            entry.type,
-                                            index,
-                                            launchInputCount,
-                                            entry.required,
-                                        )
-                                }`}
+                                className="space-y-1.5"
                             >
-                                <div
-                                    className={`pb-1 ${
-                                        isNarrowViewport ? 'space-y-1' : 'flex items-start justify-between gap-3'
-                                    }`}
-                                >
-                                    <div className="min-w-0">
-                                        <Label className="text-sm">
-                                            {entry.label}
-                                        </Label>
-                                        {entry.description ? (
-                                            <p className="mt-0.5 text-xs leading-4 text-muted-foreground">
-                                                {entry.description}
-                                            </p>
-                                        ) : null}
-                                    </div>
-                                    <p className="shrink-0 text-xs leading-4 text-muted-foreground">
-                                        {launchInputTypeLabel(entry.type)}
-                                        {entry.required ? ' · Required' : ''}
-                                    </p>
+                                <div>
+                                    <Label htmlFor={id} className="text-sm">
+                                        {entry.label}
+                                        {entry.required ? null : <span className="font-normal text-muted-foreground">(optional)</span>}
+                                    </Label>
+                                    {entry.description ? (
+                                        <p id={descriptionId} className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                                            {entry.description}
+                                        </p>
+                                    ) : null}
                                 </div>
                                 {entry.type === 'string' ? (
                                     <Input
-                                        data-testid={`execution-launch-input-${entry.key}`}
-                                        value={launchInputValues[entry.key] ?? ''}
+                                        {...common}
                                         onChange={(event) => onInputChange(entry, event.target.value)}
                                         className="h-8 text-sm"
                                     />
                                 ) : entry.type === 'string[]' ? (
                                     <Textarea
-                                        data-testid={`execution-launch-input-${entry.key}`}
-                                        value={launchInputValues[entry.key] ?? ''}
+                                        {...common}
                                         onChange={(event) => onInputChange(entry, event.target.value)}
                                         rows={2}
                                         className="min-h-16 px-2 py-1 text-sm"
@@ -161,37 +113,34 @@ export function LaunchInputsForm({
                                     />
                                 ) : entry.type === 'boolean' ? (
                                     <NativeSelect
-                                        data-testid={`execution-launch-input-${entry.key}`}
-                                        value={launchInputValues[entry.key] ?? ''}
+                                        {...common}
                                         onChange={(event) => onInputChange(entry, event.target.value)}
-                                        className="h-8 text-sm"
+                                        size="sm"
+                                        className="w-40 text-sm"
                                     >
-                                        <option value="">Unset</option>
-                                        <option value="true">True</option>
-                                        <option value="false">False</option>
+                                        <option value="">Not set</option>
+                                        <option value="true">Yes</option>
+                                        <option value="false">No</option>
                                     </NativeSelect>
                                 ) : entry.type === 'number' ? (
                                     <Input
-                                        data-testid={`execution-launch-input-${entry.key}`}
+                                        {...common}
                                         type="number"
-                                        value={launchInputValues[entry.key] ?? ''}
                                         onChange={(event) => onInputChange(entry, event.target.value)}
-                                        className="h-8 text-sm"
-                                        placeholder="42"
+                                        className="h-8 w-40 text-sm"
                                     />
                                 ) : (
                                     <Textarea
-                                        data-testid={`execution-launch-input-${entry.key}`}
-                                        value={launchInputValues[entry.key] ?? ''}
+                                        {...common}
                                         onChange={(event) => onInputChange(entry, event.target.value)}
                                         rows={3}
-                                        className="min-h-20 px-2 py-1 text-sm"
-                                        placeholder='{"key":"value"}'
+                                        className="min-h-20 px-2 py-1 font-mono text-sm"
+                                        placeholder='{"key": "value"}'
                                     />
                                 )}
                             </div>
-                        ))}
-                    </div>
+                        )
+                    })}
                 </div>
             ) : null}
         </div>

@@ -15,6 +15,7 @@ import {
     fetchTextWithValidation,
     parseDiagnosticList,
 } from './shared'
+import { notifyAttentionChanged } from './attentionApi'
 
 export const ATTRACTOR_BASE = '/attractor'
 export const ATTRACTOR_API_BASE = `${ATTRACTOR_BASE}/api`
@@ -1101,7 +1102,7 @@ export async function fetchPipelineAnswerValidated(
         },
         '/attractor/pipelines/{id}/questions/{qid}/answer',
         parsePipelineAnswerResponse,
-    )
+    ).then(notifyAttentionChanged)
 }
 
 export async function fetchPipelineGraphValidated(pipelineId: string): Promise<PipelineGraphResponse> {

@@ -2,7 +2,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
-import { LaunchPanel, useFlowCatalog, type ContinuationDraft } from '@/features/launch'
+import { LaunchPanel, openRunFlowDialog, useFlowCatalog, type ContinuationDraft } from '@/features/launch'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -32,7 +32,8 @@ import type { StatusTone } from '@/components/app/status'
 import { SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Play } from 'lucide-react'
+import { Play, Plus } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
 import { openRun } from '@/features/missions/MissionTranscript'
 import { requestNavigation } from '@/state/workspaceSlice'
@@ -440,11 +441,32 @@ export function RunsPanel() {
     // graph still get a readable column each; otherwise it sits above the details.
     const railBeside = runBodyWidth >= RAIL_BESIDE_GRAPH_MIN_WIDTH
 
+    const runFlowAction = (
+        <Button type="button" variant="outline" size="sm" data-testid="runs-empty-run-flow-button" onClick={() => openRunFlowDialog({ projectPath: useStore.getState().runsListSession.projectFilter })}>
+            Run a flow…
+        </Button>
+    )
+
     return (
         <ViewLayout
             view="runs"
             title="Runs"
-            actions={<RunsProjectFilter />}
+            actions={(
+                <>
+                    <RunsProjectFilter />
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        data-testid="runs-run-flow-button"
+                        aria-label="Run a flow"
+                        title="Run a flow"
+                        onClick={() => openRunFlowDialog({ projectPath: useStore.getState().runsListSession.projectFilter })}
+                    >
+                        <Plus aria-hidden="true" />
+                    </Button>
+                </>
+            )}
             // ponytail: the run list mounts only while Runs shows, so live updates behind
             // other views don't regroup it; its search and expansion state resets on leaving.
             panel={isRunsView ? <RunsSidebar selectedRunId={selectedRunId} /> : null}
@@ -500,8 +522,14 @@ export function RunsPanel() {
                     </Alert>
                 ) : null}
                 {showRunSelectionEmptyState && (
-                    <SheetEmpty data-testid="run-selection-empty-state" icon={Play} title="No run selected" className="flex-1">
-                        Select a run from the sidebar to inspect its details.
+                    <SheetEmpty
+                        data-testid="run-selection-empty-state"
+                        icon={Play}
+                        title="No run selected"
+                        className="flex-1"
+                        action={runFlowAction}
+                    >
+                        Pick a run from the list to see its progress and results, or start a new one.
                     </SheetEmpty>
                 )}
                 {showRunDetailsRestoringState && (
@@ -511,6 +539,9 @@ export function RunsPanel() {
                     <RunContinuationPanel
                         draft={activeContinuationDraft}
                         projectPath={selectedRun.project_path || null}
+                        startNodeLabel={activeContinuationDraft.startNodeId
+                            ? flowNodes[activeContinuationDraft.startNodeId]?.label ?? activeContinuationDraft.startNodeId
+                            : null}
                         onDraftChange={(patch) => {
                             setContinuationDraft((draft) => (draft ? { ...draft, ...patch } : draft))
                         }}
@@ -530,8 +561,8 @@ export function RunsPanel() {
                     </div>
                 )}
                 {!selectedRun && !hasRuns && (
-                    <SheetEmpty icon={Play} title="No runs yet" className="flex-1">
-                        No runs have been recorded yet. Start one from Flows or Overview.
+                    <SheetEmpty icon={Play} title="No runs yet" className="flex-1" action={runFlowAction}>
+                        Start a flow to see its progress and results here.
                     </SheetEmpty>
                 )}
                 {selectedRun && (
@@ -601,6 +632,7 @@ export function RunsPanel() {
                                                 freeformAnswersByGateId={freeformAnswersByGateId}
                                                 gateNotesByGateId={gateNotesByGateId}
                                                 groupedPendingInterviewGates={groupedPendingInterviewGates}
+                                                now={now}
                                                 onFreeformAnswerChange={(questionId, value) => {
                                                     setFreeformAnswersByGateId((previous) => ({
                                                         ...previous,

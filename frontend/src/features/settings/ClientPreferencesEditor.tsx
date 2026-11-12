@@ -1,7 +1,7 @@
 import { runPresentationChoices, type RunPresentation } from './services/clientPreferences'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Field, FieldLabel } from '@/components/ui/field'
+import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { NativeSelect } from '@/components/ui/native-select'
 import { useClientPreferencesEditor } from './hooks/useClientPreferencesEditor'
@@ -53,22 +53,31 @@ export function ClientPreferencesEditor() {
                     </NativeSelect>
                 </Field>
                 <h2 className={groupHeading}>Layout</h2>
-                <Field><FieldLabel htmlFor="preference-sidebar-width">Editor sidebar width (pixels)</FieldLabel>
-                    <Input id="preference-sidebar-width" className="w-40" type="number" min={256} max={560} step={1}
-                        aria-invalid={editor.invalidWidth} aria-describedby="preference-sidebar-help preference-sidebar-error"
-                        value={editor.draft?.editor_sidebar_width ?? ''}
-                        onChange={(event) => { const width = event.target.value === '' ? null : Number(event.target.value); editor.setDraft((draft) => draft && ({ ...draft, editor_sidebar_width: width })) }} />
-                    <p id="preference-sidebar-help" className="text-xs text-muted-foreground">256–560 pixels. Leave blank for the default of 288. Applies after saving.</p>
-                    {editor.invalidWidth && <p id="preference-sidebar-error" role="alert">Choose a whole number from 256 to 560.</p>}
+                <p className="-mt-1.5 text-sm text-muted-foreground">You can also resize these by dragging their edges. Leave a size blank to use its default.</p>
+                <Field><FieldLabel htmlFor="preference-sidebar-width">Flow editor panel width</FieldLabel>
+                    <div className="flex items-center gap-2">
+                        <Input id="preference-sidebar-width" className="w-40" type="number" min={256} max={560} step={1}
+                            aria-invalid={editor.invalidWidth} aria-describedby="preference-sidebar-unit preference-sidebar-help preference-sidebar-error"
+                            value={editor.draft?.editor_sidebar_width ?? ''}
+                            onChange={(event) => { const width = event.target.value === '' ? null : Number(event.target.value); editor.setDraft((draft) => draft && ({ ...draft, editor_sidebar_width: width })) }} />
+                        <span id="preference-sidebar-unit" className="text-sm text-muted-foreground">pixels</span>
+                    </div>
+                    <p id="preference-sidebar-help" className="text-xs text-muted-foreground">The properties panel beside the flow graph. 256 to 560; default 288.</p>
+                    {editor.invalidWidth && <FieldError id="preference-sidebar-error" role="alert">Choose a whole number from 256 to 560.</FieldError>}
                 </Field>
-                <Field><FieldLabel htmlFor="preference-home-split">Home sidebar primary split (0–1)</FieldLabel>
-                    <Input id="preference-home-split" className="w-40" type="number" min={0} max={1} step={0.01}
-                        aria-invalid={editor.invalidSplit} aria-describedby="preference-home-split-help preference-split-error"
-                        value={editor.draft?.home_sidebar_primary_split_ratio ?? ''}
-                        onChange={(event) => { const ratio = event.target.value === '' ? null : Number(event.target.value); editor.setDraft((draft) => draft && ({ ...draft, home_sidebar_primary_split_ratio: ratio })) }} />
-                    <p id="preference-home-split-help" className="text-xs text-muted-foreground">Share of sidebar height for the top pane. Leave blank for automatic sizing.</p>
-                    {editor.invalidSplit && <p id="preference-split-error" role="alert">Choose a number from 0 to 1.</p>}
+                <Field><FieldLabel htmlFor="run-preference-graph-height">Run graph height</FieldLabel>
+                    <div className="flex items-center gap-2">
+                        <Input id="run-preference-graph-height" className="w-40" type="number" min={280} max={960} step={1}
+                            aria-invalid={editor.invalidGraphHeight} aria-describedby="preference-graph-unit preference-graph-help preference-graph-error"
+                            value={editor.draft?.run_presentation?.graph_height ?? ''}
+                            onChange={(event) => { const height = event.target.value === '' ? null : Number(event.target.value); editor.setDraft((draft) => draft && ({ ...draft, run_presentation: { ...draft.run_presentation, graph_height: height } })) }} />
+                        <span id="preference-graph-unit" className="text-sm text-muted-foreground">pixels</span>
+                    </div>
+                    <p id="preference-graph-help" className="text-xs text-muted-foreground">The flow graph on a run’s page. 280 to 960; default 512.</p>
+                    {editor.invalidGraphHeight && <FieldError id="preference-graph-error" role="alert">Choose a whole number from 280 to 960.</FieldError>}
                 </Field>
+                <Button size="sm" variant="outline" disabled={editor.draft?.editor_sidebar_width == null && editor.draft?.run_presentation?.graph_height == null}
+                    onClick={() => editor.setDraft((draft) => draft && ({ ...draft, editor_sidebar_width: null, run_presentation: { ...draft.run_presentation, graph_height: null } }))}>Reset layout</Button>
                 <h2 className={groupHeading}>Runs</h2>
                 {(Object.keys(runPresentationChoices) as (keyof typeof runPresentationChoices)[]).map((key) => <Field key={key}>
                     <FieldLabel htmlFor={`run-preference-${key}`}>{{ sort: 'Run sort order' }[key]}</FieldLabel>
@@ -76,13 +85,9 @@ export function ClientPreferencesEditor() {
                         <option value="">Default</option>{runPresentationChoices[key].map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}
                     </NativeSelect>
                 </Field>)}
-                <Field><FieldLabel htmlFor="run-preference-graph-height">Run graph height (pixels)</FieldLabel>
-                    <Input id="run-preference-graph-height" className="w-40" aria-invalid={editor.invalidGraphHeight} aria-describedby={editor.invalidGraphHeight ? "preference-graph-error" : undefined} type="number" min={280} max={960} value={editor.draft?.run_presentation?.graph_height ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, run_presentation: { ...draft.run_presentation, graph_height: event.target.value === '' ? null : Number(event.target.value) } }))} />
-                    {editor.invalidGraphHeight && <p id="preference-graph-error" role="alert">Choose a whole number from 280 to 960.</p>}
-                </Field>
             </fieldset>
             <div className="flex flex-wrap gap-2">
-                <Button size="sm" aria-label="Save client preferences" disabled={!editor.dirty || editor.pending || editor.invalidWidth || editor.invalidSplit || editor.invalidGraphHeight} onClick={() => void editor.save()}>Save</Button>
+                <Button size="sm" aria-label="Save client preferences" disabled={!editor.dirty || editor.pending || editor.invalidWidth || editor.invalidGraphHeight} onClick={() => void editor.save()}>Save</Button>
                 <Button size="sm" variant="ghost" aria-label="Discard client preferences changes" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
             </div>
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />

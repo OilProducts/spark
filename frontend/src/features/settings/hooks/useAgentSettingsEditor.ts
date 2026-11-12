@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { fetchAgentSettings, saveAgentSettings, type AgentSettings, type AgentSettingsView } from '../services/executionSettings'
+import { agentLimitError, agentLimitKeys, fetchAgentSettings, saveAgentSettings, type AgentSettings, type AgentSettingsView } from '../services/executionSettings'
 import { useSettingsNavigationProtection } from './useSettingsNavigationProtection'
 
 export function useAgentSettingsEditor() {
@@ -28,7 +28,7 @@ export function useAgentSettingsEditor() {
     }, [saved?.revision, dirty, pending])
     const invalidLimits = !!draft && [draft.tool_output_limits, draft.line_limits].some((limits) => Object.entries(limits).some(([key, value]) => !key.trim() || !Number.isSafeInteger(value) || value < 0))
     const invalidNative = !!draft?.native && Object.entries(draft.native).some(([key, value]) => key !== 'claude_permission_mode' && typeof value === 'string' && !value.trim())
-    const invalid = invalidNative || invalidLimits || !!draft && (draft.default_command_timeout_ms <= 0 || draft.max_command_timeout_ms < draft.default_command_timeout_ms || (draft.enable_loop_detection && draft.loop_detection_window <= 0) || ['max_turns', 'max_tool_rounds_per_input', 'default_command_timeout_ms', 'max_command_timeout_ms', 'loop_detection_window', 'max_subagent_depth'].some((key) => !Number.isSafeInteger(draft[key as keyof AgentSettings]) || Number(draft[key as keyof AgentSettings]) < 0))
+    const invalid = invalidNative || invalidLimits || !!draft && agentLimitKeys.some((key) => agentLimitError(draft, key))
     const save = async () => {
         if (!saved || !draft || pending || invalid) return
         setPending(true); setError(''); setMessage('')

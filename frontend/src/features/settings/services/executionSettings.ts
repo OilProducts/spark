@@ -84,6 +84,23 @@ export interface AgentSettings {
     loop_detection_window: number
     max_subagent_depth: number
 }
+// The server stores command time limits in milliseconds; Settings shows them in seconds or minutes.
+const msPer = { seconds: 1000, minutes: 60_000 } as const
+export type DurationUnit = keyof typeof msPer
+export const msToUnit = (ms: number, unit: DurationUnit): number | '' => Number.isFinite(ms) ? Number((ms / msPer[unit]).toFixed(3)) : ''
+export const unitToMs = (text: string, unit: DurationUnit): number => text.trim() === '' ? NaN : Math.round(Number(text) * msPer[unit])
+
+export const agentLimitKeys = ['max_turns', 'max_tool_rounds_per_input', 'default_command_timeout_ms', 'max_command_timeout_ms', 'max_subagent_depth', 'loop_detection_window'] as const
+export function agentLimitError(settings: AgentSettings, key: typeof agentLimitKeys[number]): string {
+    const value = settings[key]
+    if (key === 'default_command_timeout_ms') return Number.isSafeInteger(value) && value > 0 ? '' : 'Enter a time longer than 0 seconds.'
+    if (key === 'max_command_timeout_ms') {
+        if (!Number.isSafeInteger(value) || value <= 0) return 'Enter a time longer than 0 minutes.'
+        return value < settings.default_command_timeout_ms ? `Must be at least the command time limit (${msToUnit(settings.default_command_timeout_ms, 'seconds')} seconds).` : ''
+    }
+    if (!Number.isSafeInteger(value) || value < 0) return 'Enter a whole number, 0 or more.'
+    return key === 'loop_detection_window' && settings.enable_loop_detection && value === 0 ? 'Enter at least 1 while loop warnings are on.' : ''
+}
 export interface AgentSettingsView { revision: string; stored: AgentSettings | null; repair_defaults?: AgentSettings; effective: AgentSettings | null; active_startup?: NativeAgentSettings; sources?: Record<string, string>; validation_errors?: string[] }
 function parseAgents(payload: unknown, endpoint: string): AgentSettingsView {
     const view = expectObjectRecord(expectObjectRecord(payload, endpoint).agents, endpoint)

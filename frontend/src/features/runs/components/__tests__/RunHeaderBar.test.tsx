@@ -104,7 +104,10 @@ describe('RunHeaderBar', () => {
         expect(screen.getByTestId('run-summary-retry-button')).toBeVisible()
         expect(screen.queryByTestId('run-summary-cancel-button')).not.toBeInTheDocument()
         expect(screen.getByTestId('run-summary-continue-button')).toHaveTextContent('Continue from here')
-        expect(screen.getByTestId('run-summary-continue-button')).toHaveAttribute('title', 'Start a new run from Transform')
+        // Each recovery action says how it differs from the others.
+        expect(screen.getByTestId('run-summary-retry-button')).toHaveAttribute('title', expect.stringContaining('from the step where it failed, with the same flow'))
+        expect(screen.getByTestId('run-summary-continue-button')).toHaveAttribute('title', 'Start a new run from Transform, reusing this run’s results so far')
+        expect(screen.getByTestId('run-summary-rerun-button')).toHaveAttribute('title', expect.stringContaining('from the beginning, with the same inputs'))
         failed.unmount()
 
         renderHeader(makeRun({ status: 'waiting', ended_at: null }))

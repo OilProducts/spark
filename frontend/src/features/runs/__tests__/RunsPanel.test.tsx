@@ -1264,13 +1264,15 @@ describe('RunsPanel', () => {
     expect(useStore.getState().activeProjectPath).toBe('/tmp/project-one')
     const continuationPanel = await screen.findByTestId('run-continuation-panel')
     expect(continuationPanel).toBeVisible()
-    expect(screen.getByTestId('run-continuation-source-run')).toHaveTextContent('run-to-continue')
+    // The source run's id is on hover, not in the reading path.
+    expect(screen.getByTestId('run-continuation-source-run')).toHaveAttribute('title', 'From run run-to-continue')
+    expect(screen.getByTestId('run-continuation-source-run')).not.toHaveTextContent('run-to-continue')
     expect(screen.getByTestId('run-continuation-working-directory-input')).toHaveValue('/tmp/project-one/worktree')
     expect(screen.getByTestId('run-continuation-model-input')).toHaveValue('')
 
     const continueButton = screen.getByTestId('run-continuation-continue-button')
     expect(continueButton).toBeDisabled()
-    expect(continueButton).toHaveAttribute('title', expect.stringContaining('restart node'))
+    expect(continueButton).toHaveAttribute('title', 'Pick the step to start from on the graph.')
 
     fireEvent.click(await screen.findByText('Failed Node'))
     await waitFor(() => {

@@ -30,7 +30,8 @@ export function getNodeFieldVisibility(handlerType: HandlerType) {
     const isStartOrExit = handlerType === 'start' || handlerType === 'exit'
     const isHumanOrSwitch = handlerType === 'wait.human' || handlerType === 'switch'
 
-    const showPrompt = handlerType === 'codergen'
+    // An agent's instructions, or the question a human gate asks.
+    const showPrompt = handlerType === 'codergen' || handlerType === 'wait.human'
     const showToolCommand = handlerType === 'tool'
     const showParallelOptions = handlerType === 'parallel'
     const showManagerOptions = handlerType === 'stack.manager_loop'

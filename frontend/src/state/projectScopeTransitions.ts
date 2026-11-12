@@ -1,4 +1,5 @@
 import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
+import { lastUsedProjectPath } from '@/features/projects/model/projectChoices'
 import {
     DEFAULT_WORKING_DIRECTORY,
     pushRecentProjectPath,
@@ -183,11 +184,11 @@ export const buildHydrateProjectRegistryTransition = (
         )
     })
 
-    // A fresh session works in the default (Home) project until another is chosen.
+    // A fresh session reopens the project used last, on the chat it records as open; else Home.
     const nextActiveProjectPath =
         state.activeProjectPath && nextProjectRegistry[state.activeProjectPath]
             ? state.activeProjectPath
-            : Object.values(nextProjectRegistry).find((project) => project.isDefault)?.directoryPath ?? null
+            : lastUsedProjectPath(nextProjectRegistry)
     const nextActiveProjectScope = nextActiveProjectPath
         ? resolveProjectSessionState(nextProjectSessionStates[nextActiveProjectPath], nextActiveProjectPath)
         : null

@@ -229,9 +229,10 @@ export function MissionsPanel({ active }: { active: boolean }) {
                 </li>)}</ul>
             </section>
         })}
+        {/* With no missions at all, the main area's empty state says so once. */}
         {!visible.length && (loaded && !loadError
-            ? <p className="px-3 py-1 text-sm text-muted-foreground">{search ? 'No matches' : 'No missions'}</p>
-            : <p className="px-3 py-1 text-sm text-muted-foreground">{loadError ? 'Unavailable' : 'Loading…'}</p>)}
+            ? (search || missions.length ? <p className="px-3 py-1 text-sm text-muted-foreground">{search ? 'No matches' : 'No missions here'}</p> : null)
+            : <p className="px-3 py-1 text-sm text-muted-foreground">{loadError ? 'Missions could not be loaded.' : 'Loading…'}</p>)}
         <Button type="button" variant="ghost" size="sm" className="self-start text-muted-foreground" aria-pressed={archived} onClick={() => filter(search, !archived)}>{archived ? 'Hide archived' : 'Show archived'}</Button>
     </div>
     return <ViewLayout view="missions" title="Missions" panel={missionsPanel} selected={editing === undefined ? null : editing?.id ?? newKey} actions={<>

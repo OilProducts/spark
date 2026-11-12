@@ -1,5 +1,4 @@
-import { Well } from '@/components/app/well'
-import { Badge } from '@/components/ui/badge'
+import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
 import type { ExecutionPlacementState } from '../hooks/useExecutionPlacement'
@@ -8,83 +7,52 @@ interface ExecutionProfileSectionProps {
     placement: ExecutionPlacementState
 }
 
+/** Where the run executes: the project's default profile unless this run picks another. */
 export function ExecutionProfileSection({ placement }: ExecutionProfileSectionProps) {
     const {
         selectedProfileId,
         setSelectedProfileId,
-        effectiveProfileId,
-        effectiveProfile,
+        defaultProfileLabel,
         enabledProfiles,
         validationMessage,
         statusMessage,
     } = placement
-    const profileName = effectiveProfile
-        ? `${effectiveProfile.label || effectiveProfile.id} (${effectiveProfile.mode})`
-        : effectiveProfileId
     return (
-        <Well
+        <div
             data-testid="execution-profile-launch-settings"
-            className="space-y-2"
+            className="space-y-1.5 [&>[data-slot=native-select-wrapper]]:w-full"
         >
-            <div className="flex min-w-0 items-baseline justify-between gap-3">
-                <p className="text-sm font-semibold text-foreground">
-                    Execution profile
-                </p>
-                <p
-                    data-testid="execution-profile-effective-id"
-                    className="min-w-0 truncate font-mono text-xs text-muted-foreground"
-                    title={effectiveProfileId}
-                >
-                    {effectiveProfileId}
-                </p>
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-                <p
-                    data-testid="execution-profile-effective-selection"
-                    className="min-w-0 truncate text-sm text-foreground"
-                    title={profileName}
-                >
-                    {profileName}
-                </p>
-                {statusMessage ? null : (
-                    <Badge
-                        data-testid="execution-profile-prelaunch-validation"
-                        variant="outline"
-                        className="text-muted-foreground"
-                    >
-                        Ready
-                    </Badge>
-                )}
-                {/* Wide enough for the default's full label; wraps to its own line in a narrow panel. */}
-                <div className="min-w-56 flex-1 [&>[data-slot=native-select-wrapper]]:w-full">
-                    <NativeSelect
-                        id="execution-profile-override"
-                        data-testid="execution-profile-override-select"
-                        aria-label="Run override"
-                        value={selectedProfileId}
-                        onChange={(event) => setSelectedProfileId(event.target.value)}
-                        size="sm"
-                        className="w-full text-sm"
-                    >
-                        <NativeSelectOption value="">
-                            Project/runtime default
-                        </NativeSelectOption>
-                        {enabledProfiles.map((profile) => (
-                            <NativeSelectOption key={profile.id} value={profile.id || ''}>
-                                {profile.label || profile.id}
-                            </NativeSelectOption>
-                        ))}
-                    </NativeSelect>
-                </div>
-            </div>
+            <Label htmlFor="execution-profile-override" className="text-sm">
+                Runs on
+            </Label>
+            <NativeSelect
+                id="execution-profile-override"
+                data-testid="execution-profile-override-select"
+                value={selectedProfileId}
+                onChange={(event) => setSelectedProfileId(event.target.value)}
+                aria-describedby={statusMessage ? 'execution-profile-status' : undefined}
+                aria-invalid={validationMessage ? true : undefined}
+                size="sm"
+                className="w-full text-sm"
+            >
+                <NativeSelectOption value="">
+                    Project default ({defaultProfileLabel})
+                </NativeSelectOption>
+                {enabledProfiles.map((profile) => (
+                    <NativeSelectOption key={profile.id} value={profile.id || ''}>
+                        {profile.label || profile.id}
+                    </NativeSelectOption>
+                ))}
+            </NativeSelect>
             {statusMessage ? (
                 <p
+                    id="execution-profile-status"
                     data-testid="execution-profile-prelaunch-validation"
                     className={`text-xs ${validationMessage ? 'text-destructive' : 'text-muted-foreground'}`}
                 >
                     {statusMessage}
                 </p>
             ) : null}
-        </Well>
+        </div>
     )
 }

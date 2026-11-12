@@ -10,7 +10,7 @@ import { useOverviewUnread } from '../hooks/useOverviewUnread'
 import { hasUnread, markAttentionSeen, readFinishedWatermark, type Chat } from '../model/overviewModel'
 
 let pending: AttentionItem[] = []
-vi.mock('@/lib/api/attentionApi', () => ({ fetchPendingAttention: () => Promise.resolve(pending) }))
+vi.mock('@/lib/api/attentionApi', async (original) => ({ ...await original<typeof import('@/lib/api/attentionApi')>(), fetchPendingAttention: () => Promise.resolve(pending) }))
 let chats: Chat[] = []
 // The project path of each thread-list request; the Overview asks once for every project.
 let chatListRequests: (string | null)[] = []
@@ -116,10 +116,28 @@ describe('Overview finished since', () => {
         const runs = useStore.getState().runsListSession.runs
         expect(readFinishedWatermark()).toBe(Date.parse(runs[2].ended_at!))
 
+        // A later look keeps the last day listed, marking only what finished since as new.
         setRuns([...runs, finishedRun('run-after', 0)])
+        const second = render(<OverviewPanel />)
+        expect(screen.getByTestId('overview-finished').textContent).toContain('in the last day')
+        expect(finished()).toEqual(['run-after', 'run-live', 'run-hour'])
+        expect(screen.getAllByTestId('overview-finished-new')).toHaveLength(1)
+        second.unmount()
+
+        // After a long time away, the list reaches back to the last look.
+        window.localStorage.setItem('spark.overview_finished_watermark', String(Date.now() - 24 * 8 * 3_600_000))
         render(<OverviewPanel />)
         expect(screen.getByTestId('overview-finished').textContent).toContain('since you last looked')
-        expect(finished()).toEqual(['run-after'])
+        expect(finished()).toEqual(['run-after', 'run-live', 'run-hour', 'run-week'])
+    })
+
+    it('lists running runs, missions and chats under Running now, and not as finished', () => {
+        reset()
+        setRuns([{ ...finishedRun('run-going', 0), status: 'running', ended_at: null }, { ...finishedRun('run-child', 0), status: 'running', ended_at: null, parent_run_id: 'run-going' }])
+        setMissions([{ ...closedMission('mission-going', 0), status: 'running', closed: undefined }])
+        render(<OverviewPanel />)
+        expect(screen.getAllByTestId('overview-running-item').map((row) => row.dataset.itemId).sort()).toEqual(['mission-going', 'run-going'])
+        expect(finished()).toEqual([])
     })
 
     it('records nothing while missions are loading, so an earlier mission that loads later is still new', () => {

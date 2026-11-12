@@ -260,7 +260,7 @@ describe('Editor sidebar manual refresh', () => {
 describe('Flows panel layer badges', () => {
     afterEach(() => { vi.unstubAllGlobals() })
 
-    it('marks only flows that differ from bundled', async () => {
+    it('marks only customized bundled flows; the project heading already marks the project\'s own', async () => {
         resetSidebarState()
         fetchFlowListMock.mockReset()
         fetchFlowListMock.mockResolvedValue(['plain', 'local', 'shared'])
@@ -271,8 +271,8 @@ describe('Flows panel layer badges', () => {
         ] }) })))
         renderWithFlowProvider(<FlowsPanelHarness />)
         const badges = async (flow: string) => within(await screen.findByRole('button', { name: flow })).queryAllByTestId('definition-badge').map((badge) => badge.textContent)
-        await waitFor(async () => expect(await badges('local')).toEqual(['project']))
-        expect(await badges('shared')).toEqual(['customized'])
+        await waitFor(async () => expect(await badges('shared')).toEqual(['customized']))
+        expect(await badges('local')).toEqual([])
         expect(await badges('plain')).toEqual([])
     })
 })
@@ -288,13 +288,13 @@ describe('Flows panel layer badges across projects', () => {
         vi.stubGlobal('fetch', vi.fn(async (url: string) => url.includes('project_path=%2Ftmp%2Fproject-b')
             ? pendingB.promise
             : ({ ok: true, json: async () => ({ items: [
-                { kind: 'flow', name: 'shared', layer: 'project', path: 'flows/shared' },
+                { kind: 'flow', name: 'shared', layer: 'project_copy', path: 'flows/shared' },
             ] }) })))
         vi.spyOn(console, 'error').mockImplementation(() => {})
         useStore.setState({ activeProjectPath: '/tmp/project-a' })
         renderWithFlowProvider(<FlowsPanelHarness />)
         const badges = () => within(screen.getByRole('button', { name: 'shared' })).queryAllByTestId('definition-badge').map((badge) => badge.textContent)
-        await waitFor(() => expect(badges()).toEqual(['project']))
+        await waitFor(() => expect(badges()).toEqual(['customized']))
 
         // B's definition request is pending: A's badges must not carry over.
         useStore.setState({ activeProjectPath: '/tmp/project-b' })

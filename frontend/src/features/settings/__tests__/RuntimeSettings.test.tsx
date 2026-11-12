@@ -40,6 +40,6 @@ it('describes an unset runs directory as per-project storage', async () => {
         scope: 'workspace', revision: 'revision-1', restart_fields: ['runs_dir'], stored: unset, effective: unset,
     })
     render(<DialogProvider><RuntimeSettingsEditor /></DialogProvider>)
-    expect(await screen.findByText(/Effective: Each project's private storage/)).toBeInTheDocument()
-    expect(screen.getByText(/Effective: Not configured/)).toBeInTheDocument()
+    expect(await screen.findByText(/In use: Each project's private storage/)).toBeInTheDocument()
+    expect(screen.getByText(/In use: Not configured/)).toBeInTheDocument()
 })
