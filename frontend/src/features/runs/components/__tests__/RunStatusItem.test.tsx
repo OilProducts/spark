@@ -106,7 +106,7 @@ describe('RunStatusItem', () => {
     expect(screen.getByTestId('run-fact-outcome')).toHaveTextContent('commit chose done (completed)')
     const didNotPass = screen.getByTestId('run-status-did-not-pass')
     expect(within(didNotPass).getByRole('heading')).toHaveTextContent(/^Errors\s*1$/)
-    expect(didNotPass).toHaveTextContent('Review (runtime error, tolerable): Missing a test. · wrote review.required_changes')
+    expect(didNotPass).toHaveTextContent('Review · runtime error: Missing a test. · wrote review.required_changes')
     fireEvent.click(within(didNotPass).getByTestId('run-visit-link'))
     expect(onSelectVisit).toHaveBeenCalledWith(review)
 
@@ -161,7 +161,7 @@ describe('RunStatusItem', () => {
     // An earlier visit that hit the same error doesn't repeat it.
     const earlier = screen.getByTestId('run-status-did-not-pass')
     expect(within(earlier).getByRole('heading')).toHaveTextContent(/^Earlier errors\s*1$/)
-    expect(earlier).toHaveTextContent('the same error')
+    expect(earlier).toHaveTextContent('Implement · runtime error: the same error as above')
     expect(earlier).not.toHaveTextContent('exited unexpectedly')
     expect(screen.getByTestId('run-status-failure-kind')).toHaveAttribute('data-kind', 'infrastructure')
     fireEvent.click(within(screen.getByTestId('run-status-stopped-in')).getByTestId('run-visit-link'))

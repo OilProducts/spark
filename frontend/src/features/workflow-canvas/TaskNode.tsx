@@ -187,8 +187,9 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const isWaiting = isRunCanvas && (humanGate?.nodeId === id || status === 'waiting')
     const framePalette = getWorkflowNodeFramePalette({ status, selected, isWaiting })
     const nodeKind = WORKFLOW_NODE_KINDS[renderedShape]
+    // A child flow's title box is captioned as the child flow, not by its box shape.
     const showKind = derivedPreviewMeta?.kind !== 'child-cluster'
-    const kindCaption = showKind && nodeKind.caption.toLowerCase() !== displayLabel.toLowerCase() ? nodeKind.caption : null
+    const kindCaption = !showKind ? 'Child flow' : nodeKind.caption.toLowerCase() !== displayLabel.toLowerCase() ? nodeKind.caption : null
     const displayStatus = isWaiting ? 'waiting' : status
     const containerStyle = getWorkflowNodeContainerStyle(renderedShape)
     const handleClassName = cn(
@@ -412,7 +413,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                 <div className="flex w-full min-w-0 flex-col items-center justify-center gap-1">
                     {/* One caption line: the kind (a start node labelled Start needs no second Start),
                         then the run status, so status costs the frame no extra height. */}
-                    {showKind || displayStatus !== 'idle' ? (
+                    {showKind || kindCaption || displayStatus !== 'idle' ? (
                         <span className="canvas-node-caption inline-flex max-w-full items-center gap-1 whitespace-nowrap text-muted-foreground">
                             {showKind ? <nodeKind.Icon className="size-[1.15em] shrink-0" aria-hidden /> : null}
                             {kindCaption}

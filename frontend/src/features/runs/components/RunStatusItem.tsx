@@ -30,7 +30,7 @@ import {
     runFailureMessage,
     type RunStatusKind,
 } from '../model/runOverviewModel'
-import { formatVisitErrorKind, visitContextWrites, type RunVisit, type VisitFlowNode } from '../model/visitModel'
+import { visitContextWrites, type RunVisit, type VisitFlowNode } from '../model/visitModel'
 
 type ViewArtifact = (entry: { path: string; viewable: boolean }) => void
 
@@ -63,9 +63,9 @@ export function VisitLink({ visit, onSelect }: { visit: RunVisit; onSelect: (vis
     )
 }
 
+// Whether a fork may tolerate the error belongs to the visit's own details, not this summary.
 function VisitErrorKind({ visit }: { visit: RunVisit }) {
-    const kind = formatVisitErrorKind(visit)
-    return kind ? <span data-testid="run-visit-error-kind" className="text-muted-foreground"> ({kind})</span> : null
+    return visit.failureKind ? <span data-testid="run-visit-error-kind" className="text-muted-foreground"> · {visit.failureKind} error</span> : null
 }
 
 // The keys a visit wrote, named without the "context." prefix.
@@ -210,7 +210,7 @@ export function RunStatusItem({
                                 <VisitErrorKind visit={visit} />
                                 {': '}
                                 {visit.reason && visit.reason.trim() === failureMessage
-                                    ? <span className="text-muted-foreground">the same error</span>
+                                    ? <span className="text-muted-foreground">the same error as above</span>
                                     : visit.reason
                                         ? <span className="whitespace-pre-wrap break-words text-foreground/90">{visit.reason}</span>
                                         : <span className="text-muted-foreground">no reason recorded</span>}

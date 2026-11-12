@@ -476,7 +476,7 @@ describe('flowCanvasShared', () => {
         ]))
         expect(hydrated?.nodes.find((node) => node.id === '__child_preview__manager__child_start')?.selectable).toBe(false)
         expect(hydrated?.nodes.find((node) => node.id === '__child_preview_cluster__manager')?.data).toMatchObject({
-            label: 'Child Flow Preview: Child Worker',
+            label: 'Child Worker',
         })
         expect(hydrated?.nodes.some((node) => node.id.includes('grandchild'))).toBe(false)
         expect(hydrated?.edges.find((edge) => edge.id === 'e-manager-child-preview-link')).toMatchObject({
@@ -887,7 +887,7 @@ describe('flowCanvasShared', () => {
 
         expect(Object.keys(saved.nodes)).toEqual(['manager'])
         expect(JSON.stringify(saved)).not.toContain('__child_preview__manager__child_task')
-        expect(JSON.stringify(saved)).not.toContain('Child Flow Preview')
+        expect(JSON.stringify(saved)).not.toContain('__child_preview_cluster__')
     })
 })
 

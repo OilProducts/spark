@@ -342,7 +342,7 @@ function buildExpandedChildPreviewElements(
         const clusterNodeId = getChildClusterNodeId(managerNodeId)
         const clusterNodeData = attachDerivedPreviewMeta(
             {
-                label: `Child Flow Preview: ${childPreview.flowLabel}`,
+                label: childPreview.flowLabel,
                 shape: 'box',
                 prompt: childPreview.flowPath ? `Resolved from ${childPreview.flowPath}` : '',
                 status: 'idle',
