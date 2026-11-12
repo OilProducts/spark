@@ -62,11 +62,13 @@ pub struct InboxPost {
 }
 
 /// What a server installs so every conversation in its process runs inbox
-/// turns through its agent backend and publishes live updates. Without one,
-/// inbox events stay pending.
+/// turns through its agent backend, launches flows (such as a trigger's)
+/// through its runner, and publishes live updates. Without one, inbox events
+/// stay pending.
 #[derive(Clone)]
 pub struct InboxRuntime {
     pub agent_turn_backend: Arc<dyn AgentTurnBackend>,
+    pub runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
     pub publish: Arc<dyn Fn(LiveEnvelope) + Send + Sync>,
 }
 
@@ -92,9 +94,10 @@ pub(crate) fn conversations(
     store: &Arc<ConversationStore>,
     runtime: &InboxRuntime,
 ) -> WorkspaceConversationService {
-    WorkspaceConversationService::new_with_agent_turn_backend(
+    WorkspaceConversationService::new_with_runtime_handler_runner_factory_and_agent_turn_backend(
         settings.clone(),
         store.clone(),
+        runtime.runtime_handler_runner_factory.clone(),
         runtime.agent_turn_backend.clone(),
     )
 }

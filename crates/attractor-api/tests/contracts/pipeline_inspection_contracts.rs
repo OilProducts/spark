@@ -425,6 +425,16 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
             ),
         )
         .expect("pending question");
+    // An ended run's unanswered gate can take no answer, so it lists none.
+    assert_eq!(
+        service.list_pipeline_questions("run-journal").body,
+        json!({"questions": []})
+    );
+    store
+        .update_run_record("run-journal", |record| {
+            record.status = "waiting".to_string();
+        })
+        .expect("park the run at its gate");
     let transcript = handle_attractor_request(
         "GET",
         "/attractor/pipelines/run-journal/transcript",

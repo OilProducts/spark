@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Check, Folder, Hash } from 'lucide-react'
+import { Check, ChevronDown, Folder, Hash } from 'lucide-react'
 import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { ClaudeCodeReconnect } from '@/features/settings/ClaudeCodeConnectionSettings'
@@ -22,6 +22,7 @@ import { formatConversationAgeShort, formatConversationTimestamp } from '../mode
 import type { useScrollFollow } from '../hooks/useScrollFollow'
 import type { ComposerAttachment } from '../model/types'
 import { ChatPane } from './ChatPane'
+import { ProjectPicker } from './ProjectPicker'
 import { ContextMeter, type ContextUsage } from './ContextMeter'
 
 interface ProjectConversationSurfaceProps {
@@ -156,15 +157,37 @@ export function ProjectConversationSurface({
                     </h1>
                     {hasProject ? (
                         <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
-                            <button
-                                type="button"
-                                data-testid="chat-project-link"
-                                title={activeProjectPath ?? undefined}
-                                onClick={() => activeProjectPath && useStore.getState().openProjectPage(activeProjectPath)}
-                                className="min-w-0 truncate outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-                            >
-                                {activeProjectLabel}
-                            </button>
+                            {hasOpenChat ? (
+                                <button
+                                    type="button"
+                                    data-testid="chat-project-link"
+                                    title={activeProjectPath ?? undefined}
+                                    onClick={() => activeProjectPath && useStore.getState().openProjectPage(activeProjectPath)}
+                                    className="min-w-0 truncate outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                                >
+                                    {activeProjectLabel}
+                                </button>
+                            ) : (
+                                // Nothing is sent yet, so the chat can still start in another project.
+                                <ProjectPicker
+                                    heading="Start this chat in"
+                                    testId="new-chat-project-picker"
+                                    defaultProjectPath={activeProjectPath}
+                                    onPick={(projectPath) => window.dispatchEvent(new CustomEvent('spark:new-chat', { detail: projectPath }))}
+                                >
+                                    <button
+                                        type="button"
+                                        data-testid="new-chat-project-button"
+                                        title={activeProjectPath ?? undefined}
+                                        aria-label={`New chat in ${activeProjectLabel}; change project`}
+                                        className="flex min-w-0 items-center gap-1 rounded-sm outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                                    >
+                                        <span className="shrink-0">in</span>
+                                        <span className="min-w-0 truncate font-medium text-foreground">{activeProjectLabel}</span>
+                                        <ChevronDown aria-hidden="true" className="size-3.5 shrink-0" />
+                                    </button>
+                                </ProjectPicker>
+                            )}
                             {activeConversationUpdatedAt ? (
                                 <>
                                     <span aria-hidden="true">·</span>

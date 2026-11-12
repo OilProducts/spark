@@ -2084,11 +2084,17 @@ describe('App shell behavior', () => {
         if (url.endsWith('/attractor/runs')) {
           return jsonResponse({
             runs: [
-              buildRunRecord({
-                flowName: 'review-session.dot',
-                projectPath: '/tmp/project-runs-session',
-                runId: 'run-session',
-              }),
+              // Waiting on its question: an ended run takes no answer.
+              {
+                ...buildRunRecord({
+                  flowName: 'review-session.dot',
+                  projectPath: '/tmp/project-runs-session',
+                  runId: 'run-session',
+                }),
+                status: 'waiting',
+                outcome: null,
+                ended_at: null,
+              },
             ],
           })
         }
@@ -2096,8 +2102,8 @@ describe('App shell behavior', () => {
           return jsonResponse({
             pipeline_id: 'run-session',
             run_id: 'run-session',
-            status: 'completed',
-            outcome: 'success',
+            status: 'waiting',
+            outcome: null,
             outcome_reason_code: null,
             outcome_reason_message: null,
             flow_name: 'review-session.dot',

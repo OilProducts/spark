@@ -69,7 +69,8 @@ function MetaLine({ lead, project, children }: { lead: string; project: string |
     return (
         <span className="flex min-w-0 items-baseline text-xs text-muted-foreground">
             <span className="min-w-0 shrink-[100] truncate whitespace-pre">{lead}</span>
-            {project ? <span data-testid="overview-row-project" className="min-w-0 truncate whitespace-pre">{lead ? ' · ' : ''}{project}</span> : null}
+            {/* The lead gives way first; the project truncates only past the row's whole width. */}
+            {project ? <span data-testid="overview-row-project" className="max-w-full shrink-0 truncate whitespace-pre">{lead ? ' · ' : ''}{project}</span> : null}
             {children}
         </span>
     )
@@ -243,7 +244,11 @@ export function OverviewPanel() {
                                                 A long question gives way; the project stays readable. On a phone the question gets two lines of its own. */}
                                             <span className="flex min-w-0 text-xs text-muted-foreground max-sm:flex-col">
                                                 <span className="min-w-0 truncate max-sm:line-clamp-2 max-sm:whitespace-normal">{item.question || ATTENTION_KIND_LABELS[item.kind]}</span>
-                                                <span className="shrink-0 whitespace-pre"><span className="max-sm:hidden"> · </span>{[attentionFlow(item, runs), projectLabel(registry, item.project_path)].filter(Boolean).join(' · ')}</span>
+                                                <span className="flex min-w-0 shrink-0 max-sm:shrink">
+                                                    <span className="whitespace-pre max-sm:hidden"> · </span>
+                                                    {/* On a phone a long flow name gives way before the project. */}
+                                                    <MetaLine lead={attentionFlow(item, runs) ?? ''} project={projectLabel(registry, item.project_path)} />
+                                                </span>
                                             </span>
                                         </span>
                                         <span data-testid="overview-needs-you-time" className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{formatRunDate(item.updated_at, now)}</span>

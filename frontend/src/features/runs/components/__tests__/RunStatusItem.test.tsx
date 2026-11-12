@@ -99,11 +99,11 @@ describe('RunStatusItem', () => {
     )
 
     expect(screen.getByTestId('run-result-body')).toHaveTextContent('Committed the change.')
-    expect(screen.getByTestId('run-status-result-source')).toHaveTextContent('from Commit Findings, in full')
+    expect(screen.getByTestId('run-status-result-source')).toHaveTextContent(/from Commit Findings$/)
     expect(screen.getByTestId('run-status-item')).toHaveTextContent('Completed · 14m')
     // A success exit's evidence is a run fact, not a line above the result.
     expect(screen.queryByTestId('run-status-outcome-reason')).not.toBeInTheDocument()
-    expect(screen.getByTestId('run-fact-outcome')).toHaveTextContent('commit chose done (completed)')
+    expect(screen.getByTestId('run-fact-outcome')).toHaveTextContent(/commit chose done$/)
     const didNotPass = screen.getByTestId('run-status-did-not-pass')
     expect(within(didNotPass).getByRole('heading')).toHaveTextContent(/^Errors\s*1$/)
     expect(didNotPass).toHaveTextContent('Review: Missing a test. · wrote review.required_changes')
@@ -125,7 +125,7 @@ describe('RunStatusItem', () => {
     const item = screen.getByTestId('run-status-item')
     expect(item).toHaveTextContent('Blocked · 14m')
     expect(item).not.toHaveTextContent('Completed ·')
-    expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent('review chose blocked: no tests (blocked)')
+    expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent(/^review chose blocked: no tests$/)
     expect(screen.getByTestId('run-status-outcome-reason')).toHaveClass('text-warning')
   })
 

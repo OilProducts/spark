@@ -54,6 +54,8 @@ impl Harness {
             &settings,
             InboxRuntime {
                 agent_turn_backend: agent.clone(),
+                runtime_handler_runner_factory:
+                    attractor_api::default_runtime_handler_runner_factory(),
                 publish: Arc::new(|_| {}),
             },
         );

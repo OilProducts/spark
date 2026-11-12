@@ -470,7 +470,9 @@ describe('ProjectsPanel', () => {
 
     expect(screen.getByTestId('project-thread-new-button')).toBeVisible()
     expect(screen.getByTestId('chat-composer-project')).toHaveTextContent('Runs and missions started here go to quick-switch-project')
-    expect(screen.getByTestId('chat-project-link')).toHaveTextContent('quick-switch-project')
+    // Before the first message, the chat's project can still change.
+    expect(screen.getByTestId('new-chat-project-button')).toHaveTextContent(/^in\s*quick-switch-project$/)
+    expect(screen.getByTestId('new-chat-project-button')).toHaveAccessibleName('New chat in quick-switch-project; change project')
     const group = screen.getAllByTestId('chats-project-group').find((entry) => entry.dataset.projectPath === '/tmp/quick-switch-project')!
     await waitFor(() => {
       expect(group).toHaveTextContent('No chats yet.')

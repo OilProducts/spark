@@ -135,7 +135,7 @@ test('a new chat in a project opens empty there and its composer names it', asyn
     await expect(page.getByText('New chat in alpha-project')).toBeVisible()
     await expect(alphaGroup.getByTestId('chats-chat-row')).toHaveCount(0)
     await expect(page.getByTestId('chat-composer-project')).toHaveText('Runs and missions started here go to alpha-project')
-    await expect(page.getByTestId('chat-project-link')).toHaveText('alpha-project')
+    await expect(page.getByTestId('new-chat-project-button')).toHaveText(/^in\s*alpha-project$/)
 
     // "+ New" asks which project, Home first then recent projects.
     await page.getByTestId('project-thread-new-button').click()
@@ -196,7 +196,7 @@ test('each chat keeps its unsent draft across chats in other projects, and a new
     // A new chat in another project starts empty; the shown chat's draft is untouched.
     await group(page, beta).hover()
     await group(page, beta).getByTestId('chats-project-new-chat').click()
-    await expect(page.getByTestId('chat-project-link')).toHaveText('beta-project')
+    await expect(page.getByTestId('new-chat-project-button')).toHaveText(/^in\s*beta-project$/)
     await expect(composer).toHaveValue('')
     await openChat(alpha, `conversation-alpha-${stamp}`)
     await expect(composer).toHaveValue('alpha draft')

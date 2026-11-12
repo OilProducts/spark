@@ -105,7 +105,7 @@ export function RunHeaderBar({
                     {trigger ? (
                         <span data-testid="run-header-trigger">
                             {facts.length > 0 ? ' · ' : ''}started by trigger{' '}
-                            <button type="button" onClick={() => openTrigger(run.project_path || run.working_directory, trigger.id)} className="rounded-sm text-foreground underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">{trigger.name}</button>
+                            <button type="button" onClick={() => openTrigger(run.project_path || run.working_directory, trigger.id)} className="rounded-sm text-foreground underline decoration-muted-foreground/50 underline-offset-4 outline-none hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring">{trigger.name}</button>
                         </span>
                     ) : null}
                 </p>

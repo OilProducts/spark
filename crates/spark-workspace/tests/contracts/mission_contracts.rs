@@ -85,6 +85,8 @@ impl Harness {
             &settings,
             InboxRuntime {
                 agent_turn_backend: agent.clone(),
+                runtime_handler_runner_factory:
+                    attractor_api::default_runtime_handler_runner_factory(),
                 publish: Arc::new(|_| {}),
             },
         );
@@ -268,6 +270,7 @@ fn mission_updates_serialize_with_other_writers_and_publish_only_commits() {
         &h.settings,
         InboxRuntime {
             agent_turn_backend: h.agent.clone(),
+            runtime_handler_runner_factory: attractor_api::default_runtime_handler_runner_factory(),
             publish: Arc::new(move |event| published.lock().unwrap().push(event)),
         },
     );
@@ -1878,6 +1881,8 @@ fn closing_missions_publishes_disabled_triggers_with_saved_revisions() {
             &h.settings,
             InboxRuntime {
                 agent_turn_backend: h.agent.clone(),
+                runtime_handler_runner_factory:
+                    attractor_api::default_runtime_handler_runner_factory(),
                 publish: Arc::new(move |event| published.lock().unwrap().push(event)),
             },
         );

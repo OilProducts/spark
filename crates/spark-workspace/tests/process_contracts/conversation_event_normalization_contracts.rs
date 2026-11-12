@@ -4236,6 +4236,7 @@ fn a_mission_turn_failed_on_sign_in_retries_with_the_same_delivered_prompt() {
         &config,
         InboxRuntime {
             agent_turn_backend: WorkspaceConversationService::default_agent_turn_backend(&config),
+            runtime_handler_runner_factory: attractor_api::default_runtime_handler_runner_factory(),
             publish: Arc::new(|_| {}),
         },
     );
@@ -4655,6 +4656,7 @@ fn a_mission_message_between_a_provider_error_and_the_return_runs_after_it() {
         &config,
         InboxRuntime {
             agent_turn_backend: backend.clone(),
+            runtime_handler_runner_factory: attractor_api::default_runtime_handler_runner_factory(),
             publish: Arc::new(|_| {}),
         },
     );

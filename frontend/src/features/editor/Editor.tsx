@@ -192,7 +192,7 @@ function buildAuthoredFlow(
 }
 
 
-export function Editor({ isActive = true }: { isActive?: boolean }) {
+export function Editor({ isActive = true, flowList }: { isActive?: boolean; flowList?: { failed: boolean; retry: () => void } }) {
     const selectedNodeId = useStore((state) => state.selectedNodeId);
     const selectedEdgeId = useStore((state) => state.selectedEdgeId);
     const setSelectedNodeId = useStore((state) => state.setSelectedNodeId);
@@ -1471,6 +1471,13 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             ) : null}
                             <Background gap={20} size={1} color="hsl(var(--border))" />
                         </ReactFlow>
+                    ) : flowList?.failed ? (
+                        <SheetEmpty data-testid="editor-flow-list-failed" icon={GitBranch} title="The flows couldn’t load">
+                            <p>Spark couldn’t list this project’s flows, so there’s nothing to pick yet.</p>
+                            <div className="mt-3 flex justify-center">
+                                <Button type="button" size="sm" variant="outline" onClick={flowList.retry}>Try again</Button>
+                            </div>
+                        </SheetEmpty>
                     ) : (
                         <SheetEmpty data-testid="editor-no-flow-state" icon={GitBranch} title="No flow open">
                             Pick a flow from the list to edit it or run it.

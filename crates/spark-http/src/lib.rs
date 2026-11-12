@@ -225,6 +225,7 @@ fn build_app_on_store(
             &state.settings,
             spark_workspace::inbox::InboxRuntime {
                 agent_turn_backend: state.agent_turn_backend.clone(),
+                runtime_handler_runner_factory: state.runtime_handler_runner_factory.clone(),
                 publish: Arc::new(move |envelope| live_hub.publish(envelope)),
             },
         );

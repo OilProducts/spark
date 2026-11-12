@@ -25,6 +25,8 @@ import {
 type UseRunTimelineArgs = {
     pendingQuestionSnapshots: PendingQuestionSnapshot[]
     selectedRunTimelineId: string | null
+    /** An ended run's unanswered gates stay in its journal but can take no answer. */
+    runEnded?: boolean
 }
 
 const DEFAULT_TIMELINE_SESSION = {
@@ -62,6 +64,7 @@ const DEFAULT_RUN_JOURNAL_STATE: RunJournalStateEntry = {
 export function useRunTimeline({
     pendingQuestionSnapshots,
     selectedRunTimelineId,
+    runEnded = false,
 }: UseRunTimelineArgs) {
     const runSession = useStore((state) => selectedRunTimelineId ? state.runDetailSessionsByRunId[selectedRunTimelineId] ?? null : null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
@@ -75,8 +78,8 @@ export function useRunTimeline({
     const timelineError = journalState.error || journalState.liveError
     const isTimelineLive = journalState.liveStatus === 'live'
     const pendingInterviewGates = useMemo(
-        () => mergePendingInterviewGatesWithSnapshots(journalState.pendingInterviewGates, pendingQuestionSnapshots),
-        [journalState.pendingInterviewGates, pendingQuestionSnapshots],
+        () => (runEnded ? [] : mergePendingInterviewGatesWithSnapshots(journalState.pendingInterviewGates, pendingQuestionSnapshots)),
+        [journalState.pendingInterviewGates, pendingQuestionSnapshots, runEnded],
     )
     const visiblePendingInterviewGates = useMemo(
         () => filterAnsweredPendingInterviewGates(pendingInterviewGates, timelineSession.answeredGateIds),

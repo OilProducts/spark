@@ -332,6 +332,9 @@ export const runRecordTone = (run: Pick<RunRecord, 'status' | 'outcome'>): Statu
 
 export const canCancelRun = (status: string) => status === 'running' || status === 'waiting'
 
+/** A run that can no longer change: it takes no answer, steer or cancel. */
+export const runHasEnded = (status: string) => ['completed', 'failed', 'canceled', 'aborted', 'validation_error'].includes(status)
+
 export const canContinueRun = (status: string) => !['queued', 'running', 'waiting', 'cancel_requested', 'abort_requested', 'pause_requested', 'unreadable'].includes(status)
 export const canRetryRun = (status: string) => status === 'failed'
 

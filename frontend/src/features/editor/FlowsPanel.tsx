@@ -6,6 +6,7 @@ import { sanitizeFlowId } from '@/lib/canonicalFlowModel'
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { Button } from '@/components/ui/button'
+import { InlineError } from '@/components/app/inline-error'
 import { FlowTree, type FlowLabel } from '@/components/app/flow-tree'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { projectLabel } from '@/features/projects/model/projectChoices'
@@ -29,6 +30,8 @@ function useFlowCatalogPanel() {
     const [summaries, setSummaries] = useState<{ project: string | null; labels: Record<string, FlowLabel> }>({ project: null, labels: {} })
     const flowLabels = summaries.project === activeProjectPath ? summaries.labels : {}
     const [isRefreshingFlows, setIsRefreshingFlows] = useState(false)
+    // The last load failed: the list may be empty or stale, not the project's flows.
+    const [loadFailed, setLoadFailed] = useState(false)
     const activeFlowRef = useRef(activeFlow)
     const isMountedRef = useRef(true)
     const refreshRequestIdRef = useRef(0)
@@ -69,6 +72,7 @@ function useFlowCatalogPanel() {
                 return
             }
             setFlows(data)
+            setLoadFailed(false)
 
             const selectedFlow = activeFlowRef.current
             if (selectedFlow && !data.includes(selectedFlow)) {
@@ -76,6 +80,9 @@ function useFlowCatalogPanel() {
             }
         } catch (error) {
             console.error(error)
+            if (isMountedRef.current && requestId === refreshRequestIdRef.current) {
+                setLoadFailed(true)
+            }
         } finally {
             if (isMountedRef.current && requestId === refreshRequestIdRef.current) {
                 setIsRefreshingFlows(false)
@@ -163,7 +170,7 @@ function useFlowCatalogPanel() {
         await refreshFlows();
     };
 
-    return { activeProjectPath, activeFlow, setActiveFlow, flows, flowDefinitions, flowLabels, isRefreshingFlows, refreshFlows, createNewFlow, handleDeleteFlow }
+    return { activeProjectPath, activeFlow, setActiveFlow, flows, flowDefinitions, flowLabels, isRefreshingFlows, loadFailed, refreshFlows, createNewFlow, handleDeleteFlow }
 }
 
 export function FlowsPanelActions({ catalog }: { catalog: ReturnType<typeof useFlowCatalogPanel> }) {
@@ -223,6 +230,14 @@ export function FlowsPanelList({ catalog }: { catalog: ReturnType<typeof useFlow
                     </Button>
                 </ProjectPicker>
             </div>
+            {catalog.loadFailed ? (
+                <div className="px-3">
+                    <InlineError dense data-testid="flow-list-error">
+                        {catalog.flows.length > 0 ? 'Couldn’t refresh the flows; this list may be out of date.' : 'Couldn’t load the flows.'}
+                        <button type="button" onClick={() => void catalog.refreshFlows()} disabled={catalog.isRefreshingFlows} className="ml-1 font-medium underline underline-offset-4">Try again</button>
+                    </InlineError>
+                </div>
+            ) : null}
             <FlowTree
                 dataTestId="editor-flow-tree"
                 flows={catalog.flows}

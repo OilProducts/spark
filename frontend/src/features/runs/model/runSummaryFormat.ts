@@ -84,16 +84,9 @@ export function formatLineage(run: RunRecord): string | null {
     return lineageParts.length > 0 ? lineageParts.join(' · ') : null
 }
 
+/** How the run reached its exit; the status label beside it already names the result. */
 export function formatOutcomeReason(run: RunRecord): string | null {
-    const reasonMessage = run.outcome_reason_message?.trim()
-    const reasonCode = run.outcome_reason_code?.trim()
-    if (reasonMessage && reasonCode) {
-        return `${reasonMessage} (${reasonCode})`
-    }
-    if (reasonMessage || reasonCode) {
-        return reasonMessage || reasonCode || null
-    }
-    return run.last_error?.trim() || null
+    return run.outcome_reason_message?.trim() || run.outcome_reason_code?.trim() || run.last_error?.trim() || null
 }
 
 export function hasExecutionMetadata(run: RunRecord): boolean {

@@ -170,6 +170,22 @@ describe('Editor sidebar manual refresh', () => {
         expect(within(flowTree).getByRole('button', { name: 'gamma.dot' })).toBeVisible()
     })
 
+    it('says when the flows could not load, and loads them on Try again', async () => {
+        const user = userEvent.setup()
+        vi.spyOn(console, 'error').mockImplementation(() => undefined)
+        fetchFlowListMock
+            .mockRejectedValueOnce(new Error('HTTP 503'))
+            .mockResolvedValueOnce(['alpha'])
+
+        renderWithFlowProvider(<FlowsPanelHarness />)
+
+        const error = await screen.findByTestId('flow-list-error')
+        expect(error).toHaveTextContent('Couldn’t load the flows.')
+        await user.click(within(error).getByRole('button', { name: 'Try again' }))
+        expect(await screen.findByRole('button', { name: 'alpha' })).toBeVisible()
+        expect(screen.queryByTestId('flow-list-error')).not.toBeInTheDocument()
+    })
+
     it('keeps create-flow refresh behavior intact', async () => {
         const user = userEvent.setup()
 

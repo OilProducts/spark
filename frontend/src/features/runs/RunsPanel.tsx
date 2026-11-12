@@ -25,7 +25,7 @@ import { RunList } from './components/RunList'
 import { RunContinuationPanel } from './components/RunContinuationPanel'
 import { RunHeaderBar } from './components/RunHeaderBar'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
-import { formatDuration, type RunRecord } from './model/shared'
+import { formatDuration, runHasEnded, type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
 import { buildRunContextOverview, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
@@ -190,6 +190,7 @@ export function RunsPanel() {
     } = useRunTimeline({
         pendingQuestionSnapshots,
         selectedRunTimelineId,
+        runEnded: selectedRun ? runHasEnded(selectedRun.status) : false,
     })
     const selectedRunSessionState = useStore((state) => (
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null

@@ -57,6 +57,8 @@ impl Harness {
             &settings,
             InboxRuntime {
                 agent_turn_backend: agent.clone(),
+                runtime_handler_runner_factory:
+                    attractor_api::default_runtime_handler_runner_factory(),
                 publish: Arc::new(|_| {}),
             },
         );
@@ -547,6 +549,8 @@ fn a_mission_closed_or_canceled_during_a_turn_fails_its_queued_batch() {
             &h.settings,
             InboxRuntime {
                 agent_turn_backend: h.agent.clone(),
+                runtime_handler_runner_factory:
+                    attractor_api::default_runtime_handler_runner_factory(),
                 publish: Arc::new(move |envelope| {
                     if envelope.event_type == "mission.upsert" {
                         *counted.lock().unwrap() += 1;
@@ -642,6 +646,7 @@ fn a_mission_whose_conversation_cannot_be_created_is_not_created() {
         &h.settings,
         InboxRuntime {
             agent_turn_backend: h.agent.clone(),
+            runtime_handler_runner_factory: attractor_api::default_runtime_handler_runner_factory(),
             publish: Arc::new(move |envelope| {
                 sink.lock()
                     .unwrap()

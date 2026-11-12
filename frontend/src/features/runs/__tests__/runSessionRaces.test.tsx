@@ -79,6 +79,14 @@ it('keeps stale questions visible but enforces fresh confirmation in the submiss
     expect(useStore.getState().runDetailSessionsByRunId.b.answeredGateIds).toEqual({})
 })
 
+it('offers no question on a run that has ended, though its journal still holds one', () => {
+    const { result, rerender } = renderHook(({ runEnded }) => useRunTimeline({ selectedRunTimelineId: 'a', pendingQuestionSnapshots: [question], runEnded }), { initialProps: { runEnded: false } })
+    expect(result.current.groupedPendingInterviewGates).toHaveLength(1)
+    rerender({ runEnded: true })
+    expect(result.current.groupedPendingInterviewGates).toHaveLength(0)
+    expect(result.current.visiblePendingInterviewGates).toHaveLength(0)
+})
+
 it('does not rerender resource subscribers when an unrelated session changes', () => {
     let renders = 0
     renderHook(() => { renders++; return useRunDetailResources({ selectedRunId: 'a', manageSync: false }) })

@@ -20,6 +20,21 @@ pub fn exit_terminal_outcome(
 ) -> Option<TerminalWorkflowOutcome> {
     let ExitResult { name, outcome } = flow.exit_result(exit_id)?.clone();
     let message = origin.map(|(node, decision, notes)| {
+        // Said in the flow's own words: the node's and the route's labels.
+        let declared = flow.nodes.get(node);
+        let label = |text: Option<&String>, id: &str| {
+            text.map(|text| text.trim())
+                .filter(|text| !text.is_empty())
+                .unwrap_or(id)
+                .to_string()
+        };
+        let decision = label(
+            declared
+                .and_then(|declared| declared.routes.get(decision))
+                .map(|route| &route.label),
+            decision,
+        );
+        let node = label(declared.map(|declared| &declared.label), node);
         let notes = notes.trim();
         if notes.is_empty() {
             format!("{node} chose {decision}")

@@ -4062,6 +4062,15 @@ fn pipeline_detail_payload(bundle: &RunBundle, children: &[RunBundle]) -> Value 
 }
 
 fn pending_pipeline_questions(bundle: &RunBundle) -> Vec<Value> {
+    // An ended run's unanswered gates stay in its log but can take no answer.
+    if bundle.record.as_ref().is_some_and(|record| {
+        matches!(
+            record.status.as_str(),
+            "completed" | "failed" | "canceled" | "validation_error"
+        )
+    }) {
+        return Vec::new();
+    }
     let answered = answered_question_ids(&bundle.raw_events);
     bundle
         .raw_events
