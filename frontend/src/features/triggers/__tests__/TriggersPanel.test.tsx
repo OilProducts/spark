@@ -403,7 +403,9 @@ describe('TriggersPanel', () => {
     expect(within(days).getAllByRole('button').map((day) => day.textContent)).toEqual(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
     expect(within(days).getByRole('button', { name: 'Monday' })).toHaveAttribute('aria-pressed', 'true')
     expect(within(days).getByRole('button', { name: 'Wednesday' })).toHaveAttribute('aria-pressed', 'false')
-    expect(form.getByLabelText('Time')).toHaveAccessibleDescription('In your time zone.')
+    expect(form.getByLabelText('Time')).toHaveAccessibleDescription(`In your time zone, ${browserTimeZone()}.`)
+    // Days take several presses, unlike the one-choice controls beside them.
+    expect(days).toHaveAccessibleDescription('Pick one or more.')
 
     // Every day off: refused, and focus moves to the days.
     await user.click(within(days).getByRole('button', { name: 'Monday' }))
@@ -411,7 +413,7 @@ describe('TriggersPanel', () => {
     await user.click(screen.getByTestId('trigger-create-button'))
     expect(posts).toHaveLength(0)
     expect(days).toHaveFocus()
-    expect(days).toHaveAccessibleDescription('Pick at least one day.')
+    expect(days).toHaveAccessibleDescription('Pick one or more. Pick at least one day.')
 
     await user.click(within(days).getByRole('button', { name: 'Friday' }))
     await user.click(within(days).getByRole('button', { name: 'Wednesday' }))

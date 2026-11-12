@@ -211,7 +211,8 @@ export function TriggerEditor({
 
     const daysId = fieldId('scheduleWeekdays')
     // Said, not converted: a saved trigger keeps the zone its time was set in.
-    const timeHint = form.scheduleTimezone === browserTimeZone() ? 'In your time zone.' : `In ${form.scheduleTimezone}, not your time zone.`
+    const yourZone = `In your time zone, ${browserTimeZone()}.`
+    const timeHint = form.scheduleTimezone === browserTimeZone() ? yourZone : `In ${form.scheduleTimezone}, not your time zone.`
     const itemsHint = 'Where the list is in the response, such as items or data.results.'
     const itemIdHint = 'What identifies each item, such as id. Each new one starts the action.'
     const headersHint = <>A JSON object, such as <code>{'{"Authorization": "Bearer …"}'}</code>.</>
@@ -314,8 +315,8 @@ export function TriggerEditor({
                         />
                     ) : null}
                     {form.scheduleKind === 'once' ? (
-                        <TriggerField {...field('scheduleRunAt', 'Run at', 'In your time zone.')} className="text-sm">
-                            <Input {...text('scheduleRunAt', 'In your time zone.')} type="datetime-local" disabled={sourceConfigurationDisabled} className="text-sm" />
+                        <TriggerField {...field('scheduleRunAt', 'Run at', yourZone)} className="text-sm">
+                            <Input {...text('scheduleRunAt', yourZone)} type="datetime-local" disabled={sourceConfigurationDisabled} className="text-sm" />
                         </TriggerField>
                     ) : null}
                     {form.scheduleKind === 'weekly' ? (
@@ -327,7 +328,7 @@ export function TriggerEditor({
                                     id={daysId}
                                     tabIndex={-1}
                                     aria-labelledby={`${daysId}-label`}
-                                    {...describedBy(daysId, errors.scheduleWeekdays)}
+                                    {...describedBy(daysId, errors.scheduleWeekdays, true)}
                                     options={WEEKDAYS.map((day) => {
                                         const pressed = form.scheduleWeekdays.includes(day.key)
                                         // Kept in week order, as the server stores them.
@@ -342,6 +343,7 @@ export function TriggerEditor({
                                         }
                                     })}
                                 />
+                                <FieldDescription id={`${daysId}-hint`} className="text-xs">Pick one or more.</FieldDescription>
                                 {errors.scheduleWeekdays ? <FieldError id={`${daysId}-error`}>{errors.scheduleWeekdays}</FieldError> : null}
                             </Field>
                             <TriggerField {...field('scheduleTime', 'Time', timeHint)} className="text-sm">

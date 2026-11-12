@@ -99,7 +99,7 @@ describe('RunStatusItem', () => {
     )
 
     expect(screen.getByTestId('run-result-body')).toHaveTextContent('Committed the change.')
-    expect(screen.getByTestId('run-status-result-source')).toHaveTextContent('from Commit Findings, raw output')
+    expect(screen.getByTestId('run-status-result-source')).toHaveTextContent('from Commit Findings, in full')
     expect(screen.getByTestId('run-status-item')).toHaveTextContent('Completed · 14m')
     // A success exit's evidence is a run fact, not a line above the result.
     expect(screen.queryByTestId('run-status-outcome-reason')).not.toBeInTheDocument()

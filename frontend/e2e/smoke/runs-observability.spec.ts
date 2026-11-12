@@ -341,7 +341,7 @@ test('a completed run opens on its status item with its result, source, what did
   const status = page.getByTestId('run-status-item')
   await expect(page.getByTestId('run-visit-item-status')).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByTestId('run-result-body')).toContainText('Committed the fix.')
-  await expect(page.getByTestId('run-status-result-source')).toHaveText(' · from Commit Findings, raw output')
+  await expect(page.getByTestId('run-status-result-source')).toHaveText(' · from Commit Findings, in full')
   await expect(page.getByTestId('run-status-did-not-pass')).toContainText('Review: Missing a regression test.')
   await expect(page.getByTestId('run-output-commit')).toHaveText('fedcba9 on feature/traceability')
   await expect(page.getByTestId('run-output-file')).toHaveText(['result.md', 'flow snapshot'])

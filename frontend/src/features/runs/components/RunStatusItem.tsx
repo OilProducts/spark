@@ -174,7 +174,7 @@ export function RunStatusItem({
                                 {flowNodes[source]?.label ?? source}
                             </button>
                         ) : flowNodes[source]?.label ?? source}
-                        {result?.display_mode === 'summary' ? ', summarized' : ', raw output'}
+                        {result?.display_mode === 'summary' ? ', summarized' : ', in full'}
                     </span>
                 ) : null}
             </>
