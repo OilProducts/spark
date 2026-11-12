@@ -4,7 +4,7 @@ import { useStore } from '@/store'
 import { requestNavigation } from '@/state/workspaceSlice'
 import { ATTENTION_CHANGED_EVENT, fetchPendingAttention, type AttentionItem } from '@/lib/api/attentionApi'
 import { triggerKey } from '@/lib/api/triggersApi'
-import { flowTitle, runTitle } from '@/features/runs/model/runOverviewModel'
+import { flowTitle, formatRunDate, formatRunTime, runTitle } from '@/features/runs/model/runOverviewModel'
 import type { RunRecord } from '@/features/runs/model/shared'
 
 const ATTENTION_POLL_MS = 15_000
@@ -38,6 +38,20 @@ export function attentionFlow(item: AttentionItem, runs: AttentionRun[]): string
     if (item.kind !== 'run_gate' || !item.flow_name) return null
     const flow = flowTitle(item.flow_name)
     return flow.toLowerCase() === attentionTitle(item, runs).toLowerCase() ? null : flow
+}
+
+/**
+ * When each item came in: "12:52 AM" today, a date before. Items with one title that share a
+ * minute today, such as a trigger's repeated runs, show the second too, so each tells apart.
+ */
+export function attentionTimes(items: AttentionItem[], runs: AttentionRun[], now: number): (item: AttentionItem) => string {
+    const today = new Date(now).toDateString()
+    const key = (item: AttentionItem) => `${attentionTitle(item, runs)}\n${formatRunDate(item.updated_at, now)}`
+    const counts = new Map<string, number>()
+    items.forEach((item) => counts.set(key(item), (counts.get(key(item)) ?? 0) + 1))
+    return (item) => (counts.get(key(item)) ?? 0) > 1 && new Date(item.updated_at).toDateString() === today
+        ? formatRunTime(item.updated_at, true)
+        : formatRunDate(item.updated_at, now)
 }
 
 // One shared list for every view that shows it, so the Inbox and the Overview never disagree.

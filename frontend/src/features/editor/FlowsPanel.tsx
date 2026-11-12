@@ -145,9 +145,12 @@ function useFlowCatalogPanel() {
 
     const handleDeleteFlow = async (e: MouseEvent, fileName: string) => {
         e.stopPropagation();
+        const copy = flowDefinitions[fileName]?.layer === 'project_copy'
         const confirmed = await confirm({
-            title: 'Delete flow?',
-            description: `Are you sure you want to delete ${fileName}? A project copy of a bundled flow reverts to the bundled flow.`,
+            title: copy ? 'Delete your copy of this flow?' : 'Delete flow?',
+            description: copy
+                ? `${fileName} goes back to the flow bundled with Spark; your changes to it are lost.`
+                : `${fileName} is deleted from the project. This can’t be undone.`,
             confirmLabel: 'Delete',
             cancelLabel: 'Keep flow',
             confirmVariant: 'destructive',
@@ -247,6 +250,8 @@ export function FlowsPanelList({ catalog }: { catalog: ReturnType<typeof useFlow
                 selectedFlow={catalog.activeFlow}
                 onSelectFlow={catalog.setActiveFlow}
                 onDeleteFlow={catalog.handleDeleteFlow}
+                // Bundled flows can't be deleted; a project's copy of one can, which brings the bundled flow back.
+                canDeleteFlow={(flow) => catalog.flowDefinitions[flow]?.layer !== 'bundled'}
                 // The project heading already says a flow is the project's; only a customized bundled flow needs a mark.
                 renderFlowIndicator={(flow) => catalog.flowDefinitions[flow]?.layer === 'project_copy'
                     && <span className="flex shrink-0 gap-1"><DefinitionBadges item={catalog.flowDefinitions[flow]} /></span>}

@@ -20,8 +20,8 @@ const viewName = (view: ViewMode) => VIEW_LABELS[view] ?? view
 
 /**
  * Where the app is, as one browser history entry: the view, plus what it has open: the run in
- * Runs, the project page in Chats, the flow in Flows, the trigger in Triggers. Other selections
- * (a mission, a node) change in place. An absent field leaves that selection as it is.
+ * Runs, the project page in Chats, the flow in Flows, the trigger in Triggers, the mission in
+ * Missions. Other selections (a node) change in place. An absent field leaves that selection as it is.
  */
 export interface Place {
     view: ViewMode
@@ -32,13 +32,19 @@ export interface Place {
     projectPath?: string | null
     flow?: string | null
     triggerId?: string | null
+    /** The open mission, as its `missionKey`. */
+    missionId?: string | null
 }
+
+/** A mission's key in a place: its id only names it within its project. */
+export const missionKey = (mission: { projectPath: string; id: string } | null) => (mission ? JSON.stringify([mission.projectPath, mission.id]) : null)
 
 export function placeOf(state: AppState): Place {
     const view = state.viewMode === 'projects' ? 'home' : state.viewMode
     if (view === 'home') return { view, projectPagePath: state.projectPagePath }
     if (view === 'editor') return { view, projectPath: state.activeProjectPath, flow: state.activeFlow }
     if (view === 'triggers') return { view, triggerId: state.triggersSession.selectedTriggerId }
+    if (view === 'missions') return { view, missionId: missionKey(state.selectedMission) }
     if (view !== 'runs') return { view }
     const runId = state.runsListSession.selectedRunId
     return { view, runId, nodeId: runId ? state.runDetailSessionsByRunId[runId]?.selectedNodeId ?? null : null }
@@ -46,7 +52,7 @@ export function placeOf(state: AppState): Place {
 
 /** Places with the same key are one history entry; a node change only rewrites the entry. */
 const placeKey = (place: Place) =>
-    [place.view, place.runId, place.projectPagePath, place.projectPath, place.flow, place.triggerId].join('\n')
+    [place.view, place.runId, place.projectPagePath, place.projectPath, place.flow, place.triggerId, place.missionId].join('\n')
 
 /**
  * Whether moving between two places adds a history entry. In Triggers only a move from a trigger
@@ -66,10 +72,11 @@ export function addsEntry(state: AppState, from: Place, to: Place): boolean {
 
 export function placeHash(place: Place): string {
     if (place.runId) return buildRunsHash(place.runId, place.nodeId)
-    // A trigger key is its [project, id]; the link names them as a flow's link does.
+    // A trigger's and a mission's key is its [project, id]; the link names them as a flow's link does.
     const [triggerProject, trigger] = place.triggerId ? JSON.parse(place.triggerId) as [string, string] : []
-    const item = place.flow ?? trigger
-    const project = place.projectPath ?? triggerProject
+    const [missionProject, mission] = place.missionId ? JSON.parse(place.missionId) as [string, string] : []
+    const item = place.flow ?? trigger ?? mission
+    const project = place.projectPath ?? triggerProject ?? missionProject
     const hash = `#/${viewName(place.view)}${item ? `/${encodeURIComponent(item)}` : ''}`
     return project ? `${hash}?project=${encodeURIComponent(project)}` : hash
 }
@@ -91,6 +98,7 @@ export function parsePlaceHash(hash: string): Place | null {
     if (view === 'runs' && item) return { view, runId: item, nodeId: nodeId ?? null }
     const projectPath = new URLSearchParams(query).get('project')
     if (view === 'triggers' && item && projectPath) return { view, triggerId: triggerKey({ project_path: projectPath, id: item }) }
+    if (view === 'missions' && item && projectPath) return { view, missionId: missionKey({ projectPath, id: item }) }
     // A flow link without a project opens the flow in the project Flows shows.
     if (view === 'editor' && projectPath) return { view, projectPath, flow: item ?? null }
     if (view === 'editor' && item) return { view, flow: item }

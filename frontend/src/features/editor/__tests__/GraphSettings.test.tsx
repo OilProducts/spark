@@ -153,7 +153,7 @@ describe('Graph and settings behavior', () => {
     await customModel(user, 'custom:next')
     settingsRevision += 1
     await user.click(modelDefaultsCard().getByRole('button', { name: /^Save/ }))
-    await screen.findByText(/responded with HTTP 409/)
+    await screen.findByText(/Settings changed\./)
     expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('custom:next')
     expect(serverModels.model).toBe('private-model')
     await user.click(modelDefaultsCard().getByRole('button', { name: /^Discard/ }))

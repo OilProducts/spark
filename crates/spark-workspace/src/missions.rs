@@ -636,19 +636,8 @@ impl WorkspaceMissionService {
             for run in mission.inbox.runs.iter().filter(|run| run.in_flight()) {
                 runtime.cancel_pipeline_route(&run.run_id);
             }
-            if let (Some(runtime), Some(conversation)) = (
-                inbox::runtime(&self.settings),
-                mission.conversation_id.as_deref(),
-            ) {
-                let _ = inbox::conversations(&self.settings, &self.store, &runtime)
-                    .interrupt_turn(conversation, &mission.project_path);
-            }
-            self.close_locked(
-                mission,
-                CloseStatus::Canceled,
-                "Canceled by human".into(),
-                "human",
-            )
+            self.stop_agent(mission);
+            self.close_locked(mission, CloseStatus::Canceled, String::new(), "human")
         })?;
         self.report_close(&mission);
         Ok(mission)
@@ -663,20 +652,30 @@ impl WorkspaceMissionService {
             return Err(invalid("Actor must be human or assistant"));
         }
         let mission = self.with_mission(project, id, |_, mission| {
-            let reason = if request.reason.trim().is_empty() {
-                "Closed".to_string()
-            } else {
-                request.reason
-            };
+            // The agent closing its own mission ends its turn itself; a person's
+            // close stops the agent's work, as cancel does.
+            if request.actor == "human" {
+                self.stop_agent(mission);
+            }
             self.close_locked(
                 mission,
                 request.status.unwrap_or(CloseStatus::Done),
-                reason,
+                request.reason.trim().to_string(),
                 &request.actor,
             )
         })?;
         self.report_close(&mission);
         Ok(mission)
+    }
+    /// Interrupts the agent's running turn, if any.
+    fn stop_agent(&self, mission: &MissionRecord) {
+        if let (Some(runtime), Some(conversation)) = (
+            inbox::runtime(&self.settings),
+            mission.conversation_id.as_deref(),
+        ) {
+            let _ = inbox::conversations(&self.settings, &self.store, &runtime)
+                .interrupt_turn(conversation, &mission.project_path);
+        }
     }
     /// A mission opened from a conversation reports its close to it, once
     /// the mission lock is released. A deleted source gets nothing.
@@ -722,7 +721,10 @@ impl WorkspaceMissionService {
             }
             disabled.push(format!("{} ({})", trigger.name, trigger.id));
         }
-        let mut note = format!("Closed as {}: {reason}", json!(status).as_str().unwrap());
+        let mut note = format!("Closed as {}", json!(status).as_str().unwrap());
+        if !reason.is_empty() {
+            note.push_str(&format!(": {reason}"));
+        }
         if !disabled.is_empty() {
             note.push_str(&format!(
                 ". Disabled targeting triggers: {}",

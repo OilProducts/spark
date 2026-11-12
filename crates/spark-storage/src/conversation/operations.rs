@@ -2560,13 +2560,18 @@ fn render_inbox_event(event: &InboxEvent, runs: &[InboxRun]) -> String {
             );
         }
         "mission.closed" => {
+            let reason = text(&payload["reason"]);
             return format!(
-                "Mission {} ({}) closed as {}: {}",
+                "Mission {} ({}) closed as {}{}",
                 payload["title"],
                 text(&payload["mission_id"]),
                 text(&payload["status"]),
-                text(&payload["reason"])
-            )
+                if reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {reason}")
+                }
+            );
         }
         "run.question" => {
             let root = payload["root_run_id"].as_str().unwrap_or(&event.source);

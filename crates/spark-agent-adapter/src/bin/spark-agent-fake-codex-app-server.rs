@@ -2,6 +2,7 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{json, Value};
 
@@ -174,7 +175,8 @@ fn run_default(
                     return;
                 } else if mode == "gated" {
                     // Like the real app-server, keep answering requests (turn/steer) mid turn.
-                    std::thread::spawn(|| emit_gated_turn(&mut io::stdout()));
+                    let turn = GATED_TURN.fetch_add(1, Ordering::SeqCst) + 1;
+                    std::thread::spawn(move || emit_gated_turn(&mut io::stdout(), turn));
                 } else if mode == "interruptible" {
                     // Runs until Spark sends turn/interrupt.
                     write_json(
@@ -206,6 +208,15 @@ fn run_default(
                 &mut stdout,
                 json!({"id": request_id, "result": {"turnId": "turn-test"}}),
             ),
+            "turn/interrupt" if mode == "gated" => {
+                // Like the real app-server, a stopped turn ends as interrupted and says no more.
+                GATED_TURN.fetch_add(1, Ordering::SeqCst);
+                write_json(&mut stdout, json!({"id": request_id, "result": {}}));
+                write_json(
+                    &mut stdout,
+                    json!({"method": "turn/completed", "params": {"threadId": "thread-test", "turn": {"id": "turn-test", "status": "interrupted", "error": null}}}),
+                );
+            }
             "turn/interrupt" if mode == "interruptible" || mode == "interruptible-question" => {
                 assert_eq!(
                     message["params"],
@@ -256,7 +267,7 @@ fn emit_tool_notifications(stdout: &mut impl Write) {
 
 /// A long turn that streams commentary and a partial answer, then waits for
 /// the `continue` and `finish` files in SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR.
-fn emit_gated_turn(stdout: &mut impl Write) {
+fn emit_gated_turn(stdout: &mut impl Write, turn: usize) {
     let delta = |item_id: &str, text: &str| json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-test", "turnId": "turn-test", "itemId": item_id, "delta": text}});
     let completed = |item_id: &str, text: &str, phase: &str| json!({"method": "item/completed", "params": {"threadId": "thread-test", "turnId": "turn-test", "item": {"type": "AgentMessage", "id": item_id, "content": [{"type": "Text", "text": text}], "phase": phase}}});
     write_json(stdout, delta("msg-commentary", "Planning the work."));
@@ -265,9 +276,13 @@ fn emit_gated_turn(stdout: &mut impl Write) {
         completed("msg-commentary", "Planning the work.", "commentary"),
     );
     write_json(stdout, delta("msg-answer", "Half done."));
-    wait_for_gate("continue");
+    if !wait_for_gate("continue", turn) {
+        return;
+    }
     write_json(stdout, delta("msg-answer", " Still going."));
-    wait_for_gate("finish");
+    if !wait_for_gate("finish", turn) {
+        return;
+    }
     write_json(stdout, delta("msg-answer", " All done."));
     write_json(
         stdout,
@@ -283,15 +298,23 @@ fn emit_gated_turn(stdout: &mut impl Write) {
     );
 }
 
-/// Waits for the named file in SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR.
-fn wait_for_gate(name: &str) {
+/// The current gated turn; an interrupt moves past it, so its thread stops.
+static GATED_TURN: AtomicUsize = AtomicUsize::new(0);
+
+/// Waits for the named file in SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR; false
+/// once `turn` was interrupted instead.
+fn wait_for_gate(name: &str, turn: usize) -> bool {
     let gate_dir = PathBuf::from(
         env::var_os("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR")
             .expect("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR"),
     );
     while !gate_dir.join(name).exists() {
+        if GATED_TURN.load(Ordering::SeqCst) != turn {
+            return false;
+        }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    true
 }
 
 /// A silent turn that ends once steered. `steer-rejected` refuses the first
@@ -335,7 +358,7 @@ fn run_steerable(log_path: Option<PathBuf>, mode: &str) {
                         &mut stdout,
                         json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-steer", "turnId": "turn-steer", "itemId": "msg-before-reply", "delta": "Reading."}}),
                     );
-                    wait_for_gate("steer-reply");
+                    wait_for_gate("steer-reply", GATED_TURN.load(Ordering::SeqCst));
                 }
                 write_json(&mut stdout, json!({"id": request_id, "result": {}}));
                 // Runtime callers set a decision envelope as the final answer.

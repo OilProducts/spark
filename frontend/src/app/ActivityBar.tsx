@@ -5,9 +5,8 @@ import { useStore, type ViewMode } from "@/store"
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import type { AttentionItem } from "@/lib/api/attentionApi"
 import { useOverviewUnread } from '@/features/overview/hooks/useOverviewUnread'
-import { ATTENTION_KIND_LABELS, attentionFlow, attentionTitle, openAttentionItem, refreshAttention, useAttentionFailed, useAttentionItems } from './useAttention'
+import { ATTENTION_KIND_LABELS, attentionFlow, attentionTimes, attentionTitle, openAttentionItem, refreshAttention, useAttentionFailed, useAttentionItems } from './useAttention'
 import { projectLabel } from '@/features/projects/model/projectChoices'
-import { formatRunDate } from '@/features/runs/model/runOverviewModel'
 import { useChatRunning } from '@/features/projects/hooks/useChatRunning'
 import { cn } from '@/lib/utils'
 
@@ -92,6 +91,7 @@ function AttentionBell({ items: loadedItems, failed, narrow }: { items: Attentio
     }
     // eslint-disable-next-line react-hooks/purity -- render-time clock for when each item asked; the list re-renders as it opens
     const now = Date.now()
+    const timeOf = attentionTimes(items, runs, now)
 
     return (
         // Narrow, the list hangs from the top row's right edge (the sticky nav), not from the bell, so it stays on screen.
@@ -161,7 +161,7 @@ function AttentionBell({ items: loadedItems, failed, narrow }: { items: Attentio
                         >
                             <span className="flex w-full items-baseline justify-between gap-2 text-xs">
                                 <span className="font-semibold text-warning">{ATTENTION_KIND_LABELS[item.kind]}</span>
-                                <span data-testid="attention-bell-item-time" className="shrink-0 text-muted-foreground">{formatRunDate(item.updated_at, now)}</span>
+                                <span data-testid="attention-bell-item-time" className="shrink-0 text-muted-foreground">{timeOf(item)}</span>
                             </span>
                             <span className="w-full truncate text-sm">
                                 {attentionTitle(item, runs)}

@@ -190,7 +190,9 @@ export function MissionsPanel({ active }: { active: boolean }) {
     // Reopen the last selected mission, or one chosen elsewhere (such as the bell).
     const selectedMission = useStore(s => s.selectedMission)
     useEffect(() => {
-        if (!selectedMission || busy || (editing && editing.id === selectedMission.id)) return
+        // Back to the list closes the mission open to read; an editor keeps its edits.
+        if (!selectedMission) { if (editing && mode === 'read' && !busy) setEditing(undefined); return }
+        if (busy || (editing && editing.id === selectedMission.id)) return
         const mission = missions.find(m => m.id === selectedMission.id && m.project_path === selectedMission.projectPath)
         // An open editor or new-mission draft is kept, as when picking from the list.
         if (mission && editing !== undefined && mode === 'edit') open(mission, origin.current)
@@ -247,7 +249,10 @@ export function MissionsPanel({ active }: { active: boolean }) {
                     ? <MissionDetail key={(latest ?? editing).id} mission={latest ?? editing} project={project} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} archive={value => archive(latest ?? editing, value)} onChange={upsert} />
                     : <MissionEditor key={editing?.id ?? newKey} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} focusRequest={focusRequest} project={project} projectName={!editing && newProject ? projectLabel(registry, newProject) : undefined}
                         setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)
-                : <SheetEmpty icon={Target} title={active && missions.length ? 'No mission selected' : 'No missions yet'}>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with New.'}</SheetEmpty>}
+                : selectedMission && loaded && !missions.some(m => m.id === selectedMission.id && m.project_path === selectedMission.projectPath)
+                    // A link to a mission that is gone says so, instead of reading as nothing picked.
+                    ? <SheetEmpty icon={Target} title="Mission not found">The linked mission isn’t here. It may have been deleted, or its project removed.</SheetEmpty>
+                    : <SheetEmpty icon={Target} title={active && missions.length ? 'No mission selected' : 'No missions yet'}>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with New.'}</SheetEmpty>}
         </section>
     </ViewLayout>
 }

@@ -121,7 +121,7 @@ const STATUS_SEARCH_WORDS: Record<RunStatusKind, string> = {
     running: 'running queued',
     failed: 'failed',
     completed: 'completed',
-    ended: 'stopped canceled cancelled',
+    ended: 'canceled cancelled stopped',
 }
 
 /** Whether a run list search (lower-cased, trimmed) finds a run by its title, its flow or its state. */

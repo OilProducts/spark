@@ -24,7 +24,7 @@ import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
-import { addsEntry, parsePlaceHash, placeHash, placeOf, type Place } from './runsRouting'
+import { addsEntry, missionKey, parsePlaceHash, placeHash, placeOf, type Place } from './runsRouting'
 
 type ConversationStreamArgs = Parameters<typeof useConversationStream>[0]
 
@@ -578,6 +578,10 @@ function applyPlace(place: Place): boolean {
     if (place.triggerId !== undefined && state.triggersSession.selectedTriggerId !== place.triggerId) {
         state.updateTriggersSession({ selectedTriggerId: place.triggerId, createFormOpen: false })
     }
+    if (place.missionId !== undefined && missionKey(state.selectedMission) !== place.missionId) {
+        const [projectPath, id] = place.missionId ? JSON.parse(place.missionId) as [string, string] : [null, null]
+        state.setSelectedMission(projectPath && id ? { projectPath, id } : null)
+    }
     if (placeOf(useStore.getState()).view !== place.view) {
         state.setViewMode(place.view)
     }
@@ -589,7 +593,7 @@ function applyPlace(place: Place): boolean {
 
 /**
  * Keeps the browser's Back and Forward in step with the app: opening a view, a run, a project
- * page, a flow or a trigger adds a history entry, and the URL hash names it so a link reopens it.
+ * page, a flow, a trigger or a mission adds a history entry, and the URL hash names it so a link reopens it.
  */
 export function HistoryRoutingController() {
     useEffect(() => {

@@ -135,8 +135,9 @@ export function RunQuestionsPanel({
                                                         />
                                                     </div>
                                                 )}
-                                                {/* With focus on an answer, its flow key picks that answer; scoped to the buttons so
-                                                    typing elsewhere never answers a gate. */}
+                                                {/* With focus on an answer, its flow key moves focus to that answer and Enter gives it:
+                                                    an answer can't be taken back, so no single key sends one. Scoped to the
+                                                    buttons, so typing elsewhere never touches a gate. */}
                                                 <div
                                                     role="group"
                                                     aria-label="Answers"
@@ -149,7 +150,7 @@ export function RunQuestionsPanel({
                                                             && option.key?.toLowerCase() === event.key.toLowerCase())
                                                         if (keyed) {
                                                             event.preventDefault()
-                                                            onSubmitPendingGateAnswer(gate, keyed.value, gateNote)
+                                                            event.currentTarget.querySelectorAll('button')[gate.options.indexOf(keyed)]?.focus()
                                                         }
                                                     }}
                                                 >

@@ -7,7 +7,7 @@ import { StatusDot, statusTextClassName, type StatusTone } from '@/components/ap
 import { Well } from '@/components/app/well'
 import { Button } from '@/components/ui/button'
 import { useStore } from '@/store'
-import { ATTENTION_KIND_LABELS, attentionFlow, attentionTitle, openAttentionItem, openChat, openMission, openRun, refreshAttention, useAttentionFailed, useAttentionItems } from '@/app/useAttention'
+import { ATTENTION_KIND_LABELS, attentionFlow, attentionTimes, attentionTitle, openAttentionItem, openChat, openMission, openRun, refreshAttention, useAttentionFailed, useAttentionItems } from '@/app/useAttention'
 import { missionTime } from '@/features/missions/model/missionModel'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
@@ -36,7 +36,7 @@ const MARKS: Record<Mark, { label: string; tone: StatusTone; exception?: true }>
     running: { label: 'Running', tone: 'info' },
     completed: { label: 'Completed', tone: 'success' },
     failed: { label: 'Failed', tone: 'destructive', exception: true },
-    ended: { label: 'Stopped', tone: 'neutral' },
+    ended: { label: 'Canceled', tone: 'neutral' },
     draft: { label: 'Draft', tone: 'neutral' },
 }
 const MARK_ORDER: Mark[] = ['waiting', 'running', 'completed', 'failed', 'ended', 'draft']
@@ -162,7 +162,7 @@ export function OverviewPanel() {
     const runsFetched = useStore((state) => Boolean(state.runsListSession.fetched))
     const runsFailed = useStore((state) => state.runsListSession.status === 'error')
     const runsLoading = !runsFetched && !runsFailed
-    const { chats, loaded } = useOverviewChats()
+    const { chats, loaded, failed: chatsFailed, retry: retryChats } = useOverviewChats()
     // What this visit lists is judged against what earlier visits showed; what it shows is seen from the next one on.
     const [finishedWatermark] = useState(readFinishedWatermark)
     const [showRuns, setShowRuns] = useState(false)
@@ -172,6 +172,7 @@ export function OverviewPanel() {
     useEffect(() => { if (listsLoaded) markFinishedSeen(runs, missions) }, [listsLoaded, runs, missions])
     // eslint-disable-next-line react-hooks/purity -- render-time clock for relative dates; the view re-renders on run and mission updates
     const now = Date.now()
+    const attentionTime = attentionTimes(attention, runs, now)
 
     const last = lastChat(chats, runs, missions)
     const counts = last ? tally(last.started) : {}
@@ -251,7 +252,7 @@ export function OverviewPanel() {
                                                 </span>
                                             </span>
                                         </span>
-                                        <span data-testid="overview-needs-you-time" className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{formatRunDate(item.updated_at, now)}</span>
+                                        <span data-testid="overview-needs-you-time" className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{attentionTime(item)}</span>
                                     </button>
                                 </li>
                             ))}
@@ -346,6 +347,11 @@ export function OverviewPanel() {
                                 </ul>
                             ) : null}
                         </div>
+                    ) : chatsFailed ? (
+                        <Well data-testid="overview-chats-error" role="alert" className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm text-destructive">
+                            Couldn’t load your chats.
+                            <Button type="button" size="sm" variant="outline" onClick={retryChats}>Try again</Button>
+                        </Well>
                     ) : loaded ? (
                         <EmptyWell check={false}>No chats yet.</EmptyWell>
                     ) : (

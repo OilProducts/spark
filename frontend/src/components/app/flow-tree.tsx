@@ -32,6 +32,8 @@ interface FlowTreeProps {
     selectedFlow: string | null
     onSelectFlow: (flowName: string) => void
     onDeleteFlow?: (event: MouseEvent, flowName: string) => void
+    /** Which flows offer Delete; all do without it. */
+    canDeleteFlow?: (flowName: string) => boolean
     renderFlowIndicator?: (flowName: string) => ReactNode
     dataTestId?: string
 }
@@ -44,6 +46,7 @@ export function FlowTree({
     selectedFlow,
     onSelectFlow,
     onDeleteFlow,
+    canDeleteFlow,
     renderFlowIndicator,
     dataTestId,
 }: FlowTreeProps) {
@@ -72,6 +75,7 @@ export function FlowTree({
                             selectedFlow={selectedFlow}
                             onSelectFlow={onSelectFlow}
                             onDeleteFlow={onDeleteFlow}
+                            canDeleteFlow={canDeleteFlow}
                             renderFlowIndicator={renderFlowIndicator}
                         />
                     ))}
@@ -88,6 +92,7 @@ interface FlowTreeNodeRowProps {
     selectedFlow: string | null
     onSelectFlow: (flowName: string) => void
     onDeleteFlow?: (event: MouseEvent, flowName: string) => void
+    canDeleteFlow?: (flowName: string) => boolean
     renderFlowIndicator?: (flowName: string) => ReactNode
 }
 
@@ -98,6 +103,7 @@ function FlowTreeNodeRow({
     selectedFlow,
     onSelectFlow,
     onDeleteFlow,
+    canDeleteFlow,
     renderFlowIndicator,
 }: FlowTreeNodeRowProps) {
     const indent = 12 + depth * 14
@@ -111,6 +117,7 @@ function FlowTreeNodeRow({
                 selectedFlow={selectedFlow}
                 onSelectFlow={onSelectFlow}
                 onDeleteFlow={onDeleteFlow}
+                canDeleteFlow={canDeleteFlow}
                 renderFlowIndicator={renderFlowIndicator}
             />
         )
@@ -146,17 +153,17 @@ function FlowTreeNodeRow({
                     </span>
                 </span>
             </Button>
-            {onDeleteFlow ? (
+            {onDeleteFlow && (canDeleteFlow?.(node.path) ?? true) ? (
                 <Button
                     type="button"
-                    aria-label="Delete flow"
+                    aria-label={`Delete ${title ?? node.path}`}
                     onClick={(event) => {
                         event.stopPropagation()
                         onDeleteFlow(event, node.path)
                     }}
                     variant="ghost"
                     size="icon-xs"
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground opacity-0 transition-all group-hover:opacity-100 hover:text-destructive"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground opacity-0 transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive"
                     title={`Delete ${node.path}`}
                 >
                     <Trash2 className="h-3.5 w-3.5" />
@@ -173,6 +180,7 @@ function FlowTreeDirectoryRow({
     selectedFlow,
     onSelectFlow,
     onDeleteFlow,
+    canDeleteFlow,
     renderFlowIndicator,
 }: FlowTreeNodeRowProps & { node: Extract<FlowTreeNode, { kind: 'directory' }> }) {
     const [open, setOpen] = useState(true)
@@ -212,6 +220,7 @@ function FlowTreeDirectoryRow({
                         selectedFlow={selectedFlow}
                         onSelectFlow={onSelectFlow}
                         onDeleteFlow={onDeleteFlow}
+                        canDeleteFlow={canDeleteFlow}
                         renderFlowIndicator={renderFlowIndicator}
                     />
                 ))}

@@ -72,7 +72,7 @@ it('reports a failed older page with Retry, which loads it', async () => {
     render(<Log />)
     await userEvent.click(await screen.findByRole('button', { name: 'Load older messages' }))
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent('older page unavailable')
+    expect(alert).toHaveTextContent('Older page unavailable')
     failOlder = false
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(screen.getByText('Message 1')).toBeInTheDocument())

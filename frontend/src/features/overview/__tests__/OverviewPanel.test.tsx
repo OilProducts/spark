@@ -1,5 +1,5 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import type { AttentionItem } from '@/lib/api/attentionApi'
 import type { Mission } from '@/features/missions/MissionsPanel'
@@ -16,6 +16,7 @@ vi.mock('@/lib/api/attentionApi', async (original) => ({
     fetchPendingAttention: () => (attentionDown ? Promise.reject(new Error('503')) : Promise.resolve(pending)),
 }))
 let chats: Chat[] = []
+let chatsDown = false
 // The project path of each thread-list request; the Overview asks once for every project.
 let chatListRequests: (string | null)[] = []
 vi.mock('@/lib/workspaceClient', async (original) => {
@@ -25,6 +26,7 @@ vi.mock('@/lib/workspaceClient', async (original) => {
         ...client,
         fetchProjectConversationListValidated: (projectPath: string | null) => {
             chatListRequests.push(projectPath)
+            if (chatsDown) return Promise.reject(new Error('503'))
             return Promise.resolve(client.parseConversationSummarySnapshotResponse(summarySnapshot(chats)))
         },
     }
@@ -91,6 +93,25 @@ describe('Overview needs you, when the check fails', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
         await waitFor(() => expect(screen.queryByTestId('overview-needs-you-error')).toBeNull())
         expect(screen.getByTestId('overview-needs-you-empty')).toHaveTextContent('Nothing is waiting on you.')
+    })
+})
+
+describe('Overview last chat', () => {
+    it('says the chats could not load instead of "No chats yet", and loads them on Try again', async () => {
+        reset()
+        const initialCache = useStore.getState().homeConversationCache
+        onTestFinished(() => useStore.setState({ homeConversationCache: initialCache }))
+        chatsDown = true
+        act(() => { useStore.getState().hydrateProjectRegistry([{ directoryPath: '/work/app', displayName: 'app', isDefault: false, isFavorite: false, lastAccessedAt: null }]) })
+        render(<OverviewPanel />)
+        expect(await screen.findByTestId('overview-chats-error')).toHaveTextContent('Couldn’t load your chats.')
+        expect(screen.queryByText('No chats yet.')).toBeNull()
+
+        chatsDown = false
+        chats = [{ conversation_id: 'chat-1', project_path: '/work/app', title: 'Ship the fix', created_at: '', updated_at: new Date().toISOString(), revision: 1, launched_run_ids: [] }]
+        fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+        await waitFor(() => expect(screen.getByTestId('overview-last-chat-title').textContent).toBe('Ship the fix'))
+        expect(screen.queryByTestId('overview-chats-error')).toBeNull()
     })
 })
 

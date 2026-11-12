@@ -64,7 +64,7 @@ const STATUS_FILTERS: Array<{ kind: RunStatusKind; label: string; className?: st
     { kind: 'running', label: 'Running' },
     { kind: 'failed', label: 'Failed', className: 'text-destructive' },
     { kind: 'completed', label: 'Completed' },
-    { kind: 'ended', label: 'Stopped' },
+    { kind: 'ended', label: 'Canceled' },
 ]
 // A day's repeats of one run (same title, flow, project and outcome) fold into one row from this many on.
 const REPEATS_FOLDED_FROM = 3

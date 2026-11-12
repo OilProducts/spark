@@ -38,6 +38,8 @@ pub(crate) fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
 #[derive(Default)]
 pub(crate) struct GatedAgent {
     pub(crate) requests: Mutex<Vec<AgentTurnRequest>>,
+    /// The conversations whose turn Spark asked to stop.
+    pub(crate) interrupts: Mutex<Vec<String>>,
     gate: Mutex<usize>,
     opened: Condvar,
 }
@@ -64,6 +66,13 @@ impl AgentTurnBackend for GatedAgent {
         }
         *gate -= 1;
         Ok(final_answer("Noted."))
+    }
+    fn interrupt_turn(&self, _project_path: &str, conversation_id: &str) -> bool {
+        self.interrupts
+            .lock()
+            .unwrap()
+            .push(conversation_id.to_string());
+        true
     }
 }
 
@@ -790,6 +799,37 @@ fn cancel_stops_owned_runs_and_closes_the_mission() {
     assert_eq!(mission.status, MissionStatus::Closed);
     // Nothing more is delivered once closed.
     assert_eq!(harness.agent.requests.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_person_closing_a_mission_stops_its_agent_and_the_agent_closing_it_does_not() {
+    for actor in ["human", "assistant"] {
+        let harness = Harness::new();
+        let mission = harness.create(json!({"title": "Close me"}));
+        harness
+            .missions
+            .start(&harness.project, &mission.id)
+            .unwrap();
+        harness.wait_turns(1);
+        let close = serde_json::from_value(json!({"actor": actor})).unwrap();
+        let closed = harness
+            .missions
+            .close(&harness.project, &mission.id, close)
+            .unwrap();
+        harness.agent.release(1);
+        // Without a reason, none is made up.
+        assert_eq!(closed.closed.as_ref().unwrap().reason, "", "{actor}");
+        let expected = if actor == "human" {
+            vec![closed.conversation_id.clone().unwrap()]
+        } else {
+            vec![]
+        };
+        assert_eq!(
+            *harness.agent.interrupts.lock().unwrap(),
+            expected,
+            "{actor}"
+        );
+    }
 }
 
 #[test]

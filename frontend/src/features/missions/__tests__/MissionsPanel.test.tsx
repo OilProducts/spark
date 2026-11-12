@@ -205,6 +205,33 @@ it('drives close, cancel and archive from the header, and budget in the rail', a
     await waitFor(() => expect(detail().getByRole('status')).toHaveTextContent('· Archived'))
 })
 
+it('closes the open mission when the selection clears, as Back does, and says when a linked mission is gone', async () => {
+    task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't' })
+    render(<MissionsPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    expect(detail().getByRole('heading', { name: 'Deliver search' })).toBeInTheDocument()
+    act(() => useStore.getState().setSelectedMission(null))
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Mission details' })).not.toBeInTheDocument())
+    expect(screen.getByText('No mission selected')).toBeInTheDocument()
+    act(() => useStore.getState().setSelectedMission({ projectPath: '/project', id: 'gone' }))
+    expect(await screen.findByText('Mission not found')).toBeInTheDocument()
+})
+
+it('asks before closing or canceling a mission, and does nothing when kept open', async () => {
+    task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't' })
+    vi.mocked(window.confirm).mockReturnValue(false)
+    render(<MissionsPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    fireEvent.click(detail().getByRole('button', { name: 'Close mission' }))
+    fireEvent.click(detail().getByRole('button', { name: 'Cancel mission' }))
+    await waitFor(() => expect(window.confirm).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(window.confirm).mock.calls.map(([text]) => text)).toEqual([
+        'Its agent stops; runs already going finish on their own. A closed mission can’t be reopened.',
+        'Its agent stops and its unfinished runs are canceled. A closed mission can’t be reopened.',
+    ])
+    expect(calls.filter(call => /\/(close|cancel)\?/.test(call.url))).toEqual([])
+})
+
 it('sets a draft mission\'s model on its conversation before Start', async () => {
     render(<MissionsPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))

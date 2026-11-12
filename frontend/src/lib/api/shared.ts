@@ -18,8 +18,8 @@ export class ApiHttpError extends Error {
     detail: string | null
 
     constructor(endpoint: string, status: number, detail: string | null) {
-        const suffix = detail ? `: ${detail}` : ''
-        super(`${endpoint} responded with HTTP ${status}${suffix}`)
+        // People read the message: the server's reason when it gives one; the endpoint stays on the error.
+        super(detail ? detail.charAt(0).toUpperCase() + detail.slice(1) : `Spark couldn’t complete the request (HTTP ${status}).`)
         this.name = 'ApiHttpError'
         this.endpoint = endpoint
         this.status = status

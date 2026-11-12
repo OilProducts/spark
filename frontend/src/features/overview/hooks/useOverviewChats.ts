@@ -14,22 +14,29 @@ export function useOverviewChats() {
     const summaries = useStore((state) => state.homeConversationCache.summariesByProjectPath)
     const paths = Object.keys(registry).sort().join('\n')
     const [loaded, setLoaded] = useState(false)
+    // The last load failed; the live feed may still fill the list.
+    const [failed, setFailed] = useState(false)
+    const [attempt, setAttempt] = useState(0)
     useEffect(() => {
         let disposed = false
         if (!paths) return
         void fetchProjectConversationListValidated(null)
             .then((snapshot) => {
-                if (!disposed) useStore.getState().commitHomeConversationCache((current) => applySummarySnapshotToCache(current, snapshot, 'http'))
+                if (disposed) return
+                useStore.getState().commitHomeConversationCache((current) => applySummarySnapshotToCache(current, snapshot, 'http'))
+                setFailed(false)
             })
-            .catch(() => undefined)
+            .catch(() => {
+                if (!disposed) setFailed(true)
+            })
             .then(() => {
                 if (!disposed) setLoaded(true)
             })
         return () => { disposed = true }
-    }, [paths])
+    }, [paths, attempt])
     const chats = useMemo<Chat[]>(
         () => paths.split('\n').filter(Boolean).flatMap((path) => summaries[path] ?? []),
         [paths, summaries],
     )
-    return { chats, loaded }
+    return { chats, loaded, failed, retry: () => setAttempt((count) => count + 1) }
 }
