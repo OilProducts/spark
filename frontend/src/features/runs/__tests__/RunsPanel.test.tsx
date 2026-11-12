@@ -1839,7 +1839,7 @@ describe('RunsPanel', () => {
     })
     // A completed run that reached a failure exit reads as its result, not as a success.
     expect(screen.getByTestId('run-header-status')).toHaveTextContent('Rejected')
-    expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'warning')
+    expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'destructive')
     expect(screen.getByTestId('run-header-facts')).not.toHaveTextContent(/[0-9a-f]{7}$/)
     expect(screen.queryByTestId('run-output-commit')).not.toBeInTheDocument()
     expect(screen.queryByTestId('run-fact-lineage')).not.toBeInTheDocument()
@@ -2155,8 +2155,8 @@ describe('RunsPanel', () => {
     })
     await openRunFacts()
     expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent('Live gate failed')
-    // A finished run needs no status word in the selector.
-    expect(screen.queryByTestId('run-history-row-status')).not.toBeInTheDocument()
+    // A failure exit is not a success: the selector names it.
+    expect(screen.getByTestId('run-history-row-status')).toHaveTextContent('Live failure')
   })
 
   it('opens one runs-list stream and one selected-run stream while a run is selected', async () => {

@@ -1,8 +1,10 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { RunHeaderBar } from '../RunHeaderBar'
 import type { RunRecord } from '../../model/shared'
+import { useStore } from '@/store'
+import { triggerKey } from '@/lib/api/triggersApi'
 
 const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
     run_id: 'run-1',
@@ -50,10 +52,18 @@ const renderHeader = (run: RunRecord, selectedVisitLabel: string | null = null) 
 )
 
 describe('RunHeaderBar', () => {
-    it('names a completed run that reached a failure exit by its result, in a warning tone', () => {
+    it('names the trigger that started a run and opens it', () => {
+        renderHeader(makeRun({ title: 'Tests sweep', launch_context: { 'context.spark_trigger': { trigger_id: 'trigger-1', trigger_name: 'Tests sweep', source_type: 'schedule' } } }))
+        expect(screen.getByTestId('run-header-trigger')).toHaveTextContent('started by trigger Tests sweep')
+        fireEvent.click(screen.getByRole('button', { name: 'Tests sweep' }))
+        expect(useStore.getState().viewMode).toBe('triggers')
+        expect(useStore.getState().triggersSession.selectedTriggerId).toBe(triggerKey({ project_path: '/tmp/project', id: 'trigger-1' }))
+    })
+
+    it('names a completed run that reached a failure exit by its result, as a failure', () => {
         renderHeader(makeRun({ outcome: 'failure', outcome_reason_code: 'blocked', outcome_reason_message: 'review chose blocked' }))
         expect(screen.getByTestId('run-header-status')).toHaveTextContent('Blocked')
-        expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'warning')
+        expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'destructive')
     })
 
     it('shows the run title under its flow, a status pill, and one line of facts', () => {

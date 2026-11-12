@@ -4,6 +4,7 @@ import type { Mission } from '@/features/missions/MissionsPanel'
 import type { RunRecord } from '@/features/runs/model/shared'
 import type { AttentionItem } from '@/lib/api/attentionApi'
 import {
+    finishedRows,
     finishedSince,
     hasUnread,
     lastChat,
@@ -102,6 +103,18 @@ describe('finished since', () => {
             ['closed', 'failed'], ['run-failed', 'failed'], ['run-done', 'completed'],
         ])
         expect(hasUnread([], runs, missions, now)).toBe(true)
+    })
+
+    it('marks a run that completed at a failure exit as failed, and folds it apart from successes', () => {
+        const release = (id: string, endedAt: string, outcome: 'success' | 'failure') => run(id, 'completed', endedAt, endedAt, { title: 'Release', outcome })
+        const items = finishedSince([
+            release('ok-1', '2026-10-02T11:00:00Z', 'success'),
+            release('ok-2', '2026-10-02T10:00:00Z', 'success'),
+            release('stop', '2026-10-02T09:00:00Z', 'failure'),
+        ], [], null, now).map((item) => ({ ...item, isNew: false }))
+        expect(finishedRows(items).map((row) => [row.latest.id, row.latest.mark, row.count])).toEqual([
+            ['stop', 'failed', 1], ['ok-1', 'completed', 2],
+        ])
     })
 
     it('lists only what finished after the newest finish shown', () => {

@@ -45,6 +45,8 @@ export interface RunsListSessionState {
     projectFilter: string | null
     /** The one state the run list shows, or every state when null or absent. */
     statusFilter?: RunStatusKind | null
+    /** The run list's search, as typed. */
+    searchQuery?: string
     status: ResourceStatus
     error: string | null
     runs: RunRecord[]

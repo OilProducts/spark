@@ -2,7 +2,7 @@ import type { ConversationSummaryResponse } from '@/lib/api/conversationsApi'
 import type { AttentionItem } from '@/lib/api/attentionApi'
 import type { Mission } from '@/features/missions/MissionsPanel'
 import { missionTime } from '@/features/missions/model/missionModel'
-import { runStatusKind, runTitle } from '@/features/runs/model/runOverviewModel'
+import { runKind, runTitle } from '@/features/runs/model/runOverviewModel'
 import type { RunRecord } from '@/features/runs/model/shared'
 
 // What the Overview shows: the chat you were last in with what it started,
@@ -21,8 +21,9 @@ const DAY_MS = 24 * 60 * 60 * 1000
 /** Milliseconds for run and chat ISO times and mission times alike; 0 when missing. */
 export const timeOf = (value: string | null | undefined) => Date.parse(missionTime(value)) || 0
 
+/** A run's mark; one that completed at a failure exit is failed. */
 export function runMark(run: RunRecord): Mark {
-    return runStatusKind(run.status, false)
+    return runKind(run)
 }
 
 export function missionMark(mission: Mission): Mark {
@@ -113,7 +114,7 @@ export function finishedRows(items: FinishedItem[]): FinishedRow[] {
     const rows = new Map<string, FinishedRow>()
     for (const item of items) {
         const key = item.kind === 'run'
-            ? `run:${item.run.project_path ?? ''}:${runTitle(item.run)}:${item.mark}`
+            ? `run:${item.run.project_path ?? ''}:${runTitle(item.run)}:${item.mark}:${item.run.outcome_reason_code ?? ''}`
             : `mission:${item.id}`
         const row = rows.get(key)
         if (row) {

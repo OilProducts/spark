@@ -13,9 +13,9 @@ import {
 import { useStore } from '@/store'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import type { RunRecord } from '../model/shared'
-import { formatDuration, formatTimestamp, runRecordTone } from '../model/shared'
+import { formatDuration, formatRunStatusLabel, formatTimestamp, isCompletedFailure, runRecordTone } from '../model/shared'
 import { requestRunsTransportReconnect } from '../services/runsTransportReconnect'
-import { flowTitle, formatRunDate, formatRunTime, runDayLabel, runStatusKind, runTitle, type RunStatusKind } from '../model/runOverviewModel'
+import { flowTitle, formatRunDate, formatRunTime, runDayLabel, runKind, runMatchesSearch, runTitle, type RunStatusKind } from '../model/runOverviewModel'
 
 const ACTIVE_LIST_STATUSES = new Set([
     'running',
@@ -35,6 +35,10 @@ const ATTENTION: Record<string, { label: string; className: string }> = {
     running: { label: 'Running', className: 'text-info' },
     queued: { label: 'Queued', className: 'text-muted-foreground' },
 }
+// A run that completed at a failure exit says which exit ("Changes requested"), as its header does.
+const attentionOf = (run: RunRecord) => (isCompletedFailure(run)
+    ? { label: formatRunStatusLabel(run), className: 'text-destructive' }
+    : ATTENTION[run.status])
 
 interface RunListProps {
     error: string | null
@@ -44,6 +48,9 @@ interface RunListProps {
     selectedRunId: string | null
     /** Fills the search placeholder: "Search 233 runs". */
     summaryLabel: string
+    /** The search as typed; held by the caller, so opening a run it would hide can clear it. */
+    searchQuery?: string
+    onSearchQueryChange?: (searchQuery: string) => void
     /** Name each row's project; off when the list is already filtered to one project. */
     showProject?: boolean
     /** Show only runs in this state; null shows all. */
@@ -61,14 +68,8 @@ const STATUS_FILTERS: Array<{ kind: RunStatusKind; label: string; className?: st
 ]
 // A day's repeats of one run (same title, flow, project and outcome) fold into one row from this many on.
 const REPEATS_FOLDED_FROM = 3
-
-const STATUS_SEARCH_WORDS: Record<RunStatusKind, string> = {
-    waiting: 'needs input waiting',
-    running: 'running queued',
-    failed: 'failed',
-    completed: 'completed',
-    ended: 'stopped canceled cancelled',
-}
+// An open fold lists this many of its runs at a time.
+const REPEATS_PAGE = 10
 
 export function RunList({
     error,
@@ -77,34 +78,30 @@ export function RunList({
     runs,
     selectedRunId,
     summaryLabel,
+    searchQuery: heldSearchQuery,
+    onSearchQueryChange,
     showProject = true,
     statusFilter = null,
     onStatusFilterChange,
 }: RunListProps) {
     const isNarrowViewport = useNarrowViewport()
     const projectRegistry = useStore((state) => state.projectRegistry)
-    const [searchQuery, setSearchQuery] = useState('')
+    const [ownSearchQuery, setOwnSearchQuery] = useState('')
+    const searchQuery = heldSearchQuery ?? ownSearchQuery
+    const setSearchQuery = onSearchQueryChange ?? setOwnSearchQuery
     const [expandedParents, setExpandedParents] = useState<Set<string>>(() => new Set())
+    // How many runs each open fold lists, by fold key; REPEATS_PAGE when absent.
+    const [foldShown, setFoldShown] = useState<Record<string, number>>({})
     // eslint-disable-next-line react-hooks/purity -- render-time clock for run ages; the list re-renders on run updates
     const now = Date.now()
     const query = searchQuery.trim().toLowerCase()
     const statusCounts = runs.reduce<Partial<Record<RunStatusKind, number>>>((counts, run) => {
-        const kind = runStatusKind(run.status, false)
+        const kind = runKind(run)
         counts[kind] = (counts[kind] ?? 0) + 1
         return counts
     }, {})
     // A search matches a run's title, its flow, or its state ("failed", "needs input").
-    const matchesSearch = (run: RunRecord) => (
-        (!statusFilter || runStatusKind(run.status, false) === statusFilter)
-        && (
-            !query
-            || runTitle(run).toLowerCase().includes(query)
-            || flowTitle(run.flow_name).toLowerCase().includes(query)
-            || run.flow_name.toLowerCase().includes(query)
-            // Word starts only, so "fail" finds failed runs but "in" doesn't find every waiting one.
-            || ` ${STATUS_SEARCH_WORDS[runStatusKind(run.status, false)]}`.includes(` ${query}`)
-        )
-    )
+    const matchesSearch = (run: RunRecord) => (!statusFilter || runKind(run) === statusFilter) && runMatchesSearch(run, query)
     const filtering = Boolean(query) || Boolean(statusFilter)
     const queuedLockGroups = runs.reduce<Array<{ identity: string; label: string; runs: RunRecord[] }>>((groups, run) => {
         const executionLock = run.execution_lock
@@ -148,22 +145,13 @@ export function RunList({
     }
     const topLevelRuns = rootRuns.filter((run) => matchesSearch(run) || descendantMatches(run))
     const runsById = new Map(runs.map((run) => [run.run_id, run]))
-    // A run opened from elsewhere (the Overview, the Inbox) is listed: its parents open,
-    // and a search that would hide it is cleared.
+    // A run opened from elsewhere (the Overview, the Inbox) is listed: its parents open.
+    // (Opening it also clears a search that would hide it; see setRunsSelectedRunId.)
     const selectedAncestors = new Set<string>()
     let ancestor = selectedRunId ? runsById.get(selectedRunId)?.parent_run_id : undefined
     while (ancestor && runsById.has(ancestor) && !selectedAncestors.has(ancestor)) {
         selectedAncestors.add(ancestor)
         ancestor = runsById.get(ancestor)?.parent_run_id
-    }
-    const [searchedFor, setSearchedFor] = useState(selectedRunId)
-    if (searchedFor !== selectedRunId) {
-        setSearchedFor(selectedRunId)
-        const opened = selectedRunId ? runsById.get(selectedRunId) : undefined
-        const parent = opened?.parent_run_id ? runsById.get(opened.parent_run_id) : undefined
-        if (query && opened && !matchesSearch(opened) && !descendantMatches(opened) && !(parent && matchesSearch(parent))) {
-            setSearchQuery('')
-        }
     }
     const needsInputRuns = topLevelRuns.filter((run) => run.status === 'waiting')
     const runningRuns = topLevelRuns.filter((run) => ACTIVE_LIST_STATUSES.has(run.status))
@@ -184,7 +172,7 @@ export function RunList({
         { depth = 0, underDay = false, stated }: { depth?: number; underDay?: boolean; stated?: string } = {},
     ) => {
         const runProject = depth === 0 && showProject && run.project_path ? projectLabel(projectRegistry, run.project_path) : null
-        const attention = ATTENTION[run.status]?.label === stated ? null : ATTENTION[run.status]
+        const attention = attentionOf(run)?.label === stated ? null : attentionOf(run)
         const title = depth === 0 ? runTitle(run) : flowTitle(run.flow_name)
         const flowPart = title === flowTitle(run.flow_name) ? null : flowTitle(run.flow_name)
         const metaParts = [
@@ -286,7 +274,7 @@ export function RunList({
     const renderDayRuns = (day: string, dayRuns: RunRecord[]) => {
         const keyOf = (run: RunRecord) => (childRunsByParent.has(run.run_id)
             ? run.run_id
-            : [runTitle(run), run.flow_name, run.project_path, runStatusKind(run.status, false)].join('\n'))
+            : [runTitle(run), run.flow_name, run.project_path, runKind(run), attentionOf(run)?.label].join('\n'))
         const repeats = new Map<string, RunRecord[]>()
         for (const run of dayRuns) repeats.set(keyOf(run), [...(repeats.get(keyOf(run)) ?? []), run])
         return dayRuns.map((run) => {
@@ -296,12 +284,16 @@ export function RunList({
         })
     }
 
+    // A fold's runs differ only in when they ran, so each lists as its start time, to the second.
     const renderRepeats = (key: string, repeatRuns: RunRecord[]) => {
         const latest = repeatRuns[0]
-        const open = repeatRuns.some((run) => run.run_id === selectedRunId) !== expandedParents.has(key)
-        const attention = ATTENTION[latest.status]
+        const selectedIndex = repeatRuns.findIndex((run) => run.run_id === selectedRunId)
+        const open = (selectedIndex >= 0) !== expandedParents.has(key)
+        const attention = attentionOf(latest)
         const runProject = showProject && latest.project_path ? projectLabel(projectRegistry, latest.project_path) : null
         const flowPart = runTitle(latest) === flowTitle(latest.flow_name) ? null : flowTitle(latest.flow_name)
+        const shown = Math.max(foldShown[key] ?? REPEATS_PAGE, selectedIndex + 1)
+        const more = repeatRuns.length - shown
         return (
             <div key={key} className="space-y-0.5">
                 <SidePanelRow
@@ -311,10 +303,12 @@ export function RunList({
                     onClick={() => toggleExpanded(key)}
                     title={runTitle(latest)}
                     meta={(
+                        // The count and status word lead and always show; the project and flow give way.
                         <span className="flex min-w-0">
-                            <span className="shrink-0 whitespace-pre">
-                                {repeatRuns.length} runs · latest {formatRunTime(latest.started_at)}
+                            <span className="shrink-0 whitespace-pre" title={`Latest started ${formatTimestamp(latest.started_at)}`}>
+                                {repeatRuns.length} runs
                                 {attention ? <span className={attention.className}> · {attention.label}</span> : null}
+                                {' · '}{formatRunTime(latest.started_at)}
                             </span>
                             {runProject || flowPart ? (
                                 <span className="min-w-0 truncate whitespace-pre"> · {[runProject, flowPart].filter(Boolean).join(' · ')}</span>
@@ -323,7 +317,32 @@ export function RunList({
                     )}
                     trailing={open ? <ChevronDown aria-hidden="true" className="size-3.5" /> : <ChevronRight aria-hidden="true" className="size-3.5" />}
                 />
-                {open ? repeatRuns.map((run) => renderRunRow(run, { depth: 1, underDay: true, stated: attention?.label })) : null}
+                {open ? (
+                    <div data-testid="run-history-repeats-runs" className="ml-4 space-y-0.5">
+                        {repeatRuns.slice(0, shown).map((run) => (
+                            <SidePanelRow
+                                key={run.run_id}
+                                data-testid="run-history-row"
+                                data-run-id={run.run_id}
+                                selected={selectedRunId === run.run_id}
+                                tone={runRecordTone(run)}
+                                onClick={() => onSelectRun(run)}
+                                title={<span data-testid="run-history-row-title" title={`${runTitle(run)} · ${run.run_id}`}>{formatRunTime(run.started_at, true) || runTitle(run)}</span>}
+                                meta={<span data-testid="run-history-row-meta">{formatDuration(run.started_at, run.ended_at, run.status, now)}</span>}
+                            />
+                        ))}
+                        {more > 0 ? (
+                            <button
+                                type="button"
+                                data-testid="run-history-repeats-more"
+                                onClick={() => setFoldShown((current) => ({ ...current, [key]: shown + REPEATS_PAGE * 5 }))}
+                                className="px-3 py-1 text-xs text-muted-foreground underline underline-offset-4 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                                Show {Math.min(more, REPEATS_PAGE * 5)} more of {repeatRuns.length}
+                            </button>
+                        ) : null}
+                    </div>
+                ) : null}
             </div>
         )
     }

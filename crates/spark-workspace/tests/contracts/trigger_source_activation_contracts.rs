@@ -99,8 +99,9 @@ async fn workspace_source_activation_accepts_existing_flow_and_preserves_action_
         .expect("read trigger run")
         .expect("trigger run");
     let record = run.record.expect("run record");
-    // A static trigger launches in its own project.
+    // A static trigger launches in its own project, and names its run after itself.
     assert_eq!(record.flow_name, "ops/run");
+    assert_eq!(record.title.as_deref(), Some("Existing target"));
     assert_eq!(record.project_path, project);
     assert_eq!(record.working_directory, project);
     let context = run.checkpoint.expect("checkpoint").context;

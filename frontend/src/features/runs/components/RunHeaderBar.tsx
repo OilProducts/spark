@@ -13,7 +13,9 @@ import {
     formatTimestamp,
     runRecordTone,
 } from '../model/shared'
-import { formatCompactCount, formatRunDate, flowTitle as flowTitleFromName, runTitle } from '../model/runOverviewModel'
+import { formatCompactCount, formatRunDate, flowTitle as flowTitleFromName, runTitle, runTrigger } from '../model/runOverviewModel'
+import { useStore } from '@/store'
+import { triggerKey } from '@/lib/api/triggersApi'
 
 // The run's masthead: a muted breadcrumb (project · flow), the title with its status
 // pill, one line of facts, and actions. Everything else about the run lives in the
@@ -70,6 +72,12 @@ export function RunHeaderBar({
     const flow = flowTitle?.trim() || flowTitleFromName(run.flow_name)
     const showFlow = title !== flowTitleFromName(run.flow_name) && flow.toLowerCase() !== title.toLowerCase()
     const tone = runRecordTone(run)
+    const trigger = runTrigger(run)
+    const openTrigger = () => {
+        if (!trigger || !run.project_path) return
+        useStore.getState().updateTriggersSession({ selectedTriggerId: triggerKey({ project_path: run.project_path, id: trigger.id }), createFormOpen: false })
+        useStore.getState().setViewMode('triggers')
+    }
 
     return (
         <header data-testid="run-summary-panel" className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
@@ -100,6 +108,12 @@ export function RunHeaderBar({
                     title={run.started_at ? `Started ${formatTimestamp(run.started_at)}` : undefined}
                 >
                     {facts.join(' · ')}
+                    {trigger ? (
+                        <span data-testid="run-header-trigger">
+                            {facts.length > 0 ? ' · ' : ''}started by trigger{' '}
+                            <button type="button" onClick={openTrigger} className="rounded-sm text-foreground underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">{trigger.name}</button>
+                        </span>
+                    ) : null}
                 </p>
                 {/* The recovery buttons' explanations, visible without hovering; each button is described by its sentence. */}
                 {inactive ? (

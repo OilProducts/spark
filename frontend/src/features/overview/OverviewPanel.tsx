@@ -12,7 +12,7 @@ import { missionTime } from '@/features/missions/model/missionModel'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
 import { flowTitle, formatRunDate, runTitle } from '@/features/runs/model/runOverviewModel'
-import { formatDuration } from '@/features/runs/model/shared'
+import { formatDuration, formatRunStatusLabel, isCompletedFailure } from '@/features/runs/model/shared'
 import { openRunFlowDialog } from '@/features/launch'
 import { useOverviewChats } from './hooks/useOverviewChats'
 import {
@@ -54,10 +54,25 @@ function MarkDot({ mark, ...props }: Omit<ComponentProps<typeof StatusDot>, 'ton
     )
 }
 
-/** The word for an exceptional state, in its tone, after a meta line. */
-function ExceptionWord({ mark }: { mark: Mark }) {
-    const { label, tone, exception } = MARKS[mark]
-    return exception ? <span className={`shrink-0 whitespace-pre ${statusTextClassName(tone)}`}> · {label}</span> : null
+/** The word for an exceptional state, in its tone, after a meta line; a run that ended at a failure exit names the exit. */
+function ExceptionWord({ item }: { item: Started }) {
+    const { label, tone, exception } = MARKS[item.mark]
+    const word = item.kind === 'run' && isCompletedFailure(item.run) ? formatRunStatusLabel(item.run) : label
+    return exception ? <span className={`shrink-0 whitespace-pre ${statusTextClassName(tone)}`}> · {word}</span> : null
+}
+
+/**
+ * A row's meta line. What the row is gives way first; the project keeps its name unless it alone
+ * is wider than the line, so a long flow title can't push it out of sight on a phone.
+ */
+function MetaLine({ lead, project, children }: { lead: string; project: string | null; children?: ReactNode }) {
+    return (
+        <span className="flex min-w-0 items-baseline text-xs text-muted-foreground">
+            <span className="min-w-0 shrink-[100] truncate whitespace-pre">{lead}</span>
+            {project ? <span data-testid="overview-row-project" className="min-w-0 truncate whitespace-pre">{lead ? ' · ' : ''}{project}</span> : null}
+            {children}
+        </span>
+    )
 }
 
 function Section({ heading, count, testId, children }: { heading: ReactNode; count?: ReactNode; testId: string; children: ReactNode }) {
@@ -267,12 +282,13 @@ export function OverviewPanel() {
                                         ) : (
                                             <TitleLink onClick={() => openItem(item)}>{itemTitle(item)}</TitleLink>
                                         )}
-                                        <span className="truncate text-xs text-muted-foreground">
-                                            {(item.kind === 'chat'
-                                                ? ['Chat, replying', projectLabel(registry, item.chat.project_path)]
-                                                : [item.kind === 'run' ? 'Run' : 'Mission', item.kind === 'run' ? distinctFlowTitle(item) : null, projectLabel(registry, itemProject(item))]
+                                        <MetaLine
+                                            lead={(item.kind === 'chat'
+                                                ? ['Chat, replying']
+                                                : [item.kind === 'run' ? 'Run' : 'Mission', item.kind === 'run' ? distinctFlowTitle(item) : null]
                                             ).filter(Boolean).join(' · ')}
-                                        </span>
+                                            project={projectLabel(registry, item.kind === 'chat' ? item.chat.project_path : itemProject(item))}
+                                        />
                                     </span>
                                     {item.kind === 'run' ? (
                                         <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground" title="Running for">{formatDuration(item.run.started_at, null, 'running', now)}</span>
@@ -318,7 +334,7 @@ export function OverviewPanel() {
                                             <TitleLink onClick={() => openItem(item)}>{itemTitle(item)}</TitleLink>
                                             <span className="ml-auto flex shrink-0 items-baseline text-xs text-muted-foreground">
                                                 {item.kind === 'mission' ? 'Mission' : flowTitle(item.run.flow_name)} · {when(item.at, now)}
-                                                <ExceptionWord mark={item.mark} />
+                                                <ExceptionWord item={item} />
                                             </span>
                                         </li>
                                     ))}
@@ -358,17 +374,16 @@ export function OverviewPanel() {
                                     <MarkDot mark={item.mark} />
                                     <span className="flex min-w-0 flex-1 flex-col gap-px">
                                         <TitleLink onClick={() => openItem(item)}>{itemTitle(item)}</TitleLink>
-                                        <span className="flex min-w-0 items-baseline text-xs text-muted-foreground">
-                                            <span className="truncate">
-                                                {[
-                                                    count > 1 ? `${count} runs, latest shown` : item.kind === 'run' ? 'Run' : 'Mission',
-                                                    item.kind === 'run' ? distinctFlowTitle(item) : null,
-                                                    projectLabel(registry, itemProject(item)),
-                                                ].filter(Boolean).join(' · ')}
-                                            </span>
+                                        <MetaLine
+                                            lead={[
+                                                count > 1 ? `${count} runs, latest shown` : item.kind === 'run' ? 'Run' : 'Mission',
+                                                item.kind === 'run' ? distinctFlowTitle(item) : null,
+                                            ].filter(Boolean).join(' · ')}
+                                            project={projectLabel(registry, itemProject(item))}
+                                        >
                                             {count > 1 ? null : <SourceLink source={sourceOf(item, chats, missions)} />}
-                                            <ExceptionWord mark={item.mark} />
-                                        </span>
+                                            <ExceptionWord item={item} />
+                                        </MetaLine>
                                     </span>
                                     {isNew ? <span data-testid="overview-finished-new" className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">New</span> : null}
                                     <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground max-sm:hidden">{itemDuration(item)}</span>

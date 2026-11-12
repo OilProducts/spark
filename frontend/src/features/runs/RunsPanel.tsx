@@ -59,6 +59,7 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const { error, scopedRuns, status } = useRunsList({ selectedRunId, manageSync: false })
     const projectFilter = useStore((state) => state.runsListSession.projectFilter)
     const statusFilter = useStore((state) => state.runsListSession.statusFilter ?? null)
+    const searchQuery = useStore((state) => state.runsListSession.searchQuery ?? '')
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
     return (
         // The project filter heads the list at full width, where a project's name has room.
@@ -79,6 +80,8 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
             showProject={!projectFilter}
             statusFilter={statusFilter}
             onStatusFilterChange={(next) => useStore.getState().updateRunsListSession({ statusFilter: next })}
+            searchQuery={searchQuery}
+            onSearchQueryChange={(next) => useStore.getState().updateRunsListSession({ searchQuery: next })}
         />
         </div>
     )

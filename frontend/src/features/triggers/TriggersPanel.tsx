@@ -25,8 +25,33 @@ import { ListGroupLabel, SidePanelRow } from "@/components/app/side-panel-row"
 import { Well } from "@/components/app/well"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { statusTextClassName } from "@/components/app/status"
+import { RunLink } from "@/features/missions/MissionTranscript"
+import { flowTitle } from "@/features/runs/model/runOverviewModel"
+import { formatRunStatusLabel, runRecordTone, type RunRecord } from "@/features/runs/model/shared"
+
+type HistoryEntry = { status: string; run_id?: string | null; message: string }
+
+/**
+ * What a firing came to. One that started a run reads as that run's state, linked to it, so a
+ * trigger whose run failed doesn't say it succeeded; anything else reads as the firing's own result.
+ */
+function FiringResult({ entry, run }: { entry: HistoryEntry; run: RunRecord | undefined }) {
+  if (!entry.run_id) return <span>{formatTriggerResult(entry.status)}</span>
+  return (
+    <span data-testid="trigger-firing-run">
+      {run ? (
+        <><span className={statusTextClassName(runRecordTone(run))}>{formatRunStatusLabel(run)}</span>{' · '}</>
+      ) : null}
+      <RunLink runId={entry.run_id}>{run ? flowTitle(run.flow_name) : 'Started a run'}</RunLink>
+    </span>
+  )
+}
+
 export function TriggersPanel() {
   const projectRegistry = useStore((state) => state.projectRegistry)
+  const runs = useStore((state) => state.runsListSession.runs)
+  const runById = (runId?: string | null) => (runId ? runs.find((run) => run.run_id === runId) : undefined)
   const triggersSession = useStore((state) => state.triggersSession)
   const updateTriggersSession = useStore((state) => state.updateTriggersSession)
   const setTriggersSessionNewDraft = useStore((state) => state.setTriggersSessionNewDraft)
@@ -166,6 +191,7 @@ export function TriggersPanel() {
                   <>
                     {/* First, so a narrow row never truncates it away. */}
                     {activationError ? <span className="text-destructive" title={activationError}>Not running · </span> : null}
+                    {trigger.enabled || activationError ? null : 'Disabled · '}
                     <span
                       data-testid="trigger-row-project"
                       title={trigger.project_path}
@@ -174,7 +200,6 @@ export function TriggersPanel() {
                       {triggerProjectSummary(trigger, projectRegistry)}
                     </span>
                     {' · '}{triggerSourceSummary(trigger)}
-                    {trigger.enabled || activationError ? null : ' · Disabled'}
                   </>
                 )}
                 onClick={() => {
@@ -341,7 +366,12 @@ export function TriggersPanel() {
                     ) : null}
                     <div className="mt-2 text-muted-foreground">Last triggered: {formatTriggerTimestamp(selectedTrigger.state.last_fired_at)}</div>
                     <div className="text-muted-foreground">Next run: {formatTriggerTimestamp(selectedTrigger.state.next_run_at)}</div>
-                    <div className="text-muted-foreground">Last result: {formatTriggerResult(selectedTrigger.state.last_result)}</div>
+                    <div data-testid="trigger-last-result" className="text-muted-foreground">
+                      Last result:{' '}
+                      {selectedTrigger.state.recent_history[0]?.run_id ? (
+                        <FiringResult entry={selectedTrigger.state.recent_history[0]} run={runById(selectedTrigger.state.recent_history[0].run_id)} />
+                      ) : formatTriggerResult(selectedTrigger.state.last_result)}
+                    </div>
                     {selectedTrigger.state.last_error ? (
                       <div className="mt-2 text-destructive">{selectedTrigger.state.last_error}</div>
                     ) : null}
@@ -350,10 +380,11 @@ export function TriggersPanel() {
                     <SectionHeading>Recent history</SectionHeading>
                     <div className="mt-2 space-y-2">
                       {selectedTrigger.state.recent_history.slice(0, 5).map((entry) => (
-                        <div key={`${entry.timestamp}-${entry.status}`}>
-                          <div className="text-xs text-foreground">{formatTriggerResult(entry.status)}</div>
+                        <div key={`${entry.timestamp}-${entry.status}-${entry.run_id ?? ''}`} data-testid="trigger-history-entry">
+                          <div className="text-xs text-foreground"><FiringResult entry={entry} run={runById(entry.run_id)} /></div>
                           <div className="text-xs text-muted-foreground">{formatTriggerTimestamp(entry.timestamp)}</div>
-                          <div className="text-xs text-muted-foreground">{entry.message}</div>
+                          {/* A started run speaks for itself; other firings keep their message. */}
+                          {entry.run_id ? null : <div className="text-xs text-muted-foreground">{entry.message}</div>}
                         </div>
                       ))}
                       {selectedTrigger.state.recent_history.length === 0 ? (

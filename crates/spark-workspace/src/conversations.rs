@@ -3021,8 +3021,10 @@ impl WorkspaceConversationService {
                 }),
             ),
         ]));
+        // A trigger's runs are named after it, so they read as its runs in run lists.
         let artifact = json!({
             "flow_name": flow_name.clone(),
+            "title": request.trigger_name,
             "summary": summary,
             "project_path": working_directory.clone(),
             "launch_context": launch_context,
@@ -3713,6 +3715,10 @@ impl WorkspaceConversationService {
                     .and_then(non_empty_string),
                 launch_context: Some(launch_context.into_iter().collect()),
                 node_overrides,
+                title: artifact
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .and_then(non_empty_string),
                 ..PipelineStartRequest::default()
             });
         if let Ok(outcome) = flow_start_outcome_from_response(&response) {

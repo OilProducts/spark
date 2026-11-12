@@ -253,6 +253,29 @@ describe('TriggersPanel', () => {
     expect(screen.getByLabelText('Every')).not.toHaveAccessibleDescription()
   })
 
+  it('reports a firing that started a run by that run\'s state, linked to the run', async () => {
+    const fired = new Date().toISOString()
+    const trigger = makeTrigger({ id: 'sweep', name: 'Tests sweep' })
+    useStore.setState((state) => ({ runsListSession: { ...state.runsListSession, runs: [
+      { run_id: 'run-failed', flow_name: 'nightly-tests.dot', status: 'failed', started_at: fired, working_directory: '/project', model: '' },
+    ] } }))
+    vi.mocked(fetch).mockImplementation(async (input) => isFlowList(resolveRequestUrl(input))
+      ? jsonResponse(PROJECT_FLOWS)
+      : jsonResponse([{ ...trigger, state: { ...trigger.state, last_fired_at: fired, last_result: 'success', recent_history: [
+        { timestamp: fired, status: 'success', message: 'Trigger fired successfully.', run_id: 'run-failed' },
+        { timestamp: fired, status: 'success', message: 'Trigger fired successfully.', run_id: 'run-gone' },
+      ] } }]))
+    renderTriggersPanel()
+    expect(await screen.findByTestId('trigger-last-result')).toHaveTextContent('Last result: Failed · Nightly Tests')
+    const [latest, older] = screen.getAllByTestId('trigger-history-entry')
+    expect(latest).toHaveTextContent('Failed · Nightly Tests')
+    expect(latest).not.toHaveTextContent('fired successfully')
+    expect(older).toHaveTextContent('Started a run')
+    await userEvent.setup().click(within(latest).getByRole('link', { name: 'Nightly Tests' }))
+    expect(useStore.getState().viewMode).toBe('runs')
+    expect(useStore.getState().runsListSession.selectedRunId).toBe('run-failed')
+  })
+
   it('shows shared webhook ingress details and regenerates webhook secrets', async () => {
     const fetchMock = vi.mocked(global.fetch)
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -545,7 +568,7 @@ describe('TriggersPanel', () => {
     expect(registeredRow).not.toHaveAttribute('data-unregistered-target')
     const otherRow = screen.getByTestId('trigger-row-trigger-other-project')
     // Only the disabled row carries the word; its dot is hollow.
-    expect(otherRow).toHaveTextContent('Unregistered project · other-project · Every 5 minutes · Disabled')
+    expect(otherRow).toHaveTextContent('Disabled · Unregistered project · other-project · Every 5 minutes')
     expect(otherRow.querySelector('[data-slot="status-dot"]')).toHaveClass('border')
     expect(otherRow).toHaveAttribute('data-unregistered-target', 'true')
 

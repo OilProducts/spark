@@ -35,10 +35,12 @@ export function formatRunDate(timestamp: string | null | undefined, now: number)
     return (date.getFullYear() === today.getFullYear() ? MONTH_DAY_FORMAT : MONTH_DAY_YEAR_FORMAT).format(date)
 }
 
-/** "14:05": the start time of a run listed under a day group, which already names the day. */
-export function formatRunTime(timestamp: string | null | undefined): string {
+const TIME_SECONDS_FORMAT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })
+
+/** "14:05": the start time of a run listed under a day group, which already names the day; "14:05:09" with `seconds`. */
+export function formatRunTime(timestamp: string | null | undefined, seconds = false): string {
     const time = timestamp ? Date.parse(timestamp) : Number.NaN
-    return Number.isFinite(time) ? TIME_FORMAT.format(time) : ''
+    return Number.isFinite(time) ? (seconds ? TIME_SECONDS_FORMAT : TIME_FORMAT).format(time) : ''
 }
 
 /** The day group a run lists under: "Today", "Yesterday", then "Sep 27"-style dates; "" without a date. */
@@ -74,6 +76,14 @@ const firstLaunchInput = (run: Pick<RunRecord, 'launch_context' | 'first_launch_
     return run.first_launch_input?.trim() || null
 }
 
+/** The trigger that started a run, from the launch context Spark gives every run a trigger starts. */
+export function runTrigger(run: Pick<RunRecord, 'launch_context'>): { id: string; name: string } | null {
+    const value = run.launch_context?.['context.spark_trigger']
+    if (!value || typeof value !== 'object') return null
+    const { trigger_id: id, trigger_name: name } = value as Record<string, unknown>
+    return typeof id === 'string' && id ? { id, name: typeof name === 'string' && name ? name : id } : null
+}
+
 /** The run's generated title, else the first launch input it was given, else its flow title. */
 export function runTitle(run: Pick<RunRecord, 'title' | 'flow_name' | 'launch_context' | 'first_launch_input'>): string {
     const title = run.title?.trim()
@@ -92,12 +102,59 @@ export type RunStatusKind = 'waiting' | 'failed' | 'completed' | 'running' | 'en
 
 const ACTIVE_STATUSES = new Set(['running', 'queued', 'pause_requested', 'abort_requested', 'cancel_requested'])
 
-/** Which story the status item tells: a pending question wins over everything else. */
-export function runStatusKind(status: string, hasPendingQuestion: boolean): RunStatusKind {
+/**
+ * Which story the status item tells: a pending question wins over everything else. A run that
+ * completed at a failure exit (`outcome: 'failure'`) did not succeed, so lists count it as failed.
+ */
+export function runStatusKind(status: string, hasPendingQuestion: boolean, outcome?: string | null): RunStatusKind {
     if (hasPendingQuestion || status === 'waiting') return 'waiting'
     if (status === 'failed' || status === 'validation_error' || status === 'unreadable') return 'failed'
-    if (status === 'completed') return 'completed'
+    if (status === 'completed') return outcome === 'failure' ? 'failed' : 'completed'
     return ACTIVE_STATUSES.has(status) ? 'running' : 'ended'
+}
+
+/** A listed run's state, counting a failure exit as failed. */
+export const runKind = (run: Pick<RunRecord, 'status' | 'outcome'>): RunStatusKind => runStatusKind(run.status, false, run.outcome)
+
+const STATUS_SEARCH_WORDS: Record<RunStatusKind, string> = {
+    waiting: 'needs input waiting',
+    running: 'running queued',
+    failed: 'failed',
+    completed: 'completed',
+    ended: 'stopped canceled cancelled',
+}
+
+/** Whether a run list search (lower-cased, trimmed) finds a run by its title, its flow or its state. */
+export function runMatchesSearch(run: RunRecord, query: string): boolean {
+    return !query
+        || runTitle(run).toLowerCase().includes(query)
+        || flowTitle(run.flow_name).toLowerCase().includes(query)
+        || run.flow_name.toLowerCase().includes(query)
+        // Word starts only, so "fail" finds failed runs but "in" doesn't find every waiting one.
+        || ` ${STATUS_SEARCH_WORDS[runKind(run)]}`.includes(` ${query}`)
+}
+
+/**
+ * Whether a search would leave a run out of the run list. The list keeps a run that matches, one with
+ * a matching descendant (on the path to it), and every child of a matching parent.
+ */
+export function searchHidesRun(runs: RunRecord[], runId: string, query: string): boolean {
+    const run = runs.find((candidate) => candidate.run_id === runId)
+    if (!query || !run) return false
+    const parent = run.parent_run_id ? runs.find((candidate) => candidate.run_id === run.parent_run_id) : undefined
+    if (runMatchesSearch(run, query) || (parent && runMatchesSearch(parent, query))) return false
+    const seen = new Set([run.run_id])
+    const below = [run.run_id]
+    while (below.length > 0) {
+        const id = below.pop()
+        for (const child of runs) {
+            if (child.parent_run_id !== id || seen.has(child.run_id)) continue
+            if (runMatchesSearch(child, query)) return false
+            seen.add(child.run_id)
+            below.push(child.run_id)
+        }
+    }
+    return true
 }
 
 export type RunFailureKind = 'infrastructure' | 'flow'
