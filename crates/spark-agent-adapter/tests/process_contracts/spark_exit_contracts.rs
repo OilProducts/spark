@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use spark_agent_adapter::local_environment::{configure_process_group, spawn_process_group};
+use spark_agent_adapter::local_environment::{
+    configure_process_group, spawn_process_group, terminate_process_group,
+};
 
 const ROLE_ENV: &str = "SPARK_EXIT_CONTRACT_ROLE";
 const DIR_ENV: &str = "SPARK_EXIT_CONTRACT_DIR";
@@ -60,6 +62,23 @@ fn spark_exit_role() {
                     std::mem::forget(start("launched", &dir));
                 });
             }
+        }
+        // Starts a child, and a grandchild of its own, that both outlast TERM,
+        // then stops it as a timeout or a cancellation does.
+        #[cfg(unix)]
+        "stopping-spark" => {
+            let mut child = Command::new("sh");
+            child.current_dir(&dir).args([
+                "-c",
+                "trap '' TERM; sleep 60 & echo $$ $! > pids.tmp; mv pids.tmp pids; wait",
+            ]);
+            configure_process_group(&mut child);
+            let child = spawn_process_group(child).unwrap();
+            while !dir.join("pids").exists() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::fs::write(dir.join("stopping"), "").unwrap();
+            terminate_process_group(child.id(), None);
         }
         "launched" => {
             std::fs::write(dir.join(format!("launched-{}", std::process::id())), "").unwrap();
@@ -134,6 +153,33 @@ fn in_role(dir: &Path) -> Vec<u32> {
             },
         )
         .collect()
+}
+
+/// The live processes `spark` started, on windows, where a process keeps its
+/// parent's ID.
+#[cfg(windows)]
+fn children_of(spark: u32) -> Vec<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    let mut children = Vec::new();
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        assert_ne!(snapshot, INVALID_HANDLE_VALUE);
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut listed = Process32FirstW(snapshot, &mut entry) != 0;
+        while listed {
+            if entry.th32ParentProcessID == spark && running(entry.th32ProcessID) {
+                children.push(entry.th32ProcessID);
+            }
+            listed = Process32NextW(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+    }
+    children
 }
 
 fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
@@ -211,7 +257,9 @@ fn what_outlives_the_process_spark_started_stops_when_spark_is_killed() {
     );
 }
 
-#[cfg(unix)]
+/// Killed at any point of a start, Spark leaves nothing behind: on unix
+/// nothing runs before its group's lifeline does, and on windows everything
+/// starts in Spark's job.
 #[test]
 fn nothing_spark_was_starting_survives_its_kill() {
     let dir = tempfile::tempdir().unwrap();
@@ -232,7 +280,14 @@ fn nothing_spark_was_starting_survives_its_kill() {
     let mut left = Vec::new();
     assert!(
         wait_until(|| {
-            left = in_role(dir.path());
+            #[cfg(unix)]
+            {
+                left = in_role(dir.path());
+            }
+            #[cfg(windows)]
+            {
+                left = children_of(spark.id());
+            }
             left.is_empty()
         }),
         "{left:?} outlived Spark"
@@ -261,6 +316,48 @@ fn a_process_that_cannot_be_tied_to_spark_does_not_start() {
     spark.wait().unwrap();
     assert!(outcome.starts_with("Err"), "it started: {outcome}");
     assert_eq!(left, [spark.id()], "a process started untied");
+}
+
+/// A timeout or cancellation sends TERM and KILLs what outlasts it after a
+/// grace period. If Spark is killed meanwhile, what outlasts TERM still goes.
+#[cfg(unix)]
+#[test]
+fn what_spark_was_stopping_stops_when_spark_is_killed_midway() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut spark = role("stopping-spark", dir.path()).spawn().unwrap();
+    let pids = started_pids(dir.path());
+    assert!(
+        wait_until(|| dir.path().join("stopping").exists()),
+        "Spark never stopped it"
+    );
+
+    // Well within the grace period.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        pids.iter().all(|pid| running(*pid)),
+        "{pids:?} did not outlast TERM"
+    );
+    spark.kill().unwrap();
+    spark.wait().unwrap();
+    assert!(
+        wait_until(|| !pids.iter().any(|pid| running(*pid))),
+        "{pids:?} outlived Spark"
+    );
+}
+
+/// A stop still ends the group as soon as its processes have gone, not at the
+/// end of the grace period.
+#[cfg(unix)]
+#[test]
+fn a_stop_still_ends_the_group_as_soon_as_its_processes_go() {
+    let mut command = Command::new("sleep");
+    command.arg("60");
+    configure_process_group(&mut command);
+    let mut child = spawn_process_group(command).unwrap();
+    let stopped = Instant::now();
+    terminate_process_group(child.id(), Some(&mut child));
+    let took = stopped.elapsed();
+    assert!(took < Duration::from_secs(1), "the stop took {took:?}");
 }
 
 /// The lifeline goes once nothing else is left in the group, so nothing of
