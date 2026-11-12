@@ -3140,15 +3140,16 @@ fn run_shell_command(
         }
         None => (None, Stdio::piped(), None, Stdio::piped()),
     };
-    let mut child = command_line
-        .arg("-c")
-        .arg(script)
-        .current_dir(cwd)
-        .envs(env)
-        .stdin(stdin)
-        .stdout(out_writer)
-        .stderr(err_writer)
-        .spawn()?;
+    let mut child = spark_agent_adapter::local_environment::spawn_process_group(
+        command_line
+            .arg("-c")
+            .arg(script)
+            .current_dir(cwd)
+            .envs(env)
+            .stdin(stdin)
+            .stdout(out_writer)
+            .stderr(err_writer),
+    )?;
     // It keeps its copies of the write ends, which would hold the output open.
     drop(command_line);
 

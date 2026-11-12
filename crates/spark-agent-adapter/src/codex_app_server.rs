@@ -570,19 +570,20 @@ impl CodexAppServerClient {
             .stderr(Stdio::piped());
         // Its own process group, so a forced stop also ends the agent's tools.
         crate::local_environment::configure_process_group(&mut command);
-        let mut child = command.spawn().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                CodexAppServerError::configuration(format!(
-                    "codex app-server executable not found: {}",
-                    executable.display()
-                ))
-            } else {
-                CodexAppServerError::runtime(format!(
-                    "codex app-server launch failed for {}: {error}",
-                    executable.display()
-                ))
-            }
-        })?;
+        let mut child =
+            crate::local_environment::spawn_process_group(&mut command).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    CodexAppServerError::configuration(format!(
+                        "codex app-server executable not found: {}",
+                        executable.display()
+                    ))
+                } else {
+                    CodexAppServerError::runtime(format!(
+                        "codex app-server launch failed for {}: {error}",
+                        executable.display()
+                    ))
+                }
+            })?;
         let stdin = child
             .stdin
             .take()

@@ -4093,6 +4093,7 @@ dependencies = [
  "tracing",
  "unified-llm-adapter",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

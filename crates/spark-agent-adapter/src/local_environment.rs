@@ -433,8 +433,7 @@ impl ExecutionEnvironmentBackend for LocalExecutionEnvironment {
             return Err(EnvironmentError::Other("Stopped.".to_string()));
         }
         let start = Instant::now();
-        let mut child = command_builder
-            .spawn()
+        let mut child = spawn_process_group(&mut command_builder)
             .map_err(|error| EnvironmentError::CommandStart(error.to_string()))?;
         let process_group_id = child.id();
         self.register_process_group(process_group_id);
@@ -686,6 +685,8 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
+/// Makes `command` lead its own process group, which `terminate_process_group`
+/// stops as a whole. `spawn_process_group` starts it tied to Spark's process.
 pub fn configure_process_group(command: &mut Command) {
     #[cfg(unix)]
     {
@@ -697,6 +698,174 @@ pub fn configure_process_group(command: &mut Command) {
     {
         let _ = command;
     }
+}
+
+/// Starts `command` tied to this process: once this process ends, however it
+/// ends, the command and everything it started stop within a few seconds.
+/// Until then nothing changes.
+pub fn spawn_process_group(command: &mut Command) -> std::io::Result<Child> {
+    #[cfg(unix)]
+    {
+        let child = command.spawn()?;
+        if let Err(error) = start_lifeline(&child) {
+            tracing::warn!(pid = child.id(), %error, "process will outlive Spark");
+        }
+        Ok(child)
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Suspended until it is in the job, so nothing it starts escapes it.
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
+        let mut child = command.spawn()?;
+        if let Err(error) = join_spark_job(&child) {
+            tracing::warn!(pid = child.id(), %error, "process will outlive Spark");
+        }
+        if let Err(error) = resume_threads(child.id()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        Ok(child)
+    }
+}
+
+/// A pipe whose close-on-exec write end only this process holds, so its read
+/// end sees end of input once this process has ended, however it ended.
+#[cfg(unix)]
+static LIFELINE: std::sync::OnceLock<Option<(std::io::PipeReader, std::io::PipeWriter)>> =
+    std::sync::OnceLock::new();
+
+/// Waits for end of input, then stops its own process group: TERM, then KILL
+/// after a grace period. It ignores TERM only then, so until then stopping the
+/// group stops it too.
+#[cfg(unix)]
+const LIFELINE_SCRIPT: &str = "read _; trap '' TERM; kill -TERM 0; sleep 2; kill -KILL 0";
+
+/// Puts a lifeline into `child`'s process group, reading Spark's pipe on its
+/// stdin. Being in the group keeps the group's ID from being reused, so it
+/// never signals anything Spark did not start. It is stopped once `child` has
+/// ended, and a group stop stops it as it stops the rest.
+// ponytail: guards the process Spark started; a descendant that outlives it
+// while Spark runs is no longer guarded, and a kill in the moment between the
+// two spawns leaves the child unguarded.
+#[cfg(unix)]
+fn start_lifeline(child: &Child) -> std::io::Result<()> {
+    use rustix::process::{getpgid, test_kill_process, Pid};
+    use std::os::unix::process::CommandExt;
+
+    let Some((reader, _)) = LIFELINE.get_or_init(|| std::io::pipe().ok()) else {
+        return Err(std::io::Error::other(
+            "Spark's lifeline pipe could not be made",
+        ));
+    };
+    let pid = Pid::from_child(child);
+    // macOS reports no group for a child that has already exited, which still
+    // leads its own.
+    let group = getpgid(Some(pid)).unwrap_or(pid);
+    if group == rustix::process::getpgrp() {
+        return Err(std::io::Error::other("it shares Spark's process group"));
+    }
+    let mut lifeline = Command::new("sh")
+        .args(["-c", LIFELINE_SCRIPT])
+        .process_group(group.as_raw_pid())
+        .current_dir("/")
+        .stdin(reader.try_clone()?)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    thread::spawn(move || {
+        while test_kill_process(pid).is_ok() && matches!(lifeline.try_wait(), Ok(None)) {
+            thread::sleep(Duration::from_secs(1));
+        }
+        let _ = lifeline.kill();
+        let _ = lifeline.wait();
+    });
+    Ok(())
+}
+
+/// A job that ends every process in it once its handle closes, which only
+/// happens when this process ends, however it ends.
+#[cfg(windows)]
+static SPARK_JOB: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+
+#[cfg(windows)]
+fn join_spark_job(child: &Child) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    let job = SPARK_JOB.get_or_init(|| unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return None;
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let limited = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            std::ptr::from_ref(&limits).cast(),
+            std::mem::size_of_val(&limits) as u32,
+        ) != 0;
+        if !limited {
+            CloseHandle(job);
+            return None;
+        }
+        Some(job as usize)
+    });
+    let Some(job) = *job else {
+        return Err(std::io::Error::other(
+            "Spark's job object could not be made",
+        ));
+    };
+    if unsafe { AssignProcessToJobObject(job as HANDLE, child.as_raw_handle() as HANDLE) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Resumes a process started suspended; until then its only thread is its first.
+#[cfg(windows)]
+fn resume_threads(pid: u32) -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    let mut resumed = false;
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut listed = Thread32First(snapshot, &mut entry) != 0;
+        while listed {
+            if entry.th32OwnerProcessID == pid {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if !thread.is_null() {
+                    resumed |= ResumeThread(thread) != u32::MAX;
+                    CloseHandle(thread);
+                }
+            }
+            listed = Thread32Next(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+    }
+    if !resumed {
+        return Err(std::io::Error::other(
+            "its suspended start could not be resumed",
+        ));
+    }
+    Ok(())
 }
 
 /// Terminates a process group started with `configure_process_group`: TERM,

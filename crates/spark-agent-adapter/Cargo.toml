@@ -26,6 +26,15 @@ time = { version = "0.3", features = ["formatting", "parsing", "serde", "serde-w
 tracing = "0.1"
 uuid = { version = "1", features = ["serde", "v4"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 attractor-dsl = { path = "../attractor-dsl" }
 filetime = "0.2"

@@ -2,11 +2,12 @@
 //! relays the sign-in link and a pasted code; it never reads or stores tokens.
 
 use super::{claude_command, launch_error, ClaudeCodeError};
+use crate::local_environment::spawn_process_group;
 use serde::Serialize;
 use serde_json::Value;
 use spark_common::agent_settings::NativeAgentSettings;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{ChildStdin, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -104,13 +105,14 @@ impl ClaudeCodeConnection {
         }
         self.pending = None;
         let (executable, mut command) = claude_command(Some(native));
-        let mut child = command
-            .args(["auth", "login"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| launch_error(&executable, error))?;
+        let mut child = spawn_process_group(
+            command
+                .args(["auth", "login"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .map_err(|error| launch_error(&executable, error))?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
@@ -257,11 +259,15 @@ fn read_status(
 ) -> Result<ClaudeCodeConnectionStatus, ClaudeCodeError> {
     let (executable, mut command) = claude_command(Some(native));
     // Exits 1 when signed out but still prints the report.
-    let output = command
-        .args(["auth", "status", "--json"])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| launch_error(&executable, error))?;
+    let output = spawn_process_group(
+        command
+            .args(["auth", "status", "--json"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .and_then(Child::wait_with_output)
+    .map_err(|error| launch_error(&executable, error))?;
     let report = serde_json::from_slice::<Value>(&output.stdout)
         .ok()
         .filter(|report| report.get("loggedIn").is_some_and(Value::is_boolean))
