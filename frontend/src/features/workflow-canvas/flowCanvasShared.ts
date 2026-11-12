@@ -31,7 +31,7 @@ import {
     TaskNode,
     ToolNode,
 } from './TaskNode'
-import { ValidationEdge } from './ValidationEdge'
+import { MAX_ROUTE_LABEL_SCALE, routeLabelSize, ValidationEdge } from './ValidationEdge'
 import type { WorkflowCanvasPreviewResponse } from './model/types'
 
 export const nodeTypes = {
@@ -65,7 +65,16 @@ const ELK_OPTIONS = {
     // or ports escape straight through the next node.
     'elk.layered.spacing.nodeNodeBetweenLayers': '48',
     'elk.spacing.nodeNode': '40',
+    // A route ELK plans between two nodes of a row gets a lane wider than the router's padding on
+    // both sides; at ELK's default it is too narrow, and the route detours round the whole row.
+    'elk.spacing.edgeNode': '24',
     'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
+    // Measured on the bundled flows, these four together cut edge crossings by ~40% and narrow the
+    // large flows: layers follow the order steps are written in, and nodes line up along their edges.
+    'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+    'elk.layered.layering.strategy': 'COFFMAN_GRAHAM',
+    'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+    'elk.layered.thoroughness': '30',
 }
 
 const elk = new ELK()
@@ -97,17 +106,6 @@ type ParsedChildPreview = {
     flowPath: string
     flowLabel: string
     graph: CanonicalPreviewGraphPayload
-}
-
-const DERIVED_CHILD_EDGE_STYLE: Edge['style'] = {
-    opacity: 0.62,
-    stroke: 'hsl(var(--muted-foreground) / 0.45)',
-}
-
-const DERIVED_CHILD_LINK_EDGE_STYLE: Edge['style'] = {
-    opacity: 0.8,
-    stroke: 'hsl(var(--muted-foreground) / 0.6)',
-    strokeDasharray: '6 6',
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -225,7 +223,6 @@ function buildHydratedEdge(
         source?: string
         target?: string
         derivedPreviewMeta?: DerivedPreviewMeta
-        style?: Edge['style']
         hidden?: boolean
     },
 ): Edge {
@@ -242,7 +239,6 @@ function buildHydratedEdge(
         interactionWidth: EDGE_INTERACTION_WIDTH,
         label: typeof edge.attrs.label === 'string' ? edge.attrs.label : undefined,
         data: options?.derivedPreviewMeta ? attachDerivedPreviewMeta(edgeData, options.derivedPreviewMeta) : edgeData,
-        style: options?.style,
         hidden: options?.hidden,
     }
     if (options?.derivedPreviewMeta) {
@@ -346,7 +342,7 @@ function buildExpandedChildPreviewElements(
         const clusterNodeId = getChildClusterNodeId(managerNodeId)
         const clusterNodeData = attachDerivedPreviewMeta(
             {
-                label: `Child Flow Preview: ${childPreview.flowLabel}`,
+                label: childPreview.flowLabel,
                 shape: 'box',
                 prompt: childPreview.flowPath ? `Resolved from ${childPreview.flowPath}` : '',
                 status: 'idle',
@@ -404,7 +400,6 @@ function buildExpandedChildPreviewElements(
                         managerNodeId,
                         readOnly: true,
                     },
-                    style: DERIVED_CHILD_EDGE_STYLE,
                 },
             ))
         })
@@ -424,7 +419,6 @@ function buildExpandedChildPreviewElements(
                 managerNodeId,
                 readOnly: true,
             }),
-            style: DERIVED_CHILD_LINK_EDGE_STYLE,
             selectable: false,
             focusable: false,
             deletable: false,
@@ -474,11 +468,16 @@ function buildElkLayoutGraph(nodes: Node[], edges: Edge[]) {
             width: node.width ?? getNodeStyleDimension(node.style?.width) ?? DEFAULT_NODE_WIDTH,
             height: node.height ?? getNodeStyleDimension(node.style?.height) ?? DEFAULT_NODE_HEIGHT,
         })),
-        edges: edges.map((edge) => ({
-            id: edge.id,
-            sources: [edge.source],
-            targets: [edge.target],
-        })),
+        edges: edges.map((edge) => {
+            // A labelled route gets room between the rows it joins for its label, at its largest.
+            const label = typeof edge.data?.label === 'string' ? edge.data.label.trim() : ''
+            return {
+                id: edge.id,
+                sources: [edge.source],
+                targets: [edge.target],
+                labels: label && !edge.hidden ? [{ text: label, ...routeLabelSize(label, MAX_ROUTE_LABEL_SCALE) }] : undefined,
+            }
+        }),
     }
 }
 

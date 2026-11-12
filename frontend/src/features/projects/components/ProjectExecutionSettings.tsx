@@ -76,10 +76,7 @@ export function ProjectExecutionSettings({ projectPath }: { projectPath: string 
                         {saveError}
                     </p>
                 ) : null}
-                <div className="flex justify-end gap-2">
-                    <Button aria-label="Discard project settings changes" type="button" variant="outline" size="sm" disabled={!dirty || isSaving || isLoading} onClick={discard}>
-                        Discard
-                    </Button>
+                <div className="flex flex-wrap gap-2">
                     <Button
                         type="button"
                         data-testid="project-settings-save-button"
@@ -90,7 +87,10 @@ export function ProjectExecutionSettings({ projectPath }: { projectPath: string 
                             void onSave()
                         }}
                     >
-                        {isSaving ? 'Saving...' : 'Save'}
+                        {isSaving ? 'Saving…' : 'Save'}
+                    </Button>
+                    <Button aria-label="Discard project settings changes" type="button" variant="ghost" size="sm" disabled={!dirty || isSaving || isLoading} onClick={discard}>
+                        Discard
                     </Button>
                 </div>
             </CardContent>

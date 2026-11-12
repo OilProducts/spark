@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useSyncExternalStore } from 'react'
 
-export const NARROW_VIEWPORT_MAX_WIDTH = 1024
+// Below Tailwind's `lg` (1024px): a 1024px laptop or landscape tablet gets the desktop layout.
+export const NARROW_VIEWPORT_MAX_WIDTH = 1023
 
 const computeIsNarrowViewport = () => {
   if (typeof window === 'undefined') {
@@ -9,21 +10,23 @@ const computeIsNarrowViewport = () => {
   return window.innerWidth <= NARROW_VIEWPORT_MAX_WIDTH
 }
 
-export const useNarrowViewport = () => {
-  const [isNarrowViewport, setIsNarrowViewport] = useState<boolean>(() => computeIsNarrowViewport())
+// One resize listener tells every user at once, so the whole app switches layout in one commit.
+// With a listener each, React commits each switch on its own, and an effect that measures the
+// page (scrolling a picked run into view) runs while the shell is still in the other layout.
+const listeners = new Set<() => void>()
+const notify = () => listeners.forEach((listener) => listener())
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return () => undefined
+const subscribe = (listener: () => void) => {
+  if (listeners.size === 0) {
+    window.addEventListener('resize', notify)
+  }
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+    if (listeners.size === 0) {
+      window.removeEventListener('resize', notify)
     }
-    const handleResize = () => {
-      setIsNarrowViewport(computeIsNarrowViewport())
-    }
-    window.addEventListener('resize', handleResize)
-    return () => {
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [])
-
-  return isNarrowViewport
+  }
 }
+
+export const useNarrowViewport = () => useSyncExternalStore(subscribe, computeIsNarrowViewport, () => false)

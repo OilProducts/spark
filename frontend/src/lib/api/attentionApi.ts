@@ -7,6 +7,8 @@ export interface AttentionItem {
     kind: AttentionKind
     id: string
     title: string
+    /** What a run's gate asks. */
+    question?: string
     project_path: string
     run_id?: string
     conversation_id?: string
@@ -29,6 +31,7 @@ function parseAttentionItems(payload: unknown, endpoint: string): AttentionItem[
             kind: kind as AttentionKind,
             id: expectString(item.id, 'id', endpoint),
             title: asOptionalString(item.title) ?? '',
+            question: asOptionalString(item.question),
             project_path: asOptionalString(item.project_path) ?? '',
             run_id: asOptionalString(item.run_id),
             conversation_id: asOptionalString(item.conversation_id),

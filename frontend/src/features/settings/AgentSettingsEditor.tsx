@@ -16,7 +16,7 @@ const labels = { max_turns: 'Maximum turns', max_tool_rounds_per_input: 'Maximum
 export function AgentSettingsEditor() {
     const editor = useAgentSettingsEditor()
     const [newToolNames, setNewToolNames] = useState({ tool_output_limits: '', line_limits: '' })
-    return <Card><CardHeader><h3 className="text-base font-semibold">Agent session limits</h3></CardHeader><CardContent className="space-y-3">
+    return <Card><CardHeader><h2 className="text-base font-semibold">Agent session limits</h2></CardHeader><CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
         {editor.draft && <fieldset disabled={editor.pending} className="space-y-3">
             {(['max_turns', 'max_tool_rounds_per_input', 'default_command_timeout_ms', 'max_command_timeout_ms', 'loop_detection_window', 'max_subagent_depth'] as const).map((key) => {
@@ -24,8 +24,8 @@ export function AgentSettingsEditor() {
                 const invalid = !Number.isSafeInteger(value) || value < 0 || (key === 'default_command_timeout_ms' && value <= 0) || (key === 'max_command_timeout_ms' && value < editor.draft!.default_command_timeout_ms) || (key === 'loop_detection_window' && editor.draft!.enable_loop_detection && value <= 0)
                 return <Field key={key}>
                 <FieldLabel htmlFor={`agent-${key}`}>{labels[key]}</FieldLabel>
-                {(key === 'max_turns' || key === 'max_tool_rounds_per_input') && <p className="text-xs text-muted-foreground">0 means unlimited.</p>}
                 <Input id={`agent-${key}`} className="w-40" aria-invalid={invalid} aria-describedby={invalid ? "agent-limits-error" : undefined} type="number" min={0} step={1} value={editor.draft![key]} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, [key]: Number(event.target.value) }))} />
+                {(key === 'max_turns' || key === 'max_tool_rounds_per_input') && <p className="text-xs text-muted-foreground">0 means unlimited.</p>}
             </Field>})}
             <Label className="flex items-center gap-2 text-sm"><Switch checked={editor.draft.enable_loop_detection} onCheckedChange={(checked) => editor.setDraft((draft) => draft && ({ ...draft, enable_loop_detection: checked }))} />Enable loop detection</Label>
             <details ref={(node) => { if (node && (Object.values(editor.draft?.native ?? {}).some((value) => typeof value === 'string' && !value.trim()))) node.open = true }}><SettingsSummary>Runtime paths</SettingsSummary>
@@ -76,8 +76,8 @@ export function AgentSettingsEditor() {
             {editor.invalid && <p id="agent-limits-error" role="alert">Use nonnegative whole numbers, a positive default timeout no greater than the maximum, and a positive window when loop detection is enabled.</p>}
         </fieldset>}
         <div className="flex flex-wrap gap-2">
-        <Button variant="outline" aria-label="Save agent session limits" disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
-        <Button aria-label="Discard agent session limits changes" variant="ghost" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
+        <Button size="sm" aria-label="Save agent session limits" disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
+        <Button size="sm" aria-label="Discard agent session limits changes" variant="ghost" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
         </div>
         <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
     </CardContent></Card>

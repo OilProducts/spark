@@ -17,7 +17,7 @@ import {
     usageByFlow, usageSummary, type DefinitionItem, type DefinitionList, type LiveRole, type RoleFileDetail,
 } from './rolesModel'
 
-/** Only what differs from bundled only: customized or a project copy. */
+/** Only what differs from bundled only: the project's own, or customized from bundled. */
 export function DefinitionBadges({ item }: { item: Pick<DefinitionItem, 'layer'> }) {
     return <>{definitionBadges(item).map((badge) => <Badge key={badge} data-testid="definition-badge" variant="default">{badge}</Badge>)}</>
 }
@@ -212,7 +212,7 @@ export function RolesPanel() {
         {!project && <p className="px-3 py-1 text-sm text-muted-foreground">Choose a project</p>}
         {project && !list && !error && <p className="px-3 py-1 text-sm text-muted-foreground">Loading…</p>}
     </div>
-    return <ViewLayout view="roles" title="Roles" panel={panel} actions={<>
+    return <ViewLayout view="roles" title="Roles" panel={panel} selected={item?.name ?? null} actions={<>
         <Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh roles" title="Refresh roles" onClick={() => setRefreshes((value) => value + 1)}><RefreshCw aria-hidden="true" /></Button>
         <ProjectPicker heading="Show the roles of" testId="roles-project-picker" defaultProjectPath={project} onPick={(path) => { setProject(path); setSelected(null); setList(null) }}>
             <Button type="button" variant="outline" size="sm" className="max-w-36" title={project ?? undefined}><span className="truncate">{project ? projectLabel(registry, project) : 'Project'}</span><ChevronDown aria-hidden="true" className="text-muted-foreground" /></Button>

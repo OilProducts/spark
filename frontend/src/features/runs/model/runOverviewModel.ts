@@ -35,6 +35,12 @@ export function formatRunDate(timestamp: string | null | undefined, now: number)
     return (date.getFullYear() === today.getFullYear() ? MONTH_DAY_FORMAT : MONTH_DAY_YEAR_FORMAT).format(date)
 }
 
+/** "14:05": the start time of a run listed under a day group, which already names the day. */
+export function formatRunTime(timestamp: string | null | undefined): string {
+    const time = timestamp ? Date.parse(timestamp) : Number.NaN
+    return Number.isFinite(time) ? TIME_FORMAT.format(time) : ''
+}
+
 /** The day group a run lists under: "Today", "Yesterday", then "Sep 27"-style dates; "" without a date. */
 export function runDayLabel(timestamp: string | null | undefined, now: number): string {
     const time = timestamp ? Date.parse(timestamp) : Number.NaN

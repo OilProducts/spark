@@ -4,7 +4,9 @@ import { SegmentedControl } from '@/components/app/segmented-control'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
+import { CanvasViewControls } from '@/features/workflow-canvas'
 import type { EditorMode } from '@/state/store-types'
+import { cn } from '@/lib/utils'
 
 type EditorCanvasToolbarProps = {
     mode: EditorMode
@@ -21,16 +23,18 @@ type EditorCanvasToolbarProps = {
     /** The project a run starts in unless another is picked. */
     runDefaultProjectPath: string | null
     onRun: (projectPath: string) => void
+    /** The minimap toggle; omitted where the canvas has no minimap. */
+    minimap?: { shown: boolean; onToggle: () => void }
 }
 
-// Below 36rem of toolbar the view toggles show only icons (named by aria-label), so the row fits the 480px minimum canvas.
+// Below 42rem of toolbar the view toggles show only icons (named by aria-label), so the row stays one line beside the flow settings at 1280px.
 const segmentLabel = (Icon: LucideIcon, text: string) => ({
     'aria-label': text,
     title: text,
     label: (
         <>
-            <Icon aria-hidden="true" className="size-4 @xl:hidden" />
-            <span className="hidden @xl:inline">{text}</span>
+            <Icon aria-hidden="true" className="size-4 @2xl:hidden" />
+            <span className="hidden @2xl:inline">{text}</span>
         </>
     ),
 })
@@ -48,6 +52,7 @@ export function EditorCanvasToolbar({
     onAddNode,
     runDefaultProjectPath,
     onRun,
+    minimap,
 }: EditorCanvasToolbarProps) {
     const isStructured = mode === 'structured'
     const canEditLayout = isStructured && !childFlowsExpanded
@@ -57,7 +62,7 @@ export function EditorCanvasToolbar({
         <div
             data-testid="editor-canvas-toolbar"
             aria-label="Canvas toolbar"
-            className="@container flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-b bg-background px-3 py-1.5"
+            className="@container flex min-h-11 shrink-0 flex-wrap items-center gap-x-1.5 gap-y-2 border-b bg-background px-3 py-1.5"
         >
             <SegmentedControl
                 data-testid="editor-mode-toggle"
@@ -97,6 +102,10 @@ export function EditorCanvasToolbar({
                     </div>
                 </>
             ) : null}
+
+            {/* The canvas sits beside the files only from md up. */}
+            <Separator orientation="vertical" className={cn('data-[orientation=vertical]:h-5', !isStructured && 'max-md:hidden')} />
+            <CanvasViewControls minimap={minimap} lockable={canEditLayout} className={isStructured ? undefined : 'max-md:hidden'} />
 
             {isStructured ? (
                 <div role="group" aria-label="Actions" className="ml-auto flex shrink-0 items-center gap-2">

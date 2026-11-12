@@ -491,11 +491,11 @@ it('creates with a picked playbook and shows it in the rail with its text expand
     expect(text).not.toBeVisible()
 })
 
-it('preserves a new draft on Cancel', async () => {
+it('preserves a new draft on Close', async () => {
     render(<MissionsPanel active />)
     await newMission()
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Draft title' } })
-    fireEvent.click(editor().getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(editor().getByRole('button', { name: 'Close' }))
     await newMission()
     expect(screen.getByLabelText('Title')).toHaveValue('Draft title')
 })
@@ -539,7 +539,7 @@ it('locks editing and dismissal during saving and preserves input after failure'
 })
 
 it('stacks the list above the mission at the narrow breakpoint and dismisses on Escape', async () => {
-    window.innerWidth = 1024
+    window.innerWidth = 1023
     render(<MissionsPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
     expect(screen.getByTestId('missions-view')).toHaveAttribute('data-responsive-layout', 'stacked')
@@ -694,7 +694,7 @@ function scrollGeometry(clientHeight: number, scrollHeight: number) {
     return geometry
 }
 /** The conversation's scrolling element: its own pane when wide, the whole body when narrow. */
-const conversationScroller = () => window.innerWidth > 1024 ? detail().getByTestId('project-ai-conversation-body') : detail().getByTestId('mission-body')
+const conversationScroller = () => window.innerWidth > 1023 ? detail().getByTestId('project-ai-conversation-body') : detail().getByTestId('mission-body')
 /** Grows the conversation with a longer assistant reply, at a newer revision, announced by a live event. */
 async function grow(geometry: { scrollHeight: number }, scrollHeight: number, reply: string) {
     geometry.scrollHeight = scrollHeight
@@ -721,7 +721,7 @@ it('follows the reply to the bottom after the operator sends a message', async (
     expect(scroller.scrollTop).toBe(600)
 })
 
-it.each([['wide', 1440], ['narrow', 1024]])('keeps a scrolled-away position on the %s layout until the operator returns to the bottom', async (_, width) => {
+it.each([['wide', 1440], ['narrow', 1023]])('keeps a scrolled-away position on the %s layout until the operator returns to the bottom', async (_, width) => {
     window.innerWidth = width
     task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't' })
     snapshot = conversation([turn('a1', 'assistant', 'Working on it.')])

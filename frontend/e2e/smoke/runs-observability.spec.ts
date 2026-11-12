@@ -342,7 +342,7 @@ test('a completed run opens on its status item with its result, source, what did
   await expect(page.getByTestId('run-visit-item-status')).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByTestId('run-result-body')).toContainText('Committed the fix.')
   await expect(page.getByTestId('run-status-result-source')).toHaveText(' · from Commit Findings, raw output')
-  await expect(page.getByTestId('run-status-did-not-pass')).toContainText('Review (runtime error, tolerable): Missing a regression test.')
+  await expect(page.getByTestId('run-status-did-not-pass')).toContainText('Review · runtime error: Missing a regression test.')
   await expect(page.getByTestId('run-output-commit')).toHaveText('fedcba9 on feature/traceability')
   await expect(page.getByTestId('run-output-file')).toHaveText(['result.md', 'flow snapshot'])
 
@@ -495,8 +495,8 @@ test('run journal inspector hydrates durable history, pages older entries, and a
     .toContain(`run_id=${run.run_id}`)
 
   // Older pages load on their own: visits need the whole journal.
-  await expect(journalPanel).toContainText('Stage build completed')
-  await expect(journalPanel).toContainText('Stage build started')
+  await expect(journalPanel).toContainText('Build completed')
+  await expect(journalPanel).toContainText('Build started')
   expect(journalRequestUrls.some((url) => url.includes('before_sequence=4'))).toBe(true)
 
   await page.evaluate(({ runId }) => {
@@ -537,8 +537,8 @@ test('run journal inspector hydrates durable history, pages older entries, and a
     })
   }, { runId: run.run_id })
 
-  await expect(journalPanel).toContainText('Stage deploy completed (decision done)')
-  await expect(journalPanel).toContainText('deploy → approve_release on done (visit 2)')
+  await expect(journalPanel).toContainText('Deploy completed')
+  await expect(journalPanel).toContainText('Deploy → Approve Release on done (visit 2)')
   await page.screenshot({ path: screenshotPath('08c-runs-panel-journal-live-tail.png'), fullPage: true })
 
   // The question is answered in place on the status item: the choice reads as its label

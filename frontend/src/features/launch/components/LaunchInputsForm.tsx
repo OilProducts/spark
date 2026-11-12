@@ -75,7 +75,7 @@ export function LaunchInputsForm({
                     data-testid="execution-launch-inputs-title"
                     className="text-sm font-semibold text-foreground"
                 >
-                    Launch Inputs
+                    Launch inputs
                 </p>
                 {canCollapseLaunchInputs ? (
                     <Button

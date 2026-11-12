@@ -4,7 +4,9 @@ import {
     getRouteMidpoint,
     routeFixedNodeGraph,
     routeIntersectsRect,
+    separateOverlappingSegments,
 } from '@/lib/edgeRouting'
+import { routeLabelAnchor } from '@/features/workflow-canvas/ValidationEdge'
 import { describe, expect, it } from 'vitest'
 
 describe('edgeRouting', () => {
@@ -67,5 +69,66 @@ describe('edgeRouting', () => {
         const route = routes['source->target#0']
         expect(route).toBeDefined()
         expect(routeIntersectsRect(route, { x: 270, y: 20, width: 110, height: 120 }, 0)).toBe(false)
+    })
+
+    // simple-linear's last layer: Summarize above, Done and Failed side by side, 40px apart.
+    const done = { x: 12, y: 630, width: 168, height: 96 }
+    const summarize = { x: 22, y: 472, width: 220, height: 110 }
+    const failed = { x: 220, y: 630, width: 168, height: 96 }
+
+    it('keeps a port lead in the gap before a close neighbour instead of crossing it', () => {
+        const route = routeFixedNodeGraph({
+            nodes: [{ id: 'summarize', rect: summarize }, { id: 'done', rect: done }, { id: 'failed', rect: failed }],
+            edges: [{
+                id: 'summarize->failed#0',
+                source: 'summarize',
+                target: 'failed',
+                sourcePort: { side: 'right', slot: 0, slotCount: 1 },
+                targetPort: { side: 'left', slot: 0, slotCount: 1 },
+            }],
+        }).routes['summarize->failed#0']
+
+        expect(routeIntersectsRect(route, done, 0)).toBe(false)
+        expect(route.at(-1)).toEqual({ x: 220, y: 678 })
+    })
+
+    it('spreads edges that share a corridor line apart, leaving their ports in place', () => {
+        const separated = separateOverlappingSegments({
+            a: [{ x: 0, y: 0 }, { x: 0, y: 50 }, { x: 200, y: 50 }, { x: 200, y: 100 }],
+            b: [{ x: 20, y: 0 }, { x: 20, y: 50 }, { x: 300, y: 50 }, { x: 300, y: 100 }],
+            c: [{ x: 400, y: 0 }, { x: 400, y: 50 }, { x: 500, y: 50 }, { x: 500, y: 100 }],
+        })
+
+        expect(separated.a[1].y).not.toBe(separated.b[1].y)
+        expect(Math.abs(separated.a[1].y - 50)).toBeLessThanOrEqual(10)
+        expect(separated.a[0]).toEqual({ x: 0, y: 0 })
+        expect(separated.b.at(-1)).toEqual({ x: 300, y: 100 })
+        // An edge alone on its stretch of the line stays on it.
+        expect(separated.c[1].y).toBe(50)
+    })
+
+    it('orders edges sharing a line by where they turn off it, so spreading them adds no crossing', () => {
+        // Both drop from one node's bottom and turn right; `stop` starts left of `approve` but ends
+        // inside its span, so it must run below it.
+        const separated = separateOverlappingSegments({
+            approve: [{ x: 440, y: 376 }, { x: 440, y: 400 }, { x: 570, y: 400 }, { x: 570, y: 500 }],
+            stop: [{ x: 390, y: 376 }, { x: 390, y: 400 }, { x: 450, y: 400 }, { x: 450, y: 500 }],
+        })
+
+        expect(separated.stop[1].y).toBeGreaterThan(separated.approve[1].y)
+    })
+
+    it('centres a label on the clear run nearest its source, kept clear of other routes and labels', () => {
+        const route = [{ x: 0, y: 0 }, { x: 0, y: 40 }, { x: 300, y: 40 }]
+        const crossing = [{ x: -30, y: 20 }, { x: 30, y: 20 }]
+        // A few pixels from the route, it would still crowd the label.
+        const alongside = [{ x: 120, y: 0 }, { x: 120, y: 44 }, { x: 320, y: 44 }]
+
+        expect(routeLabelAnchor(route)).toEqual({ x: 0, y: 20 })
+        expect(routeLabelAnchor(route, [crossing])).toEqual({ x: 150, y: 40 })
+        expect(routeLabelAnchor(route, [crossing, alongside])).toEqual({ x: 88, y: 40 })
+        // With that stretch taken by a placed label, crossing one route beats covering a label.
+        const taken = { left: 30, right: 115, top: 30, bottom: 50 }
+        expect(routeLabelAnchor(route, [crossing, alongside], [taken])).toEqual({ x: 0, y: 20 })
     })
 })

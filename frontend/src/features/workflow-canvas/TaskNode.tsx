@@ -187,6 +187,9 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const isWaiting = isRunCanvas && (humanGate?.nodeId === id || status === 'waiting')
     const framePalette = getWorkflowNodeFramePalette({ status, selected, isWaiting })
     const nodeKind = WORKFLOW_NODE_KINDS[renderedShape]
+    // A child flow's title box is captioned as the child flow, not by its box shape.
+    const showKind = derivedPreviewMeta?.kind !== 'child-cluster'
+    const kindCaption = !showKind ? 'Child flow' : nodeKind.caption.toLowerCase() !== displayLabel.toLowerCase() ? nodeKind.caption : null
     const displayStatus = isWaiting ? 'waiting' : status
     const containerStyle = getWorkflowNodeContainerStyle(renderedShape)
     const handleClassName = cn(
@@ -408,13 +411,22 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                 )}
             >
                 <div className="flex w-full min-w-0 flex-col items-center justify-center gap-1">
-                    {derivedPreviewMeta?.kind === 'child-cluster' ? null : (
-                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                            <nodeKind.Icon className="size-3.5 shrink-0" aria-hidden />
-                            {/* A start node labelled Start needs no second Start. */}
-                            {nodeKind.caption.toLowerCase() === displayLabel.toLowerCase() ? null : nodeKind.caption}
+                    {/* One caption line: the kind (a start node labelled Start needs no second Start),
+                        then the run status, so status costs the frame no extra height. */}
+                    {showKind || kindCaption || displayStatus !== 'idle' ? (
+                        <span className="canvas-node-caption inline-flex max-w-full items-center gap-1 whitespace-nowrap text-muted-foreground">
+                            {showKind ? <nodeKind.Icon className="size-[1.15em] shrink-0" aria-hidden /> : null}
+                            {kindCaption}
+                            {displayStatus !== 'idle' ? (
+                                <>
+                                    {kindCaption ? <span aria-hidden>·</span> : null}
+                                    <span className={cn('font-medium', statusToneClassName(displayStatus))}>
+                                        {NODE_STATUS_LABELS[displayStatus] ?? displayStatus}
+                                    </span>
+                                </>
+                            ) : null}
                         </span>
-                    )}
+                    ) : null}
                     {isEditingLabel ? (
                         <input
                             ref={inputRef}
@@ -427,20 +439,12 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         />
                     ) : (
                         <span className={cn(
-                            'line-clamp-2 text-sm font-semibold',
+                            'canvas-node-label line-clamp-2 font-semibold',
                             isReadOnlyPreviewNode ? 'text-muted-foreground' : 'text-foreground',
                         )}
                         >
                             {displayLabel}
                         </span>
-                    )}
-                    {displayStatus !== 'idle' && (
-                        <span className={cn('text-xs font-medium', statusToneClassName(displayStatus))}>
-                            {NODE_STATUS_LABELS[displayStatus] ?? displayStatus}
-                        </span>
-                    )}
-                    {isReadOnlyPreviewNode && (
-                        <span className="text-xs text-muted-foreground">Read-only preview</span>
                     )}
                 </div>
             </div>

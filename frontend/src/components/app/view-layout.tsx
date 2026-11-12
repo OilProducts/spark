@@ -1,5 +1,7 @@
-import type { ComponentProps, ComponentType, ReactNode } from 'react'
+import { useEffect, useRef, useState, type ComponentProps, type ComponentType, type ReactNode } from 'react'
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 
+import { Button } from '@/components/ui/button'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { cn } from '@/lib/utils'
 
@@ -24,21 +26,50 @@ export function Sheet({ className, ...props }: ComponentProps<'div'>) {
     )
 }
 
-/** A view's side panel (on the ground) beside its sheet; on a narrow viewport they stack. */
+/**
+ * A view's side panel (on the ground) beside its sheet, narrower below 1280px so the sheet keeps
+ * room; on a desktop it can be hidden, leaving the sheet (a canvas or run graph) the width. On a
+ * narrow viewport they stack in the view's one scroll, the panel at full length, and picking
+ * something (`selected` changes) scrolls the sheet into view.
+ */
 export function ViewLayout({
     view,
     title,
     actions,
     panel,
+    selected,
     children,
 }: {
     view: string
     title: string
     actions?: ReactNode
     panel: ReactNode
+    /** The key of what the sheet shows; null when nothing is picked. */
+    selected?: string | null
     children: ReactNode
 }) {
     const isNarrowViewport = useNarrowViewport()
+    const [panelHidden, setPanelHidden] = useState(false)
+    const hidden = panelHidden && !isNarrowViewport
+    // The hide and show buttons swap places; focus follows from one to the other.
+    const panelToggleRef = useRef<HTMLButtonElement | null>(null)
+    const togglingPanel = useRef(false)
+    const togglePanel = (next: boolean) => {
+        togglingPanel.current = true
+        setPanelHidden(next)
+    }
+    useEffect(() => {
+        if (togglingPanel.current) {
+            togglingPanel.current = false
+            panelToggleRef.current?.focus()
+        }
+    }, [panelHidden])
+    const sheetRef = useRef<HTMLDivElement | null>(null)
+    useEffect(() => {
+        if (isNarrowViewport && selected) {
+            sheetRef.current?.scrollIntoView({ block: 'start' })
+        }
+    }, [isNarrowViewport, selected])
     return (
         <div
             data-testid={`${view}-view`}
@@ -47,16 +78,50 @@ export function ViewLayout({
         >
             <aside
                 data-testid="side-panel"
+                data-hidden={hidden ? 'true' : undefined}
                 aria-label={`${title} panel`}
-                className={`flex shrink-0 flex-col ${isNarrowViewport ? 'max-h-[40vh]' : 'w-70'}`}
+                className={cn('flex shrink-0 flex-col', !isNarrowViewport && (hidden ? 'w-12 items-center' : 'w-60 xl:w-70'))}
             >
-                <div className="flex items-center justify-between gap-2 px-3 pb-2 pt-3.5">
-                    <h2 data-testid="side-panel-title" className="text-base font-semibold text-foreground">{title}</h2>
-                    {actions ? <div className="flex items-center gap-1">{actions}</div> : null}
-                </div>
-                <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">{panel}</div>
+                {hidden ? (
+                    <Button
+                        ref={panelToggleRef}
+                        data-testid="side-panel-show"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="mt-2.5 text-muted-foreground"
+                        aria-label={`Show ${title} panel`}
+                        title={`Show ${title} panel`}
+                        onClick={() => togglePanel(false)}
+                    >
+                        <PanelLeftOpen />
+                    </Button>
+                ) : (
+                    // Not a heading: the aside is named for it, and the sheet's h1 leads the page's outline.
+                    <div className="flex items-center justify-between gap-2 px-3 pb-2 pt-3.5">
+                        <p data-testid="side-panel-title" className="text-base font-semibold text-foreground">{title}</p>
+                        <div className="flex items-center gap-1">
+                            {actions}
+                            {isNarrowViewport ? null : (
+                                <Button
+                                    ref={panelToggleRef}
+                                    data-testid="side-panel-hide"
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    className="text-muted-foreground"
+                                    aria-label={`Hide ${title} panel`}
+                                    title={`Hide ${title} panel`}
+                                    onClick={() => togglePanel(true)}
+                                >
+                                    <PanelLeftClose />
+                                </Button>
+                            )}
+                        </div>
+                    </div>
+                )}
+                {/* Hidden, not unmounted, so the list keeps its search, scroll and expanded folders. */}
+                <div hidden={hidden} className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">{panel}</div>
             </aside>
-            <Sheet data-testid="view-main" className={isNarrowViewport ? 'min-h-[calc(100dvh-3.25rem)]' : 'ml-0'}>
+            <Sheet ref={sheetRef} data-testid="view-main" className={isNarrowViewport ? 'min-h-[calc(100dvh-3.25rem)]' : 'ml-0'}>
                 {children}
             </Sheet>
         </div>

@@ -49,6 +49,11 @@ const OBSTACLE_PADDING = 18
 const EDGE_CORNER_RADIUS = 12
 const BEND_PENALTY = 18
 const PREVIOUS_ROUTE_PENALTY = 1
+// What a route pays to cross an edge routed before it: a short detour beats a crossing.
+const CROSSING_PENALTY = 160
+const SEGMENT_SEPARATION = 5
+// Well inside OBSTACLE_PADDING, so a spread segment never reaches a node.
+const MAX_SEGMENT_SHIFT = 10
 const EPSILON = 0.001
 
 type ExpandedRect = NodeRect
@@ -254,90 +259,34 @@ function getPortLeadPoint(anchor: EdgeRoutePoint, side: RouteSide): EdgeRoutePoi
     return { x: anchor.x - PORT_LEAD_DISTANCE, y: anchor.y }
 }
 
+// The lead steps out of the port, but never into another node's padding: in a gap narrower
+// than the lead it stops halfway across the free lane, so it can never jump across a neighbour.
+// Nodes too close for any lane leave the lead inside the neighbour, and the search falls back.
 function getPortEscapePoint(
     anchor: EdgeRoutePoint,
     side: RouteSide,
     obstacles: ExpandedRect[],
 ): EdgeRoutePoint {
-    const baseLeadPoint = getPortLeadPoint(anchor, side)
-
-    if (side === 'right') {
-        let x = baseLeadPoint.x
-        let advanced = true
-        while (advanced) {
-            advanced = false
-            obstacles.forEach((obstacle) => {
-                if (
-                    anchor.y > obstacle.y + EPSILON
-                    && anchor.y < obstacle.y + obstacle.height - EPSILON
-                    && x > obstacle.x + EPSILON
-                    && x < obstacle.x + obstacle.width - EPSILON
-                ) {
-                    x = obstacle.x + obstacle.width
-                    advanced = true
-                }
-            })
+    const horizontal = side === 'left' || side === 'right'
+    const direction = side === 'right' || side === 'bottom' ? 1 : -1
+    const along = horizontal ? anchor.x : anchor.y
+    const across = horizontal ? anchor.y : anchor.x
+    let reach = PORT_LEAD_DISTANCE
+    obstacles.forEach((obstacle) => {
+        const acrossMin = horizontal ? obstacle.y : obstacle.x
+        const acrossMax = acrossMin + (horizontal ? obstacle.height : obstacle.width)
+        if (across <= acrossMin + EPSILON || across >= acrossMax - EPSILON) {
+            return
         }
-        return { x, y: anchor.y }
-    }
-
-    if (side === 'left') {
-        let x = baseLeadPoint.x
-        let advanced = true
-        while (advanced) {
-            advanced = false
-            obstacles.forEach((obstacle) => {
-                if (
-                    anchor.y > obstacle.y + EPSILON
-                    && anchor.y < obstacle.y + obstacle.height - EPSILON
-                    && x > obstacle.x + EPSILON
-                    && x < obstacle.x + obstacle.width - EPSILON
-                ) {
-                    x = obstacle.x
-                    advanced = true
-                }
-            })
+        const nearMin = horizontal ? obstacle.x : obstacle.y
+        const near = direction > 0 ? nearMin : nearMin + (horizontal ? obstacle.width : obstacle.height)
+        const gap = (near - along) * direction
+        if (gap > EPSILON && gap < reach) {
+            reach = Math.max(OBSTACLE_PADDING, (OBSTACLE_PADDING + gap) / 2)
         }
-        return { x, y: anchor.y }
-    }
-
-    if (side === 'bottom') {
-        let y = baseLeadPoint.y
-        let advanced = true
-        while (advanced) {
-            advanced = false
-            obstacles.forEach((obstacle) => {
-                if (
-                    anchor.x > obstacle.x + EPSILON
-                    && anchor.x < obstacle.x + obstacle.width - EPSILON
-                    && y > obstacle.y + EPSILON
-                    && y < obstacle.y + obstacle.height - EPSILON
-                ) {
-                    y = obstacle.y + obstacle.height
-                    advanced = true
-                }
-            })
-        }
-        return { x: anchor.x, y }
-    }
-
-    let y = baseLeadPoint.y
-    let advanced = true
-    while (advanced) {
-        advanced = false
-        obstacles.forEach((obstacle) => {
-            if (
-                anchor.x > obstacle.x + EPSILON
-                && anchor.x < obstacle.x + obstacle.width - EPSILON
-                && y > obstacle.y + EPSILON
-                && y < obstacle.y + obstacle.height - EPSILON
-            ) {
-                y = obstacle.y
-                advanced = true
-            }
-        })
-    }
-    return { x: anchor.x, y }
+    })
+    const offset = reach * direction
+    return horizontal ? { x: anchor.x + offset, y: anchor.y } : { x: anchor.x, y: anchor.y + offset }
 }
 
 function expandRect(rect: NodeRect, padding: number): ExpandedRect {
@@ -601,6 +550,25 @@ function buildAdjacency(
     return adjacency
 }
 
+// How many routed segments the segment a-b crosses at a right angle, away from their ends.
+function countCrossings(a: EdgeRoutePoint, b: EdgeRoutePoint, routedSegments: PreviousRouteSegment[]): number {
+    const axis: Axis = a.x === b.x ? 'vertical' : 'horizontal'
+    const [coordinate, from, to] = axis === 'vertical' ? [a.x, a.y, b.y] : [a.y, a.x, b.x]
+    const min = Math.min(from, to)
+    const max = Math.max(from, to)
+    let crossings = 0
+    routedSegments.forEach((segment) => {
+        if (
+            segment.axis !== axis
+            && segment.coordinate > min + EPSILON && segment.coordinate < max - EPSILON
+            && coordinate > segment.min + EPSILON && coordinate < segment.max - EPSILON
+        ) {
+            crossings += 1
+        }
+    })
+    return crossings
+}
+
 function buildSearchKey(nodeId: string, axis: Axis | null): string {
     return `${nodeId}|${axis ?? 'start'}`
 }
@@ -610,7 +578,8 @@ function findShortestOrthogonalPath(
     adjacency: Map<string, GraphNode[]>,
     startNodeId: string,
     endNodeId: string,
-    previousRoute?: EdgeRoute | null,
+    previousRoute: EdgeRoute | null | undefined,
+    routedSegments: PreviousRouteSegment[],
 ): EdgeRoute | null {
     const previousSegments = buildPreviousRouteSegments(previousRoute)
     const distances = new Map<string, number>([[buildSearchKey(startNodeId, null), 0]])
@@ -663,7 +632,8 @@ function findShortestOrthogonalPath(
                 && !segmentMatchesPreviousRoute(currentNode.point, neighbor.point, previousSegments)
                 ? PREVIOUS_ROUTE_PENALTY
                 : 0
-            const nextCost = current.cost + segmentLength + bendPenalty + previousRoutePenalty
+            const crossingPenalty = CROSSING_PENALTY * countCrossings(currentNode.point, neighbor.point, routedSegments)
+            const nextCost = current.cost + segmentLength + bendPenalty + previousRoutePenalty + crossingPenalty
             const nextKey = buildSearchKey(neighbor.id, axis)
             if (nextCost >= (distances.get(nextKey) ?? Number.POSITIVE_INFINITY)) {
                 return
@@ -751,6 +721,7 @@ function routeSingleEdge(
     edge: FixedNodeRouterEdge,
     nodeMap: Map<string, NodeRect>,
     expandedObstacles: ExpandedRect[],
+    routedSegments: PreviousRouteSegment[],
 ): EdgeRoute {
     const sourceRect = nodeMap.get(edge.source)
     const targetRect = nodeMap.get(edge.target)
@@ -802,6 +773,7 @@ function routeSingleEdge(
         createPointId(sourceLead),
         createPointId(targetLead),
         edge.previousRoute,
+        routedSegments,
     )
 
     if (!pathBetweenLeads) {
@@ -815,16 +787,104 @@ function routeSingleEdge(
     ])
 }
 
+// minTurn and maxTurn: which way the route turns at the segment's low and high end, -1 toward
+// smaller coordinates across the line, 1 toward larger.
+type RouteSegment = { edgeId: string; index: number; axis: Axis; min: number; max: number; minTurn: number; maxTurn: number }
+
+// Which of two overlapping segments on one line goes nearer the smaller coordinates: where one
+// segment ends inside the other's span, it turns off the line, so it must lie on the side it turns
+// to, or it crosses the other. Negative puts `a` first.
+function compareSharedLineSegments(a: RouteSegment, b: RouteSegment): number {
+    if (a.min !== b.min) {
+        return a.min > b.min ? a.minTurn : -b.minTurn
+    }
+    if (a.max !== b.max) {
+        return a.max < b.max ? a.maxTurn : -b.maxTurn
+    }
+    return a.edgeId.localeCompare(b.edgeId)
+}
+
+// Edges are routed one at a time, so several can run along the same corridor line and read as
+// one. Spread each run of collinear, overlapping segments a few pixels apart, around the line,
+// so every edge stays traceable. Only segments between two bends move; the spread stays well
+// inside the obstacle padding, so no edge is pushed into a node.
+export function separateOverlappingSegments(routes: Record<string, EdgeRoute>): Record<string, EdgeRoute> {
+    const separated = Object.fromEntries(
+        Object.entries(routes).map(([edgeId, route]) => [edgeId, route.map((point) => ({ ...point }))]),
+    )
+    const lines = new Map<string, RouteSegment[]>()
+    Object.entries(separated).forEach(([edgeId, route]) => {
+        for (let index = 1; index < route.length - 2; index += 1) {
+            const from = route[index]
+            const to = route[index + 1]
+            const axis: Axis | null = from.y === to.y && from.x !== to.x ? 'horizontal' : from.x === to.x && from.y !== to.y ? 'vertical' : null
+            if (!axis) {
+                continue
+            }
+            const [along, across] = axis === 'horizontal' ? ['x', 'y'] as const : ['y', 'x'] as const
+            const [min, max] = [Math.min(from[along], to[along]), Math.max(from[along], to[along])]
+            // The neighbours before `from` and after `to` say which way the route turns at each end.
+            const fromTurn = Math.sign(route[index - 1][across] - from[across])
+            const toTurn = Math.sign(route[index + 2][across] - to[across])
+            const [minTurn, maxTurn] = from[along] < to[along] ? [fromTurn, toTurn] : [toTurn, fromTurn]
+            const key = `${axis}:${from[across]}`
+            lines.set(key, [...(lines.get(key) ?? []), { edgeId, index, axis, min, max, minTurn, maxTurn }])
+        }
+    })
+
+    const spread = (run: RouteSegment[]) => {
+        if (new Set(run.map((segment) => segment.edgeId)).size < 2) {
+            return
+        }
+        const gap = Math.min(SEGMENT_SEPARATION, (2 * MAX_SEGMENT_SHIFT) / (run.length - 1))
+        ;[...run].sort(compareSharedLineSegments).forEach((segment, position) => {
+            const shift = (position - (run.length - 1) / 2) * gap
+            const route = separated[segment.edgeId]
+            const coordinate = segment.axis === 'horizontal' ? 'y' : 'x'
+            route[segment.index][coordinate] += shift
+            route[segment.index + 1][coordinate] += shift
+        })
+    }
+    lines.forEach((segments) => {
+        let run: RouteSegment[] = []
+        let runEnd = Number.NEGATIVE_INFINITY
+        ;[...segments]
+            .sort((left, right) => left.min - right.min || left.edgeId.localeCompare(right.edgeId))
+            .forEach((segment) => {
+                if (segment.min >= runEnd - EPSILON) {
+                    spread(run)
+                    run = []
+                }
+                run.push(segment)
+                runEnd = run.length === 1 ? segment.max : Math.max(runEnd, segment.max)
+            })
+        spread(run)
+    })
+    return separated
+}
+
 export function routeFixedNodeGraph(request: FixedNodeRouterRequest): FixedNodeRouterResult {
     const nodeMap = new Map(
         request.nodes.map((node) => [node.id, node.rect]),
     )
     const expandedObstacles = request.nodes.map((node) => expandRect(node.rect, OBSTACLE_PADDING))
-    const routes = Object.fromEntries(
-        request.edges.map((edge) => [
-            edge.id,
-            routeSingleEdge(edge, nodeMap, expandedObstacles),
-        ]),
-    )
-    return { routes }
+    // Shortest edges first, so the long ones, such as routes to a shared exit, bend around them.
+    const span = (edge: FixedNodeRouterEdge) => {
+        const source = nodeMap.get(edge.source)
+        const target = nodeMap.get(edge.target)
+        return source && target
+            ? Math.abs(source.x + source.width / 2 - target.x - target.width / 2) + Math.abs(source.y + source.height / 2 - target.y - target.height / 2)
+            : 0
+    }
+    const routedSegments: PreviousRouteSegment[] = []
+    const routesById = new Map<string, EdgeRoute>()
+    ;[...request.edges]
+        .sort((left, right) => span(left) - span(right))
+        .forEach((edge) => {
+            const route = routeSingleEdge(edge, nodeMap, expandedObstacles, routedSegments)
+            routesById.set(edge.id, route)
+            routedSegments.push(...buildPreviousRouteSegments(route))
+        })
+    const routes = Object.fromEntries(request.edges.map((edge) => [edge.id, routesById.get(edge.id) ?? []]))
+    return { routes: separateOverlappingSegments(routes) }
 }

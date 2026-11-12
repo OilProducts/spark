@@ -1,10 +1,10 @@
-import { useId } from 'react'
+import { useId, type ReactNode } from 'react'
 import { Well } from '@/components/app/well'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Textarea } from '@/components/ui/textarea'
 interface ContextKeyListEditorProps {
     title: string
-    description: string
+    description: ReactNode
     value: string
     error: string | null
     testId: string
@@ -44,7 +44,7 @@ export function ContextKeyListEditor({
                     {error}
                 </p>
             ) : (
-                <p id={`${id}-help`} className="text-xs text-muted-foreground">One `context.*` key per line.</p>
+                <p id={`${id}-help`} className="text-xs text-muted-foreground">One <code>context.*</code> key per line.</p>
             )}
         </Well>
     )

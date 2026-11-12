@@ -1,5 +1,6 @@
 import { useState, useId, useRef } from 'react'
 import { Popover } from 'radix-ui'
+import { ChevronDown } from 'lucide-react'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -97,7 +98,7 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                 <Button id={id} type="button" variant="outline" disabled={disabled} aria-label={`Model: ${value.model ? describe(resolved) : `Default: ${describe(resolved)}`}`}
                     aria-invalid={invalidModel} aria-describedby={invalidModel ? `${id}-error` : undefined}
                     className={`min-w-0 max-w-full justify-between border border-input text-foreground hover:bg-transparent focus-visible:border-ring ${layout === 'fields' ? 'w-full' : ''} ${!value.model ? 'text-muted-foreground' : ''}`}>
-                    <span className="truncate">{value.model ? describe(resolved) : `Default: ${describe(resolved)}`}</span><span aria-hidden="true">⌄</span>
+                    <span className="truncate">{value.model ? describe(resolved) : `Default: ${describe(resolved)}`}</span><ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground opacity-50" />
                 </Button>
             </Popover.Trigger>
             <Popover.Portal><Popover.Content align="start" sideOffset={6} collisionPadding={8} aria-label="Choose model"

@@ -186,9 +186,10 @@ export function TriggersPanel() {
         </>
       )}
       panel={panel}
+      selected={createFormOpen ? 'new' : selectedTriggerId}
     >
     <section data-testid="triggers-panel" className="flex h-full flex-col overflow-auto p-6">
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
+      <div className="flex w-full max-w-3xl flex-col gap-6">
         {error ? (
           <InlineError>{error}</InlineError>
         ) : null}
@@ -217,18 +218,7 @@ export function TriggersPanel() {
                   mode="create"
                   protectedTrigger={false}
                 />
-                <div className="mt-6 flex justify-end gap-2">
-                  <Button
-                    type="button"
-                    aria-label="Cancel new trigger"
-                    data-testid="trigger-create-cancel-button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={pending}
-                    onClick={() => updateTriggersSession({ createFormOpen: false })}
-                  >
-                    Cancel
-                  </Button>
+                <div className="mt-6 flex flex-wrap gap-2">
                   <Button
                     type="button"
                     data-testid="trigger-create-button"
@@ -237,6 +227,18 @@ export function TriggersPanel() {
                     onClick={() => void onCreateTrigger()}
                   >
                     Create trigger
+                  </Button>
+                  {/* Close keeps the draft for the next New, like the mission editor's Close. */}
+                  <Button
+                    type="button"
+                    aria-label="Close new trigger"
+                    data-testid="trigger-create-cancel-button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={pending}
+                    onClick={() => updateTriggersSession({ createFormOpen: false })}
+                  >
+                    Close
                   </Button>
                 </div>
               </CardContent>
@@ -326,8 +328,7 @@ export function TriggersPanel() {
                 </div>
 
                 {externalChange ? <p role="status" className="mt-4 text-sm">This trigger changed elsewhere. Your draft is retained; discard to reload.</p> : null}
-                <div className="mt-6 flex justify-end gap-2">
-                  <Button aria-label="Discard selected trigger changes" type="button" variant="ghost" size="sm" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
+                <div className="mt-6 flex flex-wrap gap-2">
                   <Button aria-label="Save selected trigger"
                     type="button"
                     data-testid="trigger-save-button"
@@ -337,6 +338,7 @@ export function TriggersPanel() {
                   >
                     Save
                   </Button>
+                  <Button aria-label="Discard selected trigger changes" type="button" variant="ghost" size="sm" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
                 </div>
               </CardContent>
             </Card>

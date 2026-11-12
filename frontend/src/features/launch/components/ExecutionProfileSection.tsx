@@ -38,7 +38,7 @@ export function ExecutionProfileSection({ placement }: ExecutionProfileSectionPr
                     {effectiveProfileId}
                 </p>
             </div>
-            <div className="flex min-w-0 items-center gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
                 <p
                     data-testid="execution-profile-effective-selection"
                     className="min-w-0 truncate text-sm text-foreground"
@@ -55,7 +55,8 @@ export function ExecutionProfileSection({ placement }: ExecutionProfileSectionPr
                         Ready
                     </Badge>
                 )}
-                <div className="min-w-32 flex-1 [&>[data-slot=native-select-wrapper]]:w-full">
+                {/* Wide enough for the default's full label; wraps to its own line in a narrow panel. */}
+                <div className="min-w-56 flex-1 [&>[data-slot=native-select-wrapper]]:w-full">
                     <NativeSelect
                         id="execution-profile-override"
                         data-testid="execution-profile-override-select"

@@ -648,6 +648,8 @@ impl WorkspaceConversationService {
                     "id": gate_id,
                     "run_id": run_id,
                     "title": run.get("flow_name").cloned().unwrap_or_default(),
+                    // What the gate asks, so runs of one flow read apart.
+                    "question": question.map_or(&Value::Null, |question| &question["prompt"]),
                     "project_path": run.get("project_path").cloned().unwrap_or_default(),
                     // When the gate asked, so a later gate on the same run is newer.
                     "updated_at": question.map_or(&run["started_at"], |question| &question["asked_at"]),

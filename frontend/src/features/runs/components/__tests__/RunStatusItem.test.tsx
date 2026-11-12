@@ -106,7 +106,7 @@ describe('RunStatusItem', () => {
     expect(screen.getByTestId('run-fact-outcome')).toHaveTextContent('commit chose done (completed)')
     const didNotPass = screen.getByTestId('run-status-did-not-pass')
     expect(within(didNotPass).getByRole('heading')).toHaveTextContent(/^Errors\s*1$/)
-    expect(didNotPass).toHaveTextContent('Review (runtime error, tolerable): Missing a test. · wrote review.required_changes')
+    expect(didNotPass).toHaveTextContent('Review · runtime error: Missing a test. · wrote review.required_changes')
     fireEvent.click(within(didNotPass).getByTestId('run-visit-link'))
     expect(onSelectVisit).toHaveBeenCalledWith(review)
 
@@ -149,13 +149,20 @@ describe('RunStatusItem', () => {
   })
 
   it('shows a failed run failure, its kind, and the visit it stopped in', () => {
-    const stopped = visit('implement', 2, 'failed')
+    const stopped = visit('implement', 3, 'failed')
+    const error = 'codergen backend failed: codex app-server exited unexpectedly'
     const { onSelectVisit } = renderStatus(
-      run({ status: 'failed', last_error: 'codergen backend failed: codex app-server exited unexpectedly' }),
-      [visit('start', 1, 'completed'), stopped],
+      run({ status: 'failed', last_error: error }),
+      [visit('start', 1, 'completed'), visit('implement', 2, 'error', { reason: error, failureKind: 'runtime', tolerable: true }), stopped],
     )
 
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Why it failed')
     expect(screen.getByTestId('run-status-failure')).toHaveTextContent('codex app-server exited unexpectedly')
+    // An earlier visit that hit the same error doesn't repeat it.
+    const earlier = screen.getByTestId('run-status-did-not-pass')
+    expect(within(earlier).getByRole('heading')).toHaveTextContent(/^Earlier errors\s*1$/)
+    expect(earlier).toHaveTextContent('Implement · runtime error: the same error as above')
+    expect(earlier).not.toHaveTextContent('exited unexpectedly')
     expect(screen.getByTestId('run-status-failure-kind')).toHaveAttribute('data-kind', 'infrastructure')
     fireEvent.click(within(screen.getByTestId('run-status-stopped-in')).getByTestId('run-visit-link'))
     expect(onSelectVisit).toHaveBeenCalledWith(stopped)
@@ -663,6 +670,16 @@ describe('RunVisitsCard returned evidence', () => {
     expect(within(returned).getByTestId('run-visit-error-kind')).toHaveTextContent('contract error, not tolerable')
     expect(within(returned).queryByTestId('run-visit-decision')).toBeNull()
     expect(within(returned).getByTestId('run-visit-reason')).toHaveTextContent('response named no declared decision')
+  })
+
+  it("shows a tool's stdout once, under its command", () => {
+    const returned = openOnly([visit('check', 1, 'completed', {
+      kind: 'tool', decision: 'done', reason: '42 passed',
+      status: { status: 'completed', decision: 'done', notes: '42 passed', context_updates: { 'context.tool.output': '42 passed', 'context.tool.exit_code': 0 } },
+    })])
+    expect(within(returned).queryByTestId('run-visit-reason')).toBeNull()
+    expect(screen.getByTestId('run-visit-tool')).toHaveTextContent('42 passed')
+    expect(screen.getAllByText('42 passed')).toHaveLength(1)
   })
 
   it('lists each fan-out branch with failed, terminal-result and canceled evidence', () => {

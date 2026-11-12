@@ -57,6 +57,8 @@ it.each([':root', '.dark'])('keeps text tokens at WCAG AA contrast in %s', (sele
     const pairs = [
         ['foreground', 'background'], ['muted-foreground', 'background'], ['muted-foreground', 'muted'],
         ['foreground', 'ground'], ['muted-foreground', 'ground'],
+        // SegmentedControl: inactive labels sit on its border-coloured track.
+        ['muted-foreground', 'border'],
         ['primary', 'background'], ['accent-foreground', 'accent'], ['destructive', 'background'],
         ['success', 'background'], ['warning', 'background'], ['popover-foreground', 'popover'],
         ['success', 'ground'], ['warning', 'ground'], ['destructive', 'ground'], ['primary', 'ground'],

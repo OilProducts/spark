@@ -14,7 +14,7 @@ import { useStore } from '@/store'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import type { RunRecord } from '../model/shared'
 import { formatDuration, runRecordTone } from '../model/shared'
-import { flowTitle, formatRunDate, runDayLabel, runTitle } from '../model/runOverviewModel'
+import { flowTitle, formatRunDate, formatRunTime, runDayLabel, runTitle } from '../model/runOverviewModel'
 
 const ACTIVE_LIST_STATUSES = new Set([
     'running',
@@ -121,9 +121,9 @@ export function RunList({
         dayGroups.set(label, [...(dayGroups.get(label) ?? []), run])
     }
 
-    // The row drops what its group label already states: the date under a day group
-    // (`underDay`) and the status word under a state group (`stated`). Child rows also
-    // drop the project their parent names.
+    // The row drops what its group label already states: the day under a day group
+    // (`underDay`, which keeps the time) and the status word under a state group (`stated`).
+    // Child rows also drop the project their parent names.
     const renderRunRow = (
         run: RunRecord,
         { depth = 0, underDay = false, stated }: { depth?: number; underDay?: boolean; stated?: string } = {},
@@ -131,9 +131,9 @@ export function RunList({
         const runProject = depth === 0 && showProject && run.project_path ? projectLabel(projectRegistry, run.project_path) : null
         const attention = ATTENTION[run.status]?.label === stated ? null : ATTENTION[run.status]
         const title = depth === 0 ? runTitle(run) : flowTitle(run.flow_name)
+        const flowPart = title === flowTitle(run.flow_name) ? null : flowTitle(run.flow_name)
         const metaParts = [
-            title === flowTitle(run.flow_name) ? null : flowTitle(run.flow_name),
-            underDay ? null : formatRunDate(run.started_at, now),
+            underDay ? formatRunTime(run.started_at) : formatRunDate(run.started_at, now),
             formatDuration(run.started_at, run.ended_at, run.status, now),
         ].filter((value): value is string => Boolean(value) && value !== '—')
         // Short enough for the trailing slot, which never truncates (the meta line does).
@@ -165,16 +165,24 @@ export function RunList({
                         onClick={() => onSelectRun(run)}
                         title={<span data-testid="run-history-row-title" title={`${title} · ${run.run_id}`}>{title}</span>}
                         meta={(
-                            <span data-testid="run-history-row-meta">
-                                {runProject ? (
-                                    <span data-testid="run-history-row-project" title={run.project_path ?? undefined}>
-                                        {runProject}{metaParts.length > 0 ? ' · ' : ''}
-                                    </span>
-                                ) : null}
-                                {metaParts.join(' · ')}
-                                {attention ? (
-                                    <span data-testid="run-history-row-status" className={attention.className}>
-                                        {metaParts.length > 0 ? ' · ' : ''}{attention.label}
+                            // The time, duration and status word lead and always show; the project
+                            // and flow follow and give way at the line's end when it is short.
+                            <span data-testid="run-history-row-meta" className="flex min-w-0">
+                                <span className="shrink-0 whitespace-pre">
+                                    {metaParts.join(' · ')}
+                                    {attention ? (
+                                        <span data-testid="run-history-row-status" className={attention.className}>
+                                            {metaParts.length > 0 ? ' · ' : ''}{attention.label}
+                                        </span>
+                                    ) : null}
+                                </span>
+                                {runProject || flowPart ? (
+                                    <span className="min-w-0 truncate whitespace-pre">
+                                        {metaParts.length > 0 || attention ? ' · ' : ''}
+                                        {runProject ? (
+                                            <span data-testid="run-history-row-project" title={run.project_path ?? undefined}>{runProject}</span>
+                                        ) : null}
+                                        {runProject && flowPart ? ' · ' : ''}{flowPart}
                                     </span>
                                 ) : null}
                             </span>

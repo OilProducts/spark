@@ -129,7 +129,8 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                     </div>
                 </div>
             ))}
-            <div className="flex items-center justify-between gap-3">
+            {/* The hint sits under the button: beside it, a narrow panel squeezes it into a sliver. */}
+            <div className="flex flex-col items-start gap-2">
                 <Button
                     type="button"
                     data-testid="graph-launch-input-add"
@@ -145,7 +146,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                     </p>
                 ) : (
                     <p className="text-xs text-muted-foreground">
-                        Keys must use the `context.*` namespace.
+                        Keys must use the <code>context.*</code> namespace.
                     </p>
                 )}
             </div>

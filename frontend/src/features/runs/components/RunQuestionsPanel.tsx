@@ -132,13 +132,33 @@ export function RunQuestionsPanel({
                                                         />
                                                     </div>
                                                 )}
-                                                <div className="flex flex-wrap items-start gap-2">
+                                                {/* With focus on an answer, its flow key picks that answer; scoped to the buttons so
+                                                    typing elsewhere never answers a gate. */}
+                                                <div
+                                                    role="group"
+                                                    aria-label="Answers"
+                                                    className="flex flex-wrap items-start gap-2"
+                                                    onKeyDown={(event) => {
+                                                        if (disabled || event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1) {
+                                                            return
+                                                        }
+                                                        const keyed = gate.options.find((option) => (gate.questionType === 'MULTIPLE_CHOICE' || gate.origin === 'agent_clarification')
+                                                            && option.key?.toLowerCase() === event.key.toLowerCase())
+                                                        if (keyed) {
+                                                            event.preventDefault()
+                                                            onSubmitPendingGateAnswer(gate, keyed.value, gateNote)
+                                                        }
+                                                    }}
+                                                >
                                                     {gate.options.map((option) => {
                                                         const semanticHint = pendingGateSemanticHint(gate.questionType, option.value)
-                                                        const showMultipleChoiceMetadata = (gate.questionType === 'MULTIPLE_CHOICE' || gate.origin === 'agent_clarification')
-                                                            && Boolean(option.description)
+                                                        const showMultipleChoiceMetadata = gate.questionType === 'MULTIPLE_CHOICE' || gate.origin === 'agent_clarification'
+                                                        const optionKey = showMultipleChoiceMetadata ? option.key : null
+                                                        const description = showMultipleChoiceMetadata ? option.description : null
                                                         return (
                                                             <div key={option.value} className="flex min-w-0 max-w-[min(20rem,100%)] flex-col gap-1">
+                                                                {/* The answer's key sits in the button as a muted key cap; the button's
+                                                                    name stays the answer. */}
                                                                 <Button
                                                                     type="button"
                                                                     data-testid={`run-pending-human-gate-answer-${option.value}`}
@@ -148,17 +168,26 @@ export function RunQuestionsPanel({
                                                                     disabled={disabled}
                                                                     variant="outline"
                                                                     size="sm"
+                                                                    aria-keyshortcuts={optionKey ?? undefined}
                                                                     className="h-auto min-h-8 max-w-full self-start whitespace-normal py-1.5 text-left"
                                                                 >
                                                                     {option.label}
+                                                                    {optionKey ? (
+                                                                        <kbd
+                                                                            aria-hidden="true"
+                                                                            data-testid={`run-pending-human-gate-option-key-${option.value}`}
+                                                                            className="ml-0.5 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded border border-border px-1 font-sans text-xs font-medium leading-none text-muted-foreground"
+                                                                        >
+                                                                            {optionKey}
+                                                                        </kbd>
+                                                                    ) : null}
                                                                 </Button>
-                                                                {showMultipleChoiceMetadata || semanticHint ? (
+                                                                {description || semanticHint ? (
                                                                     <div
                                                                         data-testid={`run-pending-human-gate-option-metadata-${option.value}`}
                                                                         className="text-xs text-muted-foreground"
                                                                     >
-                                                                        {showMultipleChoiceMetadata && option.key ? <span className="mr-1">[{option.key}]</span> : null}
-                                                                        {showMultipleChoiceMetadata ? <span>{option.description}</span> : null}
+                                                                        {description ? <span>{description}</span> : null}
                                                                         {semanticHint ? <span>{semanticHint}</span> : null}
                                                                     </div>
                                                                 ) : null}

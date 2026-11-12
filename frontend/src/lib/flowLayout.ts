@@ -58,7 +58,14 @@ function getNodeCenter(rect: NodeRect): { x: number; y: number } {
     }
 }
 
+const OPPOSITE_SIDE: Record<RouteSide, RouteSide> = { top: 'bottom', right: 'left', bottom: 'top', left: 'right' }
+
+// Flows lay out top-down, so an edge to a node wholly below its source leaves from the bottom
+// and enters at the top; turning sideways would cut through that node's neighbours.
 function chooseDefaultSourceSide(sourceRect: NodeRect, targetRect: NodeRect): RouteSide {
+    if (targetRect.y >= sourceRect.y + sourceRect.height) {
+        return 'bottom'
+    }
     const sourceCenter = getNodeCenter(sourceRect)
     const targetCenter = getNodeCenter(targetRect)
     const dx = targetCenter.x - sourceCenter.x
@@ -71,15 +78,7 @@ function chooseDefaultSourceSide(sourceRect: NodeRect, targetRect: NodeRect): Ro
 }
 
 function chooseDefaultTargetSide(sourceRect: NodeRect, targetRect: NodeRect): RouteSide {
-    const sourceCenter = getNodeCenter(sourceRect)
-    const targetCenter = getNodeCenter(targetRect)
-    const dx = targetCenter.x - sourceCenter.x
-    const dy = targetCenter.y - sourceCenter.y
-
-    if (Math.abs(dx) >= Math.abs(dy)) {
-        return dx >= 0 ? 'left' : 'right'
-    }
-    return dy >= 0 ? 'top' : 'bottom'
+    return OPPOSITE_SIDE[chooseDefaultSourceSide(sourceRect, targetRect)]
 }
 
 function getProjectionForSide(_referenceRect: NodeRect, otherRect: NodeRect, side: RouteSide): number {
@@ -88,6 +87,35 @@ function getProjectionForSide(_referenceRect: NodeRect, otherRect: NodeRect, sid
         return otherCenter.x
     }
     return otherCenter.y
+}
+
+// Where a port goes in its side's order, from how its route leaves the side: routes that turn
+// toward the side's start come first, the one that turns soonest outermost; then routes that run
+// straight on; then routes that turn toward the side's end, the one that turns soonest outermost.
+// In that order no route's turn crosses another's straight run. Without a route, the side of the
+// node's centre its other end lies on stands in for the turn.
+const TURN_RANK = 1e6
+function getPortOrderKey(
+    route: EdgeRoute | null | undefined,
+    fromEnd: 'source' | 'target',
+    side: RouteSide,
+    nodeRect: NodeRect | undefined,
+    projection: number,
+): number {
+    const [along, across] = side === 'top' || side === 'bottom' ? ['x', 'y'] as const : ['y', 'x'] as const
+    const points = route && route.length >= 2 ? (fromEnd === 'source' ? route : [...route].reverse()) : null
+    if (!points) {
+        const center = nodeRect ? getNodeCenter(nodeRect)[along] : projection
+        return Math.sign(projection - center) * (TURN_RANK - 1e5)
+    }
+    const port = points[0]
+    // A jog of a few pixels, such as a shared line's spread, is not a turn.
+    const turn = points.find((point) => Math.abs(point[along] - port[along]) > 16)
+    if (!turn) {
+        return 0
+    }
+    const depth = Math.abs(turn[across] - port[across])
+    return turn[along] < port[along] ? -TURN_RANK + depth : TURN_RANK - depth
 }
 
 export function computeFlowTopologyStamp(nodes: Node[], edges: Edge[]): string {
@@ -134,9 +162,12 @@ function applySavedNodePositions(nodes: Node[], savedLayout?: SavedFlowLayoutV1 
 }
 
 function compareLayoutGroupEntry(
-    left: { projection: number; edgeId: string },
-    right: { projection: number; edgeId: string },
+    left: { orderKey: number; projection: number; edgeId: string },
+    right: { orderKey: number; projection: number; edgeId: string },
 ): number {
+    if (left.orderKey !== right.orderKey) {
+        return left.orderKey - right.orderKey
+    }
     if (left.projection !== right.projection) {
         return left.projection - right.projection
     }
@@ -151,6 +182,7 @@ export function buildEdgeLayoutAssignments(
         sourceSide?: RouteSide
         targetSide?: RouteSide
     }>,
+    headingRoutes?: Record<string, EdgeRoute>,
 ): EdgeLayoutAssignments {
     const edgeIdToLayoutKey = buildEdgeLayoutKeyMap(edges)
     const layoutKeyToEdgeId = new Map(
@@ -179,6 +211,15 @@ export function buildEdgeLayoutAssignments(
                     : 'top'
         )
 
+        const sourceProjection = sourceRect && targetRect ? getProjectionForSide(sourceRect, targetRect, sourceSide) : 0
+        const targetProjection = sourceRect && targetRect ? getProjectionForSide(targetRect, sourceRect, targetSide) : 0
+        // Ports on a side follow how their routes leave it, from this layout's first routing or the
+        // last one, while its sides hold; a self-loop keeps its two ends in order on its one side.
+        const savedRoute = savedEdgeLayout?.sourceSide === sourceSide && savedEdgeLayout.targetSide === targetSide
+            ? savedEdgeLayout.route
+            : undefined
+        const headingRoute = edge.source === edge.target ? null : headingRoutes?.[layoutKey] ?? savedRoute
+
         return {
             edgeId: edge.id,
             layoutKey,
@@ -186,27 +227,25 @@ export function buildEdgeLayoutAssignments(
             target: edge.target,
             sourceSide,
             targetSide,
-            sourceProjection: sourceRect && targetRect
-                ? getProjectionForSide(sourceRect, targetRect, sourceSide)
-                : 0,
-            targetProjection: sourceRect && targetRect
-                ? getProjectionForSide(targetRect, sourceRect, targetSide)
-                : 0,
+            sourceProjection,
+            targetProjection,
+            sourceOrderKey: getPortOrderKey(headingRoute, 'source', sourceSide, sourceRect, sourceProjection),
+            targetOrderKey: getPortOrderKey(headingRoute, 'target', targetSide, targetRect, targetProjection),
         }
     })
 
     // Edges leaving and entering one side of a node share its slots, so an outgoing and an
     // incoming edge never meet at the same point.
-    const sideGroups = new Map<string, Array<{ slotKey: string; projection: number; edgeId: string }>>()
-    const addToSideGroup = (groupKey: string, slotKey: string, projection: number, edgeId: string) => {
+    const sideGroups = new Map<string, Array<{ slotKey: string; orderKey: number; projection: number; edgeId: string }>>()
+    const addToSideGroup = (groupKey: string, slotKey: string, orderKey: number, projection: number, edgeId: string) => {
         const entries = sideGroups.get(groupKey) ?? []
-        entries.push({ slotKey, projection, edgeId })
+        entries.push({ slotKey, orderKey, projection, edgeId })
         sideGroups.set(groupKey, entries)
     }
 
     baseAssignments.forEach((assignment) => {
-        addToSideGroup(`${assignment.source}:${assignment.sourceSide}`, `${assignment.layoutKey}:source`, assignment.sourceProjection, assignment.edgeId)
-        addToSideGroup(`${assignment.target}:${assignment.targetSide}`, `${assignment.layoutKey}:target`, assignment.targetProjection, assignment.edgeId)
+        addToSideGroup(`${assignment.source}:${assignment.sourceSide}`, `${assignment.layoutKey}:source`, assignment.sourceOrderKey, assignment.sourceProjection, assignment.edgeId)
+        addToSideGroup(`${assignment.target}:${assignment.targetSide}`, `${assignment.layoutKey}:target`, assignment.targetOrderKey, assignment.targetProjection, assignment.edgeId)
     })
 
     const slotByKey = new Map<string, { slot: number; slotCount: number }>()
@@ -402,23 +441,28 @@ export function buildFlowLayoutFromNodesAndEdges(
 ): LaidOutFlowGraph {
     const topologyStamp = computeFlowTopologyStamp(nodes, edges)
     const positionedNodes = applySavedNodePositions(nodes, options?.savedLayout, options?.forceFreshLayout ?? false)
-    const { assignments, edgeIdToLayoutKey } = buildEdgeLayoutAssignments(
-        positionedNodes,
-        edges,
-        options?.forceFreshLayout ? null : options?.savedLayout,
-    )
+    const savedLayout = options?.forceFreshLayout ? null : options?.savedLayout
+    let { assignments, edgeIdToLayoutKey } = buildEdgeLayoutAssignments(positionedNodes, edges, savedLayout)
 
-    const routes = options?.savedLayout
-        && options.savedLayout.topologyStamp === topologyStamp
-        && !options?.forceFreshLayout
-        && canReuseSavedRoutes(assignments, options.savedLayout)
-        ? Object.fromEntries(
+    let routes: Record<string, EdgeRoute>
+    if (
+        savedLayout
+        && savedLayout.topologyStamp === topologyStamp
+        && canReuseSavedRoutes(assignments, savedLayout)
+    ) {
+        routes = Object.fromEntries(
             Object.keys(assignments).flatMap((layoutKey) => {
-                const savedEdgeLayout = options.savedLayout?.edgeLayouts[layoutKey]
+                const savedEdgeLayout = savedLayout.edgeLayouts[layoutKey]
                 return savedEdgeLayout ? [[layoutKey, savedEdgeLayout.route] as const] : []
             }),
         )
-        : routeEdgeLayoutAssignments(positionedNodes, assignments, options?.savedLayout)
+    } else {
+        // Ports first take their side's slots in the order of their targets; route, then order each
+        // side's slots by where the routes really head and route again, so exits do not cross.
+        const firstRoutes = routeEdgeLayoutAssignments(positionedNodes, assignments, options?.savedLayout)
+        ;({ assignments, edgeIdToLayoutKey } = buildEdgeLayoutAssignments(positionedNodes, edges, savedLayout, undefined, firstRoutes))
+        routes = routeEdgeLayoutAssignments(positionedNodes, assignments, options?.savedLayout)
+    }
 
     const layout = buildSavedFlowLayout(
         positionedNodes,

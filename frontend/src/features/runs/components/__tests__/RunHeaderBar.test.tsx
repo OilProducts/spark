@@ -113,6 +113,8 @@ describe('RunHeaderBar', () => {
         expect(screen.queryByTestId('run-summary-continue-button')).not.toBeInTheDocument()
         expect(screen.getByTestId('run-header-status')).toHaveTextContent('Needs input')
         expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'warning')
+        // A waiting run states its start like a finished one, then how long it has been going.
+        expect(screen.getByTestId('run-header-facts')).toHaveTextContent(/^\S.* · 10m 00s · 1\.2k tokens · abcdef0$/)
     })
 
     it('uses the filled button only for Retry; the other commands are outlined', () => {

@@ -12,7 +12,7 @@ const providerNames = { openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemin
 export function ProviderSettingsEditor() {
     const editor = useProviderSettingsEditor()
     return <Card>
-        <CardHeader><h3 className="text-base font-semibold">Provider connections</h3></CardHeader>
+        <CardHeader><h2 className="text-base font-semibold">Provider connections</h2></CardHeader>
         <CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <p className="text-sm text-muted-foreground">Credentials stay in environment variables.</p>
@@ -32,8 +32,8 @@ export function ProviderSettingsEditor() {
                 })}
             </fieldset></details>)}
             <div className="flex flex-wrap gap-2">
-            <Button variant="outline" aria-label="Save provider connections" disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
-            <Button variant="ghost" aria-label="Discard provider connections changes" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
+            <Button size="sm" aria-label="Save provider connections" disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
+            <Button size="sm" variant="ghost" aria-label="Discard provider connections changes" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
             </div>
             {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}

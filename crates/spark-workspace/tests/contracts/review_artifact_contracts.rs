@@ -978,6 +978,14 @@ fn run_gate_attention_items_are_distinct_across_gates_and_runs() {
         first[0].1, first[1].1,
         "runs at the same gate must be distinct items"
     );
+    let items = service.pending_attention().expect("attention items");
+    assert!(
+        items
+            .iter()
+            .filter(|item| item["kind"] == "run_gate")
+            .all(|item| item["question"] == "Proceed?"),
+        "a gate's item carries what it asks: {items:?}"
+    );
 
     store
         .append_event(

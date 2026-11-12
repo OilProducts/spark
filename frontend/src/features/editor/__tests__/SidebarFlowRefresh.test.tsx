@@ -271,8 +271,8 @@ describe('Flows panel layer badges', () => {
         ] }) })))
         renderWithFlowProvider(<FlowsPanelHarness />)
         const badges = async (flow: string) => within(await screen.findByRole('button', { name: flow })).queryAllByTestId('definition-badge').map((badge) => badge.textContent)
-        await waitFor(async () => expect(await badges('local')).toEqual(['customized']))
-        expect(await badges('shared')).toEqual(['project copy'])
+        await waitFor(async () => expect(await badges('local')).toEqual(['project']))
+        expect(await badges('shared')).toEqual(['customized'])
         expect(await badges('plain')).toEqual([])
     })
 })
@@ -294,7 +294,7 @@ describe('Flows panel layer badges across projects', () => {
         useStore.setState({ activeProjectPath: '/tmp/project-a' })
         renderWithFlowProvider(<FlowsPanelHarness />)
         const badges = () => within(screen.getByRole('button', { name: 'shared' })).queryAllByTestId('definition-badge').map((badge) => badge.textContent)
-        await waitFor(() => expect(badges()).toEqual(['customized']))
+        await waitFor(() => expect(badges()).toEqual(['project']))
 
         // B's definition request is pending: A's badges must not carry over.
         useStore.setState({ activeProjectPath: '/tmp/project-b' })

@@ -1,6 +1,7 @@
 import {
   buildGroupedPendingInterviewGates,
   buildPendingInterviewGates,
+  journalEntrySummary,
   toTimelineEvent,
 } from '@/features/runs/model/timelineModel'
 import { humanizeTimelineType } from '@/features/runs/model/shared'
@@ -23,11 +24,11 @@ describe('timelineModel', () => {
     expect(event?.summary).toContain('checksums ok')
   })
 
-  it('summarizes a live stage completion by its decision and a transition by decision, target and visit', () => {
+  it('summarizes a live stage completion and a transition by decision, target and visit', () => {
     expect(toTimelineEvent({
       type: 'StageCompleted', sequence: 4, emitted_at: '2026-07-08T10:00:04Z',
       index: 2, node_id: 'review', outcome: 'completed', decision: 'revise', notes: 'needs a test',
-    })).toMatchObject({ category: 'stage', severity: 'info', summary: 'Stage review completed (decision revise) — needs a test' })
+    })).toMatchObject({ category: 'stage', severity: 'info', summary: 'review completed' })
 
     const transition = toTimelineEvent({
       type: 'StageTransition', sequence: 5, emitted_at: '2026-07-08T10:00:05Z',
@@ -59,8 +60,30 @@ describe('timelineModel', () => {
     expect(event).toMatchObject({
       type: 'PipelineCompleted',
       severity: 'warning',
-      summary: 'Pipeline completed at done (failure: Goal gate not satisfied)',
+      summary: 'Run completed at done (failure: Goal gate not satisfied)',
     })
+  })
+
+  it('names steps in journal lines by their flow labels and keeps the runtime wording for other kinds', () => {
+    const labels: Record<string, string> = { run_tests: 'Run Test Suite', draft_notes: 'Draft Notes', run_milestone: 'Run Milestone' }
+    const nodeLabel = (nodeId: string, scope: string) => (scope === 'root' ? labels[nodeId] : null) ?? nodeId
+    const line = (rawType: string, payload: Record<string, unknown>, extra: Record<string, unknown> = {}) => journalEntrySummary(toTimelineEvent({
+      id: 'journal-1', sequence: 1, emitted_at: '2026-07-08T10:00:00Z', kind: 'stage', raw_type: rawType,
+      summary: `server ${rawType}`, severity: 'info', source_scope: 'root', payload, ...extra,
+    })!, nodeLabel)
+
+    expect(line('PipelineStarted', { name: 'release_checklist' }, { node_id: 'release_checklist' })).toBe('Run started')
+    expect(line('run_meta', { flow_name: 'release-checklist' })).toBe('Run details recorded')
+    expect(line('StageStarted', {}, { node_id: 'run_tests' })).toBe('Run Test Suite started')
+    expect(line('StageTransition', { decision: 'done', target: 'draft_notes' }, { node_id: 'run_tests' }))
+      .toBe('Run Test Suite → Draft Notes on done')
+    expect(line('CheckpointSaved', { current_node: 'draft_notes' }, { node_id: 'draft_notes' })).toBe('Checkpoint saved at Draft Notes')
+    expect(line('InterviewCompleted', { answer: 'ship' }, { node_id: 'draft_notes' })).toBe('Answer for Draft Notes: ship')
+    // A child flow's nodes are its own; its parent node is this flow's.
+    expect(line('StageStarted', {}, {
+      node_id: 'run_tests', source_scope: 'child', source_parent_node_id: 'run_milestone', source_flow_name: 'child-flow',
+    })).toBe('Child flow child-flow via Run Milestone: run_tests started')
+    expect(line('log', { msg: 'hello' })).toBe('server log')
   })
 
   it('derives pending interview gates from live events and fallback question snapshots', () => {
@@ -121,7 +144,7 @@ describe('timelineModel', () => {
       sourceScope: 'child',
       sourceParentNodeId: 'run_milestone',
       sourceFlowName: 'implement-milestone.dot',
-      summary: 'Child flow implement-milestone.dot via run_milestone: Stage plan_current started',
+      summary: 'Child flow implement-milestone.dot via run_milestone: plan_current started',
       receivedAt: '2026-04-06T12:00:00Z',
     })
   })

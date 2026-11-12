@@ -18,10 +18,12 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { formatTimestamp, type ArtifactListEntry, type TimelineEventEntry } from '../model/shared'
+import { journalEntrySummary } from '../model/timelineModel'
 import {
     VISIT_OUTCOME_LABELS,
     formatVisitDuration,
     formatVisitErrorKind,
+    humanizeNodeId,
     parallelBranchResults,
     visitContextWrites,
     visitKey,
@@ -94,6 +96,8 @@ interface RunVisitsCardProps {
     onViewArtifact: (entry: ArtifactListEntry) => void
     /** The run graph toggle, shown in the rail's view control. */
     graph?: { shown: boolean; onToggle: () => void }
+    /** Put the rail above the details, leaving the width to the graph beside them. */
+    railAbove?: boolean
 }
 
 export function RunVisitsCard({
@@ -117,6 +121,7 @@ export function RunVisitsCard({
     artifactEntries,
     onViewArtifact,
     graph,
+    railAbove = false,
 }: RunVisitsCardProps) {
     // An exit node that simply completed says nothing the status item doesn't.
     const visits = useMemo(
@@ -181,16 +186,18 @@ export function RunVisitsCard({
     return (
         <section
             data-testid="run-visits-panel"
-            data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={cn('flex gap-6', isNarrowViewport ? 'flex-col' : 'h-full min-h-0')}
+            data-responsive-layout={isNarrowViewport || railAbove ? 'stacked' : 'split'}
+            className={cn('flex gap-6', isNarrowViewport ? 'flex-col' : railAbove ? 'h-full min-h-0 flex-col gap-5' : 'h-full min-h-0')}
         >
-            <Well className={cn('flex shrink-0 flex-col gap-0.5 p-2', isNarrowViewport ? undefined : 'min-h-0 w-64')}>
+            <Well className={cn('flex shrink-0 flex-col gap-0.5 p-2', isNarrowViewport || railAbove ? undefined : 'min-h-0 w-64')}>
                 {/* Steps and Journal exclude each other; the graph is additive, so it is its own
                     one-segment track beside them (a pressed segment beside a pressed segment reads wrong). */}
                 <div className="mb-1.5 flex items-center gap-1.5">
+                    {/* As wide as it is in the 16rem side rail, wherever the rail sits, so the
+                        Graph toggle stays put and the segments never stretch across a wide rail. */}
                     <SegmentedControl
                         aria-label="View"
-                        className="min-w-0 flex-1"
+                        className="min-w-0 max-w-[9.75rem] flex-1"
                         options={[
                             { key: 'steps', label: 'Steps', pressed: !showJournal, onPress: () => setShowJournal(false) },
                             {
@@ -234,7 +241,7 @@ export function RunVisitsCard({
                     aria-label="Visits"
                     data-testid="run-visit-list"
                     onKeyDown={onListKeyDown}
-                    className={cn('space-y-0.5 overflow-y-auto', isNarrowViewport ? 'max-h-72' : 'min-h-0 flex-1')}
+                    className={cn('space-y-0.5 overflow-y-auto', isNarrowViewport || railAbove ? 'max-h-72' : 'min-h-0 flex-1')}
                 >
                     {(['status', 'context'] as const).map((item) => (
                         <button
@@ -340,7 +347,7 @@ export function RunVisitsCard({
             </Well>
             <div className={cn('min-w-0 flex-1', isNarrowViewport ? undefined : 'min-h-0 overflow-y-auto')}>
                 {showJournal ? (
-                    <RunJournal journal={journal} timelineError={timelineError} />
+                    <RunJournal journal={journal} flowNodes={flowNodes} timelineError={timelineError} />
                 ) : selected === 'status' ? (
                     renderStatus(select)
                 ) : selected === 'context' ? (
@@ -404,6 +411,8 @@ function RunVisitView({
     const branchResults = parallelBranchResults(visit)
     const outcomeLabel = VISIT_OUTCOME_LABELS[visit.outcome]
     const returned = visit.outcome !== 'running' && visit.outcome !== 'waiting'
+    // A tool's notes are its stdout, which shows once, under its command.
+    const reason = visit.kind === 'tool' && visit.reason === visitToolResult(visit).output ? null : visit.reason
     const headerMeta = [visit.count > 1 ? `Visit ${visit.number} of ${visit.count}` : null, duration || null]
         .filter((part): part is string => part !== null)
         .join(' · ')
@@ -495,8 +504,8 @@ function RunVisitView({
                             </span>
                         ) : null}
                     </div>
-                    {visit.reason ? (
-                        <p data-testid="run-visit-reason" className="max-w-[72ch] whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{visit.reason}</p>
+                    {reason ? (
+                        <p data-testid="run-visit-reason" className="max-w-[72ch] whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{reason}</p>
                     ) : null}
                     {branchResults.length > 0 ? <BranchResults results={branchResults} /> : null}
                     {writes.length > 0 ? (
@@ -752,13 +761,24 @@ function RunSteerForm({ runId, nodeId, running }: { runId: string; nodeId: strin
 function ToolWork({ visit, command }: { visit: RunVisit; command: string | null }) {
     const { output, exitCode } = visitToolResult(visit)
     return (
-        <div data-testid="run-visit-tool" className="space-y-2 text-sm">
-            {command ? <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-muted px-3 py-2 font-mono text-xs text-foreground">{command}</pre> : null}
-            {output ? (
-                <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted px-3 py-2 font-mono text-xs text-foreground/90">{output}</pre>
+        <div data-testid="run-visit-tool" className="space-y-3 text-sm">
+            {/* The section heading names the command; its output is labelled and drawn differently,
+                so the two never read as one block. */}
+            {command ? (
+                <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs text-foreground">{command}</pre>
             ) : null}
-            {exitCode !== null ? (
-                <p className={cn('text-xs', exitCode === 0 ? 'text-muted-foreground' : 'text-warning')}>Exit code {exitCode}</p>
+            {output || exitCode !== null ? (
+                <div className="space-y-1">
+                    <div className="flex items-baseline justify-between gap-3 text-xs">
+                        <span className="font-semibold text-muted-foreground">Output</span>
+                        {exitCode !== null ? (
+                            <span className={exitCode === 0 ? 'text-muted-foreground' : 'font-medium text-warning'}>Exit code {exitCode}</span>
+                        ) : null}
+                    </div>
+                    {output ? (
+                        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted px-3 py-2 font-mono text-xs text-foreground/90">{output}</pre>
+                    ) : null}
+                </div>
             ) : null}
             {!command && !output && exitCode === null ? (
                 <p className="text-muted-foreground">No command output was recorded for this visit.</p>
@@ -771,7 +791,15 @@ function ToolWork({ visit, command }: { visit: RunVisit; command: string | null 
 const JOURNAL_DAY = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
 const JOURNAL_TIME = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })
 
-function RunJournal({ journal, timelineError }: { journal: TimelineEventEntry[]; timelineError: string | null }) {
+function RunJournal({ journal, flowNodes, timelineError }: {
+    journal: TimelineEventEntry[]
+    flowNodes: Record<string, VisitFlowNode>
+    timelineError: string | null
+}) {
+    // Steps read as the Steps list names them; a child flow's nodes are not in this flow.
+    const nodeLabel = (nodeId: string, scope: TimelineEventEntry['sourceScope']) => (
+        (scope === 'root' ? flowNodes[nodeId]?.label : null) ?? humanizeNodeId(nodeId)
+    )
     let previousDay = ''
     return (
         <section data-testid="run-journal-panel" className="flex flex-col gap-3">
@@ -798,7 +826,7 @@ function RunJournal({ journal, timelineError }: { journal: TimelineEventEntry[];
                                     event.severity === 'error' ? 'text-destructive' : event.severity === 'warning' ? 'text-warning' : undefined,
                                 )}
                                 >
-                                    {event.summary}
+                                    {journalEntrySummary(event, nodeLabel)}
                                 </span>
                             </li>
                         </Fragment>

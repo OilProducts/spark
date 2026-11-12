@@ -788,7 +788,7 @@ describe('App shell behavior', () => {
     expect(useStore.getState().viewMode).toBe('editor')
     expect(screen.getByTestId('canvas-workspace-primary')).toBeVisible()
     expect(screen.getByTestId('editor-flow-tree')).toBeInTheDocument()
-    expect(screen.getByTestId('editor-no-flow-state')).toHaveTextContent('Select a flow to begin authoring.')
+    expect(screen.getByTestId('editor-no-flow-state')).toHaveTextContent('Pick a flow from the list to edit it or run it.')
   })
 
   it('adds a project from the Chats panel and opens a chat in it', async () => {
@@ -1807,7 +1807,7 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('activity-triggers'))
 
     expect(screen.getByLabelText('Name')).toHaveValue(' Draft create')
-    await user.click(screen.getByRole('button', { name: 'Cancel new trigger' }))
+    await user.click(screen.getByRole('button', { name: 'Close new trigger' }))
     expect(screen.getByLabelText('Name')).toHaveValue('Custom route edited')
   })
 
@@ -1875,7 +1875,7 @@ describe('App shell behavior', () => {
     // Opening a chat in another project does not touch trigger drafts.
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Name')).toHaveValue(' Draft create')
-    await user.click(screen.getByRole('button', { name: 'Cancel new trigger' }))
+    await user.click(screen.getByRole('button', { name: 'Close new trigger' }))
     expect(screen.getByLabelText('Name')).toHaveValue('Shared route edited')
   })
 
@@ -2776,7 +2776,7 @@ describe('App shell behavior', () => {
     render(<App />)
 
     await user.click(screen.getByTestId('activity-flows'))
-    expect(screen.getByTestId('editor-no-flow-state')).toHaveTextContent('Select a flow to begin authoring.')
+    expect(screen.getByTestId('editor-no-flow-state')).toHaveTextContent('Pick a flow from the list to edit it or run it.')
     expect(screen.getByTestId('canvas-workspace-primary')).toHaveAttribute('data-canvas-active', 'true')
 
     const editorFlowTree = await screen.findByTestId('editor-flow-tree')

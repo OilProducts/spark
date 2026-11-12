@@ -85,8 +85,8 @@ test('badges leave room for a role\'s title and meta, and for a flow\'s name', a
     await page.getByTestId('activity-roles').click()
     const role = page.getByRole('region', { name: 'Standing' }).getByTestId('roles-item').first()
     const reviewer = page.locator('[data-testid="roles-item"][data-name="adversarial-reviewer"]')
-    await expect(role.getByTestId('definition-badge')).toHaveText(['customized'])
-    await expect(reviewer.getByTestId('definition-badge')).toHaveText(['project copy'])
+    await expect(role.getByTestId('definition-badge')).toHaveText(['project'])
+    await expect(reviewer.getByTestId('definition-badge')).toHaveText(['customized'])
     for (const [row, title, meta] of [[role, standing.title, standing.description], [reviewer, 'Adversarial Reviewer', /^Reviews or verifies/]] as const) {
         const text = row.locator('span.truncate').first()
         await expect(text).toHaveText(title)
@@ -98,7 +98,7 @@ test('badges leave room for a role\'s title and meta, and for a flow\'s name', a
 
     await page.getByTestId('activity-flows').click()
     const flowRow = page.getByTestId('editor-flow-tree').getByRole('button', { name: flow, exact: true })
-    await expect(flowRow.getByTestId('definition-badge')).toHaveText(['customized'])
+    await expect(flowRow.getByTestId('definition-badge')).toHaveText(['project'])
     const name = flowRow.locator('span.truncate').first()
     expect(await name.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
     await page.screenshot({ path: screenshotPath('flows-view-badges.png') })

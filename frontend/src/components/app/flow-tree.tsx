@@ -2,6 +2,7 @@ import { ChevronRight, FileText, Folder, FolderOpen, Trash2 } from 'lucide-react
 import type { MouseEvent, ReactNode } from 'react'
 import { useMemo, useState } from 'react'
 
+import { ListGroupLabel } from '@/components/app/side-panel-row'
 import { Button } from '@/components/ui/button'
 import {
   Collapsible,
@@ -12,6 +13,9 @@ import { buildFlowTree, type FlowTreeNode } from '@/lib/flowPaths'
 
 interface FlowTreeProps {
     flows: string[]
+    /** The project's own flows (its new and customized ones): when any are listed, they come first under
+     *  "This project", and the rest under "Bundled". */
+    projectFlows?: ReadonlySet<string>
     selectedFlow: string | null
     onSelectFlow: (flowName: string) => void
     onDeleteFlow?: (event: MouseEvent, flowName: string) => void
@@ -21,26 +25,41 @@ interface FlowTreeProps {
 
 export function FlowTree({
     flows,
+    projectFlows,
     selectedFlow,
     onSelectFlow,
     onDeleteFlow,
     renderFlowIndicator,
     dataTestId,
 }: FlowTreeProps) {
-    const tree = useMemo(() => buildFlowTree(flows), [flows])
+    const sections = useMemo(() => {
+        const own = flows.filter((flow) => projectFlows?.has(flow))
+        if (own.length === 0) {
+            return [{ label: null, tree: buildFlowTree(flows) }]
+        }
+        return [
+            { label: 'This project', tree: buildFlowTree(own) },
+            { label: 'Bundled', tree: buildFlowTree(flows.filter((flow) => !projectFlows?.has(flow))) },
+        ].filter((section) => section.tree.length > 0)
+    }, [flows, projectFlows])
 
     return (
-        <div data-testid={dataTestId} className="space-y-1">
-            {tree.map((node) => (
-                <FlowTreeNodeRow
-                    key={node.path}
-                    node={node}
-                    depth={0}
-                    selectedFlow={selectedFlow}
-                    onSelectFlow={onSelectFlow}
-                    onDeleteFlow={onDeleteFlow}
-                    renderFlowIndicator={renderFlowIndicator}
-                />
+        <div data-testid={dataTestId} className="space-y-4">
+            {sections.map(({ label, tree }) => (
+                <section key={label ?? 'flows'} aria-label={label ?? undefined} className="space-y-1">
+                    {label ? <ListGroupLabel><h3>{label}</h3></ListGroupLabel> : null}
+                    {tree.map((node) => (
+                        <FlowTreeNodeRow
+                            key={node.path}
+                            node={node}
+                            depth={0}
+                            selectedFlow={selectedFlow}
+                            onSelectFlow={onSelectFlow}
+                            onDeleteFlow={onDeleteFlow}
+                            renderFlowIndicator={renderFlowIndicator}
+                        />
+                    ))}
+                </section>
             ))}
         </div>
     )
@@ -93,10 +112,10 @@ function FlowTreeNodeRow({
                 }`}
                 style={{ paddingLeft: `${indent}px` }}
             >
-                <span className="flex min-w-0 items-start gap-2">
+                <span className="flex w-full min-w-0 items-start gap-2">
                     <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    {/* The indicator sits below the name so the name keeps the row's width. */}
-                    <span className="flex min-w-0 flex-col items-start gap-1">
+                    {/* The indicator wraps under the name only when both don't fit, so the name keeps the row's width. */}
+                    <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
                         <span className="min-w-0 max-w-full truncate">{node.name}</span>
                         {renderFlowIndicator?.(node.path)}
                     </span>
@@ -140,7 +159,7 @@ function FlowTreeDirectoryRow({
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-8 w-full justify-start gap-2 px-3 text-xs font-medium tracking-[0.08em] text-muted-foreground"
+                    className="h-8 w-full justify-start gap-2 px-3 text-sm font-medium text-foreground"
                     style={{ paddingLeft: `${indent}px` }}
                     title={node.path}
                 >

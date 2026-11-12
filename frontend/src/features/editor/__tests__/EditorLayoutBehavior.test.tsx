@@ -83,11 +83,14 @@ vi.mock('@/lib/flowPersistence', async () => {
 vi.mock('@xyflow/react', async () => {
   const actual = await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react')
   const stableReactFlowInstance = { fitView: async () => true }
+  const stableStoreApi = { setState: () => {}, getState: () => ({ transform: [0, 0, 1], domNode: null }), subscribe: () => () => {} }
 
   return {
     ...actual,
     ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
     useReactFlow: () => stableReactFlowInstance,
+    useStore: (selector: (state: Record<string, boolean>) => unknown) => selector({ nodesDraggable: true, nodesConnectable: true, elementsSelectable: true }),
+    useStoreApi: () => stableStoreApi,
     ReactFlow: (props: {
       nodes: Node[]
       edges: Edge[]
@@ -756,14 +759,14 @@ describe('Editor layout behavior', () => {
     await user.click(screen.getByRole('button', { name: 'Expanded' }))
 
     await waitFor(() => {
-      expect(screen.getByText('Read-only preview. Switch to Parent only to edit.')).toBeInTheDocument()
+      expect(screen.getByText('Read-only preview. Switch to Parent to edit.')).toBeInTheDocument()
       expect(readSavedLayout('flow-a.dot')).toEqual(parentLayout)
     })
 
     await user.click(screen.getByRole('button', { name: 'Parent' }))
 
     await waitFor(() => {
-      expect(screen.queryByText('Read-only preview. Switch to Parent only to edit.')).not.toBeInTheDocument()
+      expect(screen.queryByText('Read-only preview. Switch to Parent to edit.')).not.toBeInTheDocument()
       expect(readSavedLayout('flow-a.dot')).toEqual(parentLayout)
     })
   })

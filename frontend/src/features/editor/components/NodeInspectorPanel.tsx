@@ -172,7 +172,7 @@ export function NodeInspectorPanel({
                                 <ContextKeyListEditor
                                     testId="node-reads-context-editor"
                                     title="Reads context"
-                                    description="Declare the `context.*` keys this node expects to consume from launch state or earlier stages."
+                                    description={<>Declare the <code>context.*</code> keys this node expects to consume from launch state or earlier stages.</>}
                                     value={readsContextDraft}
                                     error={readsContextError}
                                     onChange={onReadsContextChange}
@@ -180,7 +180,7 @@ export function NodeInspectorPanel({
                                 <ContextKeyListEditor
                                     testId="node-writes-context-editor"
                                     title="Writes context"
-                                    description="Declare the `context.*` keys this node is expected to produce for later stages."
+                                    description={<>Declare the <code>context.*</code> keys this node is expected to produce for later stages.</>}
                                     value={writesContextDraft}
                                     error={writesContextError}
                                     onChange={onWritesContextChange}

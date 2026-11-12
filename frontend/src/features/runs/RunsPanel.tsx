@@ -6,6 +6,7 @@ import { LaunchPanel, useFlowCatalog, type ContinuationDraft } from '@/features/
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
+import { cn } from '@/lib/utils'
 import { useRunsList } from './hooks/useRunsList'
 import { useRunActions } from './hooks/useRunActions'
 import { useRunDetails } from './hooks/useRunDetails'
@@ -38,6 +39,8 @@ import { requestNavigation } from '@/state/workspaceSlice'
 
 const EMPTY_NODE_STATUSES = {}
 const EMPTY_FLOW_NODES: Record<string, VisitFlowNode> = {}
+// The rail (16rem + gap) plus details and graph columns of 28rem each.
+const RAIL_BESIDE_GRAPH_MIN_WIDTH = 1200
 
 // The rail's first row; a dot only when the run needs attention.
 const STATUS_ROWS: Record<RunStatusKind, { label: string; tone?: StatusTone }> = {
@@ -376,6 +379,67 @@ export function RunsPanel() {
         }
     }, [continuationDraft, selectedRun])
 
+    // Stacked under the whole run list, a picked run's detail scrolls to the top.
+    const runDetailRef = useRef<HTMLElement | null>(null)
+    const [runBodyWidth, setRunBodyWidth] = useState(0)
+    const runBodyObserverRef = useRef<ResizeObserver | null>(null)
+    const runBodyRef = useCallback((element: HTMLDivElement | null) => {
+        runBodyObserverRef.current?.disconnect()
+        runBodyObserverRef.current = null
+        if (!element || typeof ResizeObserver === 'undefined') {
+            return
+        }
+        const observer = new ResizeObserver(([entry]) => setRunBodyWidth(entry.contentRect.width))
+        observer.observe(element)
+        runBodyObserverRef.current = observer
+    }, [])
+    useEffect(() => {
+        if (isNarrowViewport && isRunsView && selectedRunId) {
+            runDetailRef.current?.scrollIntoView({ block: 'start' })
+        }
+    }, [isNarrowViewport, isRunsView, selectedRunId])
+
+    // A continuation picks its restart node on the graph, so it shows the graph too.
+    const graphCard = selectedRun && (showGraph || activeContinuationDraft) ? (
+        <RunGraphCard
+            key={`graph-${selectedRun.run_id}`}
+            run={selectedRun}
+            nodeStatusesById={runNodeStatuses}
+            selectedNodeId={activeContinuationDraft ? activeContinuationDraft.startNodeId : selectedNodeId}
+            onSelectNode={activeContinuationDraft
+                ? (nodeId) => {
+                    setContinuationDraft((draft) => (draft ? { ...draft, startNodeId: nodeId } : draft))
+                }
+                : selectNode}
+            onOpenInEditor={() => {
+                const flowName = selectedRun.flow_name
+                if (!flowName || !flowCatalog.flows.includes(flowName)) {
+                    return
+                }
+                const nodeId = selectedNodeId ?? currentNodeForSummary ?? null
+                const open = () => {
+                    useStore.getState().setActiveProjectPath(runProjectPath)
+                    setActiveFlow(flowName)
+                    setPendingEditorNodeSelection({ flowName, nodeId })
+                    setViewMode('editor')
+                }
+                if (useStore.getState().projectPagePath) requestNavigation(open)
+                else open()
+            }}
+            openInEditorDisabledReason={
+                selectedRun.flow_name && flowCatalog.flows.includes(selectedRun.flow_name)
+                    ? null
+                    : flowCatalog.isLoaded
+                        ? "This run's flow is not in its project's flows."
+                        : 'Loading the project flows…'
+            }
+            fillHeight={!isNarrowViewport}
+        />
+    ) : null
+    // With the graph open, the Steps rail keeps its own column only when the details and the
+    // graph still get a readable column each; otherwise it sits above the details.
+    const railBeside = runBodyWidth >= RAIL_BESIDE_GRAPH_MIN_WIDTH
+
     return (
         <ViewLayout
             view="runs"
@@ -386,9 +450,11 @@ export function RunsPanel() {
             panel={isRunsView ? <RunsSidebar selectedRunId={selectedRunId} /> : null}
         >
         <section
+            ref={runDetailRef}
             data-testid="runs-panel"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={`h-full flex-1 ${isNarrowViewport ? '' : 'flex min-h-0 flex-col overflow-hidden'}`}
+            // On a phone the run grows past the sheet's screen height; it paints the sheet's white as it goes.
+            className={isNarrowViewport ? 'min-h-full bg-background' : 'flex h-full min-h-0 flex-1 flex-col overflow-hidden'}
         >
             {/* The view header sits at the top of the sheet, under one hairline. */}
             {selectedRun && (
@@ -469,55 +535,24 @@ export function RunsPanel() {
                     </SheetEmpty>
                 )}
                 {selectedRun && (
-                    <div className={isNarrowViewport
+                    <div ref={runBodyRef} className={isNarrowViewport
                         ? 'space-y-6'
                         : 'flex min-h-0 flex-1 gap-6'}
                     >
-                        {/* A continuation picks its restart node on the graph. */}
-                        {showGraph || activeContinuationDraft ? (
+                        {/* A continuation picks its restart node on the graph. Beside the details it
+                            sits last, so toggling it never moves the Steps rail. */}
+                        {graphCard ? (
                         <div className={isNarrowViewport
                             ? undefined
-                            : 'flex w-[24rem] min-w-[19rem] shrink-0 flex-col min-h-0 2xl:w-[28rem]'}
+                            // With the rail above the details, the graph takes the larger share.
+                            : cn('order-last flex min-h-0 min-w-0 flex-col', railBeside ? 'flex-[1_1_0%]' : 'flex-[3_1_0%]')}
                         >
-                            <RunGraphCard
-                                key={`graph-${selectedRun.run_id}`}
-                                run={selectedRun}
-                                nodeStatusesById={runNodeStatuses}
-                                selectedNodeId={activeContinuationDraft ? activeContinuationDraft.startNodeId : selectedNodeId}
-                                onSelectNode={activeContinuationDraft
-                                    ? (nodeId) => {
-                                        setContinuationDraft((draft) => (draft ? { ...draft, startNodeId: nodeId } : draft))
-                                    }
-                                    : selectNode}
-                                onOpenInEditor={() => {
-                                    const flowName = selectedRun.flow_name
-                                    if (!flowName || !flowCatalog.flows.includes(flowName)) {
-                                        return
-                                    }
-                                    const nodeId = selectedNodeId ?? currentNodeForSummary ?? null
-                                    const open = () => {
-                                        useStore.getState().setActiveProjectPath(runProjectPath)
-                                        setActiveFlow(flowName)
-                                        setPendingEditorNodeSelection({ flowName, nodeId })
-                                        setViewMode('editor')
-                                    }
-                                    if (useStore.getState().projectPagePath) requestNavigation(open)
-                                    else open()
-                                }}
-                                openInEditorDisabledReason={
-                                    selectedRun.flow_name && flowCatalog.flows.includes(selectedRun.flow_name)
-                                        ? null
-                                        : flowCatalog.isLoaded
-                                            ? "This run's flow is not in its project's flows."
-                                            : 'Loading the project flows…'
-                                }
-                                fillHeight={!isNarrowViewport}
-                            />
+                            {graphCard}
                         </div>
                         ) : null}
                         <div className={isNarrowViewport
                             ? 'mt-6'
-                            : 'flex min-h-0 min-w-0 flex-1 flex-col'}
+                            : cn('flex min-h-0 min-w-0 flex-col', !graphCard ? 'flex-[1_1_0%]' : railBeside ? 'flex-[1_1_17.5rem]' : 'flex-[2_1_0%]')}
                         >
                         <div
                             ref={detailsScrollRef}
@@ -542,6 +577,7 @@ export function RunsPanel() {
                                 artifactEntries={artifactEntries}
                                 onViewArtifact={openArtifact}
                                 graph={{ shown: showGraph, onToggle: () => setShowGraph((current) => !current) }}
+                                railAbove={Boolean(graphCard) && !railBeside}
                                 statusRow={{
                                     ...STATUS_ROWS[statusKind],
                                     detail: formatDuration(selectedRun.started_at, selectedRun.ended_at, selectedRun.status, now),
