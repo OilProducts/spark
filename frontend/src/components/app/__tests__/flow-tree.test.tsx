@@ -22,15 +22,15 @@ describe('FlowTree', () => {
     )
 
     const flowTree = screen.getByTestId('shared-flow-tree')
-    expect(within(flowTree).getByText('team')).toBeVisible()
-    expect(within(flowTree).getByText('review')).toBeVisible()
+    expect(within(flowTree).getByText('Team')).toBeVisible()
+    expect(within(flowTree).getByText('Review')).toBeVisible()
     expect(within(flowTree).getByTestId('flow-indicator')).toBeVisible()
 
-    await user.click(within(flowTree).getByRole('button', { name: 'team' }))
+    await user.click(within(flowTree).getByRole('button', { name: 'Team' }))
     expect(within(flowTree).queryByRole('button', { name: 'team/review/nested.dot' })).not.toBeInTheDocument()
 
-    await user.click(within(flowTree).getByRole('button', { name: 'team' }))
-    expect(within(flowTree).getByText('review')).toBeVisible()
+    await user.click(within(flowTree).getByRole('button', { name: 'Team' }))
+    expect(within(flowTree).getByText('Review')).toBeVisible()
 
     await user.click(within(flowTree).getByRole('button', { name: 'team/review/nested.dot' }))
     expect(onSelectFlow).toHaveBeenCalledWith('team/review/nested.dot')
@@ -48,8 +48,8 @@ describe('FlowTree', () => {
     expect(screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)).toEqual(['This project', 'Bundled with Spark'])
     const project = screen.getByRole('region', { name: 'This project' })
     expect(within(project).getByRole('button', { name: 'nightly-audit' })).toBeVisible()
-    expect(within(project).getByText('team')).toBeVisible()
-    expect(within(screen.getByRole('region', { name: 'Bundled with Spark' })).getByText('examples')).toBeVisible()
+    expect(within(project).getByText('Team')).toBeVisible()
+    expect(within(screen.getByRole('region', { name: 'Bundled with Spark' })).getByText('Examples')).toBeVisible()
     await user.click(within(project).getByRole('button', { name: 'team/release' }))
     expect(onSelectFlow).toHaveBeenCalledWith('team/release')
 

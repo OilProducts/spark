@@ -2761,8 +2761,8 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('activity-flows'))
     const editorFlowTree = await screen.findByTestId('editor-flow-tree')
 
-    expect(within(editorFlowTree).getByText('team')).toBeVisible()
-    expect(within(editorFlowTree).getByText('review')).toBeVisible()
+    expect(within(editorFlowTree).getByText('Team')).toBeVisible()
+    expect(within(editorFlowTree).getByText('Review')).toBeVisible()
 
     await user.click(within(editorFlowTree).getByRole('button', { name: NESTED_LINEAR_FLOW_NAME }))
 

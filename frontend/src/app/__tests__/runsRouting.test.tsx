@@ -206,6 +206,25 @@ describe('HistoryRoutingController', () => {
         expect(useStore.getState().runDetailSessionsByRunId['run-opened']?.selectedNodeId).toBe('build')
     })
 
+    it('rewrites the entry of a linked run that isn\'t there, so Back doesn\'t reopen it', async () => {
+        window.history.replaceState(null, '', buildRunsHash('run-gone'))
+        render(<HistoryRoutingController />)
+        await waitFor(() => expect(selectSelectedRunId(useStore.getState())).toBe('run-gone'))
+        const start = window.history.length
+        // The server says there is no such run.
+        await act(async () => {
+            useStore.getState().clearRunDetailSession('run-gone')
+        })
+        expect(useStore.getState().runsListSession.missingRunId).toBe('run-gone')
+        expect(window.location.hash).toBe('#/runs')
+        expect(window.history.length).toBe(start)
+        // Opening another run puts the notice away.
+        await act(async () => {
+            useStore.getState().setRunsSelectedRunId('run-here')
+        })
+        expect(useStore.getState().runsListSession.missingRunId).toBeNull()
+    })
+
     it('keeps the URL true when a confirmation holds a move', async () => {
         useStore.setState({ viewMode: 'overview' })
         render(<HistoryRoutingController />)

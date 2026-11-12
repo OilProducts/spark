@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { EditorPreviewResponse } from '@/features/editor/services/editorPreview'
 import { resetFlowSaveBaselines } from '@/lib/flowPersistence'
+import { ApiHttpError } from '@/lib/attractorClient'
 import {
   loadEditorFlowPayload,
   loadEditorPreview,
@@ -107,6 +108,7 @@ const resetEditorState = (activeFlow: string | null) => {
     preferredEditorMode: 'structured',
     clientPreferencesLoaded: false,
     activeFlow,
+    flowLoadFailure: null,
     executionFlow: null,
     suppressPreview: true,
     graphAttrs: {},
@@ -197,6 +199,16 @@ describe('Editor flow loading behavior', () => {
       previewDeferreds.get('flow-b.dot')?.reject(new Error('preview failed'))
     })
     await waitFor(() => expect(profile).toHaveAttribute('data-node-count', '0'))
+  })
+
+  it('says a linked flow its project doesn\'t have isn\'t there, with nothing to run', async () => {
+    vi.mocked(loadEditorFlowPayload).mockRejectedValue(new ApiHttpError('/attractor/api/flows/nope', 404, 'Flow not found'))
+    renderEditor()
+    expect(await screen.findByTestId('editor-flow-load-failed')).toHaveTextContent('This flow isn’t here')
+    expect(screen.getByTestId('editor-flow-load-failed')).toHaveTextContent('no flow named “flow-a.dot”')
+    expect(screen.queryByRole('button', { name: /^Run/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(useStore.getState().activeFlow).toBeNull()
   })
 
   it('ignores a superseded flow load that resolves after a newer selection', async () => {

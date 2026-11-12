@@ -1,4 +1,5 @@
 import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
+import { flowLoadFailed } from './model/flowLoadFailure'
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { ReactFlowProvider } from '@xyflow/react'
 
@@ -36,7 +37,8 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     const editorSidebarWidth = useStore((state) => state.editorSidebarWidth)
     const setEditorSidebarWidth = useStore((state) => state.setEditorSidebarWidth)
     const activeFlow = useStore((state) => state.activeFlow)
-    const hasActiveFlow = Boolean(activeFlow)
+    // A flow that failed to load has no inspector to resize.
+    const hasActiveFlow = useStore((state) => Boolean(state.activeFlow) && !flowLoadFailed(state.flowLoadFailure, state.activeFlow, state.activeProjectPath))
     const catalog = useFlowCatalogPanel()
     const [isEditorSidebarResizing, setIsEditorSidebarResizing] = useState(false)
     const workspaceRef = useRef<HTMLDivElement | null>(null)

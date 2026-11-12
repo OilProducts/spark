@@ -47,6 +47,8 @@ export interface RunsListSessionState {
     statusFilter?: RunStatusKind | null
     /** The run list's search, as typed. */
     searchQuery?: string
+    /** A run that was opened but isn't there (a stale link, a deleted run), until another opens. */
+    missingRunId?: string | null
     status: ResourceStatus
     error: string | null
     runs: RunRecord[]

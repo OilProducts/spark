@@ -11,6 +11,9 @@ import {
 } from '@/components/ui/collapsible'
 import { buildFlowTree, type FlowTreeNode } from '@/lib/flowPaths'
 
+/** A flow folder as people read it: "math-research" is "Math research", as flow pickers group it. */
+export const folderTitle = (folder: string) => folder.charAt(0).toUpperCase() + folder.slice(1).replace(/[-_]+/g, ' ')
+
 /** What a flow is called and does, shown in place of its file name. */
 export interface FlowLabel {
     title: string
@@ -196,7 +199,7 @@ function FlowTreeDirectoryRow({
                     ) : (
                         <Folder className="h-3.5 w-3.5 shrink-0" />
                     )}
-                    <span className="truncate">{node.name}</span>
+                    <span className="truncate">{folderTitle(node.name)}</span>
                 </Button>
             </CollapsibleTrigger>
             <CollapsibleContent className="space-y-1">

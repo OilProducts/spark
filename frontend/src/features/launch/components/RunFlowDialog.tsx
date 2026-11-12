@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { folderTitle } from '@/components/app/flow-tree'
 import { ArrowLeft, Search } from 'lucide-react'
 
 import { useStore } from '@/store'
@@ -29,7 +30,7 @@ export function openRunFlowDialog(detail: { projectPath?: string | null; flowNam
 // "software-development/review-change" lists under "Software development".
 const folderLabel = (name: string) => {
     const folder = name.includes('/') ? name.slice(0, name.indexOf('/')) : ''
-    return folder ? folder.charAt(0).toUpperCase() + folder.slice(1).replace(/[-_]+/g, ' ') : 'Other flows'
+    return folder ? folderTitle(folder) : 'Other flows'
 }
 
 const byTitle = (left: WorkspaceFlowResponse, right: WorkspaceFlowResponse) => (left.title || left.name).localeCompare(right.title || right.name)

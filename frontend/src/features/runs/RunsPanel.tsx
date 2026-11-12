@@ -1,4 +1,5 @@
 import { useShallow } from 'zustand/react/shallow'
+import { InlineError } from '@/components/app/inline-error'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
@@ -116,6 +117,7 @@ export function RunsPanel() {
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const projectRegistry = useStore((state) => state.projectRegistry)
     const selectedRunId = useStore(selectSelectedRunId)
+    const missingRunId = useStore((state) => state.runsListSession.missingRunId ?? null)
     const selectedRunStatusSync = useStore((state) => selectSelectedRunSession(state)?.statusSync ?? 'idle')
     const selectedRunStatusError = useStore((state) => selectSelectedRunSession(state)?.statusError ?? null)
     const setViewMode = useStore((state) => state.setViewMode)
@@ -516,6 +518,11 @@ export function RunsPanel() {
                             </button>
                         </AlertDescription>
                     </Alert>
+                ) : null}
+                {!selectedRunId && missingRunId ? (
+                    <InlineError data-testid="run-missing" title="This run isn’t here">
+                        There’s no run with the ID “{missingRunId}”. It may have been deleted, or the link is out of date.
+                    </InlineError>
                 ) : null}
                 {showRunSelectionEmptyState && (
                     <SheetEmpty

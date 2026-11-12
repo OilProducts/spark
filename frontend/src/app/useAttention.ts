@@ -3,6 +3,7 @@ import { useEffect, useRef, useSyncExternalStore } from 'react'
 import { useStore } from '@/store'
 import { requestNavigation } from '@/state/workspaceSlice'
 import { ATTENTION_CHANGED_EVENT, fetchPendingAttention, type AttentionItem } from '@/lib/api/attentionApi'
+import { triggerKey } from '@/lib/api/triggersApi'
 import { flowTitle, runTitle } from '@/features/runs/model/runOverviewModel'
 import type { RunRecord } from '@/features/runs/model/shared'
 
@@ -121,6 +122,12 @@ export function openChat(projectPath: string, conversationId: string, draft?: st
 export function openRun(runId: string) {
     useStore.getState().setRunsSelectedRunId(runId)
     useStore.getState().setViewMode('runs')
+}
+
+/** Opens a trigger in Triggers; a trigger's id only names it within its project. */
+export function openTrigger(projectPath: string, triggerId: string) {
+    useStore.getState().updateTriggersSession({ selectedTriggerId: triggerKey({ project_path: projectPath, id: triggerId }), createFormOpen: false })
+    useStore.getState().setViewMode('triggers')
 }
 
 export function openMission(id: string, projectPath: string) {

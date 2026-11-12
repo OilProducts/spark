@@ -205,7 +205,7 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
                         selectedNodeId: null,
                     },
                 } } : {}),
-                runsListSession: { ...state.runsListSession, selectedRunId: runId, ...unfiltered },
+                runsListSession: { ...state.runsListSession, selectedRunId: runId, missingRunId: null, ...unfiltered },
             }
         }),
     updateRunDetailSession: (runId, patch) =>
@@ -224,8 +224,8 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
             delete next[runId]
             return {
                 runDetailSessionsByRunId: next,
-                runsListSession: { ...state.runsListSession,
-                    selectedRunId: state.runsListSession.selectedRunId === runId ? null : state.runsListSession.selectedRunId },
+                // Only the server's "no such run" clears a run's session; an open one is then missing.
+                runsListSession: { ...state.runsListSession, ...(state.runsListSession.selectedRunId === runId ? { selectedRunId: null, missingRunId: runId } : {}) },
             }
         }),
 })

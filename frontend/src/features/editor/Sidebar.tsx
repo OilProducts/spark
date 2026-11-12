@@ -22,6 +22,7 @@ import {
     serializeContextKeyList,
 } from '@/lib/flowContracts'
 import { useEditorGraphBridgeRef } from './EditorGraphBridgeContext'
+import { flowLoadFailed } from './model/flowLoadFailure'
 
 const DEFAULT_NODE_INSPECTOR_SESSION = {
     showAdvanced: false,
@@ -330,7 +331,8 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const showGraphInspector = activeInspectorScope === 'graph'
     const showNodeInspector = activeInspectorScope === 'node'
     const showEdgeInspector = activeInspectorScope === 'edge'
-    const showSecondaryInspector = showGraphInspector || showNodeInspector || showEdgeInspector
+    const flowFailed = useStore((state) => flowLoadFailed(state.flowLoadFailure, state.activeFlow, state.activeProjectPath))
+    const showSecondaryInspector = !flowFailed && (showGraphInspector || showNodeInspector || showEdgeInspector)
 
     const handleEdgePropertyChange = (key: string, value: string | boolean) => {
         if (!selectedEdgeId || !activeFlow) return;

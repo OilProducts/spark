@@ -193,6 +193,9 @@ export interface WorkspaceSlice {
     clearProjectRegistrationError: () => void
     activeFlow: string | null
     setActiveFlow: (flow: string | null) => void
+    /** The open flow that couldn't load, in its project, and whether that project has no such flow. */
+    flowLoadFailure: { flow: string; project: string | null; missing: boolean } | null
+    setFlowLoadFailure: (failure: { flow: string; project: string | null; missing: boolean } | null) => void
     updateProjectSessionState: (projectPath: string, patch: ProjectSessionStatePatch) => void
 }
 

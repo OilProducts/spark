@@ -57,6 +57,8 @@ const placeKey = (place: Place) =>
  */
 export function addsEntry(state: AppState, from: Place, to: Place): boolean {
     if (placeKey(from) === placeKey(to)) return false
+    // A run that isn't there closes itself; its link's entry is rewritten, so Back doesn't reopen it.
+    if (from.runId && !to.runId && to.view === 'runs' && state.runsListSession.missingRunId === from.runId) return false
     if (from.view !== 'triggers' || to.view !== 'triggers') return true
     if (!from.triggerId && to.triggerId && window.innerWidth <= NARROW_VIEWPORT_MAX_WIDTH) return true
     return Boolean(to.triggerId) && state.triggersSession.triggers.some((trigger) => triggerKey(trigger) === from.triggerId)
