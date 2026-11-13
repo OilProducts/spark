@@ -21,12 +21,12 @@ Read the document before writing and send its opaque `revision` as `expected_rev
 ```sh
 spark settings get --base-url http://127.0.0.1:8000
 spark settings get --base-url http://127.0.0.1:8000 --project /absolute/project
-spark settings get --base-url http://127.0.0.1:8000 --project /absolute/project --conversation conversation-id
+spark settings get --base-url http://127.0.0.1:8000 --project /absolute/project --conversation-id conversation-id
 spark settings validate --base-url http://127.0.0.1:8000 --json settings-update.json
 spark settings set --base-url http://127.0.0.1:8000 --json settings-update.json
 ```
 
-Pass a filename to `--json`, or use `--json -` to read stdin. The corresponding endpoints are `GET /workspace/api/settings`, `POST /workspace/api/settings/validate`, and `PATCH /workspace/api/settings`. Reads accept `project_path` and `conversation_id` query parameters. Supported update sections are `runtime`, `connections`, `providers`, `agents`, `models`, `project_models`, `project_execution`, `conversation_models`, `client_preferences`, `llm_profiles`, and `execution_profiles`.
+`--json` takes inline JSON, a filename, or `-` to read stdin. The corresponding endpoints are `GET /workspace/api/settings`, `POST /workspace/api/settings/validate`, and `PATCH /workspace/api/settings`. Reads accept `project_path` and `conversation_id` query parameters. Supported update sections are `runtime`, `connections`, `providers`, `agents`, `models`, `project_models`, `project_execution`, `conversation_models`, `client_preferences`, `llm_profiles`, and `execution_profiles`.
 
 Example conversation override update:
 
@@ -58,7 +58,7 @@ The settings sections and dedicated profile editors provide explicit Save/Discar
 
 Server and Desktop bootstrap read `config/spark.toml` under its document lock before loading persisted runtime choices; a missing document is created with `schema_version = 1`. A core document declaring any other `schema_version`, and a `conversation.json` whose `settings_schema_version` is not 1, is rejected with an error naming the file and the version found. The earlier `ui-defaults.json` and Desktop `spark-desktop.json` sources are no longer imported; bootstrap fails with an error naming `config/ui-defaults.json` while that file exists, so delete it or move its values into `spark.toml`. Historical run snapshots, transcripts, tasks, caches and session state remain outside settings documents.
 
-Trigger definitions remain in their existing TOML files. Trigger reads include `revision`; PATCH bodies require `expected_revision`, and DELETE requires the `expected_revision` query parameter. Both use the shared per-document lock, reject stale writes with HTTP 409, and validate definition writes before atomic replacement. New definitions can only create an absent document. Runtime trigger state remains separate. CLI updates carry the revision in `--json`; deletion uses `spark trigger delete --id <id> --expected-revision <revision> --base-url <url>`. Trigger drafts retain their original revision across live changes and failed saves; Discard reloads current values.
+Trigger definitions remain in their existing TOML files. Trigger reads include `revision`; PATCH bodies require `expected_revision`, and DELETE requires the `expected_revision` query parameter. Both use the shared per-document lock, reject stale writes with HTTP 409, and validate definition writes before atomic replacement. New definitions can only create an absent document. Runtime trigger state remains separate. CLI updates carry the revision in `--json`; deletion uses `spark trigger delete <id> --project <path> --expected-revision <revision> --base-url <url>`. Trigger drafts retain their original revision across live changes and failed saves; Discard reloads current values.
 
 Client preference reads use `GET /workspace/api/settings?client_id=<id>` or
 `spark settings get --client <id>`. Save with the same settings endpoint/CLI and

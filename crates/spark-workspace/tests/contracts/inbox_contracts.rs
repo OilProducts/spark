@@ -85,7 +85,7 @@ impl Harness {
             .unwrap();
         self.handle(conversation_id)
     }
-    /// `spark send --to <to> --conversation <from> --message <message>`.
+    /// `spark send --to <to> --from <from> --message <message>`.
     fn send(&self, from: &str, to: &str, message: &str) -> Result<Value, WorkspaceError> {
         send_message(
             &self.settings,
@@ -271,9 +271,7 @@ fn inbox_batches_start_idle_turns_join_live_ones_and_drain_after_a_user_turn() {
     assert!(frame.contains(
         "When a run or descendant asks a question, you answer it. First decide whether you have the information to: this conversation,"
     ));
-    assert!(frame.contains(&format!(
-        "`spark send --to <handle> --conversation {handle}"
-    )));
+    assert!(frame.contains("`spark <domain> --help` lists every command and flag"));
 
     // A running turn that takes live messages gets the batch live.
     h.agent.live.store(true, Ordering::SeqCst);

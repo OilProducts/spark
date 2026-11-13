@@ -19,23 +19,23 @@ SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- f
 
 ## Edit A Flow
 
-Packaged example flows live under [crates/spark-assets/assets/flows/examples](../crates/spark-assets/assets/flows/examples). Copy one into your Spark home before editing:
+Packaged example flows live under [crates/spark-assets/assets/flows/examples](../crates/spark-assets/assets/flows/examples). Spark reads a project's own flows from `<project>/.spark/definitions/flows`. Copy one there before editing:
 
 ```bash
-mkdir -p ~/.spark-dev/flows
-cp -r crates/spark-assets/assets/flows/examples/simple-linear ~/.spark-dev/flows/my-first-flow
+mkdir -p .spark/definitions/flows
+cp -r crates/spark-assets/assets/flows/examples/simple-linear .spark/definitions/flows/my-first-flow
 ```
 
 Validate direct flow edits:
 
 ```bash
-cargo run -p spark-cli --bin spark -- flow validate --dir ~/.spark-dev/flows/my-first-flow --text
+cargo run -p spark-cli --bin spark -- flow validate --dir .spark/definitions/flows/my-first-flow --text
 ```
 
-Launch a saved flow through the development server:
+Launch it through the development server:
 
 ```bash
-SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- run launch --flow my-first-flow --project .
+SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- run start --project "$PWD" --flow my-first-flow --summary "Try my first flow"
 ```
 
 ## References

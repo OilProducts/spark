@@ -15,42 +15,6 @@ fn spark_bin() -> &'static str {
 }
 
 #[test]
-fn process_help_matches_top_level_contract() {
-    let output = Command::new(spark_bin())
-        .arg("--help")
-        .output()
-        .expect("run spark");
-
-    assert_eq!(output.status.code(), Some(0));
-    assert_eq!(
-        String::from_utf8(output.stdout).expect("stdout utf8"),
-        concat!(
-            "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation} ...\n",
-            "\n",
-            "Spark agent CLI\n",
-            "\n",
-            "positional arguments:\n",
-            "  {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation}\n",
-            "    convo               Conversation-scoped artifact commands\n",
-            "    send                Message another conversation by handle\n",
-            "    run                 Direct execution commands\n",
-            "    flow                Flow discovery and validation\n",
-            "    trigger             Workspace trigger management\n",
-            "    mission             Project mission management\n",
-            "    role                Standing role management\n",
-            "    playbook            Mission playbook discovery\n",
-            "    settings            Read, validate, and save workspace settings\n",
-            "    environment         This environment's pairing, tokens and links\n",
-            "    delegation          Hand a whole task to a linked environment\n",
-            "\n",
-            "options:\n",
-            "  -h, --help            show this help message and exit\n",
-        )
-    );
-    assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
-}
-
-#[test]
 fn process_flow_validate_dir_observes_stdout_json() {
     let temp_dir = temp_dir("process-validate");
     let flow_path = temp_dir.join("valid-flow");
@@ -213,7 +177,7 @@ fn process_flow_validate_through_the_api_exit_code_follows_the_report() {
     let validate = |body: &str, text: bool| {
         let (base_url, _requests) = serve_once(HttpResponse::json(200, body));
         let mut command = Command::new(spark_bin());
-        command.args(["flow", "validate", "--flow", "team/work", "--base-url"]);
+        command.args(["flow", "validate", "team/work", "--base-url"]);
         command.arg(base_url).env_clear();
         if text {
             command.arg("--text");
@@ -239,7 +203,7 @@ fn process_flow_validate_through_the_api_exit_code_follows_the_report() {
     let (base_url, _requests) =
         serve_once(HttpResponse::json(404, r#"{"detail":"Unknown flow."}"#));
     let output = Command::new(spark_bin())
-        .args(["flow", "validate", "--flow", "team/work", "--base-url"])
+        .args(["flow", "validate", "team/work", "--base-url"])
         .arg(base_url)
         .env_clear()
         .output()
@@ -247,13 +211,13 @@ fn process_flow_validate_through_the_api_exit_code_follows_the_report() {
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
 
-    // The flow name `validate` is not the validate route.
+    // A flow named `validate` is a name, not a route segment.
     let (base_url, requests) = serve_once(HttpResponse::json(
         200,
-        r#"{"name":"validate","status":"validation_error"}"#,
+        r#"{"status":"ok","diagnostics":[],"errors":[]}"#,
     ));
     let output = Command::new(spark_bin())
-        .args(["flow", "describe", "--flow", "validate", "--base-url"])
+        .args(["flow", "validate", "validate", "--base-url"])
         .arg(base_url)
         .env_clear()
         .output()
@@ -262,9 +226,9 @@ fn process_flow_validate_through_the_api_exit_code_follows_the_report() {
     assert_eq!(
         requests
             .recv_timeout(Duration::from_secs(2))
-            .expect("describe request")
+            .expect("validate request")
             .path,
-        "/workspace/api/flows/validate"
+        "/workspace/api/flows/validate/validate"
     );
 }
 
@@ -366,9 +330,7 @@ fn process_flow_get_json_prints_files_response() {
         .args([
             "flow",
             "get",
-            "--flow",
             "software-development/implement-change-request",
-            "--json",
             "--base-url",
             base_url.as_str(),
         ])
@@ -393,18 +355,11 @@ fn process_flow_get_json_prints_files_response() {
 fn process_http_404_maps_to_stderr_json_and_exit_three() {
     let (base_url, _requests) = serve_once(HttpResponse::json(
         404,
-        r#"{"detail":"Unknown flow: missing"}"#,
+        r#"{"detail":"Unknown pipeline: missing"}"#,
     ));
 
     let output = Command::new(spark_bin())
-        .args([
-            "flow",
-            "describe",
-            "--flow",
-            "missing",
-            "--base-url",
-            base_url.as_str(),
-        ])
+        .args(["run", "get", "missing", "--base-url", base_url.as_str()])
         .env_clear()
         .output()
         .expect("run spark");
@@ -413,7 +368,9 @@ fn process_http_404_maps_to_stderr_json_and_exit_three() {
     assert_eq!(String::from_utf8(output.stdout).expect("stdout utf8"), "");
     assert_eq!(
         String::from_utf8(output.stderr).expect("stderr utf8"),
-        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing\"}\n"
+        format!(
+            "{{\"ok\": false, \"error\": \"Unknown pipeline: missing\", \"exit_code\": 3, \"status_code\": 404, \"target\": \"{base_url}\", \"target_source\": \"flag\"}}\n"
+        )
     );
 }
 
@@ -425,14 +382,7 @@ fn process_http_nested_detail_error_maps_to_stderr_json() {
     ));
 
     let output = Command::new(spark_bin())
-        .args([
-            "flow",
-            "describe",
-            "--flow",
-            "invalid",
-            "--base-url",
-            base_url.as_str(),
-        ])
+        .args(["run", "get", "invalid", "--base-url", base_url.as_str()])
         .env_clear()
         .output()
         .expect("run spark");
@@ -441,12 +391,14 @@ fn process_http_nested_detail_error_maps_to_stderr_json() {
     assert_eq!(String::from_utf8(output.stdout).expect("stdout utf8"), "");
     assert_eq!(
         String::from_utf8(output.stderr).expect("stderr utf8"),
-        "{\"ok\": false, \"status_code\": 400, \"error\": \"Nested detail process error\"}\n"
+        format!(
+            "{{\"ok\": false, \"error\": \"Nested detail process error\", \"exit_code\": 1, \"status_code\": 400, \"target\": \"{base_url}\", \"target_source\": \"flag\"}}\n"
+        )
     );
 }
 
 #[test]
-fn process_convo_run_request_posts_json_payload() {
+fn process_run_start_with_conversation_posts_json_payload() {
     let (base_url, requests) = serve_once(HttpResponse::json(
         200,
         r#"{"ok":true,"flow_run_request_id":"flow-run-request-process"}"#,
@@ -454,8 +406,8 @@ fn process_convo_run_request_posts_json_payload() {
 
     let output = Command::new(spark_bin())
         .args([
-            "convo",
-            "run-request",
+            "run",
+            "start",
             "--conversation",
             "amber-otter",
             "--flow",
@@ -524,7 +476,7 @@ fn process_trigger_stdin_payload_errors_before_server_dispatch() {
     assert_eq!(String::from_utf8(output.stdout).expect("stdout utf8"), "");
     assert_eq!(
         String::from_utf8(output.stderr).expect("stderr utf8"),
-        "{\"ok\": false, \"error\": \"Trigger payload must be a JSON object.\"}\n"
+        "{\"ok\": false, \"error\": \"--json must be a JSON object.\", \"exit_code\": 1}\n"
     );
 }
 
@@ -544,7 +496,7 @@ fn process_trigger_list_text_executes_http_and_renders_rows() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
-        "trigger-123: Nightly [webhook] -> ops/run\n  project=/repo enabled=True protected=False\n"
+        "trigger-123: Nightly [webhook] -> ops/run\n  project=/repo enabled=true protected=false\n"
     );
     assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
     let request = requests
@@ -565,12 +517,11 @@ fn process_trigger_http_error_maps_to_stderr_json() {
         .args([
             "trigger",
             "delete",
+            "protected",
             "--project",
             "/repo",
             "--expected-revision",
             "revision-1",
-            "--id",
-            "protected",
             "--base-url",
             base_url.as_str(),
         ])
@@ -582,7 +533,9 @@ fn process_trigger_http_error_maps_to_stderr_json() {
     assert_eq!(String::from_utf8(output.stdout).expect("stdout utf8"), "");
     assert_eq!(
         String::from_utf8(output.stderr).expect("stderr utf8"),
-        "{\"ok\": false, \"status_code\": 400, \"error\": \"Protected triggers cannot be deleted.\"}\n"
+        format!(
+            "{{\"ok\": false, \"error\": \"Protected triggers cannot be deleted.\", \"exit_code\": 1, \"status_code\": 400, \"target\": \"{base_url}\", \"target_source\": \"flag\"}}\n"
+        )
     );
 }
 
@@ -715,7 +668,7 @@ fn process_delegation_answer_sends_several_answers_by_question_id() {
     let (base_url, requests) = serve_once(HttpResponse::json(200, r#"{"answered":true}"#));
     let output = Command::new(spark_bin())
         .args(["delegation", "answer", "d-1", "--question", "q1"])
-        .args(["--answers-json", r#"{"choice":"A","notes":"None"}"#])
+        .args(["--answers", r#"{"choice":"A","notes":"None"}"#])
         .args(["--base-url", base_url.as_str()])
         .env_clear()
         .output()
@@ -730,6 +683,124 @@ fn process_delegation_answer_sends_several_answers_by_question_id() {
     );
 }
 
+/// `GET /workspace/api/delegations/{id}` as the server serializes it: the
+/// target's latest view, with its open requests, sits in `last_state`.
+fn delegation_record(open_requests: &[&str]) -> String {
+    let questions: Vec<Value> = open_requests
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "question_id": id,
+                "questions": [{"id": "choice", "question": "Which one?"}],
+            })
+        })
+        .collect();
+    serde_json::to_string(&spark_storage::environment::DelegationOut {
+        delegation_id: "d-1".to_string(),
+        environment_id: "env-b".to_string(),
+        project_path: "/repo".to_string(),
+        kind: "conversation".to_string(),
+        request: serde_json::json!({"message": "Do it."}),
+        request_sha256: String::new(),
+        caller: "cli".to_string(),
+        request_key: "key-1".to_string(),
+        owner_conversation_id: None,
+        phase: "accepted".to_string(),
+        target_id: Some("conversation-b".to_string()),
+        last_state: Some(serde_json::json!({
+            "delegation_id": "d-1",
+            "phase": "launched",
+            "target_kind": "conversation",
+            "target_id": "conversation-b",
+            "status": "waiting",
+            "questions": questions,
+        })),
+        result: None,
+        paused: None,
+        cancel_requested_at: None,
+        cancel_acknowledged_at: None,
+        created_at: "2026-11-13T00:00:00Z".to_string(),
+        updated_at: "2026-11-13T00:00:00Z".to_string(),
+    })
+    .expect("record JSON")
+}
+
+#[test]
+fn process_delegation_answer_without_a_question_answers_the_one_open_request() {
+    let (base_url, requests) = serve_sequence(vec![
+        HttpResponse::json(200, delegation_record(&["request-1"])),
+        HttpResponse::json(200, r#"{"answered":true}"#),
+    ]);
+    let output = Command::new(spark_bin())
+        .args([
+            "delegation",
+            "answer",
+            "d-1",
+            "--answers",
+            r#"{"choice":"A"}"#,
+        ])
+        .args(["--base-url", base_url.as_str()])
+        .env_clear()
+        .output()
+        .expect("run spark");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).expect("stdout JSON"),
+        serde_json::json!({"answered": true})
+    );
+    let read = requests.recv_timeout(Duration::from_secs(2)).expect("read");
+    assert_eq!(
+        (read.method.as_str(), read.path.as_str()),
+        ("GET", "/workspace/api/delegations/d-1")
+    );
+    let answer = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("answer");
+    assert_eq!(
+        (answer.method.as_str(), answer.path.as_str()),
+        (
+            "POST",
+            "/workspace/api/delegations/d-1/questions/request-1/answer"
+        )
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&answer.body).expect("request JSON"),
+        serde_json::json!({"answers": {"choice": "A"}})
+    );
+    assert!(requests.try_recv().is_err(), "the answer was sent once");
+
+    // Two open requests are ambiguous: nothing is sent.
+    let (base_url, requests) = serve_once(HttpResponse::json(
+        200,
+        delegation_record(&["request-1", "request-2"]),
+    ));
+    let output = Command::new(spark_bin())
+        .args([
+            "delegation",
+            "answer",
+            "d-1",
+            "--answers",
+            r#"{"choice":"A"}"#,
+        ])
+        .args(["--base-url", base_url.as_str()])
+        .env_clear()
+        .output()
+        .expect("run spark");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        stderr_error(&output),
+        "The delegation has 2 open questions (request-1, request-2); pass --question with one of them, from spark delegation get."
+    );
+    assert_eq!(
+        requests
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .method,
+        "GET"
+    );
+    assert!(requests.try_recv().is_err(), "no answer was sent");
+}
+
 #[test]
 fn process_delegation_start_requires_a_request_key_before_any_request() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
@@ -737,7 +808,7 @@ fn process_delegation_start_requires_a_request_key_before_any_request() {
 
     let output = Command::new(spark_bin())
         .args(["delegation", "start", "--environment", "env-1"])
-        .args(["--project", "/repo", "--kind", "conversation"])
+        .args(["--target-project", "/repo", "--kind", "conversation"])
         .args(["--message", "Do it.", "--base-url", base_url.as_str()])
         .env_clear()
         .output()
@@ -745,11 +816,14 @@ fn process_delegation_start_requires_a_request_key_before_any_request() {
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).expect("stderr JSON");
+    assert_eq!(error["exit_code"], 2);
+    let message = error["error"].as_str().expect("error");
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("the following arguments are required: --request-key"),
-        "{output:?}"
+        message.contains("the following required arguments were not provided"),
+        "{message}"
     );
+    assert!(message.contains("--request-key <KEY>"), "{message}");
     assert_no_pending_connection(&listener);
 }
 
@@ -1124,4 +1198,453 @@ fn process_flow_validate_dir_reports_why_a_flow_failed_to_load() {
     let text = validate(&broken, &["--text"]);
     assert!(text.contains("Diagnostics: 1"), "{text}");
     assert!(text.contains("start.md"), "{text}");
+}
+
+/// Runs spark with `stdin` on its standard input.
+fn spark_with_stdin(args: &[&str], stdin: &str) -> std::process::Output {
+    let mut child = Command::new(spark_bin())
+        .args(args)
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn spark");
+    // A command that never reads stdin may exit before this write lands.
+    let _ = child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(stdin.as_bytes());
+    child.wait_with_output().expect("wait spark")
+}
+
+fn stderr_error(output: &std::process::Output) -> String {
+    let error: Value = serde_json::from_slice(&output.stderr).expect("stderr json");
+    error["error"].as_str().expect("error text").to_string()
+}
+
+#[test]
+fn process_run_events_and_run_retry_take_the_same_run_id() {
+    let (base_url, requests) = serve_sequence(vec![
+        HttpResponse {
+            status: 200,
+            content_type: "text/event-stream",
+            body: String::new(),
+        },
+        HttpResponse::json(200, r#"{"run_id":"run-2"}"#),
+    ]);
+    for leaf in ["events", "retry"] {
+        let output = spark_with_stdin(&["run", leaf, "run-1", "--base-url", &base_url], "");
+        assert_eq!(output.status.code(), Some(0), "{leaf}: {output:?}");
+    }
+    let paths = (0..2)
+        .map(|_| {
+            requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("request")
+                .path
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        [
+            "/workspace/api/live/events?run_id=run-1",
+            "/workspace/api/runs/run-1/retry"
+        ]
+    );
+}
+
+#[test]
+fn process_run_list_get_and_cancel_call_their_routes() {
+    let (base_url, requests) = serve_sequence(vec![
+        HttpResponse::json(200, r#"{"runs":[]}"#),
+        HttpResponse::json(200, r#"{"run_id":"run-1","status":"running"}"#),
+        HttpResponse::json(200, r#"{"status":"cancel_requested"}"#),
+    ]);
+    for (command, method, path) in [
+        (
+            &["run", "list", "--project", "/repo"][..],
+            "GET",
+            "/attractor/runs?project_path=%2Frepo",
+        ),
+        (
+            &["run", "get", "run-1"],
+            "GET",
+            "/attractor/pipelines/run-1",
+        ),
+        (
+            &["run", "cancel", "run-1"],
+            "POST",
+            "/attractor/pipelines/run-1/cancel",
+        ),
+    ] {
+        let output = spark_with_stdin(&[command, &["--base-url", &base_url]].concat(), "");
+        assert_eq!(output.status.code(), Some(0), "{command:?}: {output:?}");
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request");
+        assert_eq!(
+            (request.method.as_str(), request.path.as_str()),
+            (method, path)
+        );
+    }
+}
+
+#[test]
+fn process_unknown_short_flow_name_suggests_the_namespaced_one_from_the_conversations_project() {
+    let (base_url, requests) = serve_sequence(vec![
+        HttpResponse::json(404, r#"{"detail":"Unknown flow: design-change"}"#),
+        HttpResponse::json(
+            200,
+            r#"{"rows":[{"kind":"conversation","payload":{"handle":"other-otter","project_path":"/other"}},{"kind":"conversation","payload":{"handle":"amber-otter","project_path":"/repo"}}]}"#,
+        ),
+        HttpResponse::json(
+            200,
+            r#"[{"name":"team/design-change"},{"name":"examples/simple-linear"}]"#,
+        ),
+    ]);
+    let output = spark_with_stdin(
+        &[
+            "run",
+            "start",
+            "--conversation",
+            "amber-otter",
+            "--flow",
+            "design-change",
+            "--summary",
+            "Design it",
+            "--base-url",
+            &base_url,
+        ],
+        "",
+    );
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(
+        stderr_error(&output),
+        "Unknown flow: design-change; did you mean team/design-change?"
+    );
+    let paths = (0..3)
+        .map(|_| {
+            requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("request")
+                .path
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        [
+            "/workspace/api/conversations/by-handle/amber-otter/flow-run-requests",
+            "/workspace/api/projects/conversations",
+            "/workspace/api/flows?project_path=%2Frepo",
+        ]
+    );
+}
+
+#[test]
+fn process_retry_conflict_names_run_continue() {
+    let (base_url, _requests) = serve_once(HttpResponse::json(
+        409,
+        r#"{"detail":"Retry requires a failed pipeline"}"#,
+    ));
+    let output = spark_with_stdin(&["run", "retry", "run-1", "--base-url", &base_url], "");
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        stderr_error(&output),
+        "Retry requires a failed pipeline; use spark run continue run-1 --from <node> to resume a run that did not fail"
+    );
+}
+
+#[test]
+fn process_run_start_from_a_conversation_and_a_project_explains_the_conflict() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+    let output = spark_with_stdin(
+        &[
+            "run",
+            "start",
+            "--conversation",
+            "amber-otter",
+            "--project",
+            "/repo",
+            "--flow",
+            "examples/simple-linear",
+            "--summary",
+            "Inspect",
+            "--base-url",
+            &base_url,
+        ],
+        "",
+    );
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(
+        stderr_error(&output),
+        "spark run start takes --conversation or --project, not both: a run started from a conversation runs in that conversation's project, under its mission or role budget. Drop --project."
+    );
+    assert_no_pending_connection(&listener);
+}
+
+#[test]
+fn process_flow_get_inputs_prints_only_the_declared_inputs() {
+    let flow_md = "---\ntype: Flow\nid: design\ntitle: Design\nschema_version: '2'\ninputs:\n- key: context.request.problem\n  label: Problem\n  description: What to design.\n  required: true\n---\n\nDesign it.\n";
+    let (base_url, requests) = serve_once(HttpResponse::json(
+        200,
+        serde_json::json!({
+            "name": "team/design",
+            "layer": "bundled",
+            "path": "/flows/team/design",
+            "files": [
+                {"name": "flow.md", "content": flow_md},
+                {"name": "nodes/start.md", "content": "---\nkind: start\n---\n"},
+            ],
+        })
+        .to_string(),
+    ));
+    let output = spark_with_stdin(
+        &[
+            "flow",
+            "get",
+            "team/design",
+            "--inputs",
+            "--base-url",
+            &base_url,
+        ],
+        "",
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).expect("stdout json"),
+        serde_json::json!([{
+            "key": "context.request.problem",
+            "label": "Problem",
+            "type": "string",
+            "description": "What to design.",
+            "required": true,
+        }])
+    );
+    let request = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("request");
+    assert_eq!(request.path, "/workspace/api/flows/team%2Fdesign/files");
+}
+
+#[test]
+fn process_json_flags_take_inline_json_a_file_or_stdin() {
+    let input = r#"{"k":{"v":1}}"#;
+    let file = temp_dir("json-input").join("input.json");
+    fs::write(&file, input).expect("write input");
+    let file = file.to_str().expect("utf8 path");
+    let launch = [
+        "run",
+        "start",
+        "--project",
+        "/repo",
+        "--flow",
+        "f",
+        "--summary",
+        "s",
+    ];
+    let cases: [(&[&str], &str, &str); 4] = [
+        (&launch, "--context", "/launch_context/k"),
+        (&launch, "--node-overrides", "/node_overrides/k"),
+        (
+            &["delegation", "answer", "d-1", "--question", "q1"],
+            "--answers",
+            "/answers/k",
+        ),
+        (&["trigger", "create", "--project", "/repo"], "--json", "/k"),
+    ];
+    for (command, flag, pointer) in cases {
+        for value in [input, file, "-"] {
+            let (base_url, requests) = serve_once(HttpResponse::json(200, "{}"));
+            let output = spark_with_stdin(
+                &[command, &[flag, value, "--base-url", &base_url]].concat(),
+                input,
+            );
+            assert_eq!(output.status.code(), Some(0), "{flag} {value}: {output:?}");
+            let request = requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("request");
+            let body: Value = serde_json::from_str(&request.body).expect("request JSON");
+            assert_eq!(
+                body.pointer(pointer),
+                Some(&serde_json::json!({"v": 1})),
+                "{flag} {value}: {body}"
+            );
+        }
+    }
+}
+
+/// A run's server for `run events --until-done`. The run reads as ended
+/// after `live_reads` reads; its journal holds `entries` (sequence, raw
+/// type); its event stream replays the entries after the requested cursor,
+/// then stays open when `hold_open`. Sends each request's path.
+fn serve_run(
+    entries: &'static [(u64, &'static str)],
+    live_reads: usize,
+    hold_open: bool,
+) -> (String, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+    let (sender, paths) = mpsc::channel();
+    thread::spawn(move || {
+        let mut run_reads = 0;
+        let mut open_streams = Vec::new();
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let path = read_http_request(&mut stream).path;
+            let _ = sender.send(path.clone());
+            if path.starts_with("/workspace/api/live/events") {
+                let after = path
+                    .split("run_sequence=")
+                    .nth(1)
+                    .map_or(0, |after| after.parse::<u64>().expect("cursor"));
+                let _ =
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n");
+                for (sequence, raw_type) in entries.iter().filter(|(sequence, _)| *sequence > after)
+                {
+                    let event = serde_json::json!({
+                        "type": "run.journal_entry",
+                        "cursor": {"kind": "run_sequence", "value": sequence},
+                        "payload": {"sequence": sequence, "raw_type": raw_type},
+                    });
+                    let _ = write!(stream, "data: {event}\n\n");
+                }
+                if hold_open {
+                    open_streams.push(stream);
+                }
+                continue;
+            }
+            let body = if path.ends_with("/journal?limit=1") {
+                serde_json::json!({"newest_sequence": entries.last().map(|(sequence, _)| sequence)})
+            } else {
+                run_reads += 1;
+                let ended = (run_reads > live_reads).then_some("2026-11-13T00:00:00Z");
+                serde_json::json!({"run_id": "run-1", "ended_at": ended})
+            }
+            .to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (base_url, paths)
+}
+
+/// `spark run events run-1 --until-done`, failing if it still runs after
+/// ten seconds.
+fn run_events_until_done(base_url: &str, extra: &[&str]) -> std::process::Output {
+    let mut child = Command::new(spark_bin())
+        .args([
+            "run",
+            "events",
+            "run-1",
+            "--until-done",
+            "--base-url",
+            base_url,
+        ])
+        .args(extra)
+        .env_clear()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn spark");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while child.try_wait().expect("poll spark").is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("spark run events --until-done kept reading after the run ended");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    child.wait_with_output().expect("wait spark")
+}
+
+const RUN: &str = "/attractor/pipelines/run-1";
+const JOURNAL: &str = "/attractor/pipelines/run-1/journal?limit=1";
+const EVENTS: &str = "/workspace/api/live/events?run_id=run-1";
+const RETRIED: &[(u64, &str)] = &[
+    (1, "StageCompleted"),
+    (2, "PipelineFailed"),
+    (3, "StageCompleted"),
+    (4, "PipelineCompleted"),
+];
+
+#[test]
+fn process_run_events_until_done_stops_at_a_live_runs_end_on_an_open_stream() {
+    let (base_url, paths) = serve_run(&[(1, "StageCompleted"), (2, "PipelineCompleted")], 1, true);
+    let output = run_events_until_done(&base_url, &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout.lines().count(), 2, "{stdout}");
+    assert_eq!(
+        paths.try_iter().collect::<Vec<_>>(),
+        [RUN, EVENTS, RUN, JOURNAL]
+    );
+}
+
+#[test]
+fn process_run_events_until_done_replays_a_retried_run_past_its_earlier_failure() {
+    let (base_url, paths) = serve_run(RETRIED, 0, true);
+    let output = run_events_until_done(&base_url, &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let raw_types = stdout
+        .lines()
+        .map(|line| {
+            let event: Value = serde_json::from_str(line).expect("event JSON");
+            event["payload"]["raw_type"].as_str().unwrap().to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        raw_types,
+        RETRIED
+            .iter()
+            .map(|(_, raw_type)| *raw_type)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(paths.try_iter().collect::<Vec<_>>(), [RUN, JOURNAL, EVENTS]);
+}
+
+#[test]
+fn process_run_events_until_done_after_an_ended_runs_last_cursor_exits_at_once() {
+    let (base_url, paths) = serve_run(RETRIED, 0, true);
+    let output = run_events_until_done(&base_url, &["--after", "4"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(paths.try_iter().collect::<Vec<_>>(), [RUN, JOURNAL]);
+}
+
+#[test]
+fn process_run_events_until_done_reports_a_stream_lost_before_the_run_ended() {
+    let (base_url, _paths) = serve_run(&[(1, "StageCompleted")], usize::MAX, false);
+    let output = run_events_until_done(&base_url, &[]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
+    assert_eq!(
+        output.stderr.iter().filter(|byte| **byte == b'\n').count(),
+        1
+    );
+    let error: Value = serde_json::from_slice(&output.stderr).expect("stderr json");
+    assert_eq!(
+        error,
+        serde_json::json!({
+            "ok": false,
+            "error": "The event stream for run run-1 ended before the run did; continue with spark run events run-1 --after 1 --until-done.",
+            "exit_code": 1,
+            "target": base_url,
+            "target_source": "flag",
+        })
+    );
 }

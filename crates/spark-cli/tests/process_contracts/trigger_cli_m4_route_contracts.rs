@@ -91,17 +91,16 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
         ],
     );
     assert_eq!(listed.status.code(), Some(0), "{}", stderr(&listed));
-    assert!(stdout(&listed).contains(&format!("  project={project} enabled=True")));
+    assert!(stdout(&listed).contains(&format!("  project={project} enabled=true")));
 
     let described = run_spark(
         temp.path(),
         [
             "trigger",
-            "describe",
+            "get",
+            trigger_id.as_str(),
             "--project",
             project,
-            "--id",
-            trigger_id.as_str(),
             "--text",
             "--base-url",
             server.base_url.as_str(),
@@ -127,10 +126,9 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
         [
             "trigger",
             "update",
+            trigger_id.as_str(),
             "--project",
             project,
-            "--id",
-            trigger_id.as_str(),
             "--json",
             update_payload.to_str().expect("update path"),
             "--base-url",
@@ -153,12 +151,11 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
         [
             "trigger",
             "delete",
+            trigger_id.as_str(),
             "--project",
             project,
             "--expected-revision",
             updated_payload["revision"].as_str().unwrap(),
-            "--id",
-            trigger_id.as_str(),
             "--message",
             "No longer needed & retired",
             "--base-url",
@@ -199,12 +196,11 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         [
             "trigger",
             "delete",
+            "trigger-protected",
             "--project",
             project,
             "--expected-revision",
             "protected",
-            "--id",
-            "trigger-protected",
             "--base-url",
             server.base_url.as_str(),
         ],
@@ -213,7 +209,10 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
     assert_eq!(stdout(&protected_delete), "");
     assert_eq!(
         stderr(&protected_delete),
-        "{\"ok\": false, \"status_code\": 400, \"error\": \"Protected triggers cannot be deleted.\"}\n"
+        format!(
+            "{{\"ok\": false, \"error\": \"Protected triggers cannot be deleted.\", \"exit_code\": 1, \"status_code\": 400, \"target\": \"{}\", \"target_source\": \"flag\"}}\n",
+            server.base_url
+        )
     );
 
     let protected_update_payload = temp.path().join("protected-update.json");
@@ -227,10 +226,9 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         [
             "trigger",
             "update",
+            "trigger-protected",
             "--project",
             project,
-            "--id",
-            "trigger-protected",
             "--json",
             protected_update_payload
                 .to_str()
@@ -242,7 +240,10 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
     assert_eq!(protected_update.status.code(), Some(1));
     assert_eq!(
         stderr(&protected_update),
-        "{\"ok\": false, \"status_code\": 400, \"error\": \"Protected triggers do not allow static context changes.\"}\n"
+        format!(
+            "{{\"ok\": false, \"error\": \"Protected triggers do not allow static context changes.\", \"exit_code\": 1, \"status_code\": 400, \"target\": \"{}\", \"target_source\": \"flag\"}}\n",
+            server.base_url
+        )
     );
 
     let unknown_flow_payload = temp.path().join("unknown-flow.json");
@@ -292,8 +293,7 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         temp.path(),
         [
             "trigger",
-            "describe",
-            "--id",
+            "get",
             "trigger-protected",
             "--base-url",
             server.base_url.as_str(),
@@ -330,7 +330,6 @@ async fn flow_validate_through_the_api_reports_an_invalid_project_copy_without_b
         let mut args = vec![
             "flow",
             "validate",
-            "--flow",
             "ops/run",
             "--project",
             project.as_str(),
@@ -523,10 +522,9 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
         [
             "mission",
             "get",
+            id,
             "--project",
             project,
-            "--id",
-            id,
             "--base-url",
             &server.base_url,
         ],
@@ -547,10 +545,9 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
         [
             "mission",
             "update",
+            id,
             "--project",
             project,
-            "--id",
-            id,
             "--json",
             payload_file.to_str().unwrap(),
             "--base-url",
@@ -596,10 +593,9 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
             [
                 "mission",
                 "update",
+                id,
                 "--project",
                 project,
-                "--id",
-                id,
                 "--json",
                 payload_file.to_str().unwrap(),
                 "--base-url",
@@ -628,14 +624,7 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     let mission_cli = |args: &[&str]| {
         let mut argv = vec!["mission"];
         argv.extend_from_slice(args);
-        argv.extend_from_slice(&[
-            "--project",
-            project,
-            "--id",
-            id,
-            "--base-url",
-            &server.base_url,
-        ]);
+        argv.extend_from_slice(&[id, "--project", project, "--base-url", &server.base_url]);
         let output = run_spark(temp.path(), argv);
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         serde_json::from_slice::<Value>(&output.stdout).unwrap()
@@ -671,10 +660,9 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
         vec![
             "trigger",
             "update",
+            trigger["id"].as_str().unwrap(),
             "--project",
             project,
-            "--id",
-            trigger["id"].as_str().unwrap(),
             "--json",
             action_file.to_str().unwrap(),
             "--base-url",
@@ -709,7 +697,7 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
             "send",
             "--to",
             handle,
-            "--conversation",
+            "--from",
             handle,
             "--message",
             "Focus on the parser",
@@ -725,8 +713,8 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     let output = run_spark(
         temp.path(),
         [
-            "convo",
-            "run-request",
+            "run",
+            "start",
             "--conversation",
             handle,
             "--flow",
@@ -743,6 +731,35 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     let mission = mission_cli(&["get"]);
     assert_eq!(mission["runs"][0]["run_id"], run_id);
     assert_eq!(mission["runs"][0]["summary"], "Parse it");
+    // A launch from the mission's own handle is held to the mission budget.
+    fs::write(
+        &payload_file,
+        json!({"revision": mission["revision"], "fields": {"budget": {"total_runs": 1}}})
+            .to_string(),
+    )
+    .unwrap();
+    mission_cli(&["update", "--json", payload_file.to_str().unwrap()]);
+    let refused = run_spark(
+        temp.path(),
+        [
+            "run",
+            "start",
+            "--conversation",
+            handle,
+            "--flow",
+            "work/parse",
+            "--summary",
+            "Parse again",
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    assert_ne!(refused.status.code(), Some(0));
+    assert!(
+        stderr(&refused).contains("total_runs (1)"),
+        "{}",
+        stderr(&refused)
+    );
 
     let closed = mission_cli(&["close", "--status", "done", "--reason", "Parser shipped"]);
     assert_eq!(closed["status"], "closed");
@@ -754,10 +771,9 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
             [
                 "mission",
                 removed,
+                id,
                 "--project",
                 project,
-                "--id",
-                id,
                 "--base-url",
                 &server.base_url,
             ],
@@ -908,7 +924,7 @@ async fn playbook_cli_lists_gets_and_validates_mission_playbooks() {
         serde_json::from_slice::<Value>(&output.stdout).unwrap(),
         json!([{"name":"bug-report","title":"Bug report","description":"Fix a bug."}])
     );
-    let output = spark(&["playbook", "get", "--name", "bug-report"]);
+    let output = spark(&["playbook", "get", "bug-report"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let playbook: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(playbook["text"], "Reproduce, then fix.");
@@ -919,14 +935,7 @@ async fn playbook_cli_lists_gets_and_validates_mission_playbooks() {
         serde_json::from_slice::<Value>(&output.stdout).unwrap(),
         json!([{"name":"bug-report","title":"Org bug report","description":"Fix it here."}])
     );
-    let output = spark(&[
-        "playbook",
-        "get",
-        "--project",
-        project,
-        "--name",
-        "bug-report",
-    ]);
+    let output = spark(&["playbook", "get", "bug-report", "--project", project]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let playbook: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(playbook["text"], "Org steps.");
@@ -1015,16 +1024,17 @@ async fn mission_create_from_a_conversation_takes_its_project_and_records_the_so
     assert_eq!(created["project_path"], paths.project_path.as_str());
     assert_eq!(created["source_conversation_id"], "conversation-chat");
 
-    let output = create(&["--project", &paths.project_path]);
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-
-    let output = create(&["--project", other.to_str().unwrap()]);
-    assert_ne!(output.status.code(), Some(0));
-    assert!(
-        stderr(&output).contains("does not match"),
-        "{}",
-        stderr(&output)
-    );
+    // The conversation names the project; naming one too is refused before
+    // any request, matching or not.
+    for project in [paths.project_path.as_str(), other.to_str().unwrap()] {
+        let output = create(&["--project", project]);
+        assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+        assert!(
+            stderr(&output).contains("cannot be used with"),
+            "{}",
+            stderr(&output)
+        );
+    }
     let listed: Value = reqwest::Client::new()
         .get(format!("{}/workspace/api/missions", server.base_url))
         .send()
@@ -1039,7 +1049,207 @@ async fn mission_create_from_a_conversation_takes_its_project_and_records_the_so
         .iter()
         .map(|mission| mission["project_path"].as_str().unwrap())
         .collect();
-    assert_eq!(projects, [paths.project_path.as_str(); 2]);
+    assert_eq!(projects, [paths.project_path.as_str()]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_start_from_a_conversation_suggests_flows_its_project_defines() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let project = temp.path().join("chat-project");
+    fs::create_dir_all(&project).unwrap();
+    let paths = spark_storage::ProjectRegistry::new(&settings.data_dir)
+        .ensure_project_paths(project.to_str().unwrap())
+        .unwrap();
+    // Created through a store that closes before the server opens its own.
+    {
+        let repository = spark_storage::ConversationRepository::new(
+            spark_storage::ConversationStore::open(&settings.data_dir).unwrap(),
+        );
+        repository
+            .conversation_handle("conversation-chat", Some("amber-anchor"))
+            .unwrap();
+        repository
+            .touch_conversation("conversation-chat", &paths.project_path)
+            .unwrap();
+    }
+    // Only the project defines the flow.
+    let name = crate::install_org_flow(
+        &project,
+        json!({
+            "schema_version": "2",
+            "id": "design_change",
+            "title": "Design Change",
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {"next": {"to": "done", "description": "Enter the first workflow step."}},
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}},
+                },
+            },
+        }),
+    );
+    let server = serve(build_app(settings.clone()).expect("app")).await;
+
+    let output = run_spark(
+        temp.path(),
+        [
+            "run",
+            "start",
+            "--conversation",
+            "amber-anchor",
+            "--flow",
+            "design-change",
+            "--summary",
+            "Design it",
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(
+        error["error"],
+        format!("Unknown flow: design-change; did you mean {name}?")
+    );
+    assert_eq!(error["status_code"], 404);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_events_until_done_ends_when_a_queued_run_is_canceled() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let project = registered_project(&settings, &temp.path().join("locked-project"));
+    let release = temp.path().join("release");
+    // Each run holds the project's lock until `release` exists.
+    let name = crate::install_org_flow(
+        Path::new(&project),
+        json!({
+            "schema_version": "2",
+            "id": "locked_wait",
+            "title": "Locked Wait",
+            "execution_lock": {"scope": "project", "key": "tail", "conflict_policy": "queue"},
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {"next": {"to": "work", "description": "Enter the first workflow step."}},
+                },
+                "work": {
+                    "kind": "tool",
+                    "config": {
+                        "kind": "tool",
+                        "command": format!(
+                            "for i in $(seq 1 1200); do [ -f '{}' ] && exit 0; sleep 0.05; done; exit 1",
+                            release.display()
+                        ),
+                        "exit_codes": {"0": "done"},
+                    },
+                    "routes": {"done": {"to": "done", "description": "The step is complete."}},
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}},
+                },
+            },
+        }),
+    );
+    let server = spawn_server(settings.clone()).await;
+    let base_url = server.base_url.as_str();
+    let spark = |args: &[&str]| -> Value {
+        let output = run_spark(
+            temp.path(),
+            args.iter().copied().chain(["--base-url", base_url]),
+        );
+        assert!(output.status.success(), "{args:?}: {}", stderr(&output));
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let start = |summary: &str| {
+        let started = spark(&[
+            "run",
+            "start",
+            "--project",
+            &project,
+            "--flow",
+            &name,
+            "--summary",
+            summary,
+        ]);
+        started["run_id"].as_str().expect("run id").to_string()
+    };
+    start("Hold the lock");
+    let queued = start("Wait for the lock");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while spark(&["run", "get", &queued])["status"] != "queued" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{queued} never queued"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let mut tail = Command::new(spark_bin())
+        .args([
+            "run",
+            "events",
+            &queued,
+            "--until-done",
+            "--base-url",
+            base_url,
+        ])
+        .env_clear()
+        .env("HOME", temp.path())
+        .env("SPARK_HOME", temp.path().join("spark-home"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn tail");
+    let (lines_tx, lines) = std::sync::mpsc::channel();
+    let tail_stdout = tail.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in std::io::BufRead::lines(std::io::BufReader::new(tail_stdout)) {
+            let _ = lines_tx.send(line.expect("tail line"));
+        }
+    });
+    let mut events = vec![lines
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the tail replays the queued run's history")];
+    spark(&["run", "cancel", &queued]);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = tail.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = tail.kill();
+            panic!("the tail of canceled run {queued} never ended");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    fs::write(&release, "").unwrap();
+    let mut tail_stderr = String::new();
+    std::io::Read::read_to_string(&mut tail.stderr.take().unwrap(), &mut tail_stderr).unwrap();
+    assert_eq!(status.code(), Some(0), "{tail_stderr}");
+    events.extend(lines.iter());
+    let events: Vec<Value> = events
+        .iter()
+        .map(|line| serde_json::from_str(line).expect("event JSON"))
+        .collect();
+    let raw_types: Vec<&str> = events
+        .iter()
+        .map(|event| event["payload"]["raw_type"].as_str().unwrap_or_default())
+        .collect();
+    assert!(raw_types.contains(&"CancelRequested"), "{raw_types:?}");
+    let last = events.last().unwrap();
+    assert_eq!(last["payload"]["raw_type"], "runtime", "{raw_types:?}");
+    assert_eq!(last["payload"]["payload"]["status"], "canceled");
+    assert_eq!(spark(&["run", "get", &queued])["status"], "canceled");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1085,7 +1295,7 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
     let listed = json_of(role_cli(&["list"]));
     assert_eq!(listed["roles"], json!([]), "{listed}");
     assert_ne!(role_cli(&["start"]).status.code(), Some(0));
-    let started = json_of(role_cli(&["start", "--role", "chief-of-staff"]));
+    let started = json_of(role_cli(&["start", "chief-of-staff"]));
     assert_eq!(started["name"], "chief-of-staff");
     let conversation: Value = reqwest::Client::new()
         .get(format!(
@@ -1102,7 +1312,7 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
         .unwrap();
     let handle = page_handle(&conversation);
     assert_ne!(
-        role_cli(&["send", "--role", "chief-of-staff", "--message", "Fixed it"])
+        role_cli(&["send", "chief-of-staff", "--message", "Fixed it"])
             .status
             .code(),
         Some(0)
@@ -1113,7 +1323,7 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
             "send",
             "--to",
             &handle,
-            "--conversation",
+            "--from",
             &handle,
             "--message",
             "Fixed it",
@@ -1124,7 +1334,7 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
     assert_eq!(sent["conversation_id"], started["conversation_id"]);
     let listed = json_of(role_cli(&["list"]));
     assert_eq!(listed["roles"][0]["event_seq"], 1, "{listed}");
-    let stopped = json_of(role_cli(&["stop", "--role", "chief-of-staff"]));
+    let stopped = json_of(role_cli(&["stop", "chief-of-staff"]));
     assert_eq!(stopped["state"], "stopped");
 
     registered_project(&settings, Path::new(project));

@@ -14,57 +14,20 @@ use spark_cli::{
     run_with_args_env_and_stdin, HttpMethod,
 };
 
-const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation} ...\n",
-    "\n",
-    "Spark agent CLI\n",
-    "\n",
-    "positional arguments:\n",
-    "  {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation}\n",
-    "    convo               Conversation-scoped artifact commands\n",
-    "    send                Message another conversation by handle\n",
-    "    run                 Direct execution commands\n",
-    "    flow                Flow discovery and validation\n",
-    "    trigger             Workspace trigger management\n",
-    "    mission             Project mission management\n",
-    "    role                Standing role management\n",
-    "    playbook            Mission playbook discovery\n",
-    "    settings            Read, validate, and save workspace settings\n",
-    "    environment         This environment's pairing, tokens and links\n",
-    "    delegation          Hand a whole task to a linked environment\n",
-    "\n",
-    "options:\n",
-    "  -h, --help            show this help message and exit\n",
-);
-
-#[test]
-fn top_level_help_matches_argparse_contract() {
-    let env = BTreeMap::new();
-    let output = run_with_args_and_env(["spark", "--help"], &env);
-
-    assert_eq!(output.exit_code, 0);
-    assert_eq!(output.stdout, TOP_LEVEL_HELP);
-    assert_eq!(output.stderr, "");
+/// The one JSON object a failure writes to stderr.
+fn stderr_json(output: &spark_cli::CommandOutput) -> Value {
+    assert_eq!(output.stderr.lines().count(), 1, "{}", output.stderr);
+    serde_json::from_str(&output.stderr).expect("stderr json")
 }
 
 #[test]
-fn missing_domain_prints_top_level_help() {
-    let env = BTreeMap::new();
-    let output = run_with_args_and_env(["spark"], &env);
-
-    assert_eq!(output.exit_code, 0);
-    assert_eq!(output.stdout, TOP_LEVEL_HELP);
-    assert_eq!(output.stderr, "");
-}
-
-#[test]
-fn launch_unknown_image_argument_keeps_usage_error_category() {
+fn start_unknown_image_argument_is_a_json_usage_error() {
     let env = BTreeMap::new();
     let output = run_with_args_and_env(
         [
             "spark",
             "run",
-            "launch",
+            "start",
             "--flow",
             "test-dispatch",
             "--summary",
@@ -79,11 +42,16 @@ fn launch_unknown_image_argument_keeps_usage_error_category() {
 
     assert_eq!(output.exit_code, 2);
     assert_eq!(output.stdout, "");
-    assert_eq!(
-        output.stderr,
-        "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation} ...\n\
-spark: error: unrecognized arguments: --image direct-selection\n"
+    let error = stderr_json(&output);
+    assert_eq!(error["ok"], false);
+    assert_eq!(error["exit_code"], 2);
+    let message = error["error"].as_str().unwrap();
+    assert!(
+        message.contains("unexpected argument '--image'"),
+        "{message}"
     );
+    assert!(!message.contains("as a value"), "{message}");
+    assert!(message.contains("Usage: spark run start"), "{message}");
 }
 
 #[test]
@@ -134,7 +102,7 @@ fn flow_list_text_executes_http_request_and_renders_rows() {
 }
 
 #[test]
-fn convo_run_request_posts_payload_and_prints_response_json() {
+fn run_start_with_conversation_posts_by_handle_and_prints_response_json() {
     let env = BTreeMap::new();
     let (base_url, requests) = serve_once(HttpResponse::json(
         200,
@@ -144,8 +112,8 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
     let output = run_with_args_and_env(
         [
             "spark",
-            "convo",
-            "run-request",
+            "run",
+            "start",
             "--conversation",
             "amber-otter",
             "--flow",
@@ -154,17 +122,17 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
             "Run the approved scope",
             "--goal",
             "Implement it.",
-            "--launch-context-json",
+            "--context",
             r#"{"context.request.summary":"Run the approved scope"}"#,
             "--model",
             "gpt-5",
-            "--llm-provider",
+            "--provider",
             "OpenAI",
-            "--llm-profile",
+            "--profile",
             "implementation",
             "--reasoning-effort",
             "FutureEffort",
-            "--node-overrides-json",
+            "--node-overrides",
             r#"{"verify":{"llm_model":"gpt-5.5","reasoning_effort":"high"}}"#,
             "--execution-profile",
             "local-dev",
@@ -206,7 +174,7 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
 }
 
 #[test]
-fn launch_commands_reject_supplied_node_overrides_that_are_not_a_json_object() {
+fn run_start_rejects_supplied_node_overrides_that_are_not_a_json_object() {
     let env = BTreeMap::new();
     let command = |base_url: &str, overrides: &str| -> Vec<String> {
         [
@@ -214,7 +182,7 @@ fn launch_commands_reject_supplied_node_overrides_that_are_not_a_json_object() {
             "test",
             "--summary",
             "Launch",
-            "--node-overrides-json",
+            "--node-overrides",
             overrides,
             "--base-url",
             base_url,
@@ -223,23 +191,19 @@ fn launch_commands_reject_supplied_node_overrides_that_are_not_a_json_object() {
         .to_vec()
     };
     for prefix in [
-        [
-            "spark",
-            "convo",
-            "run-request",
-            "--conversation",
-            "amber-otter",
-        ],
-        ["spark", "run", "launch", "--project", "/tmp/project"],
+        ["spark", "run", "start", "--conversation", "amber-otter"],
+        ["spark", "run", "start", "--project", "/tmp/project"],
     ] {
         // An empty `"$OVERRIDES"` must not launch without the overrides.
-        for (overrides, error) in [
-            ("", "Node overrides must be valid JSON"),
-            ("  ", "Node overrides must be valid JSON"),
+        for (overrides, exit_code, error) in [
+            ("", 2, "must not be empty"),
+            ("  ", 2, "must not be empty"),
             (
                 r#"["verify"]"#,
-                "Node overrides must be a JSON object keyed by node id.",
+                1,
+                "--node-overrides must be a JSON object keyed by node id.",
             ),
+            ("{", 1, "--node-overrides inline value is not valid JSON"),
         ] {
             let (base_url, requests) = serve_once(HttpResponse::json(200, r#"{"ok":true}"#));
             let args = prefix
@@ -247,12 +211,15 @@ fn launch_commands_reject_supplied_node_overrides_that_are_not_a_json_object() {
                 .into_iter()
                 .chain(command(&base_url, overrides));
             let output = run_with_args_and_env(args, &env);
-            assert_eq!(output.exit_code, 1, "{prefix:?} {overrides:?}: {output:?}");
+            assert_eq!(
+                output.exit_code, exit_code,
+                "{prefix:?} {overrides:?}: {output:?}"
+            );
             assert_eq!(output.stdout, "");
+            let stderr = stderr_json(&output);
+            assert_eq!(stderr["exit_code"], exit_code);
             assert!(
-                output
-                    .stderr
-                    .starts_with(&format!("{{\"ok\": false, \"error\": \"{error}")),
+                stderr["error"].as_str().unwrap().contains(error),
                 "{prefix:?} {overrides:?}: {}",
                 output.stderr
             );
@@ -281,14 +248,14 @@ fn launch_commands_reject_supplied_node_overrides_that_are_not_a_json_object() {
 }
 
 #[test]
-fn run_launch_requires_project_when_conversation_is_omitted() {
+fn run_start_requires_a_conversation_or_a_project() {
     let env = BTreeMap::new();
 
     let output = run_with_args_and_env(
         [
             "spark",
             "run",
-            "launch",
+            "start",
             "--flow",
             "test",
             "--summary",
@@ -299,16 +266,19 @@ fn run_launch_requires_project_when_conversation_is_omitted() {
         &env,
     );
 
-    assert_eq!(output.exit_code, 1);
+    assert_eq!(output.exit_code, 2);
     assert_eq!(output.stdout, "");
-    assert_eq!(
-        output.stderr,
-        "{\"ok\": false, \"error\": \"spark run launch requires --project when --conversation is omitted.\"}\n"
+    let error = stderr_json(&output);
+    assert_eq!(error["exit_code"], 2);
+    let message = error["error"].as_str().unwrap();
+    assert!(
+        message.contains("<--conversation <HANDLE>|--project <PATH>>"),
+        "{message}"
     );
 }
 
 #[test]
-fn run_launch_retry_and_continue_send_expected_json_bodies() {
+fn run_start_retry_and_continue_send_expected_json_bodies() {
     let env = BTreeMap::new();
     let (launch_base_url, launch_requests) = serve_once(HttpResponse::json(
         200,
@@ -318,7 +288,7 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
         [
             "spark",
             "run",
-            "launch",
+            "start",
             "--flow",
             "test",
             "--summary",
@@ -329,9 +299,9 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
             "local-review",
             "--model",
             "gpt-5.3",
-            "--llm-provider",
+            "--provider",
             "Anthropic",
-            "--llm-profile",
+            "--profile",
             "launch-profile",
             "--reasoning-effort",
             "LOW",
@@ -368,7 +338,6 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
             "spark",
             "run",
             "retry",
-            "--run",
             "run-1",
             "--conversation",
             "amber-otter",
@@ -396,23 +365,18 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
             "spark",
             "run",
             "continue",
-            "--run",
             "run-1",
-            "--start-node",
+            "--from",
             "next",
-            "--flow-source-mode",
-            "snapshot",
-            "--flow",
-            "ignored",
             "--project",
             "/repo",
             "--conversation",
             "amber-otter",
             "--model",
             "gpt-5.4",
-            "--llm-provider",
+            "--provider",
             "openai",
-            "--llm-profile",
+            "--profile",
             "default",
             "--reasoning-effort",
             "high",
@@ -439,51 +403,39 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
             "start_node": "next"
         })
     );
+
+    // `--flow` continues from the flow's current definition instead.
+    let plan = request_plan_with_args_env_and_stdin(
+        [
+            "spark",
+            "run",
+            "continue",
+            "run-1",
+            "--from",
+            "next",
+            "--flow",
+            "team/work",
+            "--base-url",
+            "http://127.0.0.1:8010",
+        ],
+        &env,
+        "",
+    )
+    .expect("continue plan");
+    assert_eq!(plan.path, "/workspace/api/runs/run-1/continue");
+    assert_eq!(
+        plan.body.expect("continue body"),
+        serde_json::json!({
+            "flow_name": "team/work",
+            "flow_source_mode": "flow_name",
+            "start_node": "next"
+        })
+    );
 }
 
 #[test]
-fn flow_describe_and_validate_text_match_python_labels() {
+fn flow_validate_by_name_renders_text_and_exits_one_on_errors() {
     let env = BTreeMap::new();
-    let (describe_base_url, describe_requests) = serve_once(HttpResponse::json(
-        200,
-        r#"{
-          "name":"software-development/implement-change-request",
-          "title":"Implement Change Request",
-          "description":"Execute approved work items.",
-          "graph_label":"Implement Change Request",
-          "graph_goal":"Implement approved changes",
-          "node_count":6,
-          "edge_count":6,
-          "features":{"has_human_gate":false,"has_manager_loop":true}
-        }"#,
-    ));
-    let describe_output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "describe",
-            "--flow",
-            "software-development/implement-change-request",
-            "--project",
-            "/work/app",
-            "--text",
-            "--base-url",
-            describe_base_url.as_str(),
-        ],
-        &env,
-    );
-    assert_eq!(describe_output.exit_code, 0);
-    assert!(!describe_output.stdout.contains("Launch Policy"));
-    assert!(describe_output.stdout.contains("Has Human Gate: False"));
-    assert!(describe_output.stdout.contains("Has Manager Loop: True"));
-    assert_eq!(
-        describe_requests
-            .recv_timeout(Duration::from_secs(2))
-            .expect("describe request")
-            .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request?project_path=%2Fwork%2Fapp"
-    );
-
     let (validate_base_url, validate_requests) = serve_once(HttpResponse::json(
         200,
         r#"{
@@ -499,7 +451,6 @@ fn flow_describe_and_validate_text_match_python_labels() {
             "spark",
             "flow",
             "validate",
-            "--flow",
             "software-development/implement-change-request",
             "--text",
             "--base-url",
@@ -522,7 +473,7 @@ fn flow_describe_and_validate_text_match_python_labels() {
 }
 
 #[test]
-fn flow_get_prints_each_file_exactly_and_json_prints_files_response() {
+fn flow_get_prints_the_files_response_and_text_prints_each_file_exactly() {
     let env = BTreeMap::new();
     let files = serde_json::json!({
         "name": "software-development/implement-change-request",
@@ -539,10 +490,10 @@ fn flow_get_prints_each_file_exactly_and_json_prints_files_response() {
             "spark",
             "flow",
             "get",
-            "--flow",
             "software-development/implement-change-request",
             "--project",
             "/project",
+            "--text",
             "--base-url",
             text_base_url.as_str(),
         ],
@@ -570,9 +521,7 @@ Path: /project/.spark/definitions/flows/software-development/implement-change-re
             "spark",
             "flow",
             "get",
-            "--flow",
             "software-development/implement-change-request",
-            "--json",
             "--base-url",
             json_base_url.as_str(),
         ],
@@ -588,112 +537,71 @@ Path: /project/.spark/definitions/flows/software-development/implement-change-re
 #[test]
 fn http_errors_map_detail_payloads_and_validation_arrays() {
     let env = BTreeMap::new();
-    let (missing_base_url, _missing_requests) = serve_once(HttpResponse::json(
-        404,
-        r#"{"detail":"Unknown flow: missing"}"#,
-    ));
-    let missing_output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "describe",
-            "--flow",
-            "missing",
-            "--base-url",
-            missing_base_url.as_str(),
-        ],
-        &env,
-    );
-    assert_eq!(missing_output.exit_code, 3);
-    assert_eq!(missing_output.stdout, "");
-    assert_eq!(
-        missing_output.stderr,
-        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing\"}\n"
-    );
-
-    let (validation_base_url, _validation_requests) = serve_once(HttpResponse::json(
-        422,
-        r#"{"detail":[{"loc":["body","flow_name"],"msg":"Field required"},{"loc":["query","surface"],"msg":"Invalid surface"}]}"#,
-    ));
-    let validation_output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "list",
-            "--base-url",
-            validation_base_url.as_str(),
-        ],
-        &env,
-    );
-    assert_eq!(validation_output.exit_code, 1);
-    assert_eq!(
-        validation_output.stderr,
-        "{\"ok\": false, \"status_code\": 422, \"error\": \"flow_name: Field required; query.surface: Invalid surface\"}\n"
-    );
-
-    let (top_level_error_base_url, _top_level_error_requests) = serve_once(HttpResponse::json(
-        409,
-        r#"{"error":"Conflict from top level","detail":"Lower priority detail"}"#,
-    ));
-    let top_level_error_output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "describe",
-            "--flow",
-            "conflict",
-            "--base-url",
-            top_level_error_base_url.as_str(),
-        ],
-        &env,
-    );
-    assert_eq!(top_level_error_output.exit_code, 1);
-    assert_eq!(
-        top_level_error_output.stderr,
-        "{\"ok\": false, \"status_code\": 409, \"error\": \"Conflict from top level\"}\n"
-    );
-
-    let (nested_error_base_url, _nested_error_requests) = serve_once(HttpResponse::json(
-        400,
-        r#"{"detail":{"error":"Nested detail error"}}"#,
-    ));
-    let nested_error_output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "describe",
-            "--flow",
-            "invalid",
-            "--base-url",
-            nested_error_base_url.as_str(),
-        ],
-        &env,
-    );
-    assert_eq!(nested_error_output.exit_code, 1);
-    assert_eq!(
-        nested_error_output.stderr,
-        "{\"ok\": false, \"status_code\": 400, \"error\": \"Nested detail error\"}\n"
-    );
+    for (status, body, exit_code, message) in [
+        (
+            404,
+            r#"{"detail":"Unknown pipeline"}"#,
+            3,
+            "Unknown pipeline",
+        ),
+        (
+            422,
+            r#"{"detail":[{"loc":["body","flow_name"],"msg":"Field required"},{"loc":["query","surface"],"msg":"Invalid surface"}]}"#,
+            1,
+            "flow_name: Field required; query.surface: Invalid surface",
+        ),
+        (
+            409,
+            r#"{"error":"Conflict from top level","detail":"Lower priority detail"}"#,
+            1,
+            "Conflict from top level",
+        ),
+        (
+            400,
+            r#"{"detail":{"error":"Nested detail error"}}"#,
+            1,
+            "Nested detail error",
+        ),
+    ] {
+        let (base_url, _requests) = serve_once(HttpResponse::json(status, body));
+        let output = run_with_args_and_env(
+            [
+                "spark",
+                "run",
+                "get",
+                "run-1",
+                "--base-url",
+                base_url.as_str(),
+            ],
+            &env,
+        );
+        assert_eq!(output.exit_code, exit_code, "{status}");
+        assert_eq!(output.stdout, "");
+        assert_eq!(
+            output.stderr,
+            format!(
+                "{{\"ok\": false, \"error\": \"{message}\", \"exit_code\": {exit_code}, \"status_code\": {status}, \"target\": \"{base_url}\", \"target_source\": \"flag\"}}\n"
+            )
+        );
+    }
 
     let (text_error_base_url, _text_error_requests) =
         serve_once(HttpResponse::text(500, "Plain text failure\n"));
     let text_error_output = run_with_args_and_env(
         [
             "spark",
-            "flow",
-            "describe",
-            "--flow",
-            "server-error",
+            "run",
+            "get",
+            "run-1",
             "--base-url",
             text_error_base_url.as_str(),
         ],
         &env,
     );
     assert_eq!(text_error_output.exit_code, 1);
-    assert_eq!(
-        text_error_output.stderr,
-        "{\"ok\": false, \"status_code\": 500, \"error\": \"Plain text failure\"}\n"
-    );
+    let error = stderr_json(&text_error_output);
+    assert_eq!(error["error"], "Plain text failure");
+    assert_eq!(error["status_code"], 500);
 }
 
 #[test]
@@ -713,6 +621,11 @@ fn http_transport_failures_return_request_failed_json() {
     assert!(output
         .stderr
         .starts_with("{\"ok\": false, \"error\": \"Request failed: "));
+    let error = stderr_json(&output);
+    assert_eq!(error["exit_code"], 1);
+    assert_eq!(error["target"], base_url);
+    assert_eq!(error["target_source"], "flag");
+    assert!(error.get("status_code").is_none());
 }
 
 #[test]
@@ -735,7 +648,6 @@ data: \"type\":\"run.journal_entry\",\"payload\":{\"sequence\":8,\"type\":\"log\
             "run-123",
             "--after",
             "7",
-            "--json",
             "--base-url",
             json_base_url.as_str(),
         ],
@@ -764,6 +676,7 @@ data: \"type\":\"run.journal_entry\",\"payload\":{\"sequence\":8,\"type\":\"log\
             "run",
             "events",
             "run-123",
+            "--text",
             "--base-url",
             text_base_url.as_str(),
         ],
@@ -782,7 +695,7 @@ fn send_messages_a_conversation_by_handle_and_replaces_the_role_and_mission_send
             "send",
             "--to",
             "brisk-otter",
-            "--conversation",
+            "--from",
             "amber-anchor",
             "--message",
             "Prefer small diffs",
@@ -802,11 +715,11 @@ fn send_messages_a_conversation_by_handle_and_replaces_the_role_and_mission_send
         plan.body.unwrap(),
         serde_json::json!({"conversation_handle": "amber-anchor", "message": "Prefer small diffs"})
     );
-    for missing in ["--to", "--conversation", "--message"] {
+    for missing in ["--to", "--from", "--message"] {
         let mut args = vec!["spark", "send", "--base-url", "http://localhost:8000"];
         for (flag, value) in [
             ("--to", "brisk-otter"),
-            ("--conversation", "amber-anchor"),
+            ("--from", "amber-anchor"),
             ("--message", "Hi"),
         ] {
             if flag != missing {
@@ -819,29 +732,16 @@ fn send_messages_a_conversation_by_handle_and_replaces_the_role_and_mission_send
         );
     }
     for removed in [
-        &[
-            "spark",
-            "role",
-            "send",
-            "--project",
-            "/p",
-            "--role",
-            "coordinator",
-        ][..],
-        &[
-            "spark",
-            "mission",
-            "send",
-            "--project",
-            "/p",
-            "--id",
-            "mission-1",
-        ][..],
+        &["spark", "role", "send", "coordinator", "--project", "/p"][..],
+        &["spark", "mission", "send", "mission-1", "--project", "/p"][..],
     ] {
         let output = run_with_args_and_env(removed.iter().copied(), &env);
         assert_eq!(output.exit_code, 2, "{output:?}");
         assert!(
-            output.stderr.contains("Unknown command"),
+            stderr_json(&output)["error"]
+                .as_str()
+                .unwrap()
+                .contains("unrecognized subcommand 'send'"),
             "{}",
             output.stderr
         );
@@ -854,10 +754,14 @@ fn flow_format_is_not_a_command() {
 
     assert_eq!(output.exit_code, 2, "{output:?}");
     assert_eq!(output.stdout, "");
+    let message = stderr_json(&output)["error"].as_str().unwrap().to_string();
     assert!(
-        output.stderr.contains("Unknown command"),
-        "{}",
-        output.stderr
+        message.contains("unrecognized subcommand 'format'"),
+        "{message}"
+    );
+    assert!(
+        message.contains("valid subcommands: list, get, validate"),
+        "{message}"
     );
 }
 
@@ -897,7 +801,7 @@ fn flow_validate_dir_json_uses_local_preview_without_source_checkout_guard() {
 }
 
 #[test]
-fn flow_validate_rejects_file_option_and_single_flow_files() {
+fn flow_validate_dir_rejects_single_flow_files() {
     let temp_dir = temp_dir("flow-validate-yaml");
     let flow_path = temp_dir.join("flow.yaml");
     // A whole-flow YAML file is no longer a flow source.
@@ -905,24 +809,14 @@ fn flow_validate_rejects_file_option_and_single_flow_files() {
     let flow_path = flow_path.to_str().expect("path");
     let env = BTreeMap::new();
 
-    let file_option =
-        run_with_args_and_env(["spark", "flow", "validate", "--file", flow_path], &env);
-    assert_eq!(file_option.exit_code, 2, "{file_option:?}");
-    assert_eq!(file_option.stdout, "");
-    assert!(
-        file_option
-            .stderr
-            .contains("unrecognized arguments: --file"),
-        "{}",
-        file_option.stderr
-    );
-
     let yaml_file = run_with_args_and_env(["spark", "flow", "validate", "--dir", flow_path], &env);
     assert_eq!(yaml_file.exit_code, 1, "{yaml_file:?}");
     assert_eq!(yaml_file.stdout, "");
     assert_eq!(
         yaml_file.stderr,
-        format!("{{\"ok\": false, \"error\": \"Flow directory not found: {flow_path}\"}}\n")
+        format!(
+            "{{\"ok\": false, \"error\": \"Flow directory not found: {flow_path}\", \"exit_code\": 1}}\n"
+        )
     );
     let _ = fs::remove_dir_all(temp_dir);
 }
@@ -1060,7 +954,6 @@ fn flow_validate_dir_and_flow_are_mutually_exclusive() {
             "spark",
             "flow",
             "validate",
-            "--flow",
             "examples/simple-linear",
             "--dir",
             "local",
@@ -1070,11 +963,8 @@ fn flow_validate_dir_and_flow_are_mutually_exclusive() {
 
     assert_eq!(output.exit_code, 2);
     assert_eq!(output.stdout, "");
-    assert_eq!(
-        output.stderr,
-        "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation} ...\n\
-spark: error: argument --dir: not allowed with argument --flow\n"
-    );
+    let message = stderr_json(&output)["error"].as_str().unwrap().to_string();
+    assert!(message.contains("cannot be used with"), "{message}");
 }
 
 #[test]
@@ -1089,24 +979,26 @@ fn request_plans_resolve_target_order_and_escape_path_segments() {
         .expect("flow list plan");
     assert_eq!(env_plan.method, HttpMethod::Get);
     assert_eq!(env_plan.base_url, "http://127.0.0.1:8010");
+    assert_eq!(env_plan.target_source, "env");
     assert_eq!(env_plan.path, "/workspace/api/flows");
 
     let explicit_plan = request_plan_with_args_env_and_stdin(
         [
             "spark",
             "flow",
-            "describe",
-            "--flow=software-development/implement-change-request",
+            "get",
+            "software-development/implement-change-request",
             "--base-url=http://127.0.0.1:8020",
         ],
         &env,
         "",
     )
-    .expect("flow describe plan");
+    .expect("flow get plan");
     assert_eq!(explicit_plan.base_url, "http://127.0.0.1:8020");
+    assert_eq!(explicit_plan.target_source, "flag");
     assert_eq!(
         explicit_plan.path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request"
+        "/workspace/api/flows/software-development%2Fimplement-change-request/files"
     );
 }
 
@@ -1163,7 +1055,7 @@ fn trigger_json_payload_rejects_non_object_stdin_before_dispatch() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "{\"ok\": false, \"error\": \"Trigger payload must be a JSON object.\"}\n"
+        "{\"ok\": false, \"error\": \"--json must be a JSON object.\", \"exit_code\": 1}\n"
     );
 }
 
@@ -1218,7 +1110,7 @@ fn trigger_commands_execute_http_requests_and_render_text() {
     assert_eq!(list_text_output.exit_code, 0);
     assert_eq!(
         list_text_output.stdout,
-        "trigger-123: Nightly [webhook] -> ops/run\n  project=/repo enabled=True protected=False\n"
+        "trigger-123: Nightly [webhook] -> ops/run\n  project=/repo enabled=true protected=false\n"
     );
 
     let (describe_base_url, describe_requests) = serve_once(HttpResponse::json(
@@ -1229,11 +1121,10 @@ fn trigger_commands_execute_http_requests_and_render_text() {
         [
             "spark",
             "trigger",
-            "describe",
+            "get",
+            "trigger-123",
             "--project",
             "/repo",
-            "--id",
-            "trigger-123",
             "--text",
             "--base-url",
             describe_base_url.as_str(),
@@ -1247,8 +1138,8 @@ fn trigger_commands_execute_http_requests_and_render_text() {
 Name: Nightly\n\
 Project: /repo\n\
 Source Type: webhook\n\
-Enabled: True\n\
-Protected: False\n\
+Enabled: true\n\
+Protected: false\n\
 Flow Target: ops/run\n\
 Last Fired: (never)\n\
 Last Result: (none)\n\
@@ -1329,10 +1220,9 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
             "spark",
             "trigger",
             "update",
+            "trigger/custom",
             "--project",
             "/repo",
-            "--id",
-            "trigger/custom",
             "--json",
             update_path.to_str().expect("update path"),
             "--base-url",
@@ -1363,12 +1253,11 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
             "spark",
             "trigger",
             "delete",
+            "trigger/custom",
             "--project",
             "/repo",
             "--expected-revision",
             "revision-1",
-            "--id",
-            "trigger/custom",
             "--message",
             "Retire it",
             "--base-url",
@@ -1401,12 +1290,11 @@ fn trigger_http_errors_preserve_cli_stderr_envelope() {
             "spark",
             "trigger",
             "delete",
+            "protected",
             "--project",
             "/repo",
             "--expected-revision",
             "revision-1",
-            "--id",
-            "protected",
             "--base-url",
             base_url.as_str(),
         ],
@@ -1417,39 +1305,45 @@ fn trigger_http_errors_preserve_cli_stderr_envelope() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "{\"ok\": false, \"status_code\": 400, \"error\": \"Protected triggers cannot be deleted.\"}\n"
+        format!(
+            "{{\"ok\": false, \"error\": \"Protected triggers cannot be deleted.\", \"exit_code\": 1, \"status_code\": 400, \"target\": \"{base_url}\", \"target_source\": \"flag\"}}\n"
+        )
     );
 }
 
 #[test]
-fn launch_goal_sources_are_mutually_exclusive() {
+fn run_start_goal_reads_stdin_and_only_one_flag_may_read_it() {
     let env = BTreeMap::new();
+    let args = [
+        "spark",
+        "run",
+        "start",
+        "--project",
+        "/tmp/project",
+        "--flow",
+        "test",
+        "--summary",
+        "Summary",
+        "--goal",
+        "-",
+        "--base-url",
+        "http://localhost:8000",
+    ];
 
-    let output = run_with_args_and_env(
-        [
-            "spark",
-            "run",
-            "launch",
-            "--flow",
-            "test",
-            "--summary",
-            "Summary",
-            "--project",
-            "/tmp/project",
-            "--goal",
-            "inline",
-            "--goal-file",
-            "goal.txt",
-        ],
+    let plan = request_plan_with_args_env_and_stdin(args, &env, "Goal text\n").unwrap();
+    assert_eq!(plan.path, "/workspace/api/runs/launch");
+    assert_eq!(plan.body.unwrap()["goal"], "Goal text");
+
+    let output = run_with_args_env_and_stdin(
+        args.into_iter().chain(["--context", "-"]),
         &env,
+        "Goal text\n",
     );
-
-    assert_eq!(output.exit_code, 2);
+    assert_eq!(output.exit_code, 2, "{output:?}");
     assert_eq!(output.stdout, "");
     assert_eq!(
-        output.stderr,
-        "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation} ...\n\
-spark: error: argument --goal-file: not allowed with argument --goal\n"
+        stderr_json(&output)["error"],
+        "--goal and --context both read stdin (-); pass one of them inline or as a file."
     );
 }
 
@@ -1641,10 +1535,9 @@ fn mission_stdin_uses_structured_json_and_run_request_rejects_task_flags() {
             "spark",
             "mission",
             "update",
+            "mission-123",
             "--project",
             "/project",
-            "--id",
-            "mission-123",
             "--json",
             "-",
             "--base-url",
@@ -1660,8 +1553,8 @@ fn mission_stdin_uses_structured_json_and_run_request_rejects_task_flags() {
         assert!(request_plan_with_args_env_and_stdin(
             [
                 "spark",
-                "convo",
-                "run-request",
+                "run",
+                "start",
                 "--conversation",
                 "amber-anchor",
                 "--flow",
@@ -1694,7 +1587,7 @@ fn mission_commands_use_project_scope_and_minimal_payloads() {
             "http://localhost:8000",
         ];
         if matches!(command, "get" | "update") {
-            args.extend(["--id", "mission-123"]);
+            args.insert(3, "mission-123");
         }
         if matches!(command, "create" | "update") {
             args.extend(["--json", "-"]);
@@ -1724,10 +1617,9 @@ fn mission_commands_use_project_scope_and_minimal_payloads() {
             "spark",
             "mission",
             command,
+            "mission-1",
             "--project",
             "/p",
-            "--id",
-            "mission-1",
             "--base-url",
             "http://localhost:8000",
         ];
@@ -1765,10 +1657,9 @@ fn mission_commands_use_project_scope_and_minimal_payloads() {
             "spark",
             "mission",
             "close",
+            "mission-1",
             "--project",
             "/p",
-            "--id",
-            "mission-1",
             "--base-url",
             "http://localhost:8000",
         ];
@@ -1777,15 +1668,7 @@ fn mission_commands_use_project_scope_and_minimal_payloads() {
     }
     for removed in ["events", "pause", "resume", "send"] {
         assert!(request_plan_with_args_env_and_stdin(
-            [
-                "spark",
-                "mission",
-                removed,
-                "--project",
-                "/p",
-                "--id",
-                "mission-1"
-            ],
+            ["spark", "mission", removed, "mission-1", "--project", "/p"],
             &env,
             ""
         )
@@ -1868,7 +1751,7 @@ fn settings_get_encodes_project_and_conversation_scopes() {
             "http://127.0.0.1:9876",
             "--project",
             "/tmp/a & b",
-            "--conversation",
+            "--conversation-id",
             "chat/1",
         ],
         &env,
@@ -1890,15 +1773,7 @@ fn run_questions_and_answers_use_existing_routes_and_owning_run() {
         r#"{"questions":[{"run_id":"child","question_id":"q1"}]}"#,
     ));
     let output = run_with_args_and_env(
-        [
-            "spark",
-            "run",
-            "questions",
-            "--run",
-            "root",
-            "--base-url",
-            &base,
-        ],
+        ["spark", "run", "questions", "root", "--base-url", &base],
         &env,
     );
     assert_eq!(output.exit_code, 0);
@@ -1907,49 +1782,128 @@ fn run_questions_and_answers_use_existing_routes_and_owning_run() {
         requests.recv_timeout(Duration::from_secs(2)).unwrap().path,
         "/attractor/pipelines/root/questions"
     );
-    for (flag, value) in [
-        ("--option", "approve"),
-        ("--text", "Use the existing design"),
+    for (flag, value, note) in [
+        ("--option", "approve", None),
+        (
+            "--text",
+            "Use the existing design",
+            Some("Checked the spec"),
+        ),
     ] {
         let (base, requests) = serve_once(HttpResponse::json(200, r#"{"ok":true}"#));
-        let output = run_with_args_and_env(
-            [
-                "spark",
-                "run",
-                "answer",
-                "--run",
-                "child",
-                "--question",
-                "q1",
-                flag,
-                value,
-                "--base-url",
-                &base,
-            ],
-            &env,
-        );
+        let mut args = vec![
+            "spark",
+            "run",
+            "answer",
+            "child",
+            "--question",
+            "q1",
+            flag,
+            value,
+            "--base-url",
+            &base,
+        ];
+        if let Some(note) = note {
+            args.extend(["--note", note]);
+        }
+        let output = run_with_args_and_env(args, &env);
         assert_eq!(output.exit_code, 0, "{}", output.stderr);
         let request = requests.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(
             request.path,
             "/attractor/pipelines/child/questions/q1/answer"
         );
+        let mut expected = serde_json::json!({"selected_value": value});
+        if let Some(note) = note {
+            expected["note"] = Value::from(note);
+        }
         assert_eq!(
             serde_json::from_str::<Value>(&request.body).unwrap(),
-            serde_json::json!({"selected_value": value})
+            expected
         );
     }
     for args in [vec![], vec!["--option", "a", "--text", "b"]] {
-        let mut command = vec![
-            "spark",
-            "run",
-            "answer",
-            "--run",
-            "child",
-            "--question",
-            "q1",
-        ];
+        let mut command = vec!["spark", "run", "answer", "child", "--question", "q1"];
         command.extend(args);
         assert_ne!(run_with_args_and_env(command, &env).exit_code, 0);
     }
+}
+
+#[test]
+fn a_leading_base_url_keeps_each_commands_error_guidance() {
+    let env = BTreeMap::new();
+    let error = |args: &[&str]| {
+        let output = run_with_args_and_env(
+            [&["spark", "--base-url", "http://127.0.0.1:9"][..], args].concat(),
+            &env,
+        );
+        assert_eq!(output.exit_code, 2, "{args:?}: {output:?}");
+        stderr_json(&output)["error"].as_str().unwrap().to_string()
+    };
+
+    let unknown = error(&["run", "bogus"]);
+    assert!(
+        unknown.contains(
+            "valid subcommands: start, list, get, cancel, retry, continue, events, questions, answer"
+        ),
+        "{unknown}"
+    );
+    let missing = error(&["run", "get"]);
+    assert!(
+        missing.contains("<RUN_ID>: Run id, from spark run list"),
+        "{missing}"
+    );
+}
+
+#[test]
+fn delegation_wait_rejects_an_unrepresentable_timeout_as_a_usage_error() {
+    let env = BTreeMap::new();
+    for timeout in ["1e300", "-1", "inf", "nan"] {
+        let output = run_with_args_and_env(
+            [
+                "spark",
+                "delegation",
+                "wait",
+                "d-1",
+                &format!("--timeout={timeout}"),
+                "--base-url",
+                "http://127.0.0.1:9",
+            ],
+            &env,
+        );
+        assert_eq!(output.exit_code, 2, "{timeout}: {output:?}");
+        let message = stderr_json(&output)["error"].as_str().unwrap().to_string();
+        assert!(
+            message.contains(&format!("invalid value '{timeout}' for '--timeout")),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn mission_create_takes_a_project_or_a_conversation_not_both() {
+    // No target is configured: a usage error proves the check runs before
+    // the target is resolved or any request is sent.
+    let env = BTreeMap::new();
+    let output = run_with_args_and_env(
+        [
+            "spark",
+            "mission",
+            "create",
+            "--project",
+            "/repo",
+            "--conversation",
+            "amber-otter",
+            "--json",
+            "{}",
+        ],
+        &env,
+    );
+
+    assert_eq!(output.exit_code, 2, "{output:?}");
+    let message = stderr_json(&output)["error"].as_str().unwrap().to_string();
+    assert!(
+        message.contains("'--project <PATH>' cannot be used with '--conversation <HANDLE>'"),
+        "{message}"
+    );
 }

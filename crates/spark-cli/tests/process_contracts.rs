@@ -3,6 +3,10 @@ mod isolated_home;
 #[path = "../../test-fixtures/isolated_spark_env.rs"]
 mod isolated_spark_env;
 pub(crate) use isolated_home::isolate_home;
+#[path = "process_contracts/cli_drift_guard_contracts.rs"]
+mod cli_drift_guard_contracts;
+#[path = "process_contracts/cli_help_contracts.rs"]
+mod cli_help_contracts;
 #[path = "process_contracts/cli_process_contracts.rs"]
 mod cli_process_contracts;
 #[path = "process_contracts/cli_shell_contracts.rs"]

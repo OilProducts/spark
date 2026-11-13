@@ -3969,7 +3969,7 @@ fn normalize_run_launch_request_payload(
         request.reasoning_effort.as_deref(),
         request.execution_profile_id.as_deref(),
         request.node_overrides,
-        "spark run launch",
+        "spark run start",
     )
 }
 
@@ -4239,7 +4239,7 @@ fn workspace_assistant_frame(
 /// How a chat or standing role runs a playbook through a mission.
 pub(crate) fn playbook_instructions(conversation_handle: &str, project_path: &str) -> String {
     format!(
-        "To run a playbook against an issue: `spark playbook list --project {project_path}` to pick one, create a mission with the playbook and the issue as its objective (`spark mission create --conversation {conversation_handle} --json -` with a JSON body whose `fields` object holds `title`, `description` set to the issue, and `playbook` set to its name), then start it with `spark mission start --project {project_path} --id <mission id>`."
+        "To run a playbook against an issue: `spark playbook list --project {project_path}` to pick one, create a mission with the playbook and the issue as its objective (`spark mission create --conversation {conversation_handle} --json -` with a JSON body whose `fields` object holds `title`, `description` set to the issue, and `playbook` set to its name), then start it with `spark mission start <mission id> --project {project_path}`."
     )
 }
 
@@ -4263,19 +4263,17 @@ pub(crate) fn project_storage_instructions(settings: &SparkSettings, project_pat
 /// `sources` names the frame's own context, ahead of the runs and repository.
 pub(crate) fn run_question_instructions(sources: &str) -> String {
     format!(
-        "When a run or descendant asks a question, you answer it. First decide whether you have the information to: {sources}, the runs' results and logs, and the repository. Investigate before deciding. If you have it, answer with `spark run answer --run <owning run id> --question <question id> (--option <value> | --text <text>)` and state your reasoning in your reply. Use the owning run id, not the root run id; `spark run questions --run <id>` lists open questions. Only if you do not have the information, ask the user for exactly what is missing and end your turn; relay their reply with `spark run answer` on the next turn. Never guess an answer."
+        "When a run or descendant asks a question, you answer it. First decide whether you have the information to: {sources}, the runs' results and logs, and the repository. Investigate before deciding. If you have it, answer with `spark run answer <owning run id> --question <question id> --option <value>` (or `--text <text>` for a free-text answer) and state your reasoning in your reply. Use the owning run id, not the root run id; `spark run questions <run id>` lists open questions. Only if you do not have the information, ask the user for exactly what is missing and end your turn; relay their reply the same way on the next turn. Never guess an answer."
     )
 }
 
 /// How a conversation agent drives Spark, shared by the chat, role, and mission frames.
 pub(crate) fn spark_control_surface(conversation_handle: &str, project_path: &str) -> String {
     format!(
-        "The Spark control surface is the `spark` CLI from this workspace's runtime. SPARK_HOME and SPARK_API_BASE_URL are already set in your environment. Flows are directories of markdown files (flow.md plus one file per node) and roles are <name>.md files. They resolve project first, then bundled: this project's definitions {org} (flows/ and roles/) replace any bundled flow or role of the same name in $SPARK_HOME/bundled, which is a read-only library rewritten on every start. Every flow can be launched.\n\
-        - `spark flow list` / `spark flow describe --flow <name>` / `spark flow get --flow <name>` / `spark flow validate --dir <flow directory>` (pass `--project {project_path}` to include this project's flows)\n\
-        - `spark convo run-request --conversation {handle} --flow <name> --summary <text>` launches the flow immediately and prints its run id. This is the only way you start workflow runs.\n\
-        Before launching, read the flow's `inputs`, declared in the frontmatter of its `flow.md`, with `spark flow get --flow <name>`, which prints the flow's files. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs. `--model`, `--llm-provider`, `--llm-profile` and `--reasoning-effort` apply run-wide but do not change nodes whose own or role execution sets those fields; to change specific nodes, pass `--node-overrides-json '{{\"<node id>\":{{\"llm_model\":\"…\",\"reasoning_effort\":\"…\"}}}}'` with node ids from `spark flow get`. Only `agent_task` nodes can be overridden, and every member of a shared `runtime.session` must end up on the same provider, profile and model.\n\
-        - `spark run retry|continue|events|questions|answer ...` inspect, resume, or answer existing runs.\n\
-        - `spark send --to <handle> --conversation {handle} --message <text>` messages another conversation (a chat, mission, or standing role) by its handle. It arrives there as a turn, marked as from your handle; replies come back to you the same way. `spark role list --project {project_path}` shows each standing role's conversation handle.\n\n\
+        "The Spark control surface is the `spark` CLI from this workspace's runtime, already configured for this Spark: SPARK_HOME and SPARK_API_BASE_URL are set in your environment. `spark <domain> --help` lists every command and flag; `spark --help` lists the domains. Flows are directories of markdown files (flow.md plus one file per node) and roles are <name>.md files. They resolve project first, then bundled: this project's definitions {org} (flows/ and roles/) replace any bundled flow or role of the same name in $SPARK_HOME/bundled, which is a read-only library rewritten on every start. Every flow can be launched; `spark flow list --project {project_path}` includes this project's flows.\n\
+        - Before launching, read the flow's declared inputs with `spark flow get <name> --inputs` and supply the required ones with `--context`, keyed by input key.\n\
+        - `spark run start --conversation {handle} --flow <name> --summary <text>` launches the flow immediately and prints its run id. This is the only way you start workflow runs.\n\
+        - `spark delegation --help` hands a whole task to a linked environment; `spark environment --help` manages those links.\n\n\
         Before you write or change a flow or role, read $SPARK_HOME/bundled/guides/flow-definition-authoring.md and follow its writing principles. Never edit $SPARK_HOME/bundled.\n\n\
         Never launch runs by other means: do not call the run APIs directly, do not invent run ids, and do not use any other Spark installation found on the filesystem (for example ~/.spark or ~/.local/bin/spark — these may be stale). If the control surface fails, report the failure instead of working around it.",
         handle = conversation_handle,

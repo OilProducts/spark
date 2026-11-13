@@ -9,8 +9,9 @@ Use it for launch, inspection, human-gate, trigger, mission, and standing-role t
 
 Control-surface contract:
 
-- Inside the assistant runtime, the canonical Spark agent control surface is the bare `spark ...` CLI.
-- In a human source-checkout shell, run the same CLI commands with `cargo run -p spark-cli --bin spark -- ...` before installing the binaries.
+- Inside the assistant runtime, the canonical Spark agent control surface is the `spark` CLI. `spark <domain> --help` lists every command and its flags; this guide says when to use them.
+- In a human source-checkout shell, run the same CLI commands through `cargo run -p spark-cli --bin spark --` before installing the binaries.
+- Commands print the server's JSON payload; `--text` opts into a readable rendering where offered. A failure prints one JSON object on stderr with the error, the exit code (2 for usage, 3 for not found) and, for server errors, the target it called.
 - The examples below use the assistant-runtime form unless a source-checkout example is called out explicitly.
 
 ## Environment And Bootstrap
@@ -33,8 +34,8 @@ SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- f
 Operational rules:
 
 - From a source checkout, always set `SPARK_HOME` before `spark-server init` or `spark-server serve`.
-- From a source checkout, always set `SPARK_API_BASE_URL` before `spark ...` commands that talk to a running server.
-- `spark flow validate --dir ...` is local and does not require a running server.
+- From a source checkout, always set `SPARK_API_BASE_URL` before `spark` commands that talk to a running server.
+- `spark flow validate --dir <flow directory>` is local and does not require a running server.
 - `SPARK_UI_DIR` overrides the served built UI directory when needed.
 
 ## Discover And Validate Flows
@@ -57,151 +58,46 @@ Spark writes nothing else into `.spark`: run history, memory and working data
 are private to the installation (see Storage, Removal And Reset). Spark runs
 no Git in `.spark`; versioning the definitions is the operator's choice.
 
-List flows:
+Read one flow before launching it, and validate flows you edit:
 
 ```bash
 spark flow list --project /absolute/path/to/project --text
-```
-
-```bash
-curl 'http://127.0.0.1:8000/workspace/api/flows?project_path=/absolute/path/to/project'
-```
-
-Describe one flow:
-
-```bash
-spark flow describe --flow examples/simple-linear --text
-```
-
-```bash
-curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear
-```
-
-Print a stored flow's files (its layer and directory, then each file under a
-`==> <file> <==` header; `--json` prints the JSON response):
-
-```bash
-spark flow get --flow examples/simple-linear
-```
-
-```bash
-curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear/files
-```
-
-Validate a flow directory you are editing directly:
-
-```bash
+spark flow get examples/simple-linear --inputs
+spark flow get examples/simple-linear --text
+spark flow validate examples/simple-linear --text
 spark flow validate --dir /absolute/path/to/flows/my-flow --text
 ```
 
-Validate a stored flow through the server:
+`flow list` gives each flow's name, title and description. `flow get` prints
+a flow's files (`--text` prints each under a `==> <file> <==` header), and
+`--inputs` prints only the inputs its `flow.md` declares. `flow validate --dir`
+checks a directory you are editing, with no server; `--project` names the
+project whose definitions resolve its roles, which otherwise is the project
+whose `.spark/definitions` holds the directory.
+
+## Launch Runs
+
+An agent launches from its conversation. The run reports back to that
+conversation and counts against its mission's or role's budget:
 
 ```bash
-spark flow validate --flow examples/simple-linear --text
+spark run start --conversation amber-otter --flow examples/simple-linear --summary "Inspect the repo and summarize next steps."
 ```
 
-```bash
-curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear/validate
-```
-
-## Launch Runs, Recover Runs, And Create Run Requests
-
-Assistant-runtime default:
-
-- Include `--conversation <handle>` for launches and run requests so the resulting artifact appears inline in the active chat.
-- Use `--project` without `--conversation` only for intentionally detached, project-scoped launches with no inline chat artifact.
-
-Launch a flow immediately inside the active conversation:
+A detached launch names a project instead, shows no launch card in any chat
+and reports nowhere:
 
 ```bash
-spark run launch \
-  --conversation amber-otter \
-  --flow examples/simple-linear \
-  --summary "Inspect the repo and summarize next steps."
-```
-
-```bash
-curl -X POST http://127.0.0.1:8000/workspace/api/runs/launch \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "conversation_handle": "amber-otter",
-    "flow_name": "examples/simple-linear",
-    "summary": "Inspect the repo and summarize next steps."
-  }'
-```
-
-Launch a detached flow immediately against an explicit project:
-
-```bash
-spark run launch \
-  --flow examples/simple-linear \
-  --summary "Inspect the repo and summarize next steps." \
-  --project /absolute/path/to/project
-```
-
-```bash
-curl -X POST http://127.0.0.1:8000/workspace/api/runs/launch \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "flow_name": "examples/simple-linear",
-    "summary": "Inspect the repo and summarize next steps.",
-    "project_path": "/absolute/path/to/project"
-  }'
-```
-
-Launch with explicit goal text or launch context:
-
-```bash
-spark run launch \
-  --flow examples/implement-review-loop \
-  --summary "Implement the approved change." \
-  --project /absolute/path/to/project \
-  --goal "Add the requested endpoint and tests." \
-  --launch-context-json '{"context.request.ticket":"ABC-123"}' \
-  --model gpt-5 \
-  --llm-provider openai \
-  --reasoning-effort high \
-  --execution-profile native
-```
-
-Source-checkout launch against the development backend:
-
-```bash
-SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- run launch \
-  --flow examples/simple-linear \
-  --summary "Inspect the repo and summarize next steps." \
-  --project "$PWD" \
-  --launch-context-json '{"context.request.summary":"Inspect the checkout."}'
-```
-
-Launch a run from a conversation (agents use this; it launches immediately, prints the run id, and shows the launch in the conversation):
-
-```bash
-spark convo run-request \
-  --conversation amber-otter \
-  --flow software-development/spec-implementation/implement-spec \
-  --summary "Draft the implementation flow for the approved spec."
-```
-
-```bash
-curl -X POST \
-  http://127.0.0.1:8000/workspace/api/conversations/by-handle/amber-otter/flow-run-requests \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "flow_name": "software-development/spec-implementation/implement-spec",
-    "summary": "Draft the implementation flow for the approved spec."
-  }'
+spark run start --project /absolute/path/to/project --flow examples/simple-linear --summary "Inspect the repo and summarize next steps."
 ```
 
 Notes:
 
-- `spark run launch` requires either `--conversation` or `--project`.
-- `spark convo run-request` launches any flow, resolved through the conversation's project.
-- Before launching, read the flow's `inputs`, declared in the frontmatter of its `flow.md`, with `spark flow get --flow <name>`, which prints the flow's files. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.
-- `--goal-file` and `--launch-context-file` are available when inline text is inconvenient.
-- Use `--model`, `--llm-provider`, `--llm-profile`, `--reasoning-effort`, and `--execution-profile` only when you need launch-time overrides; otherwise let the flow defaults and project settings apply. The model, provider, profile and reasoning-effort options apply run-wide but do not change nodes whose own or role execution sets those fields.
-- To change specific nodes, pass `--node-overrides-json '<JSON object>'` keyed by node ids from `spark flow get`; each value may set only `llm_model`, `llm_provider`, `llm_profile` and `reasoning_effort`, and a supplied field beats the node's and its role's. Only `agent_task` nodes can be overridden, and every member of a shared `runtime.session` must end up on the same provider, profile and model. For example, `--node-overrides-json '{"verify_findings":{"reasoning_effort":"high"}}'` with `--flow software-development/audit-codebase` raises only that node's reasoning effort.
-- A launch created without `--conversation` is project-scoped only, so no flow-launch card appears in chat.
+- Give `--conversation` or `--project`, not both: a conversation's runs use its project.
+- Before launching, read the flow's inputs with `spark flow get <name> --inputs` and supply the required ones with `--context`, keyed by input key (for example `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.
+- Every JSON flag takes inline JSON, a file path, or `-` for stdin; `--goal -` reads the goal from stdin.
+- Leave the model and execution flags out unless you need a launch-time override; the flow defaults and project settings then apply. They apply run-wide but do not change nodes whose own or role execution sets those fields. `--node-overrides` changes specific `agent_task` nodes, keyed by node id from `spark flow get <name>`; every member of a shared `runtime.session` must end up on the same provider, profile and model. `spark run start --help` lists the flags.
+- A launch over its mission's or role's budget is refused with the limit named.
 
 ## Recover Runs
 
@@ -213,172 +109,63 @@ descendants in place; successful children are consumed without rerunning. Existi
 working directories, snapshots, lineage, and prior attempt artifacts are preserved.
 `started` reports execution acceptance, not success. Continue creates a new run.
 
-Retry a run inside the active conversation:
-
 ```bash
-spark run retry \
-  --run <run_id> \
-  --conversation amber-otter
-```
-
-```bash
-curl -X POST http://127.0.0.1:8000/workspace/api/runs/<run_id>/retry \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "conversation_handle": "amber-otter"
-  }'
-```
-
-Continue a run from a checkpoint using the source run snapshot:
-
-```bash
-spark run continue \
-  --run <run_id> \
-  --start-node run_milestone \
-  --flow-source-mode snapshot \
-  --conversation amber-otter
-```
-
-```bash
-curl -X POST http://127.0.0.1:8000/workspace/api/runs/<run_id>/continue \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "conversation_handle": "amber-otter",
-    "start_node": "run_milestone",
-    "flow_source_mode": "snapshot"
-  }'
-```
-
-Continue a run against a named flow definition:
-
-```bash
-spark run continue \
-  --run <run_id> \
-  --start-node run_milestone \
-  --flow-source-mode flow_name \
-  --flow examples/simple-linear \
-  --conversation amber-otter
-```
-
-```bash
-curl -X POST http://127.0.0.1:8000/workspace/api/runs/<run_id>/continue \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "conversation_handle": "amber-otter",
-    "start_node": "run_milestone",
-    "flow_source_mode": "flow_name",
-    "flow_name": "examples/simple-linear"
-  }'
-```
-
-Continue with launch-time model overrides:
-
-```bash
-spark run continue \
-  --run <run_id> \
-  --start-node run_milestone \
-  --flow-source-mode snapshot \
-  --conversation amber-otter \
-  --model gpt-5.4 \
-  --llm-provider openai \
-  --llm-profile default \
-  --reasoning-effort high
+spark run retry <run_id> --conversation amber-otter
+spark run continue <run_id> --from run_milestone --conversation amber-otter
+spark run continue <run_id> --from run_milestone --flow examples/simple-linear --conversation amber-otter
 ```
 
 Notes:
 
-- `spark run retry` posts to `POST /workspace/api/runs/{run_id}/retry`.
-- `spark run continue` posts to `POST /workspace/api/runs/{run_id}/continue`.
+- Only a failed run can be retried. To resume a run that completed or was canceled, continue it from a node.
+- Continue runs the source run's flow snapshot; `--flow` runs that flow's current definition instead.
 - When `--conversation` is supplied, Spark resolves the handle, validates that any explicit `--project` matches the conversation project, creates a conversation-visible `run_recovery` artifact, and publishes the updated conversation snapshot.
 - The recovery artifact records the operation, source run, result run, status, project path, conversation context, continuation node and flow source, optional model/provider/profile/reasoning overrides, and any recovery error.
 - Retry records the same source and result run id. Continue records the original run as `source_run_id` and the newly created run as `result_run_id`.
 - For detached continue, omit `--project` to let Attractor inherit the source run working directory. Include `--project /absolute/path/to/project` only when intentionally overriding that working directory.
 - For conversation-scoped continue, omit `--project` unless validating an explicit project path against the conversation.
-- `--flow` is only sent when `--flow-source-mode flow_name`; snapshot continuations ignore it.
 
 ## Inspect Runs
 
-Use the CLI for live run tailing and the Attractor HTTP API for authoritative durable queries.
-
-Authoritative selected-run detail:
-
 ```bash
-curl http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>
+spark run list --project /absolute/path/to/project
+spark run get <run_id>
+spark run events <run_id> --after 1200 --until-done
+spark run cancel <run_id>
 ```
 
-Durable journal history, newest first:
+- `spark run get <run_id>` is the authoritative run detail.
+- `run events` prints one JSON object per event line (`--text` prints readable lines). It stops after 30 seconds unless `--until-done` keeps it running until the run ends; `--after` skips events up to a sequence you already have.
+- `GET /workspace/api/live/events` is the browser/operator live delivery stream. It multiplexes observed resources: conversations use `conversation_id` with required `conversation_project_path`, runs overview uses optional active-project `runs_project_path` and omits it for all-project runs, triggers use `triggers_project_path`, and selected-run tailing uses `run_id` only after selected-run detail plus durable journal hydration establish a cursor. `run_sequence` and `conversation_revision` are reconnect/catch-up cursors, not steady-state stream identity.
+- `GET /attractor/pipelines/{id}/events` is deprecated for Spark UI/operator clients. Prefer `spark run events <run_id>`.
+
+The durable journal and other selected-run surfaces have no CLI command:
 
 ```bash
 curl 'http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/journal?limit=50'
-```
-
-Load older journal history:
-
-```bash
 curl 'http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/journal?limit=50&before_sequence=1200'
-```
-
-Live-tail events after an already loaded sequence:
-
-```bash
-spark run events <pipeline_id> --after 1200
-spark run events <pipeline_id> --after 1200 --json
-```
-
-Operational rules:
-
-- `GET /attractor/pipelines/{id}` is the authoritative run-detail surface.
-- `GET /attractor/pipelines/{id}/journal` is the primary durable history-read surface.
-- `GET /workspace/api/live/events` is the browser/operator live delivery stream. It multiplexes observed resources: conversations use `conversation_id` with required `conversation_project_path`, runs overview uses optional active-project `runs_project_path` and omits it for all-project runs, triggers use `triggers_project_path`, and selected-run tailing uses `run_id` only after selected-run detail plus durable journal hydration establish a cursor. `run_sequence` and `conversation_revision` are reconnect/catch-up cursors, not steady-state stream identity.
-- `GET /attractor/pipelines/{id}/events` is deprecated for Spark UI/operator clients. Prefer `spark run events` or `GET /workspace/api/live/events?run_id=<pipeline_id>&run_sequence=1200`.
-
-Other selected-run inspection surfaces:
-
-```bash
 curl http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/checkpoint
 curl http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/context
-curl http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/questions
 curl http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/artifacts
 curl http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/graph-preview
-```
-
-Fetch one artifact inline or as a download:
-
-```bash
-curl http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/artifacts/path/to/file.txt
 curl -OJ 'http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/artifacts/path/to/file.txt?download=true'
 ```
 
+The journal reads newest first; `before_sequence` loads older history.
+
 ## Answer Pending Human Gates
 
-List pending questions:
-
 ```bash
-curl http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/questions
-```
-
-Submit an answer:
-
-```bash
-curl -X POST \
-  http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/questions/<question_id>/answer \
-  -H 'Content-Type: application/json' \
-  -d '{"selected_value":"approve"}'
+spark run questions <run_id>
+spark run answer <run_id> --question <question_id> --option approve
+spark run answer <run_id> --question <question_id> --option request_fixes --note "Tighten the error handling in the retry path."
 ```
 
 Use an option's `value` (the gate's decision ID) from the question payload;
-labels and keys are display only and are not accepted. `selected_value` picks
-the route; it is not a feedback channel — anything other than a declared
-decision ID is rejected and the gate keeps waiting.
-
-To send feedback with the selection, add an optional `note`:
-
-```bash
-curl -X POST \
-  http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/questions/<question_id>/answer \
-  -H 'Content-Type: application/json' \
-  -d '{"selected_value":"request_fixes","note":"Tighten the error handling in the retry path."}'
-```
+labels and keys are display only and are not accepted. The option picks the
+route; it is not a feedback channel — anything other than a declared
+decision ID is rejected and the gate keeps waiting. Send feedback with the
+selection as `--note`.
 
 The note reaches downstream nodes as the `human.gate.note` context value;
 nodes that should see it declare it in `contracts.reads_context`. Each
@@ -388,59 +175,15 @@ answered gate overwrites `human.gate.note` (empty when no note was given).
 
 A trigger belongs to a project: its definition is `triggers/<id>.toml` in the project's definitions (`<project>/.spark/definitions`), and a trigger is identified by its project plus its id.
 
-List triggers, across registered projects or in one:
-
 ```bash
-spark trigger list [--project /absolute/path/to/project] --text
+spark trigger list --project /absolute/path/to/project --text
+spark trigger get <trigger_id> --project /absolute/path/to/project --text
+spark trigger create --project /absolute/path/to/project --json /absolute/path/to/trigger.json --message "Nightly audit"
+spark trigger update <trigger_id> --project /absolute/path/to/project --json /absolute/path/to/trigger-patch.json
+spark trigger delete <trigger_id> --project /absolute/path/to/project --expected-revision <revision>
 ```
 
-```bash
-curl 'http://127.0.0.1:8000/workspace/api/triggers?project_path=/absolute/path/to/project'
-```
-
-Describe one trigger:
-
-```bash
-spark trigger describe --project /absolute/path/to/project --id <trigger_id> --text
-```
-
-```bash
-curl 'http://127.0.0.1:8000/workspace/api/triggers/<trigger_id>?project_path=/absolute/path/to/project'
-```
-
-Create a trigger from JSON in a registered project:
-
-```bash
-spark trigger create --project /absolute/path/to/project --json /absolute/path/to/trigger.json [--message <reason>]
-```
-
-```bash
-curl -X POST http://127.0.0.1:8000/workspace/api/triggers \
-  -H 'Content-Type: application/json' \
-  -d @/absolute/path/to/trigger.json   # includes "project_path" and optional "message"
-```
-
-Patch a trigger:
-
-```bash
-spark trigger update --project /absolute/path/to/project --id <trigger_id> --json /absolute/path/to/trigger-patch.json [--message <reason>]
-```
-
-```bash
-curl -X PATCH 'http://127.0.0.1:8000/workspace/api/triggers/<trigger_id>?project_path=/absolute/path/to/project' \
-  -H 'Content-Type: application/json' \
-  -d @/absolute/path/to/trigger-patch.json
-```
-
-Delete a trigger:
-
-```bash
-spark trigger delete --project /absolute/path/to/project --id <trigger_id> --expected-revision <revision> [--message <reason>]
-```
-
-```bash
-curl -X DELETE 'http://127.0.0.1:8000/workspace/api/triggers/<trigger_id>?project_path=/absolute/path/to/project&expected_revision=<revision>'
-```
+Update and delete name the trigger's current revision, from `spark trigger get <trigger_id> --project <path>`: update as `expected_revision` in its JSON, delete as `--expected-revision`. Without `--project`, `trigger list` covers every registered project.
 
 Trigger operation notes:
 
@@ -523,15 +266,15 @@ A mission is a project objective plus a long-lived agent conversation that owns 
 
 ```sh
 spark mission list --project /absolute/project
-spark mission get --project /absolute/project --id mission-ID
+spark mission get mission-ID --project /absolute/project
 spark mission create --project /absolute/project --json mission.json
 spark mission create --conversation <handle> --json mission.json
-spark mission update --project /absolute/project --id mission-ID --json - < update.json
-spark mission start --project /absolute/project --id mission-ID
-spark mission close --project /absolute/project --id mission-ID --status done --reason "Shipped and verified"
+spark mission update mission-ID --project /absolute/project --json update.json
+spark mission start mission-ID --project /absolute/project
+spark mission close mission-ID --project /absolute/project --status done --reason "Shipped and verified"
 ```
 
-`--json` reads a file or `-` for stdin; output is JSON. Create requires only a title:
+Create requires only a title:
 
 ```json
 {"fields":{"title":"Deliver search","description":"Search should return matching documents."},"actor":"assistant"}
@@ -547,9 +290,9 @@ Create with `--conversation <handle>` instead of `--project` to make a mission f
 
 Archive with `fields.archived: true` and restore with `false`. On a revision conflict, reread and reconcile; never blindly retry stale edits. Listing returns `missions`, ordered by creation time then ID; `GET /workspace/api/missions` without `project_path` lists every project's missions.
 
-Creating a mission also creates its conversation (`conversation_id`, the mission ID) and handle, without starting a turn, so a draft can be messaged with `spark send`. A draft holds its inbox: messages and mission-targeted trigger deliveries wait until start, which sends the objective as the first turn together with them. From then on, the mission's inbox (see Conversation inboxes) delivers its events to that conversation as new turns, including while the mission waits; a closed mission still records events but never wakes. The mission agent launches flows with `spark convo run-request`; each launch joins the mission's `runs` roster, so its events come back to the mission. A launch over budget is refused with the limit named. The agent closes the mission with `spark mission close`; `POST /workspace/api/missions/{id}/cancel?project_path=...` cancels in-flight runs and closes it.
+Creating a mission also creates its conversation (`conversation_id`, the mission ID) and handle, without starting a turn, so a draft can be messaged with `spark send` (see Conversation inboxes). A draft holds its inbox: messages and mission-targeted trigger deliveries wait until start, which sends the objective as the first turn together with them. From then on, the mission's inbox (see Conversation inboxes) delivers its events to that conversation as new turns, including while the mission waits; a closed mission still records events but never wakes. The mission agent launches flows with `spark run start --conversation <mission handle> --flow <name> --summary <text>`; each launch joins the mission's `runs` roster, so its events come back to the mission. A launch over budget is refused with the limit named. The agent closes the mission with `spark mission close <mission id> --project <path> --status done --reason <text>`; `POST /workspace/api/missions/{id}/cancel?project_path=...` cancels in-flight runs and closes it.
 
-Questions from all descendants return to the mission with their owning run ID. List open questions with `spark run questions --run <id>`. Answer using `spark run answer --run <owning run id> --question <question id> --option <value>` or `--text <text>`. The mission agent answers every question itself when the objective, playbook, run results and logs, and the repository give it the information, stating its reasoning; only when that information is missing does it ask the user for exactly what is missing, end the turn, and relay their reply without guessing. A mission is Running during its question-handling turn and Needs you if it ends with an unanswered question. Answers from the Runs view also clear the roster wait.
+Questions from all descendants return to the mission with their owning run ID. List open questions with `spark run questions <run id>`. Answer using `spark run answer <owning run id> --question <question id> --option <value>`, or `--text <text>` for a free-text answer. The mission agent answers every question itself when the objective, playbook, run results and logs, and the repository give it the information, stating its reasoning; only when that information is missing does it ask the user for exactly what is missing, end the turn, and relay their reply without guessing. A mission is Running during its question-handling turn and Needs you if it ends with an unanswered question. Answers from the Runs view also clear the roster wait.
 
 ### Playbooks
 
@@ -557,7 +300,7 @@ A playbook is named, reusable guidance for a kind of mission: `playbooks/<name>.
 
 ```sh
 spark playbook list --project /absolute/project
-spark playbook get --project /absolute/project --name bug-report
+spark playbook get bug-report --project /absolute/project
 ```
 
 To run a playbook against an issue, list the playbooks, create a mission with the playbook and the issue as its objective, and start it:
@@ -576,8 +319,8 @@ A standing role is a role file (`roles/<name>.md`, resolved from the project's d
 
 ```bash
 spark role list --project /absolute/project
-spark role start --project /absolute/project --role <name>
-spark role stop --project /absolute/project --role <name>
+spark role start <name> --project /absolute/project
+spark role stop <name> --project /absolute/project
 ```
 
 Only a role whose file declares `standing: true` can be started. Starting a role records it, creates its conversation if it has none and gives it a first turn to begin its work; starting a stopped role resumes delivery. The Roles tab in the app starts a standing role and opens its conversation the same way. The role file also sets the role's launch limit:
@@ -588,7 +331,7 @@ budget:
   concurrent_runs: 4
 ```
 
-`budget` and its field are optional and default to the value shown; `budget` without `standing: true` is invalid. The budget is read from the role file as the project resolves it, so a project raises or lowers it by editing the role's file in its definitions. Spark's role record keeps only whether the role is stopped; its inbox and run roster belong to its conversation. `spark role list` shows each role's `conversation_handle` once its conversation exists; message a role with `spark send --to <that handle>`.
+`budget` and its field are optional and default to the value shown; `budget` without `standing: true` is invalid. The budget is read from the role file as the project resolves it, so a project raises or lowers it by editing the role's file in its definitions. Spark's role record keeps only whether the role is stopped; its inbox and run roster belong to its conversation. `spark role list --project <path>` shows each role's `conversation_handle` once its conversation exists; message a role with `spark send --to <that handle> --from <your handle> --message <text>`.
 
 The same operations are `GET /workspace/api/roles?project_path=...` and `POST /workspace/api/roles/{name}/start|stop?project_path=...`.
 
@@ -598,12 +341,49 @@ A role wakes on a new turn when the user writes in its conversation, when a run 
 
 Every conversation, whether a chat, mission or standing role, has an inbox in the conversation store. Run reports, trigger deliveries and messages from other conversations arrive there and reach the conversation as turns: one marked batch per turn, oldest first, at most one turn in flight. An idle conversation starts a turn for a batch; a busy one takes it into the running turn when the provider accepts live input, and otherwise keeps it for the next turn. A batch is about earlier work or relays a message: it is not a new request from the user, and an agent assesses it against the user's latest instructions. A mission or standing role delivers through its own gate (draft, closed, stopped); a chat always does.
 
-A run launched from a conversation (with `spark convo run-request`, an approved run request, or an approved proposed plan) belongs to that conversation for good: Spark records `context.spark_owner` as `{"conversation_id": ...}` at launch and replaces any owner a caller supplies. Child runs report to their root's owner. Completion, failure, cancellation, questions and recovery-decision waits each arrive once; ordinary progress does not wake anyone. A report wakes its own conversation even after the user moved on to another topic or thread; it does not move to the thread on screen. A run launched with no conversation is unowned and reports nowhere. If the owner conversation is deleted, its reports are dropped.
+A run launched from a conversation (with `spark run start --conversation <handle> --flow <name> --summary <text>`, an approved run request, or an approved proposed plan) belongs to that conversation for good: Spark records `context.spark_owner` as `{"conversation_id": ...}` at launch and replaces any owner a caller supplies. Child runs report to their root's owner. Completion, failure, cancellation, questions and recovery-decision waits each arrive once; ordinary progress does not wake anyone. A report wakes its own conversation even after the user moved on to another topic or thread; it does not move to the thread on screen. A run launched with no conversation is unowned and reports nowhere. If the owner conversation is deleted, its reports are dropped.
 
 Message any conversation by handle:
 
 ```sh
-spark send --to <recipient handle> --conversation <your handle> --message "The review flow is fixed"
+spark send --to <recipient handle> --from <your handle> --message "The review flow is fixed"
 ```
 
-The same request is `POST /workspace/api/conversations/by-handle/{recipient handle}/messages` with `{"conversation_handle": "<your handle>", "message": "<text>"}`; it answers 202 once the message is stored, not once the recipient replies. Each call is a new message, so a repeated send arrives twice. The recipient sees your handle, your project and, for a mission or standing role, its label; it replies with `spark send --to <your handle>`. Handles work across projects, and a conversation can message itself. Find a standing role's handle with `spark role list`, a mission's with `spark mission get`, and your own in your instructions.
+The same request is `POST /workspace/api/conversations/by-handle/{recipient handle}/messages` with `{"conversation_handle": "<your handle>", "message": "<text>"}`; it answers 202 once the message is stored, not once the recipient replies. Each call is a new message, so a repeated send arrives twice. The recipient sees your handle, your project and, for a mission or standing role, its label; it replies the same way, to your handle. Handles work across projects, and a conversation can message itself. Find a standing role's handle with `spark role list --project <path>`, a mission's with `spark mission get <mission id> --project <path>`, and your own in your instructions.
+
+## Delegate To A Linked Environment
+
+A delegation hands a whole task, a flow run or a new conversation, to a project
+in a linked environment (see Link Environments). Its questions and its result
+come back to the run or conversation that started it.
+
+```bash
+spark delegation start --environment <environment_id> --target-project /absolute/path/there --kind flow --request-key nightly-checks --conversation <your handle> --flow examples/simple-linear --summary "Run the checks there."
+spark delegation get <delegation_id>
+spark delegation wait <delegation_id> --timeout 600
+spark delegation answer <delegation_id> --question <question_id> --option approve
+spark delegation cancel <delegation_id>
+```
+
+- `--request-key` is your name for the task: starting again with the same key returns the same delegation, so a retried step never starts a second task.
+- `--kind conversation` starts a conversation there with `--message` instead of running a flow.
+- `spark delegation get <delegation_id>` shows the open questions. Answer a conversation's several questions at once with `--answers`, keyed by question id.
+- `wait` prints the record once the delegation seals, or with `timed_out` when `--timeout` passes first; stopping it changes nothing on either side.
+
+## Link Environments
+
+Two environments link with a pairing code. On the environment to be reached,
+create a code; on the environment that will delegate, add the link with that
+code, the other environment's address and its id:
+
+```bash
+spark environment pair-code --label "Build server"
+spark environment link add --origin https://build.example:8000 --expected-id <environment_id> --code <code>
+spark environment link list
+spark environment link remove <environment_id>
+spark environment tokens list
+spark environment tokens revoke <token_id>
+```
+
+`tokens list` shows the tokens other environments reach this one with;
+`tokens revoke` cuts one off.

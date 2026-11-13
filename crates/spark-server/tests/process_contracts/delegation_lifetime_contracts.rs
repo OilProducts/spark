@@ -531,7 +531,7 @@ fn a_flow_tool_delegates_through_its_own_server() {
                     "env_map": {"SPARK_RUN_ID": "internal.run_id"},
                     "command": format!(
                         "spark delegation start --run \"$SPARK_RUN_ID\" --request-key handoff \
-                         --environment {} --project {} --kind flow --flow tests/hold-1 --summary Handoff",
+                         --environment {} --target-project {} --kind flow --flow tests/hold-1 --summary Handoff",
                         pair.b_id,
                         pair.b_project.display()
                     ),

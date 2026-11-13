@@ -128,7 +128,7 @@ impl Harness {
             self.project
         )
     }
-    /// The role's `spark convo run-request` from inside its turn.
+    /// The role's `spark run start --conversation` from inside its turn.
     fn launch(&self, name: &str, flow: &str, summary: &str) -> Result<String, WorkspaceError> {
         crate::conversations(self.settings.clone())
             .create_flow_run_request_by_handle(
@@ -775,11 +775,11 @@ fn a_question_from_a_run_the_role_launched_arrives_as_a_turn_with_answer_instruc
     assert!(turn.prompt.contains("q-1"), "{}", turn.prompt);
     let frame = frame(&turn);
     assert!(
-        frame.contains("spark run answer --run <owning run id>"),
+        frame.contains("spark run answer <owning run id>"),
         "{frame}"
     );
     assert!(frame.contains("Never guess an answer"), "{frame}");
-    assert!(frame.contains("`spark run retry|continue|events|questions|answer ...`"));
+    assert!(frame.contains("`spark <domain> --help` lists every command and flag"));
     harness.agent.release(1);
 }
 

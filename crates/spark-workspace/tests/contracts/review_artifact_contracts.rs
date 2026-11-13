@@ -1059,7 +1059,7 @@ fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
     let work = format!("private work area is {}", storage.join("work").display());
     for expected in [
         "You are the Spark workspace assistant",
-        "spark convo run-request",
+        "spark run start --conversation",
         "launches the flow immediately",
         "do not use any other Spark installation",
         "Every flow can be launched",
