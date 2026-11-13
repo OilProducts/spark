@@ -414,7 +414,8 @@ fn caller(
 
 /// Records a delegation to a linked environment before anything is sent; the
 /// follower submits it. The same caller and request key return the earlier
-/// record when the request matches, and conflict otherwise.
+/// record when the request matches, and conflict otherwise, even once its
+/// link is removed; only a new record needs a link.
 pub fn start(
     settings: &SparkSettings,
     store: &Arc<ConversationStore>,
@@ -436,33 +437,36 @@ pub fn start(
     let task = task(&request)?;
     let kind = request.kind.trim().to_string();
     let repository = environments(settings);
-    if repository.link(&environment_id)?.is_none() {
+    let (caller, owner_conversation_id) = caller(settings, store, &request)?;
+    let request_sha256 = request_digest(&project_path, &kind, &task);
+    let stored = if let Some(earlier) = repository.out_by_key(&caller, &request_key)? {
+        earlier
+    } else if repository.link(&environment_id)?.is_none() {
         return Err(WorkspaceError::NotFound(format!(
             "No link to environment {environment_id:?}; add one with spark environment link add."
         )));
-    }
-    let (caller, owner_conversation_id) = caller(settings, store, &request)?;
-    let request_sha256 = request_digest(&project_path, &kind, &task);
-    let stored = repository.create_out(&DelegationOut {
-        delegation_id: uuid::Uuid::new_v4().to_string(),
-        environment_id: environment_id.clone(),
-        project_path,
-        kind,
-        request: task,
-        request_sha256: request_sha256.clone(),
-        caller,
-        request_key: request_key.clone(),
-        owner_conversation_id,
-        phase: "created".to_string(),
-        target_id: None,
-        last_state: None,
-        result: None,
-        paused: None,
-        cancel_requested_at: None,
-        cancel_acknowledged_at: None,
-        created_at: String::new(),
-        updated_at: String::new(),
-    })?;
+    } else {
+        repository.create_out(&DelegationOut {
+            delegation_id: uuid::Uuid::new_v4().to_string(),
+            environment_id: environment_id.clone(),
+            project_path,
+            kind,
+            request: task,
+            request_sha256: request_sha256.clone(),
+            caller,
+            request_key: request_key.clone(),
+            owner_conversation_id,
+            phase: "created".to_string(),
+            target_id: None,
+            last_state: None,
+            result: None,
+            paused: None,
+            cancel_requested_at: None,
+            cancel_acknowledged_at: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        })?
+    };
     if stored.request_sha256 != request_sha256 || stored.environment_id != environment_id {
         return Err(WorkspaceError::Conflict(format!(
             "Request key {request_key:?} already names a different task, delegation {}.",

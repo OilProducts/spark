@@ -265,6 +265,20 @@ fn a_start_is_keyed_by_caller_and_request_key() {
         from_chat.owner_conversation_id.as_deref(),
         Some("chat-caller")
     );
+
+    // Once the link is removed, its records pause; a retry still returns its
+    // record or conflicts, and only a new task is refused.
+    delegations::remove_link(&home.settings, LINKED).unwrap();
+    let retried = home.start(home.flow_start("build", "Build it")).unwrap();
+    assert_eq!(retried.delegation_id, first.delegation_id);
+    assert!(retried.paused.is_some(), "{retried:?}");
+    let changed = home.start(home.flow_start("build", "Build something else"));
+    assert!(
+        matches!(changed, Err(WorkspaceError::Conflict(_))),
+        "{changed:?}"
+    );
+    let new = home.start(home.flow_start("deploy", "Deploy it"));
+    assert!(matches!(new, Err(WorkspaceError::NotFound(_))), "{new:?}");
 }
 
 #[test]

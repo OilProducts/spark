@@ -438,6 +438,21 @@ impl EnvironmentRepository {
         Ok(stored)
     }
 
+    /// The record `caller` keeps under `request_key`, if any.
+    pub fn out_by_key(&self, caller: &str, request_key: &str) -> Result<Option<DelegationOut>> {
+        Ok(self
+            .connection()?
+            .query_row(
+                &format!(
+                    "SELECT {OUT_COLUMNS} FROM delegations_out WHERE caller = ?1 \
+                     AND request_key = ?2"
+                ),
+                [caller, request_key],
+                out_row,
+            )
+            .optional()?)
+    }
+
     pub fn out(&self, delegation_id: &str) -> Result<Option<DelegationOut>> {
         Ok(self
             .connection()?
