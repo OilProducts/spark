@@ -1121,6 +1121,138 @@ async fn run_start_from_a_conversation_suggests_flows_its_project_defines() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_events_until_done_ends_when_a_queued_run_is_canceled() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let project = registered_project(&settings, &temp.path().join("locked-project"));
+    let release = temp.path().join("release");
+    // Each run holds the project's lock until `release` exists.
+    let name = crate::install_org_flow(
+        Path::new(&project),
+        json!({
+            "schema_version": "2",
+            "id": "locked_wait",
+            "title": "Locked Wait",
+            "execution_lock": {"scope": "project", "key": "tail", "conflict_policy": "queue"},
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {"next": {"to": "work", "description": "Enter the first workflow step."}},
+                },
+                "work": {
+                    "kind": "tool",
+                    "config": {
+                        "kind": "tool",
+                        "command": format!(
+                            "for i in $(seq 1 1200); do [ -f '{}' ] && exit 0; sleep 0.05; done; exit 1",
+                            release.display()
+                        ),
+                        "exit_codes": {"0": "done"},
+                    },
+                    "routes": {"done": {"to": "done", "description": "The step is complete."}},
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}},
+                },
+            },
+        }),
+    );
+    let server = spawn_server(settings.clone()).await;
+    let base_url = server.base_url.as_str();
+    let spark = |args: &[&str]| -> Value {
+        let output = run_spark(
+            temp.path(),
+            args.iter().copied().chain(["--base-url", base_url]),
+        );
+        assert!(output.status.success(), "{args:?}: {}", stderr(&output));
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let start = |summary: &str| {
+        let started = spark(&[
+            "run",
+            "start",
+            "--project",
+            &project,
+            "--flow",
+            &name,
+            "--summary",
+            summary,
+        ]);
+        started["run_id"].as_str().expect("run id").to_string()
+    };
+    start("Hold the lock");
+    let queued = start("Wait for the lock");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while spark(&["run", "get", &queued])["status"] != "queued" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{queued} never queued"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let mut tail = Command::new(spark_bin())
+        .args([
+            "run",
+            "events",
+            &queued,
+            "--until-done",
+            "--base-url",
+            base_url,
+        ])
+        .env_clear()
+        .env("HOME", temp.path())
+        .env("SPARK_HOME", temp.path().join("spark-home"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn tail");
+    let (lines_tx, lines) = std::sync::mpsc::channel();
+    let tail_stdout = tail.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in std::io::BufRead::lines(std::io::BufReader::new(tail_stdout)) {
+            let _ = lines_tx.send(line.expect("tail line"));
+        }
+    });
+    let mut events = vec![lines
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the tail replays the queued run's history")];
+    spark(&["run", "cancel", &queued]);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = tail.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = tail.kill();
+            panic!("the tail of canceled run {queued} never ended");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    fs::write(&release, "").unwrap();
+    let mut tail_stderr = String::new();
+    std::io::Read::read_to_string(&mut tail.stderr.take().unwrap(), &mut tail_stderr).unwrap();
+    assert_eq!(status.code(), Some(0), "{tail_stderr}");
+    events.extend(lines.iter());
+    let events: Vec<Value> = events
+        .iter()
+        .map(|line| serde_json::from_str(line).expect("event JSON"))
+        .collect();
+    let raw_types: Vec<&str> = events
+        .iter()
+        .map(|event| event["payload"]["raw_type"].as_str().unwrap_or_default())
+        .collect();
+    assert!(raw_types.contains(&"CancelRequested"), "{raw_types:?}");
+    let last = events.last().unwrap();
+    assert_eq!(last["payload"]["raw_type"], "runtime", "{raw_types:?}");
+    assert_eq!(last["payload"]["payload"]["status"], "canceled");
+    assert_eq!(spark(&["run", "get", &queued])["status"], "canceled");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());

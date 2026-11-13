@@ -1704,15 +1704,18 @@ fn stream_events(
     )
 }
 
-/// A root run's final event: completion, or failure (cancel included).
+/// An event that may end a root run: completion, failure, or the
+/// `canceled` status, which is all a run canceled before it started writes.
+// ponytail: a live run's cancel appends `PipelineFailed` right after its
+// `canceled` status; a check that beats that append stops before it.
 fn is_run_end(envelope: &Value) -> bool {
     let entry = &envelope["payload"];
-    envelope["type"] == "run.journal_entry"
-        && matches!(
-            entry["raw_type"].as_str(),
-            Some("PipelineCompleted" | "PipelineFailed")
-        )
-        && entry["source_scope"] != "child"
+    let ends = match entry["raw_type"].as_str() {
+        Some("PipelineCompleted" | "PipelineFailed") => true,
+        Some("runtime") => entry["payload"]["status"] == "canceled",
+        _ => false,
+    };
+    envelope["type"] == "run.journal_entry" && ends && entry["source_scope"] != "child"
 }
 
 /// The sequence of the run's last journal entry, once the run has ended.
