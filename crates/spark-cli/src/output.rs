@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,14 +17,6 @@ impl CommandOutput {
             stderr: String::new(),
         }
     }
-
-    pub(crate) fn stderr(exit_code: i32, stderr: impl Into<String>) -> Self {
-        Self {
-            exit_code,
-            stdout: String::new(),
-            stderr: stderr.into(),
-        }
-    }
 }
 
 pub(crate) fn success_json(payload: &Value) -> CommandOutput {
@@ -31,35 +25,45 @@ pub(crate) fn success_json(payload: &Value) -> CommandOutput {
     CommandOutput::stdout(0, stdout)
 }
 
-pub(crate) fn json_error(message: impl AsRef<str>, exit_code: i32) -> CommandOutput {
-    let encoded_message =
-        serde_json::to_string(message.as_ref()).expect("serializing a string cannot fail");
-    CommandOutput::stderr(
+/// The one JSON object every failure writes to stderr. Transport and HTTP
+/// failures name the server they called and where that target came from.
+pub(crate) fn failure(
+    message: impl AsRef<str>,
+    exit_code: i32,
+    status_code: Option<u16>,
+    target: Option<(&str, &str)>,
+) -> CommandOutput {
+    let string =
+        |value: &str| serde_json::to_string(value).expect("serializing a string cannot fail");
+    let mut stderr = format!(
+        "{{\"ok\": false, \"error\": {}, \"exit_code\": {exit_code}",
+        string(message.as_ref())
+    );
+    if let Some(status_code) = status_code {
+        let _ = write!(stderr, ", \"status_code\": {status_code}");
+    }
+    if let Some((target, source)) = target {
+        let _ = write!(
+            stderr,
+            ", \"target\": {}, \"target_source\": {}",
+            string(target),
+            string(source)
+        );
+    }
+    stderr.push_str("}\n");
+    CommandOutput {
         exit_code,
-        format!("{{\"ok\": false, \"error\": {encoded_message}}}\n"),
-    )
+        stdout: String::new(),
+        stderr,
+    }
 }
 
-pub(crate) fn http_error(status_code: u16, message: impl AsRef<str>) -> CommandOutput {
-    let encoded_message =
-        serde_json::to_string(message.as_ref()).expect("serializing a string cannot fail");
-    CommandOutput::stderr(
-        crate::http_status_exit_code(status_code),
-        format!(
-            "{{\"ok\": false, \"status_code\": {status_code}, \"error\": {encoded_message}}}\n"
-        ),
-    )
+pub(crate) fn json_error(message: impl AsRef<str>, exit_code: i32) -> CommandOutput {
+    failure(message, exit_code, None, None)
 }
 
 pub(crate) fn usage_error(message: impl AsRef<str>) -> CommandOutput {
-    CommandOutput::stderr(
-        crate::EXIT_USAGE_ERROR,
-        format!(
-            "usage: spark [-h] {{convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation}} ...\n\
-spark: error: {}\n",
-            message.as_ref()
-        ),
-    )
+    failure(message, crate::EXIT_USAGE_ERROR, None, None)
 }
 
 pub(crate) fn write_process_output(output: &CommandOutput) {

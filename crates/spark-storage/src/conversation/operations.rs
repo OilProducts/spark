@@ -2630,7 +2630,7 @@ fn render_inbox_event(event: &InboxEvent, runs: &[InboxRun]) -> String {
                 format!("{task}, sealed: {}", payload["result"])
             } else {
                 format!(
-                    "{task}, asks (answer with spark delegation answer; --answers-json answers several questions by ID): {}",
+                    "{task}, asks (answer with spark delegation answer; --answers answers several questions by ID): {}",
                     payload["question"]
                 )
             };

@@ -22,7 +22,7 @@ An unchanged copy of a bundled definition, and a fix limited to the diagnostics 
 1. Write a proposal as a new file under `proposals/` in the project's private work area: the reason, its evidence (the requester's words, the runs where the problem occurred) and the exact edits to each definitions file. Never edit the live definitions to prepare a change.
 2. Launch `software-development/design-change` with `context.request.artifact_path` set to the proposal and `context.request.objective` set to the reason. In `context.request.constraints`, state that the review covers exactly the proposed definitions changes and nothing beyond them, and that nothing is committed and no triggers are created.
 3. When the run completes, read its design at `context.design.path` and its review results. The review may have revised the proposal: apply exactly the final reviewed version, not your initial file. Do not apply a proposal from a failed or blocked run or one with unresolved findings, and do not apply changes listed as not reviewed under Open questions until a completed review of them, by the same route, approves them. If the live files changed so the proposal no longer fits, submit an updated proposal instead of adapting it by hand.
-4. Validate every flow you changed with `spark flow validate --dir` before you report success.
+4. Validate every flow you changed with `spark flow validate --dir <flow directory>` before you report success.
 
 Your own memory needs no review.
 
@@ -36,6 +36,6 @@ Fix the cause in the project's flows and roles through the steps above. For work
 
 ## Reporting
 
-Report briefly to the conversation that asked: the failure, its cause, the change and its review. Answer a message from your inbox with `spark send --to <the handle the message came from>`. Report work a trigger started, and requests made in your own conversation, in your own conversation.
+Report briefly to the conversation that asked: the failure, its cause, the change and its review. Answer a message from your inbox with `spark send --to <the handle the message came from> --from <your handle> --message <reply>`. Report work a trigger started, and requests made in your own conversation, in your own conversation.
 
 Keep your memory current: the failure patterns you have seen and how each was resolved.

@@ -141,7 +141,7 @@ impl Harness {
     fn install(&self, flow: &str, content: Value) {
         crate::install_named_flow(&self.settings, flow, content);
     }
-    /// The agent's `spark convo run-request` from inside its turn.
+    /// The agent's `spark run start --conversation` from inside its turn.
     fn launch(&self, id: &str, flow: &str, summary: &str) -> Result<String, WorkspaceError> {
         crate::conversations(self.settings.clone())
             .create_flow_run_request_by_handle(

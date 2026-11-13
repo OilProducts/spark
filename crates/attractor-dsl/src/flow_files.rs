@@ -545,7 +545,8 @@ fn check_schema_version(header: &str) -> Result<(), FlowSourceError> {
     }
 }
 
-fn parse_flow_file(text: &str) -> Result<FlowDefinition, FlowSourceError> {
+/// `flow.md` alone: the flow header, its inputs and goal, with no nodes.
+pub fn parse_flow_file(text: &str) -> Result<FlowDefinition, FlowSourceError> {
     let (frontmatter, body) =
         split_frontmatter(text).map_err(|error| file_error(FLOW_FILE, error))?;
     let file: FlowFile =

@@ -802,6 +802,7 @@ settings — `condition` and `weight` on routes, `conditional` nodes,
 `retry_target`, `fallback_retry_target`, `join_policy`, `join_k`,
 `join_quorum` and human gate `config.decisions` — are rejected, not ignored,
 and `context.workflow_outcome` has no effect on how a run ends.
-A file inside `<project>/.spark/definitions` resolves roles through that
-project's definitions, then the bundled library. `spark flow list|describe|get|validate`
-take `--project <path>` to include a project's flows.
+A directory inside `<project>/.spark/definitions` resolves roles through that
+project's definitions, then the bundled library; `--project <path>` names the
+project for a directory elsewhere. `spark flow validate <name> --project <path>`
+validates a stored flow as that project resolves it.

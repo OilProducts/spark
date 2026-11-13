@@ -359,8 +359,8 @@ fn run_record(
 }
 
 /// The caller's request-key scope and the conversation its outcome reports
-/// to. Callers identify themselves, as `spark run launch --conversation`
-/// does; the checks prevent accidents, not a caller that lies.
+/// to. Callers identify themselves, as a conversation's run start does;
+/// the checks prevent accidents, not a caller that lies.
 fn caller(
     settings: &SparkSettings,
     store: &Arc<ConversationStore>,

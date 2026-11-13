@@ -91,17 +91,16 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
         ],
     );
     assert_eq!(listed.status.code(), Some(0), "{}", stderr(&listed));
-    assert!(stdout(&listed).contains(&format!("  project={project} enabled=True")));
+    assert!(stdout(&listed).contains(&format!("  project={project} enabled=true")));
 
     let described = run_spark(
         temp.path(),
         [
             "trigger",
-            "describe",
+            "get",
+            trigger_id.as_str(),
             "--project",
             project,
-            "--id",
-            trigger_id.as_str(),
             "--text",
             "--base-url",
             server.base_url.as_str(),
@@ -127,10 +126,9 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
         [
             "trigger",
             "update",
+            trigger_id.as_str(),
             "--project",
             project,
-            "--id",
-            trigger_id.as_str(),
             "--json",
             update_payload.to_str().expect("update path"),
             "--base-url",
@@ -153,12 +151,11 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
         [
             "trigger",
             "delete",
+            trigger_id.as_str(),
             "--project",
             project,
             "--expected-revision",
             updated_payload["revision"].as_str().unwrap(),
-            "--id",
-            trigger_id.as_str(),
             "--message",
             "No longer needed & retired",
             "--base-url",
@@ -199,12 +196,11 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         [
             "trigger",
             "delete",
+            "trigger-protected",
             "--project",
             project,
             "--expected-revision",
             "protected",
-            "--id",
-            "trigger-protected",
             "--base-url",
             server.base_url.as_str(),
         ],
@@ -213,7 +209,10 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
     assert_eq!(stdout(&protected_delete), "");
     assert_eq!(
         stderr(&protected_delete),
-        "{\"ok\": false, \"status_code\": 400, \"error\": \"Protected triggers cannot be deleted.\"}\n"
+        format!(
+            "{{\"ok\": false, \"error\": \"Protected triggers cannot be deleted.\", \"exit_code\": 1, \"status_code\": 400, \"target\": \"{}\", \"target_source\": \"flag\"}}\n",
+            server.base_url
+        )
     );
 
     let protected_update_payload = temp.path().join("protected-update.json");
@@ -227,10 +226,9 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         [
             "trigger",
             "update",
+            "trigger-protected",
             "--project",
             project,
-            "--id",
-            "trigger-protected",
             "--json",
             protected_update_payload
                 .to_str()
@@ -242,7 +240,10 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
     assert_eq!(protected_update.status.code(), Some(1));
     assert_eq!(
         stderr(&protected_update),
-        "{\"ok\": false, \"status_code\": 400, \"error\": \"Protected triggers do not allow static context changes.\"}\n"
+        format!(
+            "{{\"ok\": false, \"error\": \"Protected triggers do not allow static context changes.\", \"exit_code\": 1, \"status_code\": 400, \"target\": \"{}\", \"target_source\": \"flag\"}}\n",
+            server.base_url
+        )
     );
 
     let unknown_flow_payload = temp.path().join("unknown-flow.json");
@@ -292,8 +293,7 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         temp.path(),
         [
             "trigger",
-            "describe",
-            "--id",
+            "get",
             "trigger-protected",
             "--base-url",
             server.base_url.as_str(),
@@ -330,7 +330,6 @@ async fn flow_validate_through_the_api_reports_an_invalid_project_copy_without_b
         let mut args = vec![
             "flow",
             "validate",
-            "--flow",
             "ops/run",
             "--project",
             project.as_str(),
@@ -523,10 +522,9 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
         [
             "mission",
             "get",
+            id,
             "--project",
             project,
-            "--id",
-            id,
             "--base-url",
             &server.base_url,
         ],
@@ -547,10 +545,9 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
         [
             "mission",
             "update",
+            id,
             "--project",
             project,
-            "--id",
-            id,
             "--json",
             payload_file.to_str().unwrap(),
             "--base-url",
@@ -596,10 +593,9 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
             [
                 "mission",
                 "update",
+                id,
                 "--project",
                 project,
-                "--id",
-                id,
                 "--json",
                 payload_file.to_str().unwrap(),
                 "--base-url",
@@ -628,14 +624,7 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     let mission_cli = |args: &[&str]| {
         let mut argv = vec!["mission"];
         argv.extend_from_slice(args);
-        argv.extend_from_slice(&[
-            "--project",
-            project,
-            "--id",
-            id,
-            "--base-url",
-            &server.base_url,
-        ]);
+        argv.extend_from_slice(&[id, "--project", project, "--base-url", &server.base_url]);
         let output = run_spark(temp.path(), argv);
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         serde_json::from_slice::<Value>(&output.stdout).unwrap()
@@ -671,10 +660,9 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
         vec![
             "trigger",
             "update",
+            trigger["id"].as_str().unwrap(),
             "--project",
             project,
-            "--id",
-            trigger["id"].as_str().unwrap(),
             "--json",
             action_file.to_str().unwrap(),
             "--base-url",
@@ -709,7 +697,7 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
             "send",
             "--to",
             handle,
-            "--conversation",
+            "--from",
             handle,
             "--message",
             "Focus on the parser",
@@ -725,8 +713,8 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     let output = run_spark(
         temp.path(),
         [
-            "convo",
-            "run-request",
+            "run",
+            "start",
             "--conversation",
             handle,
             "--flow",
@@ -743,6 +731,35 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     let mission = mission_cli(&["get"]);
     assert_eq!(mission["runs"][0]["run_id"], run_id);
     assert_eq!(mission["runs"][0]["summary"], "Parse it");
+    // A launch from the mission's own handle is held to the mission budget.
+    fs::write(
+        &payload_file,
+        json!({"revision": mission["revision"], "fields": {"budget": {"total_runs": 1}}})
+            .to_string(),
+    )
+    .unwrap();
+    mission_cli(&["update", "--json", payload_file.to_str().unwrap()]);
+    let refused = run_spark(
+        temp.path(),
+        [
+            "run",
+            "start",
+            "--conversation",
+            handle,
+            "--flow",
+            "work/parse",
+            "--summary",
+            "Parse again",
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    assert_ne!(refused.status.code(), Some(0));
+    assert!(
+        stderr(&refused).contains("total_runs (1)"),
+        "{}",
+        stderr(&refused)
+    );
 
     let closed = mission_cli(&["close", "--status", "done", "--reason", "Parser shipped"]);
     assert_eq!(closed["status"], "closed");
@@ -754,10 +771,9 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
             [
                 "mission",
                 removed,
+                id,
                 "--project",
                 project,
-                "--id",
-                id,
                 "--base-url",
                 &server.base_url,
             ],
@@ -908,7 +924,7 @@ async fn playbook_cli_lists_gets_and_validates_mission_playbooks() {
         serde_json::from_slice::<Value>(&output.stdout).unwrap(),
         json!([{"name":"bug-report","title":"Bug report","description":"Fix a bug."}])
     );
-    let output = spark(&["playbook", "get", "--name", "bug-report"]);
+    let output = spark(&["playbook", "get", "bug-report"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let playbook: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(playbook["text"], "Reproduce, then fix.");
@@ -919,14 +935,7 @@ async fn playbook_cli_lists_gets_and_validates_mission_playbooks() {
         serde_json::from_slice::<Value>(&output.stdout).unwrap(),
         json!([{"name":"bug-report","title":"Org bug report","description":"Fix it here."}])
     );
-    let output = spark(&[
-        "playbook",
-        "get",
-        "--project",
-        project,
-        "--name",
-        "bug-report",
-    ]);
+    let output = spark(&["playbook", "get", "bug-report", "--project", project]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let playbook: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(playbook["text"], "Org steps.");
@@ -1085,7 +1094,7 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
     let listed = json_of(role_cli(&["list"]));
     assert_eq!(listed["roles"], json!([]), "{listed}");
     assert_ne!(role_cli(&["start"]).status.code(), Some(0));
-    let started = json_of(role_cli(&["start", "--role", "chief-of-staff"]));
+    let started = json_of(role_cli(&["start", "chief-of-staff"]));
     assert_eq!(started["name"], "chief-of-staff");
     let conversation: Value = reqwest::Client::new()
         .get(format!(
@@ -1102,7 +1111,7 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
         .unwrap();
     let handle = page_handle(&conversation);
     assert_ne!(
-        role_cli(&["send", "--role", "chief-of-staff", "--message", "Fixed it"])
+        role_cli(&["send", "chief-of-staff", "--message", "Fixed it"])
             .status
             .code(),
         Some(0)
@@ -1113,7 +1122,7 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
             "send",
             "--to",
             &handle,
-            "--conversation",
+            "--from",
             &handle,
             "--message",
             "Fixed it",
@@ -1124,7 +1133,7 @@ async fn role_cli_lists_starts_messages_and_stops_standing_roles() {
     assert_eq!(sent["conversation_id"], started["conversation_id"]);
     let listed = json_of(role_cli(&["list"]));
     assert_eq!(listed["roles"][0]["event_seq"], 1, "{listed}");
-    let stopped = json_of(role_cli(&["stop", "--role", "chief-of-staff"]));
+    let stopped = json_of(role_cli(&["stop", "chief-of-staff"]));
     assert_eq!(stopped["state"], "stopped");
 
     registered_project(&settings, Path::new(project));

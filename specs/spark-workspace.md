@@ -298,20 +298,18 @@ Human source-checkout shell instructions are a separate operational concern. In 
 Stable read-only flow inspection and validation commands:
 
 ```text
-spark flow list [--text]
-spark flow describe --flow <flow_name> [--text]
-spark flow get --flow <flow_name> [--text]
-spark flow validate --file <path> --text
+spark flow list [--project <path>] [--text]
+spark flow get <flow_name> [--project <path>] [--text | --inputs]
+spark flow validate (<flow_name> | --dir <path>) [--project <path>] [--text]
 ```
 
-Stable mutating workspace and run commands:
+Stable mutating run command:
 
 ```text
-spark convo run-request --conversation <adjective-noun> --flow <flow_name> --summary <text> [--goal-file <path>|--goal -] [--model <model>]
-spark run launch --flow <flow_name> --summary <text> [--conversation <adjective-noun>] [--project <path>]
+spark run start (--conversation <adjective-noun> | --project <path>) --flow <flow_name> --summary <text> [--goal <text>|-] [--context <JSON|file|->]
 ```
 
-`spark convo run-request` creates a pending review artifact. It must not approve or launch downstream execution by itself.
+`spark run start --conversation` launches through the conversation's by-handle flow-run-request route, so the conversation's mission or role budget and run roster apply; `--project` launches a detached run. `spark <domain> --help` lists every command and flag.
 
 The read-only flow commands expose only workspace-requestable flows to the agent surface by default, while the workspace retains separate global policy for flows that are trigger-only or disabled.
 
