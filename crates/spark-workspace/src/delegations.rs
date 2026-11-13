@@ -486,10 +486,15 @@ pub fn cancel(settings: &SparkSettings, delegation_id: &str) -> WorkspaceResult<
     get(settings, delegation_id)
 }
 
+/// A run question takes `selected_value`; a conversation request takes
+/// `answers` by question ID, or `selected_value` when it asks one question.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DelegationAnswerRequest {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub selected_value: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub answers: BTreeMap<String, String>,
 }
 
 /// Forwards an answer to B once. A lost response is not replayed: the caller
@@ -790,6 +795,7 @@ pub fn admit(
         result: None,
         created_at: now.clone(),
         sealed_at: None,
+        canceled_at: None,
     };
     match validate(conversations, &request) {
         Ok(()) => {
@@ -967,7 +973,7 @@ fn state(
             let (status, questions, result) = if row.target_kind == "run" {
                 run_view(conversations, &row.target_id)?
             } else {
-                conversation_view(conversations, &row.target_id)?
+                conversation_view(conversations, &row)?
             };
             if let Some(result) = result {
                 row = repository.seal_in(delegation_id, &result)?.unwrap_or(row);
@@ -1049,14 +1055,19 @@ fn run_view(
 /// A delegated conversation: `running` while a turn is in progress,
 /// `waiting` on an open question, plan review or in-flight roster run, else
 /// `idle`. Its result, once an assistant turn has ended and nothing is in
-/// progress, pending or open, is the last assistant turn.
+/// progress, pending or open, is the last assistant turn. Once canceled, its
+/// open questions expire, and a turn that failed reports `canceled`.
 // ponytail: reads the whole conversation each poll; read a summary if delegated chats grow long.
 fn conversation_view(
     conversations: &WorkspaceConversationService,
-    conversation_id: &str,
+    row: &DelegationIn,
 ) -> WorkspaceResult<(String, Vec<Value>, Option<Value>)> {
+    let conversation_id = row.target_id.as_str();
     let store = conversations.store();
     let repository = ConversationRepository::new(store.clone());
+    if row.canceled_at.is_some() {
+        expire_questions(&repository, conversation_id)?;
+    }
     let Some(snapshot) = repository.read_snapshot(conversation_id, None)? else {
         return Ok((
             "failed".to_string(),
@@ -1102,8 +1113,9 @@ fn conversation_view(
         Some(turn)
             if status == "idle" && repository.pending_inbox_events(conversation_id)?.is_empty() =>
         {
+            let canceled = row.canceled_at.is_some() && turn["status"] == "failed";
             Some(json!({
-                "status": turn["status"],
+                "status": if canceled { json!("canceled") } else { turn["status"].clone() },
                 "text": turn["content"],
                 "error": turn.get("error").cloned().unwrap_or(Value::Null),
             }))
@@ -1113,9 +1125,33 @@ fn conversation_view(
     Ok((status.to_string(), questions, result))
 }
 
+/// Expires a canceled conversation's open questions, so the turn waiting
+/// for them ends. The turn's execution, if still live, is interrupted
+/// separately; its later writes are dropped once the turn settles.
+fn expire_questions(
+    repository: &ConversationRepository,
+    conversation_id: &str,
+) -> WorkspaceResult<()> {
+    let Some(project_path) = repository.conversation_project_path(conversation_id)? else {
+        return Ok(());
+    };
+    let Some(snapshot) = repository.read_snapshot(conversation_id, None)? else {
+        return Ok(());
+    };
+    for segment in snapshot["segments"].as_array().into_iter().flatten() {
+        if segment["kind"] == "request_user_input" && segment["status"] == "pending" {
+            if let Some(segment_id) = segment["id"].as_str() {
+                repository.expire_question(conversation_id, &project_path, segment_id)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Cancels a delegation: an unknown ID becomes a `canceled` tombstone, an
-/// unlaunched admission seals `canceled`, and a launched target is stopped;
-/// it then seals with whatever outcome it reaches.
+/// unlaunched admission seals `canceled`, and a launched target that has not
+/// already ended is marked canceled and stopped; it then seals with whatever
+/// outcome it reaches.
 pub fn cancel_incoming(
     conversations: &WorkspaceConversationService,
     delegation_id: &str,
@@ -1131,6 +1167,12 @@ pub fn cancel_incoming(
             repository.seal_in(delegation_id, &json!({"status": "canceled"}))?;
         }
         Some(row) if row.phase == "launched" => {
+            // A target that ended before the cancel keeps its outcome.
+            let current = state(conversations, delegation_id)?;
+            if current["phase"] == "sealed" {
+                return Ok(current);
+            }
+            repository.cancel_in(delegation_id)?;
             let api = conversations.runtime_api_service();
             if row.target_kind == "run" {
                 // An ended run refuses; its seal stands.
@@ -1166,12 +1208,18 @@ pub fn answer_incoming(
             row.phase
         )));
     }
+    if request.selected_value.is_empty() == request.answers.is_empty() {
+        return Err(validation("Give exactly one of selected_value or answers."));
+    }
     let unknown = || {
         WorkspaceError::NotFound(format!(
             "Question {question_id} is not open in delegation {delegation_id}."
         ))
     };
     if row.target_kind == "run" {
+        if !request.answers.is_empty() {
+            return Err(validation("A run question takes selected_value."));
+        }
         let api = conversations.runtime_api_service();
         let questions = api.list_pipeline_questions(&row.target_id).body;
         let question = questions["questions"]
@@ -1210,21 +1258,24 @@ pub fn answer_incoming(
                 && segment["request_user_input"]["request_id"] == question_id
         })
         .ok_or_else(unknown)?;
-    // ponytail: one answer per request; a request asking several questions is answered on B.
-    let questions = segment["request_user_input"]["questions"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let [question] = questions.as_slice() else {
-        return Err(validation(format!(
-            "Request {question_id} asks {} questions; answer it in the conversation on its environment.",
-            questions.len()
-        )));
+    let answers = if request.answers.is_empty() {
+        let questions = segment["request_user_input"]["questions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let [question] = questions.as_slice() else {
+            return Err(validation(format!(
+                "Request {question_id} asks {} questions; give answers by question ID.",
+                questions.len()
+            )));
+        };
+        BTreeMap::from([(
+            question["id"].as_str().unwrap_or_default().to_string(),
+            request.selected_value,
+        )])
+    } else {
+        request.answers
     };
-    let answers = BTreeMap::from([(
-        question["id"].as_str().unwrap_or_default().to_string(),
-        request.selected_value,
-    )]);
     conversations.submit_request_user_input_answer(
         &row.target_id,
         question_id,

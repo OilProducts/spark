@@ -3070,7 +3070,13 @@ fn build_delegation_plan(
         });
     }
     let value_flags: &[&'static str] = match command {
-        "answer" => &["--question", "--option", "--text", "--base-url"],
+        "answer" => &[
+            "--question",
+            "--option",
+            "--text",
+            "--answers-json",
+            "--base-url",
+        ],
         _ => &["--base-url"],
     };
     let options = parse_api_options(
@@ -3089,12 +3095,27 @@ fn build_delegation_plan(
         "answer" => {
             let question =
                 non_empty_value(&options, "--question", "Missing required --question id.")?;
-            let answer = match (
+            let body = match (
                 trimmed_option(&options, "--option"),
                 trimmed_option(&options, "--text"),
+                trimmed_option(&options, "--answers-json"),
             ) {
-                (Some(value), None) | (None, Some(value)) => value,
-                _ => return Err(usage_error("Provide exactly one of --option or --text.")),
+                (Some(value), None, None) | (None, Some(value), None) => {
+                    json!({"selected_value": value})
+                }
+                (None, None, Some(raw)) => match serde_json::from_str::<Value>(&raw) {
+                    Ok(answers @ Value::Object(_)) => json!({"answers": answers}),
+                    _ => {
+                        return Err(usage_error(
+                            "--answers-json must be a JSON object of question ID to answer.",
+                        ))
+                    }
+                },
+                _ => {
+                    return Err(usage_error(
+                        "Provide exactly one of --option, --text or --answers-json.",
+                    ))
+                }
             };
             (
                 HttpMethod::Post,
@@ -3102,7 +3123,7 @@ fn build_delegation_plan(
                     "{path}/questions/{}/answer",
                     percent_encode_component(&question)
                 ),
-                Some(json!({"selected_value": answer})),
+                Some(body),
             )
         }
         _ => return Err(usage_error("Unknown command")),

@@ -291,7 +291,8 @@ CREATE TABLE delegations_in (
     phase TEXT NOT NULL CHECK (phase IN ('accepted', 'launched', 'sealed')),
     result TEXT CHECK (result IS NULL OR json_valid(result)),
     created_at TEXT NOT NULL,
-    sealed_at TEXT
+    sealed_at TEXT,
+    canceled_at TEXT
 ) WITHOUT ROWID;
 "#;
 

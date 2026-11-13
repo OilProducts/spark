@@ -1,7 +1,8 @@
 //! Whole-task handoff between two real `spark-server` processes: A delegates
-//! flows to B through a link, and each delegation still ends with exactly one
-//! result in A's owner conversation and at most one launch on B, whichever
-//! server stops, loses its link or is canceled on the way.
+//! flows and conversations to B through a link, and each delegation still
+//! ends with exactly one result in A's owner conversation and at most one
+//! launch on B, whichever server stops, loses its link or is canceled on the
+//! way.
 #![cfg(unix)]
 
 use std::fs;
@@ -20,14 +21,26 @@ const OWNER: &str = "chat-owner";
 struct Server {
     root: PathBuf,
     port: u16,
+    codex: PathBuf,
     child: Option<Child>,
 }
 
+/// The fake Codex app-server: each turn asks two questions, ends once they
+/// are answered, and ends interrupted when stopped.
+fn fake_codex() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    exe.parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("spark-agent-fake-codex-app-server")
+}
+
 impl Server {
-    fn new(root: PathBuf) -> Self {
+    /// A server whose agents fail at once, or run as `codex`.
+    fn new(root: PathBuf, codex: Option<PathBuf>) -> Self {
         fs::create_dir_all(root.join("ui")).unwrap();
         fs::write(root.join("ui/index.html"), "<!doctype html>\n").unwrap();
-        // Agents fail at once; no case here needs one to answer.
         let agent = root.join("agent");
         fs::write(&agent, "#!/bin/sh\nexit 1\n").unwrap();
         fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).unwrap();
@@ -37,6 +50,7 @@ impl Server {
             .unwrap()
             .port();
         let mut server = Self {
+            codex: codex.unwrap_or_else(|| root.join("agent")),
             root,
             port,
             child: None,
@@ -53,7 +67,11 @@ impl Server {
     fn start(&mut self) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_spark-server"))
             .env("HOME", &self.root)
-            .env("SPARK_CODEX_APP_SERVER_BIN", self.root.join("agent"))
+            .env("SPARK_CODEX_APP_SERVER_BIN", &self.codex)
+            .env(
+                "SPARK_FAKE_CODEX_APP_SERVER_MODE",
+                "interruptible-questions",
+            )
             .env("SPARK_CLAUDE_CODE_BIN", self.root.join("agent"))
             .args(["serve", "--host", "127.0.0.1", "--port"])
             .arg(self.port.to_string())
@@ -204,7 +222,7 @@ impl Pair {
                 attractor_dsl::validated_flow(serde_json::from_value(flow).unwrap()).unwrap();
             attractor_dsl::write_flow_dir(&flows.join(name), &flow).unwrap();
         }
-        let b = Server::new(root.join("b"));
+        let b = Server::new(root.join("b"), Some(fake_codex()));
         b.call(
             "POST",
             "/projects/register",
@@ -212,7 +230,7 @@ impl Pair {
         );
         let b_id = b.environment_id();
         let pair = Self {
-            a: Server::new(root.join("a")),
+            a: Server::new(root.join("a"), None),
             b,
             b_id,
             b_project,
@@ -230,20 +248,37 @@ impl Pair {
         );
     }
     fn start(&self, key: &str, flow: &str) -> String {
-        let record = self.a.call(
-            "POST",
-            "/delegations",
-            Some(json!({
-                "environment_id": self.b_id,
-                "project_path": self.b_project,
+        self.delegate(
+            key,
+            json!({
                 "kind": "flow",
-                "request_key": key,
-                "conversation_handle": self.handle,
                 "flow_name": format!("tests/{flow}"),
                 "summary": format!("Delegated {key}"),
-            })),
-        );
+            }),
+        )
+    }
+    fn start_conversation(&self, key: &str) -> String {
+        self.delegate(
+            key,
+            json!({"kind": "conversation", "message": "Ask me two things."}),
+        )
+    }
+    fn delegate(&self, key: &str, mut task: Value) -> String {
+        task["environment_id"] = json!(self.b_id);
+        task["project_path"] = json!(self.b_project);
+        task["request_key"] = json!(key);
+        task["conversation_handle"] = json!(self.handle);
+        let record = self.a.call("POST", "/delegations", Some(task));
         record["delegation_id"].as_str().unwrap().to_string()
+    }
+    /// Waits until A sees `id`'s first open question, and returns it.
+    fn wait_question(&self, id: &str) -> Value {
+        let mut question = Value::Null;
+        wait_for(&format!("{id}'s question on A"), || {
+            question = self.get(id)["last_state"]["questions"][0].clone();
+            question.is_object()
+        });
+        question
     }
     fn get(&self, id: &str) -> Value {
         self.a.call("GET", &format!("/delegations/{id}"), None)
@@ -306,6 +341,7 @@ fn every_delegation_seals_once_whatever_stops_on_the_way() {
             result: None,
             created_at: spark_storage::environment::now(),
             sealed_at: None,
+            canceled_at: None,
         })
         .unwrap();
     pair.b.start();
@@ -387,11 +423,7 @@ fn every_delegation_seals_once_whatever_stops_on_the_way() {
 
     // A question on B reaches A's owner and is answered through A.
     let asking = pair.start("asking", "gate");
-    let mut question = Value::Null;
-    wait_for("the gate's question on A", || {
-        question = pair.get(&asking)["last_state"]["questions"][0].clone();
-        question.is_object()
-    });
+    let question = pair.wait_question(&asking);
     let question_id = question["question_id"].as_str().unwrap();
     pair.a.call(
         "POST",
@@ -402,6 +434,26 @@ fn every_delegation_seals_once_whatever_stops_on_the_way() {
         pair.wait_phase(&asking, "sealed")["result"]["status"],
         "completed"
     );
+
+    // A conversation on B asks two questions in one request, and A answers
+    // both. Another is canceled while it waits for its answers, and seals.
+    let answered = pair.start_conversation("answered");
+    let question = pair.wait_question(&answered);
+    assert_eq!(question["questions"].as_array().unwrap().len(), 2);
+    let question_id = question["question_id"].as_str().unwrap();
+    pair.a.call(
+        "POST",
+        &format!("/delegations/{answered}/questions/{question_id}/answer"),
+        Some(json!({"answers": {"choice": "A", "notes": "Nothing else."}})),
+    );
+    let sealed = pair.wait_phase(&answered, "sealed");
+    assert_eq!(sealed["result"]["status"], "complete", "{sealed}");
+    let waiting = pair.start_conversation("canceled-waiting");
+    pair.wait_question(&waiting);
+    pair.a
+        .call("POST", &format!("/delegations/{waiting}/cancel"), None);
+    let sealed = pair.wait_phase(&waiting, "sealed");
+    assert_eq!(sealed["result"]["status"], "canceled", "{sealed}");
 
     pair.a.kill();
     pair.b.kill();
@@ -423,6 +475,8 @@ fn every_delegation_seals_once_whatever_stops_on_the_way() {
         (&racing, 1..=1),
         (&unadmitted, 0..=1),
         (&asking, 1..=1),
+        (&answered, 0..=0),
+        (&waiting, 0..=0),
     ] {
         let results = events
             .iter()

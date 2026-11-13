@@ -107,6 +107,8 @@ pub struct DelegationIn {
     pub result: Option<Value>,
     pub created_at: String,
     pub sealed_at: Option<String>,
+    /// When a cancel reached this home.
+    pub canceled_at: Option<String>,
 }
 
 /// A fresh secret: 32 random bytes, hex encoded.
@@ -142,7 +144,7 @@ const OUT_COLUMNS: &str = "delegation_id, environment_id, project_path, kind, re
     request_sha256, caller, request_key, owner_conversation_id, phase, target_id, last_state, \
     result, paused, cancel_requested_at, cancel_acknowledged_at, created_at, updated_at";
 const IN_COLUMNS: &str = "delegation_id, origin_environment_id, project_path, kind, request, \
-    request_sha256, target_kind, target_id, phase, result, created_at, sealed_at";
+    request_sha256, target_kind, target_id, phase, result, created_at, sealed_at, canceled_at";
 
 fn json_column(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<Value>> {
     Ok(row
@@ -187,6 +189,7 @@ fn in_row(row: &Row<'_>) -> rusqlite::Result<DelegationIn> {
         result: json_column(row, 9)?,
         created_at: row.get(10)?,
         sealed_at: row.get(11)?,
+        canceled_at: row.get(12)?,
     })
 }
 
@@ -528,7 +531,7 @@ impl EnvironmentRepository {
         connection.execute(
             &format!(
                 "INSERT INTO delegations_in ({IN_COLUMNS}) VALUES \
-                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
                  ON CONFLICT (delegation_id) DO NOTHING"
             ),
             params![
@@ -544,6 +547,7 @@ impl EnvironmentRepository {
                 record.result.as_ref().map(Value::to_string),
                 record.created_at,
                 record.sealed_at,
+                record.canceled_at,
             ],
         )?;
         self.in_(&record.delegation_id)?
@@ -594,6 +598,15 @@ impl EnvironmentRepository {
         self.in_(delegation_id)
     }
 
+    /// Records the first cancel that reaches an unsealed row.
+    pub fn cancel_in(&self, delegation_id: &str) -> Result<bool> {
+        Ok(self.connection()?.execute(
+            "UPDATE delegations_in SET canceled_at = ?2 WHERE delegation_id = ?1 \
+             AND phase != 'sealed' AND canceled_at IS NULL",
+            params![delegation_id, now()],
+        )? > 0)
+    }
+
     /// A cancellation for an ID never admitted: a sealed `canceled` row, so
     /// a delayed start returns it without launching. Returns the stored row.
     pub fn tombstone_in(
@@ -615,6 +628,7 @@ impl EnvironmentRepository {
             result: Some(serde_json::json!({"status": "canceled"})),
             created_at: now.clone(),
             sealed_at: Some(now),
+            canceled_at: None,
         })
     }
 }

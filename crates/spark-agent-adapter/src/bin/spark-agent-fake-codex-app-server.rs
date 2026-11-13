@@ -22,7 +22,10 @@ fn main() {
             mode == "model-list",
             matches!(
                 mode.as_str(),
-                "request-user-input" | "interruptible-question" | "question-then-exit"
+                "request-user-input"
+                    | "interruptible-question"
+                    | "interruptible-questions"
+                    | "question-then-exit"
             ),
             mode == "tool-calls",
         );
@@ -148,6 +151,20 @@ fn run_default(
                     json!({"id": request_id, "result": {"turn": {"id": "turn-test", "status": "inProgress", "items": []}}}),
                 );
                 if request_user_input {
+                    let mut questions = vec![json!({
+                        "id": "choice",
+                        "header": "Choice",
+                        "question": "Pick one",
+                        "options": [{"label": "A", "description": "Use A"}]
+                    })];
+                    if mode == "interruptible-questions" {
+                        questions.push(json!({
+                            "id": "notes",
+                            "header": "Notes",
+                            "question": "Anything else?",
+                            "options": null
+                        }));
+                    }
                     write_json(
                         &mut stdout,
                         json!({
@@ -157,12 +174,7 @@ fn run_default(
                                 "threadId": "thread-test",
                                 "turnId": "turn-test",
                                 "itemId": "input-test",
-                                "questions": [{
-                                    "id": "choice",
-                                    "header": "Choice",
-                                    "question": "Pick one",
-                                    "options": [{"label": "A", "description": "Use A"}]
-                                }],
+                                "questions": questions,
                                 "autoResolutionMs": null
                             }
                         }),
@@ -217,7 +229,12 @@ fn run_default(
                     json!({"method": "turn/completed", "params": {"threadId": "thread-test", "turn": {"id": "turn-test", "status": "interrupted", "error": null}}}),
                 );
             }
-            "turn/interrupt" if mode == "interruptible" || mode == "interruptible-question" => {
+            "turn/interrupt"
+                if matches!(
+                    mode,
+                    "interruptible" | "interruptible-question" | "interruptible-questions"
+                ) =>
+            {
                 assert_eq!(
                     message["params"],
                     json!({"threadId": "thread-test", "turnId": "turn-test"})

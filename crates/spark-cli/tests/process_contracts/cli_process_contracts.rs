@@ -711,6 +711,26 @@ fn process_delegation_answer_with_a_lost_response_is_reported_unknown_and_not_re
 }
 
 #[test]
+fn process_delegation_answer_sends_several_answers_by_question_id() {
+    let (base_url, requests) = serve_once(HttpResponse::json(200, r#"{"answered":true}"#));
+    let output = Command::new(spark_bin())
+        .args(["delegation", "answer", "d-1", "--question", "q1"])
+        .args(["--answers-json", r#"{"choice":"A","notes":"None"}"#])
+        .args(["--base-url", base_url.as_str()])
+        .env_clear()
+        .output()
+        .expect("run spark");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let request = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("answer");
+    assert_eq!(
+        serde_json::from_str::<Value>(&request.body).expect("request JSON"),
+        serde_json::json!({"answers": {"choice": "A", "notes": "None"}})
+    );
+}
+
+#[test]
 fn process_delegation_start_requires_a_request_key_before_any_request() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
     let base_url = format!("http://{}", listener.local_addr().expect("local addr"));

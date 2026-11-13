@@ -143,6 +143,7 @@ impl Home {
                 result: None,
                 created_at: String::new(),
                 sealed_at: None,
+                canceled_at: None,
             })
             .unwrap();
     }
@@ -565,6 +566,57 @@ fn b_seals_a_conversation_once_it_is_idle_with_an_answer() {
 }
 
 #[test]
+fn b_seals_a_canceled_conversation_that_waits_for_answers() {
+    let home = Home::new();
+    // An interrupted execution leaves its turn failed and its question open.
+    let question = json!([{
+        "id": "segment-question", "turn_id": "turn-assistant", "order": 1,
+        "kind": "request_user_input", "role": "assistant", "status": "pending",
+        "timestamp": "2026-01-01T00:00:01Z", "updated_at": "2026-01-01T00:00:01Z", "content": "",
+        "request_user_input": {"request_id": "question-1", "status": "pending", "questions": [
+            {"id": "decision", "header": "Approve", "question": "Approve?", "isOther": false,
+             "isSecret": false, "options": [{"label": "Approve", "description": "Go"}]}]}
+    }]);
+    home.seed_chat("chat-asking", "amber-asking", "chat", "failed", question);
+    home.seed_chat("chat-done", "amber-done", "chat", "complete", json!([]));
+    home.launched(&id(1), "conversation", "chat-asking");
+    home.launched(&id(2), "conversation", "chat-done");
+    assert_eq!(home.state(&id(1))["status"], "waiting");
+
+    // B recorded the cancel and stopped before it sealed; its next read
+    // expires the question and seals, and a repeated cancel returns the seal.
+    assert!(home.environments().cancel_in(&id(1)).unwrap());
+    let sealed = home.state(&id(1));
+    assert_eq!(sealed["phase"], "sealed");
+    assert_eq!(sealed["result"]["status"], "canceled");
+    let snapshot = home
+        .repository()
+        .read_snapshot("chat-asking", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        snapshot["segments"][0]["request_user_input"]["status"],
+        "expired"
+    );
+    let cancel = || {
+        delegations::cancel_incoming(&home.service(), &id(1), IncomingCancel::default()).unwrap()
+    };
+    assert_eq!(cancel(), sealed);
+
+    // A conversation that ended before the cancel keeps its outcome.
+    let done =
+        delegations::cancel_incoming(&home.service(), &id(2), IncomingCancel::default()).unwrap();
+    assert_eq!(done["result"]["status"], "complete");
+    assert!(home
+        .environments()
+        .in_(&id(2))
+        .unwrap()
+        .unwrap()
+        .canceled_at
+        .is_none());
+}
+
+#[test]
 fn b_launches_accepted_rows_at_startup_once() {
     let home = Home::new();
     let accepted = |n: u8, target_id: &str| DelegationIn {
@@ -580,6 +632,7 @@ fn b_launches_accepted_rows_at_startup_once() {
         result: None,
         created_at: String::new(),
         sealed_at: None,
+        canceled_at: None,
     };
     // One row's launch never happened; the other's did, but not its mark.
     home.environments()
