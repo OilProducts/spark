@@ -1788,7 +1788,8 @@ fn answer_once(plan: &ApiRequestPlan, token: Option<&str>) -> CommandOutput {
             Ok(record) => record,
             Err(error) => return failure_output(&read, error, token),
         };
-        let open = record["questions"]
+        // The record keeps the target's latest view in `last_state`.
+        let open = record["last_state"]["questions"]
             .as_array()
             .into_iter()
             .flatten()

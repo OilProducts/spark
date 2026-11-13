@@ -683,6 +683,124 @@ fn process_delegation_answer_sends_several_answers_by_question_id() {
     );
 }
 
+/// `GET /workspace/api/delegations/{id}` as the server serializes it: the
+/// target's latest view, with its open requests, sits in `last_state`.
+fn delegation_record(open_requests: &[&str]) -> String {
+    let questions: Vec<Value> = open_requests
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "question_id": id,
+                "questions": [{"id": "choice", "question": "Which one?"}],
+            })
+        })
+        .collect();
+    serde_json::to_string(&spark_storage::environment::DelegationOut {
+        delegation_id: "d-1".to_string(),
+        environment_id: "env-b".to_string(),
+        project_path: "/repo".to_string(),
+        kind: "conversation".to_string(),
+        request: serde_json::json!({"message": "Do it."}),
+        request_sha256: String::new(),
+        caller: "cli".to_string(),
+        request_key: "key-1".to_string(),
+        owner_conversation_id: None,
+        phase: "accepted".to_string(),
+        target_id: Some("conversation-b".to_string()),
+        last_state: Some(serde_json::json!({
+            "delegation_id": "d-1",
+            "phase": "launched",
+            "target_kind": "conversation",
+            "target_id": "conversation-b",
+            "status": "waiting",
+            "questions": questions,
+        })),
+        result: None,
+        paused: None,
+        cancel_requested_at: None,
+        cancel_acknowledged_at: None,
+        created_at: "2026-11-13T00:00:00Z".to_string(),
+        updated_at: "2026-11-13T00:00:00Z".to_string(),
+    })
+    .expect("record JSON")
+}
+
+#[test]
+fn process_delegation_answer_without_a_question_answers_the_one_open_request() {
+    let (base_url, requests) = serve_sequence(vec![
+        HttpResponse::json(200, delegation_record(&["request-1"])),
+        HttpResponse::json(200, r#"{"answered":true}"#),
+    ]);
+    let output = Command::new(spark_bin())
+        .args([
+            "delegation",
+            "answer",
+            "d-1",
+            "--answers",
+            r#"{"choice":"A"}"#,
+        ])
+        .args(["--base-url", base_url.as_str()])
+        .env_clear()
+        .output()
+        .expect("run spark");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).expect("stdout JSON"),
+        serde_json::json!({"answered": true})
+    );
+    let read = requests.recv_timeout(Duration::from_secs(2)).expect("read");
+    assert_eq!(
+        (read.method.as_str(), read.path.as_str()),
+        ("GET", "/workspace/api/delegations/d-1")
+    );
+    let answer = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("answer");
+    assert_eq!(
+        (answer.method.as_str(), answer.path.as_str()),
+        (
+            "POST",
+            "/workspace/api/delegations/d-1/questions/request-1/answer"
+        )
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&answer.body).expect("request JSON"),
+        serde_json::json!({"answers": {"choice": "A"}})
+    );
+    assert!(requests.try_recv().is_err(), "the answer was sent once");
+
+    // Two open requests are ambiguous: nothing is sent.
+    let (base_url, requests) = serve_once(HttpResponse::json(
+        200,
+        delegation_record(&["request-1", "request-2"]),
+    ));
+    let output = Command::new(spark_bin())
+        .args([
+            "delegation",
+            "answer",
+            "d-1",
+            "--answers",
+            r#"{"choice":"A"}"#,
+        ])
+        .args(["--base-url", base_url.as_str()])
+        .env_clear()
+        .output()
+        .expect("run spark");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        stderr_error(&output),
+        "The delegation has 2 open questions (request-1, request-2); pass --question with one of them, from spark delegation get."
+    );
+    assert_eq!(
+        requests
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .method,
+        "GET"
+    );
+    assert!(requests.try_recv().is_err(), "no answer was sent");
+}
+
 #[test]
 fn process_delegation_start_requires_a_request_key_before_any_request() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
