@@ -3144,6 +3144,13 @@ fn run_shell_command(
         .arg("-c")
         .arg(script)
         .current_dir(cwd)
+        // The `spark` CLI in a tool or hook reaches this Spark, as in an agent's
+        // shell; the node's own bindings come after and win.
+        .envs(
+            spark_agent_adapter::codex_app_server::spark_agent_environment(
+                std::env::var("PATH").ok().as_deref(),
+            ),
+        )
         .envs(env)
         .stdin(stdin)
         .stdout(out_writer)

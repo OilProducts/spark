@@ -67,6 +67,8 @@ impl Server {
     fn start(&mut self) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_spark-server"))
             .env("HOME", &self.root)
+            .env_remove("SPARK_HOME")
+            .env_remove("SPARK_API_BASE_URL")
             .env("SPARK_CODEX_APP_SERVER_BIN", &self.codex)
             .env(
                 "SPARK_FAKE_CODEX_APP_SERVER_MODE",
@@ -498,4 +500,91 @@ fn every_delegation_seals_once_whatever_stops_on_the_way() {
     assert!(events
         .iter()
         .any(|event| event.kind == "delegation.question" && event.source == asking));
+}
+
+/// A native flow on A delegates from its tool step with the `spark` CLI, which
+/// reaches A although the CLI's saved target is another server.
+#[test]
+fn a_flow_tool_delegates_through_its_own_server() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let pair = Pair::new(&root);
+    let saved = root.join("a/.spark/config");
+    fs::create_dir_all(&saved).unwrap();
+    fs::write(
+        saved.join("spark.toml"),
+        format!(
+            "[connections]\nclient_api_base_url = \"{}\"\n",
+            pair.b.origin()
+        ),
+    )
+    .unwrap();
+    let a_project = root.join("a/project");
+    let flow = json!({
+        "schema_version": "2",
+        "id": "handoff",
+        "nodes": {
+            "start": {"kind": "start", "config": {"kind": "start"},
+                "routes": {"next": {"to": "handoff", "description": "Hand the work over."}}},
+            "handoff": {"kind": "tool",
+                "config": {"kind": "tool",
+                    "env_map": {"SPARK_RUN_ID": "internal.run_id"},
+                    "command": format!(
+                        "spark delegation start --run \"$SPARK_RUN_ID\" --request-key handoff \
+                         --environment {} --project {} --kind flow --flow tests/hold-1 --summary Handoff",
+                        pair.b_id,
+                        pair.b_project.display()
+                    ),
+                    "exit_codes": {"0": "done"}},
+                "routes": {"done": {"to": "done", "description": "B has the work."}}},
+            "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+        }
+    });
+    attractor_dsl::write_flow_dir(
+        &a_project.join(".spark/definitions/flows/tests/handoff"),
+        &attractor_dsl::validated_flow(serde_json::from_value(flow).unwrap()).unwrap(),
+    )
+    .unwrap();
+    pair.a.call(
+        "POST",
+        "/projects/register",
+        Some(json!({"project_path": a_project})),
+    );
+    let launched = reqwest::blocking::Client::new()
+        .post(format!("{}/attractor/pipelines", pair.a.origin()))
+        .json(&json!({
+            "run_id": "handoff-run",
+            "flow_name": "tests/handoff",
+            "working_directory": a_project,
+            "project_path": a_project,
+        }))
+        .send()
+        .unwrap();
+    assert!(
+        launched.status().is_success(),
+        "{}",
+        launched.text().unwrap()
+    );
+
+    let runs = attractor_runtime::RunStore::for_runs_root(attractor_runtime::RunsRoot::Home(
+        pair.a.data_dir(),
+    ));
+    let mut status = String::new();
+    wait_for("the handoff run to end on A", || {
+        status = runs
+            .list_run_records()
+            .unwrap()
+            .into_iter()
+            .find(|run| run.run_id == "handoff-run")
+            .map(|run| run.status)
+            .unwrap_or_default();
+        ["completed", "failed"].contains(&status.as_str())
+    });
+    assert_eq!(status, "completed");
+    let delegation = spark_storage::environment::EnvironmentRepository::new(pair.a.data_dir())
+        .out_by_key("run:handoff-run", "handoff")
+        .unwrap()
+        .expect("A records the run's delegation");
+    assert_eq!(delegation.environment_id, pair.b_id);
+    pair.wait_running(&delegation.delegation_id);
 }
