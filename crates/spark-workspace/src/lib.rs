@@ -5,6 +5,7 @@
 pub mod attachments;
 pub mod conversations;
 pub mod definitions;
+pub mod delegations;
 pub mod errors;
 pub mod flows;
 pub mod live;

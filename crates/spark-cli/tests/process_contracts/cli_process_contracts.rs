@@ -25,12 +25,12 @@ fn process_help_matches_top_level_contract() {
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
         concat!(
-            "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings} ...\n",
+            "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation} ...\n",
             "\n",
             "Spark agent CLI\n",
             "\n",
             "positional arguments:\n",
-            "  {convo,send,run,flow,trigger,mission,role,playbook,settings}\n",
+            "  {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation}\n",
             "    convo               Conversation-scoped artifact commands\n",
             "    send                Message another conversation by handle\n",
             "    run                 Direct execution commands\n",
@@ -40,6 +40,8 @@ fn process_help_matches_top_level_contract() {
             "    role                Standing role management\n",
             "    playbook            Mission playbook discovery\n",
             "    settings            Read, validate, and save workspace settings\n",
+            "    environment         This environment's pairing, tokens and links\n",
+            "    delegation          Hand a whole task to a linked environment\n",
             "\n",
             "options:\n",
             "  -h, --help            show this help message and exit\n",
@@ -584,6 +586,173 @@ fn process_trigger_http_error_maps_to_stderr_json() {
     );
 }
 
+#[test]
+fn process_api_token_is_sent_as_a_bearer_only_when_set() {
+    let sse = HttpResponse {
+        status: 200,
+        content_type: "text/event-stream",
+        body: "data: {\"payload\":{\"sequence\":1,\"type\":\"log\"}}\n\n".to_string(),
+    };
+    for token in [Some("secret"), Some("  "), None] {
+        for (args, response) in [
+            (
+                &["delegation", "get", "d-1"][..],
+                HttpResponse::json(200, r#"{"id":"d-1"}"#),
+            ),
+            (&["run", "events", "run-1"][..], sse.clone()),
+        ] {
+            let (base_url, requests) = serve_once(response);
+            let mut command = Command::new(spark_bin());
+            command
+                .args(args)
+                .args(["--base-url", base_url.as_str()])
+                .env_clear();
+            if let Some(token) = token {
+                command.env("SPARK_API_TOKEN", token);
+            }
+            let output = command.output().expect("run spark");
+            assert_eq!(output.status.code(), Some(0), "{args:?}: {output:?}");
+            let request = requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("request");
+            let expected = (token == Some("secret")).then(|| "Bearer secret".to_string());
+            assert_eq!(request.authorization, expected, "{args:?} {token:?}");
+        }
+    }
+}
+
+#[test]
+fn process_delegation_wait_polls_until_sealed_or_its_timeout() {
+    let (base_url, requests) = serve_sequence(vec![
+        HttpResponse::json(
+            200,
+            r#"{"phase":"accepted","timed_out":true,"result":null}"#,
+        ),
+        HttpResponse::json(
+            200,
+            r#"{"phase":"sealed","timed_out":false,"result":{"status":"completed"}}"#,
+        ),
+    ]);
+    let output = Command::new(spark_bin())
+        .args(["delegation", "wait", "d-1", "--base-url", base_url.as_str()])
+        .env_clear()
+        .output()
+        .expect("run spark");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).expect("record JSON"),
+        serde_json::json!({"phase":"sealed","timed_out":false,"result":{"status":"completed"}})
+    );
+    for _ in 0..2 {
+        let request = requests.recv_timeout(Duration::from_secs(2)).expect("poll");
+        assert_eq!(request.method, "GET");
+        assert_eq!(
+            request.path,
+            "/workspace/api/delegations/d-1/wait?timeout_ms=25000"
+        );
+    }
+
+    // Its own timeout ends the wait with the still-open record, not an error.
+    let (base_url, requests) = serve_once(HttpResponse::json(
+        200,
+        r#"{"phase":"accepted","timed_out":true,"result":null}"#,
+    ));
+    let output = Command::new(spark_bin())
+        .args(["delegation", "wait", "d-1", "--timeout", "0"])
+        .args(["--base-url", base_url.as_str()])
+        .env_clear()
+        .output()
+        .expect("run spark");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let record: Value = serde_json::from_slice(&output.stdout).expect("record JSON");
+    assert_eq!(record["timed_out"], true);
+    assert_eq!(record["phase"], "accepted");
+    assert_eq!(
+        requests.recv_timeout(Duration::from_secs(2)).unwrap().path,
+        "/workspace/api/delegations/d-1/wait?timeout_ms=0"
+    );
+}
+
+#[test]
+fn process_delegation_answer_with_a_lost_response_is_reported_unknown_and_not_resent() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+    // Reads the answer, then closes without responding.
+    let server = thread::spawn(move || {
+        let (mut stream, _addr) = listener.accept().expect("accept");
+        let request = read_http_request(&mut stream);
+        drop(stream);
+        (listener, request)
+    });
+
+    let output = Command::new(spark_bin())
+        .args(["delegation", "answer", "d-1", "--question", "q1"])
+        .args(["--option", "yes", "--base-url", base_url.as_str()])
+        .env_clear()
+        .output()
+        .expect("run spark");
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("outcome is unknown"), "{stderr}");
+    assert!(stderr.contains("it was not resent"), "{stderr}");
+    let (listener, request) = server.join().expect("server");
+    assert_eq!(request.method, "POST");
+    assert_eq!(
+        request.path,
+        "/workspace/api/delegations/d-1/questions/q1/answer"
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&request.body).expect("request JSON"),
+        serde_json::json!({"selected_value": "yes"})
+    );
+    assert_no_pending_connection(&listener);
+}
+
+#[test]
+fn process_delegation_answer_sends_several_answers_by_question_id() {
+    let (base_url, requests) = serve_once(HttpResponse::json(200, r#"{"answered":true}"#));
+    let output = Command::new(spark_bin())
+        .args(["delegation", "answer", "d-1", "--question", "q1"])
+        .args(["--answers-json", r#"{"choice":"A","notes":"None"}"#])
+        .args(["--base-url", base_url.as_str()])
+        .env_clear()
+        .output()
+        .expect("run spark");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let request = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("answer");
+    assert_eq!(
+        serde_json::from_str::<Value>(&request.body).expect("request JSON"),
+        serde_json::json!({"answers": {"choice": "A", "notes": "None"}})
+    );
+}
+
+#[test]
+fn process_delegation_start_requires_a_request_key_before_any_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+
+    let output = Command::new(spark_bin())
+        .args(["delegation", "start", "--environment", "env-1"])
+        .args(["--project", "/repo", "--kind", "conversation"])
+        .args(["--message", "Do it.", "--base-url", base_url.as_str()])
+        .env_clear()
+        .output()
+        .expect("run spark");
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("the following arguments are required: --request-key"),
+        "{output:?}"
+    );
+    assert_no_pending_connection(&listener);
+}
+
 #[derive(Debug, Clone)]
 struct HttpResponse {
     status: u16,
@@ -606,34 +775,52 @@ struct CapturedRequest {
     method: String,
     path: String,
     body: String,
+    authorization: Option<String>,
 }
 
 fn serve_once(response: HttpResponse) -> (String, mpsc::Receiver<CapturedRequest>) {
+    serve_sequence(vec![response])
+}
+
+/// Answers one connection per response, in order.
+fn serve_sequence(responses: Vec<HttpResponse>) -> (String, mpsc::Receiver<CapturedRequest>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
     let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let Ok((mut stream, _addr)) = listener.accept() else {
-            return;
-        };
-        let request = read_http_request(&mut stream);
-        let _ = sender.send(request);
-        let reason = match response.status {
-            200 => "OK",
-            404 => "Not Found",
-            _ => "OK",
-        };
-        let wire_response = format!(
-            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            response.status,
-            reason,
-            response.content_type,
-            response.body.as_bytes().len(),
-            response.body
-        );
-        let _ = stream.write_all(wire_response.as_bytes());
+        for response in responses {
+            let Ok((mut stream, _addr)) = listener.accept() else {
+                return;
+            };
+            let request = read_http_request(&mut stream);
+            let _ = sender.send(request);
+            let reason = match response.status {
+                200 => "OK",
+                404 => "Not Found",
+                _ => "OK",
+            };
+            let wire_response = format!(
+                "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.status,
+                reason,
+                response.content_type,
+                response.body.as_bytes().len(),
+                response.body
+            );
+            let _ = stream.write_all(wire_response.as_bytes());
+        }
     });
     (base_url, receiver)
+}
+
+/// Fails if a client connected to `listener` and was never accepted.
+fn assert_no_pending_connection(listener: &TcpListener) {
+    listener.set_nonblocking(true).expect("nonblocking");
+    assert_eq!(
+        listener.accept().map(|_| ()).map_err(|error| error.kind()),
+        Err(std::io::ErrorKind::WouldBlock),
+        "the CLI sent another request"
+    );
 }
 
 fn read_http_request(stream: &mut TcpStream) -> CapturedRequest {
@@ -668,22 +855,29 @@ fn read_http_request(stream: &mut TcpStream) -> CapturedRequest {
     let path = request_line.next().unwrap_or_default().to_string();
     let body_start = (header_end + 4).min(bytes.len());
     let body = String::from_utf8_lossy(&bytes[body_start..]).into_owned();
-    CapturedRequest { method, path, body }
+    let authorization = header_value(&headers, "authorization").map(str::to_string);
+    CapturedRequest {
+        method,
+        path,
+        body,
+        authorization,
+    }
 }
 
 fn header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
+fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
+    headers.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.eq_ignore_ascii_case(name).then(|| value.trim())
+    })
+}
+
 fn content_length(headers: &str) -> usize {
-    headers
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>().ok())
-                .flatten()
-        })
+    header_value(headers, "content-length")
+        .and_then(|value| value.parse().ok())
         .unwrap_or(0)
 }
 

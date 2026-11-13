@@ -58,6 +58,7 @@ pub struct ConversationStore {
     /// Handles promised to conversations before their first commit.
     reserved_handles: Mutex<HashMap<String, String>>,
     commit_listener: RwLock<Option<CommitListener>>,
+    environment_id: String,
     // Declared last so the database closes before the lock is released.
     _home_lock: fs::File,
 }
@@ -90,6 +91,7 @@ impl ConversationStore {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        let environment_id = crate::environment::ensure_environment_id(&home_dir)?;
         let database = ConversationDatabase::open(&home_dir)?;
         let markers = database.read(|read| read.project_deletions())?;
         let store = Self {
@@ -105,6 +107,7 @@ impl ConversationStore {
             ),
             reserved_handles: Mutex::new(HashMap::new()),
             commit_listener: RwLock::new(None),
+            environment_id,
             _home_lock: lock,
         };
         for marker in markers {
@@ -184,6 +187,11 @@ impl ConversationStore {
 
     pub fn home_dir(&self) -> &Path {
         &self.home_dir
+    }
+
+    /// This home's environment ID, created under the home lock.
+    pub fn environment_id(&self) -> &str {
+        &self.environment_id
     }
 
     /// Install the app's commit listener, replacing any earlier one. It runs

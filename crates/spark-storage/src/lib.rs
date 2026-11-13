@@ -17,6 +17,9 @@ pub mod codecs;
 /// Typed conversation record model and commit boundary.
 pub mod conversation;
 
+/// Environment identity, peer tokens, links and delegations.
+pub mod environment;
+
 /// Storage error types.
 pub mod error;
 

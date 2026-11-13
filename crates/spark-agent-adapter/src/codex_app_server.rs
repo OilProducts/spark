@@ -2692,8 +2692,8 @@ fn copy_tree_contents(source: &Path, destination: &Path) -> std::io::Result<()> 
 
 /// What every agent shell needs for the `spark` CLI to reach this Spark: its
 /// home, its API, and the app's own binaries (the CLI among them) first on
-/// PATH. Codex and Claude Code sessions get the same.
-pub(crate) fn spark_agent_environment(path: Option<&str>) -> Vec<(String, String)> {
+/// PATH. Codex and Claude Code sessions get the same, as do flow tool commands.
+pub fn spark_agent_environment(path: Option<&str>) -> Vec<(String, String)> {
     let mut vars = Vec::new();
     if let Some(spark_home) = CODEX_SPARK_HOME.get() {
         vars.push((

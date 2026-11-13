@@ -302,6 +302,42 @@ async fn run_launch_route_executes_codergen_through_injected_rust_llm_client() {
     );
 }
 
+/// Only an admitted delegation fixes a run's ID; the public launch route
+/// refuses one.
+#[tokio::test]
+async fn public_run_launch_rejects_a_caller_chosen_run_id() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    let flow_name = crate::install_flow(&settings, simple_flow());
+    let app = crate::store_app_default(settings.clone());
+
+    let launched = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/runs/launch",
+        Some(json!({
+            "flow_name": flow_name,
+            "summary": "Launch under a chosen ID.",
+            "project_path": project_path.to_string_lossy(),
+            "run_id": "run-chosen-by-caller"
+        })),
+    )
+    .await;
+    assert_eq!(launched.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(launched.1["detail"][0]["type"], "extra_forbidden");
+    assert_eq!(launched.1["detail"][0]["loc"], json!(["body", "run_id"]));
+
+    let runs = request_json(app, "GET", "/attractor/runs", None).await;
+    assert_eq!(runs.0, StatusCode::OK);
+    assert_eq!(runs.1["runs"], json!([]));
+    assert!(RunStore::for_settings(&settings)
+        .read_run_meta("run-chosen-by-caller")
+        .expect("read run")
+        .is_none());
+}
+
 async fn request_json(
     app: axum::Router,
     method: &str,

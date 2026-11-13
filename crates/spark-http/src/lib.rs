@@ -28,6 +28,8 @@ use tokio_util::sync::CancellationToken;
 
 mod claude_auth;
 mod codex_auth;
+mod delegations;
+mod environment_auth;
 mod workspace;
 
 /// Builders open the Spark home's conversation store and hold its exclusive
@@ -236,9 +238,33 @@ fn build_app_on_store(
         {
             eprintln!("Unable to recover conversation inboxes: {error}");
         }
+        // Then delegations admitted but never launched.
+        if let Err(error) =
+            spark_workspace::delegations::launch_accepted(&workspace::conversation_service(
+                &state.settings,
+                &state.conversation_store,
+                &state.runtime_handler_runner_factory,
+                &state.agent_turn_backend,
+                &state.run_event_observer,
+            ))
+        {
+            eprintln!("Unable to launch admitted delegations: {error}");
+        }
     }
+    let trust = axum::middleware::from_fn_with_state(
+        state.settings.clone(),
+        environment_auth::require_trust,
+    );
     let app = Router::new()
         .route("/", get(serve_index))
+        .route(
+            "/environment",
+            get(environment_auth::environment_descriptor),
+        )
+        .route(
+            "/environment/pair",
+            axum::routing::post(environment_auth::pair),
+        )
         .route("/favicon.ico", get(serve_favicon))
         .route("/assets/{*asset_path}", get(serve_asset))
         .route("/workspace", any(redirect_workspace_mount))
@@ -257,7 +283,8 @@ fn build_app_on_store(
         )
         .route("/attractor/{*path}", any(attractor_dispatch))
         .fallback(product_fallback)
-        .with_state(state);
+        .with_state(state)
+        .layer(trust);
     (app, live_hub)
 }
 
@@ -802,9 +829,11 @@ async fn run_event_publisher_loop(
     }
 }
 
+/// The trigger source loop and, beside it, the delegation follower.
 struct TriggerSourceLoop {
     cancellation: CancellationToken,
     handle: JoinHandle<()>,
+    follower: JoinHandle<()>,
 }
 
 impl TriggerSourceLoop {
@@ -818,6 +847,11 @@ impl TriggerSourceLoop {
         };
         let cancellation = CancellationToken::new();
         let task_cancellation = cancellation.clone();
+        let follower = handle.spawn(run_delegation_follower(
+            settings.clone(),
+            live_hub.clone(),
+            cancellation.clone(),
+        ));
         let handle = handle.spawn(run_trigger_source_loop(
             settings,
             live_hub,
@@ -827,6 +861,7 @@ impl TriggerSourceLoop {
         Some(Arc::new(Self {
             cancellation,
             handle,
+            follower,
         }))
     }
 }
@@ -835,6 +870,7 @@ impl Drop for TriggerSourceLoop {
     fn drop(&mut self) {
         self.cancellation.cancel();
         self.handle.abort();
+        self.follower.abort();
     }
 }
 
@@ -1998,6 +2034,35 @@ async fn run_trigger_source_loop(
                     log_trigger_issues(&issues, &reported);
                     reported = issues;
                 }
+            }
+        }
+    }
+}
+
+/// Follows this environment's open delegations every few seconds.
+async fn run_delegation_follower(
+    settings: Arc<SparkSettings>,
+    live_hub: Arc<WorkspaceLiveHub>,
+    cancellation: CancellationToken,
+) {
+    let mut interval = time::interval(spark_workspace::delegations::FOLLOW_INTERVAL);
+    interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    let follower = Arc::new(Mutex::new(spark_workspace::delegations::Follower::default()));
+    loop {
+        tokio::select! {
+            _ = cancellation.cancelled() => break,
+            _ = interval.tick() => {
+                let Some(store) = live_hub.conversation_store() else {
+                    break;
+                };
+                let (settings, follower) = (settings.clone(), follower.clone());
+                let _ = tokio::task::spawn_blocking(move || {
+                    follower
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .tick(&settings, &store);
+                })
+                .await;
             }
         }
     }

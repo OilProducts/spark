@@ -36,12 +36,12 @@ pub const EXIT_NOT_FOUND: i32 = 3;
 pub const DEFAULT_API_BASE_URL: &str = spark_common::source_checkout::DEFAULT_API_BASE_URL;
 
 const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings} ...\n",
+    "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation} ...\n",
     "\n",
     "Spark agent CLI\n",
     "\n",
     "positional arguments:\n",
-    "  {convo,send,run,flow,trigger,mission,role,playbook,settings}\n",
+    "  {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation}\n",
     "    convo               Conversation-scoped artifact commands\n",
     "    send                Message another conversation by handle\n",
     "    run                 Direct execution commands\n",
@@ -51,6 +51,8 @@ const TOP_LEVEL_HELP: &str = concat!(
     "    role                Standing role management\n",
     "    playbook            Mission playbook discovery\n",
     "    settings            Read, validate, and save workspace settings\n",
+    "    environment         This environment's pairing, tokens and links\n",
+    "    delegation          Hand a whole task to a linked environment\n",
     "\n",
     "options:\n",
     "  -h, --help            show this help message and exit\n",
@@ -94,7 +96,8 @@ impl ParsedOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PositionalMode {
     None,
-    Exact(usize),
+    /// A count of positionals and the name a missing one is reported by.
+    Exact(usize, &'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +111,8 @@ enum CommandDomain {
     Role,
     Playbook,
     Settings,
+    Environment,
+    Delegation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,7 +242,7 @@ fn run_agent_shell(
     match command_path.domain {
         CommandDomain::Convo | CommandDomain::Send | CommandDomain::Run => {
             match build_request_plan(args, env, stdin) {
-                Ok(plan) => execute_request_plan(&plan),
+                Ok(plan) => execute_request_plan(&plan, env),
                 Err(output) => output,
             }
         }
@@ -246,10 +251,25 @@ fn run_agent_shell(
         | CommandDomain::Playbook
         | CommandDomain::Trigger
         | CommandDomain::Settings => match build_request_plan(args, env, stdin) {
-            Ok(plan) => execute_request_plan(&plan),
+            Ok(plan) => execute_request_plan(&plan, env),
             Err(output) => output,
         },
         CommandDomain::Flow => run_flow_domain(args, env, stdin),
+        CommandDomain::Environment => match build_request_plan(args, env, stdin) {
+            Ok(plan) => execute_request_plan(&plan, env),
+            Err(output) => output,
+        },
+        CommandDomain::Delegation => match args.get(1).map(String::as_str) {
+            Some("wait") => run_delegation_wait(args, env),
+            Some("answer") => match build_request_plan(args, env, stdin) {
+                Ok(plan) => execute_delegation_answer(&plan, env),
+                Err(output) => output,
+            },
+            _ => match build_request_plan(args, env, stdin) {
+                Ok(plan) => execute_request_plan(&plan, env),
+                Err(output) => output,
+            },
+        },
     }
 }
 
@@ -265,7 +285,7 @@ fn run_flow_domain(
     match command {
         "validate" if has_option(&args[2..], "--dir") => run_flow_validate_dir_command(args, env),
         "list" | "describe" | "get" | "validate" => match build_request_plan(args, env, stdin) {
-            Ok(plan) => execute_request_plan(&plan),
+            Ok(plan) => execute_request_plan(&plan, env),
             Err(output) => output,
         },
         _ => usage_error("Unknown command"),
@@ -288,6 +308,8 @@ fn build_request_plan(
         CommandDomain::Role => build_role_plan(args, env),
         CommandDomain::Playbook => build_playbook_plan(args, env),
         CommandDomain::Settings => build_settings_plan(args, env, stdin),
+        CommandDomain::Environment => build_environment_plan(args, env),
+        CommandDomain::Delegation => build_delegation_plan(args, env, stdin),
     }
 }
 
@@ -551,7 +573,7 @@ fn build_run_plan(
                 &args[2..],
                 &["--after", "--base-url"],
                 &["--json"],
-                PositionalMode::Exact(1),
+                PositionalMode::Exact(1, "run_id"),
             )?;
             let base_url = resolve_base_url(&options, "spark run events", env)?;
             let run_id = options
@@ -845,11 +867,20 @@ fn build_trigger_plan(
     }
 }
 
-fn execute_request_plan(plan: &ApiRequestPlan) -> CommandOutput {
+/// The bearer a human sets to reach a remote server; agents on their own
+/// server's loopback need none.
+fn api_token(env: &impl Environment) -> Option<String> {
+    env.get_var("SPARK_API_TOKEN")
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+}
+
+fn execute_request_plan(plan: &ApiRequestPlan, env: &impl Environment) -> CommandOutput {
+    let token = api_token(env);
     if is_run_events_path(&plan.path) {
-        return execute_sse_request(plan);
+        return execute_sse_request(plan, token.as_deref());
     }
-    let payload = match request_json(plan) {
+    let payload = match request_json(plan, token.as_deref()) {
         Ok(payload) => payload,
         Err(output) => return output,
     };
@@ -876,19 +907,17 @@ fn execute_request_plan(plan: &ApiRequestPlan) -> CommandOutput {
     success_json(&payload)
 }
 
-fn request_json(plan: &ApiRequestPlan) -> Result<Value, CommandOutput> {
-    let client = match reqwest::blocking::Client::builder()
+fn request_json(plan: &ApiRequestPlan, token: Option<&str>) -> Result<Value, CommandOutput> {
+    response_json_payload(send_request(plan, token).map_err(request_failed)?)
+}
+
+fn send_request(
+    plan: &ApiRequestPlan,
+    token: Option<&str>,
+) -> Result<reqwest::blocking::Response, reqwest::Error> {
+    let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
-        .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            return Err(json_error(
-                format!("Request failed: {error}"),
-                EXIT_GENERAL_FAILURE,
-            ))
-        }
-    };
+        .build()?;
     let url = workspace_url(&plan.base_url, &plan.path);
     let mut request = match plan.method {
         HttpMethod::Get => client.get(&url),
@@ -899,8 +928,10 @@ fn request_json(plan: &ApiRequestPlan) -> Result<Value, CommandOutput> {
     if let Some(body) = &plan.body {
         request = request.json(body);
     }
-    let response = request.send().map_err(request_failed)?;
-    response_json_payload(response)
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    request.send()
 }
 
 fn response_json_payload(response: reqwest::blocking::Response) -> Result<Value, CommandOutput> {
@@ -918,13 +949,17 @@ fn response_json_payload(response: reqwest::blocking::Response) -> Result<Value,
     Ok(payload)
 }
 
-fn execute_sse_request(plan: &ApiRequestPlan) -> CommandOutput {
+fn execute_sse_request(plan: &ApiRequestPlan, token: Option<&str>) -> CommandOutput {
     let client = match reqwest::blocking::Client::builder().build() {
         Ok(client) => client,
         Err(error) => return json_error(format!("Request failed: {error}"), EXIT_GENERAL_FAILURE),
     };
     let url = workspace_url(&plan.base_url, &plan.path);
-    let response = match client.get(url).send() {
+    let mut request = client.get(url);
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    let response = match request.send() {
         Ok(response) => response,
         Err(error) => return request_failed(error),
     };
@@ -1393,6 +1428,18 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
             }),
             _ => Err(usage_error("Unknown command")),
         },
+        "environment" => match domain_matches.subcommand_name() {
+            Some("pair-code" | "tokens" | "link") => Ok(CommandPath {
+                domain: CommandDomain::Environment,
+            }),
+            _ => Err(usage_error("Unknown command")),
+        },
+        "delegation" => match domain_matches.subcommand_name() {
+            Some("start" | "get" | "wait" | "cancel" | "answer") => Ok(CommandPath {
+                domain: CommandDomain::Delegation,
+            }),
+            _ => Err(usage_error("Unknown command")),
+        },
         _ => Err(usage_error(format!(
             "argument domain: invalid choice: '{}'",
             domain
@@ -1406,7 +1453,7 @@ fn legacy_command_path_error(args: &[String]) -> CommandOutput {
     };
     match domain {
         "convo" | "send" | "run" | "flow" | "trigger" | "mission" | "role" | "playbook"
-        | "settings" => usage_error("Unknown command"),
+        | "settings" | "environment" | "delegation" => usage_error("Unknown command"),
         _ => usage_error(format!("argument domain: invalid choice: '{}'", domain)),
     }
 }
@@ -1479,6 +1526,24 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("update"))
                 .subcommand(clap_command_leaf("delete")),
         )
+        .subcommand(
+            Command::new("environment")
+                .disable_help_flag(true)
+                .disable_help_subcommand(true)
+                .subcommand(clap_command_leaf("pair-code"))
+                .subcommand(clap_command_leaf("tokens"))
+                .subcommand(clap_command_leaf("link")),
+        )
+        .subcommand(
+            Command::new("delegation")
+                .disable_help_flag(true)
+                .disable_help_subcommand(true)
+                .subcommand(clap_command_leaf("start"))
+                .subcommand(clap_command_leaf("get"))
+                .subcommand(clap_command_leaf("wait"))
+                .subcommand(clap_command_leaf("cancel"))
+                .subcommand(clap_command_leaf("answer")),
+        )
 }
 
 fn clap_command_leaf(name: &'static str) -> Command {
@@ -1535,7 +1600,7 @@ fn parse_options(
 
     let positional_values = match positionals {
         PositionalMode::None => Vec::new(),
-        PositionalMode::Exact(count) => {
+        PositionalMode::Exact(count, name) => {
             let values = if count == 1 {
                 matches
                     .get_one::<String>("positional")
@@ -1548,7 +1613,7 @@ fn parse_options(
                     .unwrap_or_default()
             };
             if values.len() < count {
-                return Err("the following arguments are required: run_id".to_string());
+                return Err(format!("the following arguments are required: {name}"));
             }
             values
         }
@@ -1586,7 +1651,7 @@ fn clap_options_command(
         let id = clap_flag_id(flag);
         command = command.arg(Arg::new(id).long(id).action(ArgAction::SetTrue));
     }
-    if let PositionalMode::Exact(count) = positionals {
+    if let PositionalMode::Exact(count, _) = positionals {
         let positional = Arg::new("positional").index(1).allow_hyphen_values(true);
         command = if count == 1 {
             command.arg(positional.action(ArgAction::Set))
@@ -1661,7 +1726,7 @@ fn scan_options_for_argparse_error(
 
     let allowed_positionals = match positionals {
         PositionalMode::None => 0,
-        PositionalMode::Exact(count) => count,
+        PositionalMode::Exact(count, _) => count,
     };
     if positional_values.len() > allowed_positionals {
         unknown.extend(positional_values[allowed_positionals..].iter().cloned());
@@ -1669,9 +1734,9 @@ fn scan_options_for_argparse_error(
     if !unknown.is_empty() {
         return Err(format!("unrecognized arguments: {}", unknown.join(" ")));
     }
-    if let PositionalMode::Exact(count) = positionals {
+    if let PositionalMode::Exact(count, name) = positionals {
         if positional_values.len() < count {
-            return Err("the following arguments are required: run_id".to_string());
+            return Err(format!("the following arguments are required: {name}"));
         }
     }
     Ok(())
@@ -2809,4 +2874,346 @@ fn build_settings_plan(
         body,
         text: false,
     })
+}
+
+fn build_environment_plan(
+    args: &[String],
+    env: &impl Environment,
+) -> Result<ApiRequestPlan, CommandOutput> {
+    let command = args.get(1).map(String::as_str).unwrap_or("");
+    let action = args.get(2).map(String::as_str).unwrap_or("");
+    let rest = args.get(3..).unwrap_or_default();
+    let plan = |method, options: &ParsedOptions, path: String, body: Option<Value>| {
+        Ok(ApiRequestPlan {
+            method,
+            base_url: resolve_base_url(options, "spark environment", env)?,
+            path,
+            body,
+            text: false,
+        })
+    };
+    let id = |options: &ParsedOptions| percent_encode_component(options.positionals[0].trim());
+    match (command, action) {
+        ("pair-code", _) => {
+            let options = parse_api_options(
+                &args[2..],
+                &["--label", "--base-url"],
+                &[],
+                PositionalMode::None,
+            )?;
+            let mut body = Map::new();
+            insert_trimmed(&mut body, &options, "--label", "label");
+            plan(
+                HttpMethod::Post,
+                &options,
+                "/workspace/api/environment/pairing-codes".to_string(),
+                Some(Value::Object(body)),
+            )
+        }
+        ("tokens", "list") => {
+            let options = parse_api_options(rest, &["--base-url"], &[], PositionalMode::None)?;
+            plan(
+                HttpMethod::Get,
+                &options,
+                "/workspace/api/environment/tokens".to_string(),
+                None,
+            )
+        }
+        ("tokens", "revoke") => {
+            let options = parse_api_options(
+                rest,
+                &["--base-url"],
+                &[],
+                PositionalMode::Exact(1, "token_id"),
+            )?;
+            let path = format!("/workspace/api/environment/tokens/{}/revoke", id(&options));
+            plan(HttpMethod::Post, &options, path, None)
+        }
+        ("link", "add") => {
+            let options = parse_api_options(
+                rest,
+                &[
+                    "--origin",
+                    "--expected-id",
+                    "--code",
+                    "--label",
+                    "--base-url",
+                ],
+                &[],
+                PositionalMode::None,
+            )?;
+            require_values(&options, &["--origin", "--expected-id", "--code"])?;
+            let mut body = Map::new();
+            insert_trimmed(&mut body, &options, "--origin", "origin");
+            insert_trimmed(&mut body, &options, "--expected-id", "expected_id");
+            insert_trimmed(&mut body, &options, "--code", "code");
+            insert_trimmed(&mut body, &options, "--label", "label");
+            plan(
+                HttpMethod::Post,
+                &options,
+                "/workspace/api/environments/links".to_string(),
+                Some(Value::Object(body)),
+            )
+        }
+        ("link", "list") => {
+            let options = parse_api_options(rest, &["--base-url"], &[], PositionalMode::None)?;
+            plan(
+                HttpMethod::Get,
+                &options,
+                "/workspace/api/environments/links".to_string(),
+                None,
+            )
+        }
+        ("link", "remove") => {
+            let options = parse_api_options(
+                rest,
+                &["--base-url"],
+                &[],
+                PositionalMode::Exact(1, "environment_id"),
+            )?;
+            let path = format!("/workspace/api/environments/links/{}", id(&options));
+            plan(HttpMethod::Delete, &options, path, None)
+        }
+        _ => Err(usage_error("Unknown command")),
+    }
+}
+
+fn build_delegation_plan(
+    args: &[String],
+    env: &impl Environment,
+    stdin: &mut RuntimeStdin,
+) -> Result<ApiRequestPlan, CommandOutput> {
+    let command = args.get(1).map(String::as_str).unwrap_or("");
+    if command == "start" {
+        let options = parse_api_options(
+            &args[2..],
+            &[
+                "--environment",
+                "--project",
+                "--kind",
+                "--request-key",
+                "--run",
+                "--conversation",
+                "--flow",
+                "--summary",
+                "--goal",
+                "--goal-file",
+                "--launch-context-json",
+                "--launch-context-file",
+                "--message",
+                "--base-url",
+            ],
+            &[],
+            PositionalMode::None,
+        )?;
+        // No default key: a missing one could create a second task on retry.
+        require_values(
+            &options,
+            &["--environment", "--project", "--kind", "--request-key"],
+        )?;
+        reject_mutually_exclusive(&options, &["--run", "--conversation"])?;
+        reject_mutually_exclusive(&options, &["--goal", "--goal-file"])?;
+        reject_mutually_exclusive(
+            &options,
+            &["--launch-context-json", "--launch-context-file"],
+        )?;
+        let kind = non_empty_value(&options, "--kind", "Missing required --kind.")?;
+        let flow_flags = [
+            "--flow",
+            "--summary",
+            "--goal",
+            "--goal-file",
+            "--launch-context-json",
+            "--launch-context-file",
+        ];
+        let mut body = match kind.as_str() {
+            "flow" if options.value("--message").is_some() => {
+                return Err(usage_error(
+                    "argument --message: not allowed with --kind flow",
+                ))
+            }
+            "flow" => build_flow_payload(&options, "spark delegation start", stdin)?
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            "conversation" => {
+                if let Some(flag) = flow_flags.iter().find(|flag| options.value(flag).is_some()) {
+                    return Err(usage_error(format!(
+                        "argument {flag}: not allowed with --kind conversation"
+                    )));
+                }
+                let message = non_empty_value(
+                    &options,
+                    "--message",
+                    "A conversation task requires --message.",
+                )?;
+                Map::from_iter([("message".to_string(), json!(message))])
+            }
+            other => {
+                return Err(usage_error(format!(
+                "argument --kind: invalid choice: '{other}' (choose from 'flow', 'conversation')"
+            )))
+            }
+        };
+        body.insert("kind".to_string(), json!(kind));
+        insert_trimmed(&mut body, &options, "--environment", "environment_id");
+        insert_trimmed(&mut body, &options, "--project", "project_path");
+        insert_trimmed(&mut body, &options, "--request-key", "request_key");
+        insert_trimmed(&mut body, &options, "--run", "run_id");
+        insert_trimmed(&mut body, &options, "--conversation", "conversation_handle");
+        return Ok(ApiRequestPlan {
+            method: HttpMethod::Post,
+            base_url: resolve_base_url(&options, "spark delegation start", env)?,
+            path: "/workspace/api/delegations".to_string(),
+            body: Some(Value::Object(body)),
+            text: false,
+        });
+    }
+    let value_flags: &[&'static str] = match command {
+        "answer" => &[
+            "--question",
+            "--option",
+            "--text",
+            "--answers-json",
+            "--base-url",
+        ],
+        _ => &["--base-url"],
+    };
+    let options = parse_api_options(
+        &args[2..],
+        value_flags,
+        &[],
+        PositionalMode::Exact(1, "delegation_id"),
+    )?;
+    let path = format!(
+        "/workspace/api/delegations/{}",
+        percent_encode_component(options.positionals[0].trim())
+    );
+    let (method, path, body) = match command {
+        "get" => (HttpMethod::Get, path, None),
+        "cancel" => (HttpMethod::Post, format!("{path}/cancel"), None),
+        "answer" => {
+            let question =
+                non_empty_value(&options, "--question", "Missing required --question id.")?;
+            let body = match (
+                trimmed_option(&options, "--option"),
+                trimmed_option(&options, "--text"),
+                trimmed_option(&options, "--answers-json"),
+            ) {
+                (Some(value), None, None) | (None, Some(value), None) => {
+                    json!({"selected_value": value})
+                }
+                (None, None, Some(raw)) => match serde_json::from_str::<Value>(&raw) {
+                    Ok(answers @ Value::Object(_)) => json!({"answers": answers}),
+                    _ => {
+                        return Err(usage_error(
+                            "--answers-json must be a JSON object of question ID to answer.",
+                        ))
+                    }
+                },
+                _ => {
+                    return Err(usage_error(
+                        "Provide exactly one of --option, --text or --answers-json.",
+                    ))
+                }
+            };
+            (
+                HttpMethod::Post,
+                format!(
+                    "{path}/questions/{}/answer",
+                    percent_encode_component(&question)
+                ),
+                Some(body),
+            )
+        }
+        _ => return Err(usage_error("Unknown command")),
+    };
+    Ok(ApiRequestPlan {
+        method,
+        base_url: resolve_base_url(&options, "spark delegation", env)?,
+        path,
+        body,
+        text: false,
+    })
+}
+
+/// What one server poll of `spark delegation wait` asks for: under the
+/// client's own request timeout.
+const DELEGATION_SERVER_WAIT: Duration = Duration::from_secs(25);
+
+/// Polls until the delegation seals or `--timeout` seconds pass (default: no
+/// limit). Prints the record, whose `timed_out` and `result` a flow maps.
+/// Stopping it changes nothing on either environment.
+fn run_delegation_wait(args: &[String], env: &impl Environment) -> CommandOutput {
+    let options = match parse_api_options(
+        &args[2..],
+        &["--timeout", "--base-url"],
+        &[],
+        PositionalMode::Exact(1, "delegation_id"),
+    ) {
+        Ok(options) => options,
+        Err(output) => return output,
+    };
+    let timeout = match options
+        .value("--timeout")
+        .map(|raw| raw.trim().parse::<f64>())
+    {
+        None => None,
+        Some(Ok(seconds)) if seconds.is_finite() && seconds >= 0.0 => {
+            Some(Duration::from_secs_f64(seconds))
+        }
+        Some(_) => return usage_error("argument --timeout: expected a number of seconds"),
+    };
+    let base_url = match resolve_base_url(&options, "spark delegation wait", env) {
+        Ok(base_url) => base_url,
+        Err(output) => return output,
+    };
+    let token = api_token(env);
+    let started = std::time::Instant::now();
+    loop {
+        let remaining = timeout.map(|timeout| timeout.saturating_sub(started.elapsed()));
+        let wait = remaining.map_or(DELEGATION_SERVER_WAIT, |remaining| {
+            remaining.min(DELEGATION_SERVER_WAIT)
+        });
+        let plan = ApiRequestPlan {
+            method: HttpMethod::Get,
+            base_url: base_url.clone(),
+            path: format!(
+                "/workspace/api/delegations/{}/wait?timeout_ms={}",
+                percent_encode_component(options.positionals[0].trim()),
+                wait.as_millis()
+            ),
+            body: None,
+            text: false,
+        };
+        let record = match request_json(&plan, token.as_deref()) {
+            Ok(record) => record,
+            Err(output) => return output,
+        };
+        let expired = timeout.is_some_and(|timeout| started.elapsed() >= timeout);
+        if record["timed_out"] != true || expired {
+            return success_json(&record);
+        }
+    }
+}
+
+/// Sends an answer once. A request whose response is lost is reported as
+/// uncertain and never resent; `spark delegation get` shows whether the
+/// question closed.
+fn execute_delegation_answer(plan: &ApiRequestPlan, env: &impl Environment) -> CommandOutput {
+    let response = match send_request(plan, api_token(env).as_deref()) {
+        Ok(response) => response,
+        Err(error) => {
+            return json_error(
+                format!(
+                    "The answer's outcome is unknown ({error}); it was not resent. Run spark delegation get to see whether the question closed."
+                ),
+                EXIT_GENERAL_FAILURE,
+            )
+        }
+    };
+    match response_json_payload(response) {
+        Ok(payload) => success_json(&payload),
+        Err(output) => output,
+    }
 }

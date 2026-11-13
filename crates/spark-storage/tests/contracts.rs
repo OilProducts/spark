@@ -6,6 +6,8 @@ mod conversation_commit_contracts;
 mod conversation_runtime_session_contracts;
 #[path = "../../test-fixtures/conversation_seed.rs"]
 mod conversation_seed;
+#[path = "contracts/environment_contracts.rs"]
+mod environment_contracts;
 #[path = "../../test-fixtures/isolated_spark_env.rs"]
 mod isolated_spark_env;
 #[path = "contracts/storage_contracts.rs"]

@@ -15,12 +15,12 @@ use spark_cli::{
 };
 
 const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings} ...\n",
+    "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation} ...\n",
     "\n",
     "Spark agent CLI\n",
     "\n",
     "positional arguments:\n",
-    "  {convo,send,run,flow,trigger,mission,role,playbook,settings}\n",
+    "  {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation}\n",
     "    convo               Conversation-scoped artifact commands\n",
     "    send                Message another conversation by handle\n",
     "    run                 Direct execution commands\n",
@@ -30,6 +30,8 @@ const TOP_LEVEL_HELP: &str = concat!(
     "    role                Standing role management\n",
     "    playbook            Mission playbook discovery\n",
     "    settings            Read, validate, and save workspace settings\n",
+    "    environment         This environment's pairing, tokens and links\n",
+    "    delegation          Hand a whole task to a linked environment\n",
     "\n",
     "options:\n",
     "  -h, --help            show this help message and exit\n",
@@ -79,7 +81,7 @@ fn launch_unknown_image_argument_keeps_usage_error_category() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings} ...\n\
+        "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation} ...\n\
 spark: error: unrecognized arguments: --image direct-selection\n"
     );
 }
@@ -1070,7 +1072,7 @@ fn flow_validate_dir_and_flow_are_mutually_exclusive() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings} ...\n\
+        "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation} ...\n\
 spark: error: argument --dir: not allowed with argument --flow\n"
     );
 }
@@ -1446,7 +1448,7 @@ fn launch_goal_sources_are_mutually_exclusive() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings} ...\n\
+        "usage: spark [-h] {convo,send,run,flow,trigger,mission,role,playbook,settings,environment,delegation} ...\n\
 spark: error: argument --goal-file: not allowed with argument --goal\n"
     );
 }

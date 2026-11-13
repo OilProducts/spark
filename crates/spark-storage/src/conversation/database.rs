@@ -23,7 +23,7 @@ use crate::error::{Result, StorageError};
 /// File name of the state database inside the Spark home.
 pub const STATE_DATABASE_FILE_NAME: &str = "state.sqlite3";
 /// Schema version written to `store_meta`; any other stored version fails open.
-pub const STATE_DATABASE_SCHEMA_VERSION: i64 = 5;
+pub const STATE_DATABASE_SCHEMA_VERSION: i64 = 6;
 /// Maximum rows returned by one catch-up before a resync is required.
 pub const CATCH_UP_MAX_ROWS: usize = 1000;
 /// Maximum payload bytes returned by one catch-up before a resync is required.
@@ -231,6 +231,68 @@ CREATE TABLE workflow_milestones (
 CREATE TABLE workflow_projection (
     run_id TEXT PRIMARY KEY,
     state TEXT NOT NULL CHECK (json_type(state) = 'object')
+) WITHOUT ROWID;
+-- Environments (see crate::environment): tokens this home issued to peers,
+-- its single-use pairing codes, its links to other homes, and the
+-- delegations it sent and admitted. Secrets are stored only as hashes,
+-- except a link's token, which this home presents to its peer.
+CREATE TABLE peer_tokens (
+    token_id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    token_sha256 TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
+) WITHOUT ROWID;
+CREATE TABLE pairing_codes (
+    code_sha256 TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
+) WITHOUT ROWID;
+CREATE TABLE environment_links (
+    environment_id TEXT PRIMARY KEY,
+    origin TEXT NOT NULL,
+    label TEXT NOT NULL,
+    token TEXT NOT NULL,
+    created_at TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE delegations_out (
+    delegation_id TEXT PRIMARY KEY,
+    environment_id TEXT NOT NULL,
+    project_path TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('flow', 'conversation')),
+    request TEXT NOT NULL CHECK (json_type(request) = 'object'),
+    request_sha256 TEXT NOT NULL,
+    caller TEXT NOT NULL,
+    request_key TEXT NOT NULL CHECK (length(request_key) > 0),
+    owner_conversation_id TEXT,
+    phase TEXT NOT NULL CHECK (phase IN ('created', 'accepted', 'sealed')),
+    target_id TEXT,
+    last_state TEXT CHECK (last_state IS NULL OR json_valid(last_state)),
+    result TEXT CHECK (result IS NULL OR json_valid(result)),
+    -- Why following stopped, until a link to the environment is saved again.
+    paused TEXT,
+    cancel_requested_at TEXT,
+    cancel_acknowledged_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (caller, request_key)
+) WITHOUT ROWID;
+-- A cancellation tombstone is a sealed row with an empty request.
+CREATE TABLE delegations_in (
+    delegation_id TEXT PRIMARY KEY,
+    origin_environment_id TEXT NOT NULL,
+    project_path TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    request TEXT NOT NULL CHECK (json_valid(request)),
+    request_sha256 TEXT NOT NULL,
+    target_kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    phase TEXT NOT NULL CHECK (phase IN ('accepted', 'launched', 'sealed')),
+    result TEXT CHECK (result IS NULL OR json_valid(result)),
+    created_at TEXT NOT NULL,
+    sealed_at TEXT,
+    canceled_at TEXT
 ) WITHOUT ROWID;
 "#;
 

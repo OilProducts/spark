@@ -55,7 +55,8 @@ fn live_run_registry() -> &'static std::sync::Mutex<std::collections::HashSet<St
     REGISTRY.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
-fn run_has_live_executor(run_id: &str) -> bool {
+/// Whether this process is executing `run_id` now.
+pub fn run_has_live_executor(run_id: &str) -> bool {
     live_run_registry()
         .lock()
         .map(|live| live.contains(run_id))

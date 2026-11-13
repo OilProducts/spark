@@ -342,7 +342,7 @@ pub(crate) fn deliver_inbox(
             }
         }
     };
-    complete_in_background(runtime, conversations, prepared);
+    complete_in_background(runtime.publish, conversations, prepared);
     Ok(true)
 }
 
@@ -350,13 +350,12 @@ pub(crate) fn deliver_inbox(
 /// thread; its completion then processes the inbox again. Committed changes
 /// reach live clients through the store's commit notices; only transient
 /// stream deltas are published here.
-fn complete_in_background(
-    runtime: InboxRuntime,
+pub(crate) fn complete_in_background(
+    publish: Arc<dyn Fn(LiveEnvelope) + Send + Sync>,
     conversations: WorkspaceConversationService,
     prepared: PreparedConversationTurn,
 ) {
     std::thread::spawn(move || {
-        let publish = runtime.publish.clone();
         let (conversation, project_path) = (
             prepared.conversation_id.clone(),
             prepared.project_path.clone(),

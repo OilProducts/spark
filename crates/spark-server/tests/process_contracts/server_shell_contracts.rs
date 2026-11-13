@@ -1028,3 +1028,121 @@ fn worker_run_node_gives_agents_the_resolved_spark_home() {
         );
     }
 }
+
+/// A server on all interfaces prints, and gives its agents, a loopback base
+/// URL, where they need no token; a relayed request still needs one.
+#[cfg(unix)]
+#[test]
+fn serve_on_all_interfaces_gives_agents_a_loopback_base_url() {
+    use std::io::{BufRead, BufReader, Read};
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    struct Server(std::process::Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn get(port: u16, path: &str, extra_headers: &str) -> String {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(120)))
+            .expect("read timeout");
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{extra_headers}Connection: close\r\n\r\n"
+        )
+        .expect("request");
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).expect("response");
+        String::from_utf8_lossy(&response).into_owned()
+    }
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let (ui_dir, home) = (root.join("ui"), root.join("home"));
+    fs::create_dir_all(&ui_dir).expect("ui dir");
+    fs::create_dir_all(&home).expect("home");
+    fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
+    // Each fake agent records the environment Spark launched it with.
+    let fake = |name: &str| {
+        let path = root.join(name);
+        let dump = root.join(format!("{name}.env"));
+        fs::write(&path, format!("#!/bin/sh\nenv > '{}'\n", dump.display())).expect("fake");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        (path, dump)
+    };
+    let ((codex, codex_env), (claude, claude_env)) = (fake("codex"), fake("claude"));
+    let mut server = Server(
+        Command::new(env!("CARGO_BIN_EXE_spark-server"))
+            .args(["serve", "--host", "0.0.0.0", "--port", "0", "--data-dir"])
+            .arg(root.join("spark-home"))
+            .arg("--ui-dir")
+            .arg(&ui_dir)
+            .current_dir(&root)
+            .env("HOME", &home)
+            .env_remove("SPARK_HOME")
+            .env_remove("SPARK_API_BASE_URL")
+            .env_remove("SPARK_CLAUDE_CODE_CONFIG_DIR")
+            .env_remove("ATTRACTOR_CODEX_RUNTIME_ROOT")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env("SPARK_CODEX_APP_SERVER_BIN", &codex)
+            .env("SPARK_CLAUDE_CODE_BIN", &claude)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn spark-server serve"),
+    );
+
+    let stdout = BufReader::new(server.0.stdout.take().expect("server stdout"));
+    let (lines, printed) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in stdout.lines().map_while(Result::ok) {
+            let _ = lines.send(line);
+        }
+    });
+    let mut startup = Vec::new();
+    let port: u16 = loop {
+        let line = printed
+            .recv_timeout(Duration::from_secs(180))
+            .unwrap_or_else(|error| panic!("server did not start ({error}): {startup:?}"));
+        if let Some(port) = line.strip_prefix("Spark server listening on http://0.0.0.0:") {
+            break port.parse().expect("port");
+        }
+        startup.push(line);
+    };
+    let base_url = format!("http://127.0.0.1:{port}");
+    assert!(
+        startup.contains(&format!("Spark agent base URL {base_url}")),
+        "{startup:?}"
+    );
+    assert!(
+        !startup.iter().any(|line| line.contains("0.0.0.0")),
+        "{startup:?}"
+    );
+
+    // Model discovery launches both agents over the loopback address.
+    let models = get(port, "/workspace/api/projects/chat-models", "");
+    assert!(models.starts_with("HTTP/1.1 200"), "{models}");
+    for dump in [&codex_env, &claude_env] {
+        let env = fs::read_to_string(dump)
+            .unwrap_or_else(|error| panic!("{} was not launched: {error}", dump.display()));
+        assert!(
+            env.lines()
+                .any(|line| line == format!("SPARK_API_BASE_URL={base_url}")),
+            "{}: {env}",
+            dump.display()
+        );
+    }
+
+    let relayed = get(
+        port,
+        "/workspace/api/projects",
+        "X-Forwarded-For: 203.0.113.9\r\n",
+    );
+    assert!(relayed.starts_with("HTTP/1.1 401"), "{relayed}");
+    assert!(relayed.contains(r#"{"detail":"A peer token is required."}"#));
+}

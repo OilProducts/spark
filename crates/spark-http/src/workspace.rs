@@ -48,7 +48,7 @@ use crate::{
 
 type ApiResult<T> = std::result::Result<Json<T>, WorkspaceApiError>;
 
-fn conversation_service(
+pub(crate) fn conversation_service(
     settings: &SparkSettings,
     store: &Arc<ConversationStore>,
     runtime_handler_runner_factory: &attractor_api::RuntimeHandlerRunnerFactory,
@@ -176,6 +176,8 @@ pub fn router() -> Router<HttpAppState> {
         )
         .route("/settings", get(settings).patch(patch_settings))
         .route("/settings/validate", post(validate_settings_update))
+        .merge(crate::environment_auth::workspace_router())
+        .merge(crate::delegations::router())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1691,7 +1693,9 @@ impl From<DeletedProjectRecord> for DeletedProjectRecordWithStatus {
     }
 }
 
-fn json_payload<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, WorkspaceApiError> {
+pub(crate) fn json_payload<T>(
+    payload: Result<Json<T>, JsonRejection>,
+) -> Result<T, WorkspaceApiError> {
     payload
         .map(|Json(value)| value)
         .map_err(|rejection| WorkspaceError::Validation(rejection.to_string()).into())
@@ -1700,7 +1704,13 @@ fn json_payload<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, Workspa
 fn run_launch_payload(body: Bytes) -> Result<RunLaunchRequest, Response> {
     let value = run_body_value(body)?;
     let object = run_body_object(&value)?;
-    let errors = required_field_errors(object, &["flow_name", "summary"], &value);
+    let mut errors = required_field_errors(object, &["flow_name", "summary"], &value);
+    // Only an admitted delegation fixes a run's ID.
+    errors.extend(
+        extra_field_errors(object, &[])
+            .into_iter()
+            .filter(|error| error["loc"][1] == "run_id"),
+    );
     if !errors.is_empty() {
         return Err(run_validation_response(errors));
     }
