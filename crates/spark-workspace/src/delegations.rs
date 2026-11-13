@@ -23,8 +23,8 @@ use spark_storage::environment::{
 use spark_storage::{ConversationRepository, ConversationStore};
 
 use crate::conversations::{
-    ConversationRequestUserInputAnswerRequest, ConversationTurnRequest, RunLaunchRequest,
-    WorkspaceConversationService,
+    ConversationRequestUserInputAnswerRequest, ConversationTurnRequest, ProposedPlanReviewRequest,
+    RunLaunchRequest, WorkspaceConversationService,
 };
 use crate::inbox::{self, Inbox, InboxPost, TERMINAL_RUN_STATUSES};
 use crate::{WorkspaceError, WorkspaceResult};
@@ -1055,8 +1055,9 @@ fn run_view(
 /// A delegated conversation: `running` while a turn is in progress,
 /// `waiting` on an open question, plan review or in-flight roster run, else
 /// `idle`. Its result, once an assistant turn has ended and nothing is in
-/// progress, pending or open, is the last assistant turn. Once canceled, its
-/// open questions expire, and a turn that failed reports `canceled`.
+/// progress, pending or open, is the last assistant turn. Once canceled,
+/// nothing waits on its owner: open questions expire, plans awaiting review
+/// are rejected, and a turn that failed reports `canceled`.
 // ponytail: reads the whole conversation each poll; read a summary if delegated chats grow long.
 fn conversation_view(
     conversations: &WorkspaceConversationService,
@@ -1066,7 +1067,7 @@ fn conversation_view(
     let store = conversations.store();
     let repository = ConversationRepository::new(store.clone());
     if row.canceled_at.is_some() {
-        expire_questions(&repository, conversation_id)?;
+        end_waits(conversations, &repository, conversation_id)?;
     }
     let Some(snapshot) = repository.read_snapshot(conversation_id, None)? else {
         return Ok((
@@ -1125,10 +1126,13 @@ fn conversation_view(
     Ok((status.to_string(), questions, result))
 }
 
-/// Expires a canceled conversation's open questions, so the turn waiting
-/// for them ends. The turn's execution, if still live, is interrupted
-/// separately; its later writes are dropped once the turn settles.
-fn expire_questions(
+/// Ends what a canceled conversation waits for from its owner, through the
+/// ordinary paths: its open questions expire, so the turn waiting for them
+/// ends, and its plans awaiting review are rejected. A live execution is
+/// interrupted separately; its later writes are dropped once its turn
+/// settles.
+fn end_waits(
+    conversations: &WorkspaceConversationService,
     repository: &ConversationRepository,
     conversation_id: &str,
 ) -> WorkspaceResult<()> {
@@ -1142,6 +1146,21 @@ fn expire_questions(
         if segment["kind"] == "request_user_input" && segment["status"] == "pending" {
             if let Some(segment_id) = segment["id"].as_str() {
                 repository.expire_question(conversation_id, &project_path, segment_id)?;
+            }
+        }
+    }
+    for plan in snapshot["proposed_plans"].as_array().into_iter().flatten() {
+        if plan["status"] == "pending_review" {
+            if let Some(plan_id) = plan["id"].as_str() {
+                conversations.review_proposed_plan(
+                    conversation_id,
+                    plan_id,
+                    ProposedPlanReviewRequest {
+                        project_path: project_path.clone(),
+                        disposition: "rejected".to_string(),
+                        review_note: Some("The delegation was canceled.".to_string()),
+                    },
+                )?;
             }
         }
     }

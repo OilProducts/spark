@@ -771,7 +771,7 @@ fn assistant_completed(content: &str) -> TurnStreamEvent {
     }
 }
 
-fn plan_completed(content: &str) -> TurnStreamEvent {
+pub(super) fn plan_completed(content: &str) -> TurnStreamEvent {
     TurnStreamEvent {
         kind: TurnStreamEventKind::ContentCompleted,
         channel: Some(TurnStreamChannel::Plan),

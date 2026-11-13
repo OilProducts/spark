@@ -2,10 +2,13 @@
 //! admits, launches, reports and seals a delegation, driven through the
 //! workspace API with no network between them.
 use super::mission_contracts::{project, wait_for, GatedAgent};
-use super::review_artifact_contracts::{settings, simple_flow, write_native_execution_profile};
+use super::review_artifact_contracts::{
+    plan_completed, settings, simple_flow, write_native_execution_profile,
+};
 use attractor_core::{RunRecord, RunResult};
 use attractor_runtime::{CreateRunRequest, RunStore};
 use serde_json::{json, Value};
+use spark_agent_adapter::AgentTurnOutput;
 use spark_common::settings::SparkSettings;
 use spark_storage::environment::{DelegationIn, EnvironmentLink, EnvironmentRepository};
 use spark_storage::{ConversationRepository, ProjectRegistry};
@@ -13,7 +16,7 @@ use spark_workspace::delegations::{
     self, request_digest, DelegationStartRequest, IncomingCancel, IncomingDelegation,
     DELEGATION_CONTEXT_KEY,
 };
-use spark_workspace::{WorkspaceConversationService, WorkspaceError};
+use spark_workspace::{ConversationTurnRequest, WorkspaceConversationService, WorkspaceError};
 use std::sync::Arc;
 
 /// The linked environment A delegates to, and the origin B records.
@@ -614,6 +617,73 @@ fn b_seals_a_canceled_conversation_that_waits_for_answers() {
         .unwrap()
         .canceled_at
         .is_none());
+}
+
+#[test]
+fn b_seals_a_canceled_conversation_that_waits_for_plan_review() {
+    let home = Home::new();
+    let service = home.service();
+    let admitted = home
+        .admit(home.incoming(
+            &id(1),
+            "conversation",
+            json!({"message": "Summarize the repo."}),
+        ))
+        .unwrap();
+    let target = admitted["target_id"].as_str().unwrap().to_string();
+    // The delegated turn ends while nothing reads the delegation.
+    home.agent.release(1);
+    wait_for("the delegated turn to end", || {
+        let snapshot = home.repository().read_snapshot(&target, None).unwrap();
+        snapshot.unwrap()["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|turn| turn["role"] == "assistant" && turn["status"] == "complete")
+    });
+    // B's owner then plans in the same chat, and the plan awaits review.
+    let (prepared, _) = service
+        .start_turn(
+            &target,
+            ConversationTurnRequest {
+                project_path: home.project.clone(),
+                message: "Plan the next step.".into(),
+                chat_mode: Some("plan".into()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .unwrap();
+    service
+        .ingest_agent_turn_output(
+            &target,
+            &home.project,
+            &prepared.assistant_turn_id,
+            "plan",
+            AgentTurnOutput {
+                events: vec![plan_completed("# Next Step\n\n1. Do it.")],
+                ..AgentTurnOutput::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(home.state(&id(1))["status"], "waiting");
+
+    // The cancel rejects the plan and seals what the chat reached.
+    let cancel =
+        || delegations::cancel_incoming(&service, &id(1), IncomingCancel::default()).unwrap();
+    let sealed = cancel();
+    assert_eq!(sealed["phase"], "sealed");
+    assert_eq!(sealed["result"]["status"], "complete");
+    let snapshot = home
+        .repository()
+        .read_snapshot(&target, None)
+        .unwrap()
+        .unwrap();
+    let plan = &snapshot["proposed_plans"][0];
+    assert_eq!(
+        (&plan["status"], &plan["review_note"]),
+        (&json!("rejected"), &json!("The delegation was canceled."))
+    );
+    assert_eq!(cancel(), sealed);
 }
 
 #[test]
