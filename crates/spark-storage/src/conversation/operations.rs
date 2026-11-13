@@ -2177,7 +2177,19 @@ impl ConversationRepository {
         conversation_id: &str,
         event: NewInboxEvent,
     ) -> Result<Option<i64>> {
+        self.append_inbox_event_with(conversation_id, event, |_| Ok(()))
+    }
+
+    /// `append_inbox_event` in one transaction with `with`, which writes the
+    /// record the event reports on, so both commit or neither does.
+    pub fn append_inbox_event_with(
+        &self,
+        conversation_id: &str,
+        event: NewInboxEvent,
+        with: impl FnOnce(&Connection) -> Result<()>,
+    ) -> Result<Option<i64>> {
         self.write_inbox(conversation_id, |connection| {
+            with(connection)?;
             Ok(connection
                 .query_row(
                     "INSERT INTO inbox_events (conversation_id, seq, event_id, at, kind, source, \
@@ -2576,6 +2588,26 @@ fn render_inbox_event(event: &InboxEvent, runs: &[InboxRun]) -> String {
         "run.question" => {
             let root = payload["root_run_id"].as_str().unwrap_or(&event.source);
             return format!("Run question in run {root} ({}): {payload}", launch(root));
+        }
+        "delegation.result" | "delegation.question" => {
+            let task = format!(
+                "Delegated {} task {:?} (delegation {}) in project {} on environment {}, its {} {}",
+                text(&payload["kind"]),
+                text(&payload["request_key"]),
+                text(&payload["delegation_id"]),
+                text(&payload["project_path"]),
+                text(&payload["environment_id"]),
+                text(&payload["target_kind"]),
+                text(&payload["target_id"]),
+            );
+            return if event.kind == "delegation.result" {
+                format!("{task}, sealed: {}", payload["result"])
+            } else {
+                format!(
+                    "{task}, asks (answer with spark delegation answer): {}",
+                    payload["question"]
+                )
+            };
         }
         "mission.updated" => {
             let mut lines = vec![

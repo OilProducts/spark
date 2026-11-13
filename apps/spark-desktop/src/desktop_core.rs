@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 pub const LOCAL_BIND_HOST: &str = "127.0.0.1";
 pub const REMOTE_BIND_HOST: &str = "0.0.0.0";
 pub const REMOTE_ACCESS_WARNING: &str =
-    "Remote access lets other devices on this network reach the Spark desktop server.";
+    "Remote access makes the Spark desktop server listen on every network interface. Other devices need a token this Spark issued (spark environment pair-code); requests from this computer stay trusted.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopPaths {
@@ -299,6 +299,8 @@ pub fn start_desktop_server(
                         }
                     };
                 let _ = startup_tx.send(Ok(Box::new(notify)));
+                // The trust rule reads each request's peer address.
+                let app = app.into_make_service_with_connect_info::<SocketAddr>();
                 let server = axum::serve(listener, app).with_graceful_shutdown(async {
                     let _ = shutdown_rx.await;
                 });

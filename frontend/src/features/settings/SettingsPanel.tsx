@@ -16,6 +16,7 @@ import { Switch } from "@/components/ui/switch"
 import { useDialogController } from "@/components/app/dialog-controller"
 import { Button } from "@/components/ui/button"
 import { ConnectionSettingsEditor } from "./ConnectionSettingsEditor"
+import { EnvironmentsCard } from "./EnvironmentsCard"
 import { RuntimeSettingsEditor } from "./RuntimeSettingsEditor"
 import { useSettingsNavigationProtection } from "./hooks/useSettingsNavigationProtection"
 import { useModelSettingsEditor } from "./hooks/useModelSettingsEditor"
@@ -242,6 +243,7 @@ export function SettingsPanel() {
                     </Card>
                 ) : null}
                 <ConnectionSettingsEditor />
+                <EnvironmentsCard />
                 <RuntimeSettingsEditor />
                 </TabsContent>
             </div>

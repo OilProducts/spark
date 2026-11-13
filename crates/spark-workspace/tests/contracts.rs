@@ -2,6 +2,8 @@
 mod conversation_repository_contracts;
 #[path = "../../test-fixtures/conversation_seed.rs"]
 mod conversation_seed;
+#[path = "contracts/delegation_contracts.rs"]
+mod delegation_contracts;
 #[path = "contracts/history_index_contracts.rs"]
 mod history_index_contracts;
 #[path = "contracts/inbox_contracts.rs"]

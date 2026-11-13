@@ -860,14 +860,17 @@ fn run_serve_process(
             .port();
         let mut settings = config.settings;
         settings.connections.server_port = Some(port);
+        // Agents and local clients reach an all-interfaces server over
+        // loopback, where they need no token.
+        let local_host = match config.host.parse::<std::net::IpAddr>() {
+            Ok(ip) if ip.is_unspecified() => "127.0.0.1".to_string(),
+            _ => config.host.clone(),
+        };
+        let local_base_url = format!("http://{local_host}:{port}");
         if config.port == 0 {
-            settings.connections.client_api_base_url =
-                Some(format!("http://{}:{port}", config.host));
+            settings.connections.client_api_base_url = Some(local_base_url.clone());
         }
-        let _ = spark_agent_adapter::configure_codex_api_base_url(format!(
-            "http://{}:{}",
-            config.host, port
-        ));
+        let _ = spark_agent_adapter::configure_codex_api_base_url(local_base_url.clone());
         let client = rust_llm_client_from_settings(&settings);
         // Fails before serving, e.g. when another server holds this home.
         let app =
@@ -877,6 +880,7 @@ fn run_serve_process(
                     format!("Unable to initialize Spark server: {error}\n"),
                 )
             })?;
+        println!("Spark agent base URL {local_base_url}");
         println!("Spark server listening on http://{}:{port}", config.host);
         axum_serve(listener, app).await
     })
@@ -1031,9 +1035,13 @@ async fn axum_serve(
     listener: tokio::net::TcpListener,
     app: axum::Router,
 ) -> std::result::Result<(), CommandOutput> {
-    axum::serve(listener, app)
-        .await
-        .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))
+    // The trust rule reads each request's peer address.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))
 }
 
 fn usage_error(message: impl AsRef<str>) -> CommandOutput {

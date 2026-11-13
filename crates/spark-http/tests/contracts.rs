@@ -7,6 +7,8 @@ mod isolated_spark_env;
 pub(crate) use isolated_home::isolate_home;
 #[path = "contracts/deprecated_route_error_contracts.rs"]
 mod deprecated_route_error_contracts;
+#[path = "contracts/environment_auth_route_contracts.rs"]
+mod environment_auth_route_contracts;
 #[path = "contracts/product_shell_contracts.rs"]
 mod product_shell_contracts;
 #[path = "contracts/workspace_conversation_attachment_route_contracts.rs"]

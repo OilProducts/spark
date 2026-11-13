@@ -203,6 +203,10 @@ pub struct RunLaunchRequest {
     pub execution_profile_id: Option<String>,
     #[serde(default)]
     pub node_overrides: Option<BTreeMap<String, NodeOverride>>,
+    /// The run's ID, fixed by an admitted delegation; the public launch
+    /// route refuses it.
+    #[serde(default)]
+    pub run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -2555,6 +2559,7 @@ impl WorkspaceConversationService {
             reasoning_effort: request.reasoning_effort,
             execution_profile_id: request.execution_profile_id,
             node_overrides: request.node_overrides,
+            run_id: None,
         };
         let (project, conversation) = (&handle_match.project_path, &handle_match.conversation_id);
         let missions = crate::missions::WorkspaceMissionService::new(
@@ -2889,6 +2894,17 @@ impl WorkspaceConversationService {
         Ok(response)
     }
 
+    /// The checks `launch_workspace_run` makes of a launch into
+    /// `project_path` before it starts anything.
+    pub(crate) fn validate_run_launch(&self, request: &RunLaunchRequest) -> WorkspaceResult<()> {
+        let payload = normalize_run_launch_request_payload(request.clone())?;
+        ensure_flow_exists(
+            &self.settings,
+            request.project_path.as_deref(),
+            &payload.flow_name,
+        )
+    }
+
     /// `launch_workspace_run` without delivery, for launches under a mission
     /// or role lock.
     pub(crate) fn start_workspace_run(&self, request: RunLaunchRequest) -> WorkspaceResult<Value> {
@@ -2902,6 +2918,7 @@ impl WorkspaceConversationService {
             .and_then(non_empty_string)
             .map(|value| normalize_project_path_or_400(&value))
             .transpose()?;
+        let run_id = request.run_id.clone();
         let payload = normalize_run_launch_request_payload(request)?;
 
         let repository = self.repository();
@@ -2946,7 +2963,10 @@ impl WorkspaceConversationService {
             project_path
         };
 
-        let artifact_value = flow_launch_artifact_payload(&payload, &project_path);
+        let mut artifact_value = flow_launch_artifact_payload(&payload, &project_path);
+        if let Some(run_id) = run_id {
+            artifact_value["run_id"] = json!(run_id);
+        }
         let owner = launch_artifact
             .as_ref()
             .map(|artifact| artifact.conversation_id.as_str());
@@ -3694,7 +3714,10 @@ impl WorkspaceConversationService {
         let response = self
             .runtime_api_service()
             .start_pipeline(PipelineStartRequest {
-                run_id: None,
+                run_id: artifact
+                    .get("run_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 flow_name: Some(flow_name.to_string()),
                 working_directory: working_directory.to_string(),
                 project_path: project_path.map(str::to_string),
@@ -3870,7 +3893,7 @@ impl WorkspaceConversationService {
         &self.store
     }
 
-    fn runtime_api_service(&self) -> attractor_api::AttractorApiService {
+    pub(crate) fn runtime_api_service(&self) -> attractor_api::AttractorApiService {
         let service = attractor_api::AttractorApiService::new_with_runtime_handler_runner_factory(
             self.settings.clone(),
             self.runtime_handler_runner_factory.clone(),

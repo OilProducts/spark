@@ -3761,6 +3761,60 @@ fn chat_stop_kills_a_running_shell_command_and_keeps_the_latest_answer() {
         .any(|event| event.kind == TurnStreamEventKind::Error));
 }
 
+const SDK_AGENT_ENV_DIR_ENV: &str = "SPARK_SDK_AGENT_ENV_CONTRACT_DIR";
+const SDK_AGENT_API_BASE_URL: &str = "http://127.0.0.1:43123";
+
+/// An SDK agent's shell reaches this Spark as Codex and Claude Code shells do.
+/// Spark's home and API are set once per process, and other tests here need
+/// them unset, so a copy of this binary runs the turn.
+#[test]
+fn sdk_agent_shell_sees_sparks_home_and_api() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "llm_backend_contracts::sdk_agent_env_role"])
+        .env(SDK_AGENT_ENV_DIR_ENV, dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("agent-env")).expect("the shell ran"),
+        format!(
+            "{}|{SDK_AGENT_API_BASE_URL}",
+            dir.path().join("spark-home").display()
+        )
+    );
+}
+
+/// The turn `sdk_agent_shell_sees_sparks_home_and_api` runs. A no-op in the
+/// ordinary test run.
+#[test]
+fn sdk_agent_env_role() {
+    let Some(dir) = std::env::var_os(SDK_AGENT_ENV_DIR_ENV) else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    spark_agent_adapter::configure_codex_spark_home(dir.join("spark-home")).unwrap();
+    spark_agent_adapter::configure_codex_api_base_url(SDK_AGENT_API_BASE_URL).unwrap();
+    let (client, calls) = scripted_client(|index, _| {
+        Ok(match index {
+            0 => reply(
+                "",
+                vec![ToolCall::new(
+                    "call-env",
+                    "shell",
+                    json!({"command": "printf '%s|%s' \"$SPARK_HOME\" \"$SPARK_API_BASE_URL\" > agent-env"}),
+                )],
+            ),
+            _ => reply("Done.", Vec::new()),
+        })
+    });
+    let output = RustLlmAgentTurnBackend::new(client)
+        .run_turn(native_chat_request("sdk-agent-env", &dir.to_string_lossy()))
+        .expect("turn");
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Done."));
+}
+
 fn native_node_request(node_id: &str, timeout_seconds: Option<f64>) -> CodergenBackendRequest {
     CodergenBackendRequest {
         node_id: node_id.to_string(),

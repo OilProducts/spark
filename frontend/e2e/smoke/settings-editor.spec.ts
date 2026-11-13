@@ -234,6 +234,7 @@ test('connection settings validate, save, preserve running binding, and reload',
     const port = page.getByLabel('Server port', { exact: true })
     const target = page.getByLabel('Command-line server URL', { exact: true })
     await expect(port).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Environments', exact: true })).toBeVisible()
     try {
         await port.fill('70000')
         await expect(card(page, 'Server and client connections').getByRole('button', { name: /^Save\b/ })).toBeDisabled()
