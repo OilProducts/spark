@@ -1057,7 +1057,9 @@ fn run_view(
 /// `idle`. Its result, once an assistant turn has ended and nothing is in
 /// progress, pending or open, is the last assistant turn. Once canceled,
 /// nothing waits on its owner: open questions expire, plans awaiting review
-/// are rejected, and a turn that failed reports `canceled`.
+/// are rejected, and a turn that failed reports `canceled`. Its transcript,
+/// roster and pending inbox events are read in one transaction, so a run
+/// whose report has just started a turn is never seen ended without it.
 // ponytail: reads the whole conversation each poll; read a summary if delegated chats grow long.
 fn conversation_view(
     conversations: &WorkspaceConversationService,
@@ -1069,7 +1071,8 @@ fn conversation_view(
     if row.canceled_at.is_some() {
         end_waits(conversations, &repository, conversation_id)?;
     }
-    let Some(snapshot) = repository.read_snapshot(conversation_id, None)? else {
+    let Some((snapshot, runs, pending)) = repository.read_snapshot_with_inbox(conversation_id)?
+    else {
         return Ok((
             "failed".to_string(),
             vec![],
@@ -1098,7 +1101,7 @@ fn conversation_view(
     let review = items("proposed_plans")
         .iter()
         .any(|plan| plan["status"] == "pending_review");
-    let in_flight = Inbox::read(store, conversation_id)?.in_flight() > 0;
+    let in_flight = runs.iter().any(|run| run.in_flight());
     let status = if running {
         "running"
     } else if !questions.is_empty() || review || in_flight {
@@ -1111,9 +1114,7 @@ fn conversation_view(
             && matches!(turn["status"].as_str(), Some("complete" | "failed"))
     });
     let result = match last {
-        Some(turn)
-            if status == "idle" && repository.pending_inbox_events(conversation_id)?.is_empty() =>
-        {
+        Some(turn) if status == "idle" && pending.is_empty() => {
             let canceled = row.canceled_at.is_some() && turn["status"] == "failed";
             Some(json!({
                 "status": if canceled { json!("canceled") } else { turn["status"].clone() },

@@ -597,7 +597,7 @@ impl ConversationRepository {
 
 /// A live conversation's typed record from its current rows: all of them, or
 /// only its head. `None` when it is unknown, deleted or in another project.
-fn read_record(
+pub(crate) fn read_record(
     connection: &Connection,
     conversation_id: &str,
     expected_project: Option<&str>,

@@ -16,7 +16,9 @@ use spark_workspace::delegations::{
     self, request_digest, DelegationStartRequest, IncomingCancel, IncomingDelegation,
     DELEGATION_CONTEXT_KEY,
 };
+use spark_workspace::inbox::{install_runtime, InboxRuntime};
 use spark_workspace::{ConversationTurnRequest, WorkspaceConversationService, WorkspaceError};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// The linked environment A delegates to, and the origin B records.
@@ -684,6 +686,74 @@ fn b_seals_a_canceled_conversation_that_waits_for_plan_review() {
         (&json!("rejected"), &json!("The delegation was canceled."))
     );
     assert_eq!(cancel(), sealed);
+}
+
+#[test]
+fn b_seals_a_conversation_only_after_the_turn_its_finished_run_starts() {
+    let home = Home::new();
+    install_runtime(
+        &home.settings,
+        InboxRuntime {
+            agent_turn_backend: home.agent.clone(),
+            runtime_handler_runner_factory: attractor_api::default_runtime_handler_runner_factory(),
+            publish: Arc::new(|_| {}),
+        },
+    );
+    let turns = || home.agent.requests.lock().unwrap().len();
+    // Each round races B's reads against one run's completion.
+    for n in 1..=30u8 {
+        let target = home
+            .admit(home.incoming(&id(n), "conversation", json!({"message": "Run the work."})))
+            .unwrap()["target_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // The delegated turn launches a roster run and answers.
+        let run_id = format!("run-{n}");
+        crate::owned_run(&home.settings, &home.project, &target, &run_id, "running");
+        home.agent.release(1);
+        wait_for("the delegated turn to end", || {
+            let snapshot = home.repository().read_snapshot(&target, None).unwrap();
+            snapshot.unwrap()["turns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|turn| turn["role"] == "assistant" && turn["status"] == "complete")
+        });
+        assert_eq!(home.state(&id(n))["status"], "waiting");
+
+        // The run ends, and its report starts a turn the agent holds. B is
+        // read throughout, and seals nothing while that turn runs.
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                while !stop.load(Ordering::SeqCst) {
+                    let state = home.state(&id(n));
+                    if state["phase"] == "sealed" {
+                        return Some(state);
+                    }
+                }
+                None
+            });
+            let store = RunStore::for_settings(&home.settings);
+            let paths = store.find_run_root(&run_id).unwrap().unwrap();
+            let mut record = store.read_run_record(&paths).unwrap().unwrap();
+            record.status = "completed".into();
+            store.write_run_record(&paths, &record).unwrap();
+            store
+                .write_result(&paths, &RunResult::unavailable(&run_id, "completed"))
+                .unwrap();
+            assert!(crate::deliver_run_events(&home.settings, &run_id));
+            wait_for("the report's turn", || turns() == 2 * n as usize);
+            stop.store(true, Ordering::SeqCst);
+            assert_eq!(reader.join().unwrap(), None, "round {n}");
+        });
+        home.agent.release(1);
+        wait_for("the conversation to seal", || {
+            home.state(&id(n))["phase"] == "sealed"
+        });
+        assert_eq!(home.state(&id(n))["result"]["status"], "complete");
+    }
 }
 
 #[test]

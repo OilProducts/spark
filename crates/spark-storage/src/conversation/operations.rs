@@ -2349,6 +2349,32 @@ impl ConversationRepository {
             .read(|read| inbox_runs(read.connection(), conversation_id))
     }
 
+    /// A live conversation's snapshot with its roster and its pending inbox
+    /// events, read in one transaction so together they describe one state.
+    #[allow(clippy::type_complexity)]
+    pub fn read_snapshot_with_inbox(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<(Value, Vec<InboxRun>, Vec<InboxEvent>)>> {
+        self.store().database().read(|read| {
+            let connection = read.connection();
+            let Some(record) = crate::workspace_conversations::read_record(
+                connection,
+                conversation_id,
+                None,
+                false,
+            )?
+            else {
+                return Ok(None);
+            };
+            Ok(Some((
+                super::snapshot_from_record(&record),
+                inbox_runs(connection, conversation_id)?,
+                inbox_events(connection, conversation_id, i64::MAX, true)?,
+            )))
+        })
+    }
+
     /// Live conversations with pending inbox events, with their projects.
     pub fn pending_inbox_conversations(&self) -> Result<Vec<(String, String)>> {
         self.store().database().read(|read| {
