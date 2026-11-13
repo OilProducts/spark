@@ -1620,7 +1620,7 @@ fn similar_flows(
 /// Prints each event as it arrives. Without `until_done`, stops at the
 /// client's request timeout. With it, stops at the run's last journal entry
 /// once the run has ended, so replayed ends of a retried run do not stop it;
-/// a stream lost before then is an error.
+/// a stream lost or lagging before then is an error.
 fn stream_events(
     plan: &ApiRequestPlan,
     run_id: &str,
@@ -1680,6 +1680,11 @@ fn stream_events(
         if !until_done {
             continue;
         }
+        // Dropped frames may include the run's end: hand back the cursor so
+        // a rerun replays the rest from the journal.
+        if envelope["type"] == "resync_required" {
+            break;
+        }
         if last.is_none() && is_run_end(&envelope) {
             last = match last_sequence_if_ended(plan, run_id, token) {
                 Ok(last) => last,
@@ -1695,7 +1700,7 @@ fn stream_events(
     }
     failure(
         format!(
-            "The event stream for run {run_id} ended before the run did; continue with spark run events {run_id} --after {} --until-done.",
+            "The event stream for run {run_id} dropped events or ended before the run did; continue with spark run events {run_id} --after {} --until-done.",
             cursor.unwrap_or(0)
         ),
         EXIT_GENERAL_FAILURE,

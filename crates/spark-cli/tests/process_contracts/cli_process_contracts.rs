@@ -1482,8 +1482,8 @@ fn process_json_flags_take_inline_json_a_file_or_stdin() {
 
 /// A run's server for `run events --until-done`. The run reads as ended
 /// after `live_reads` reads; its journal holds `entries` (sequence, raw
-/// type); its event stream replays the entries after the requested cursor,
-/// then stays open when `hold_open`. Sends each request's path.
+/// type, or `resync_required` for a lag notice); its event stream replays the
+/// entries after the requested cursor, then stays open when `hold_open`. Sends each request's path.
 fn serve_run(
     entries: &'static [(u64, &'static str)],
     live_reads: usize,
@@ -1508,11 +1508,15 @@ fn serve_run(
                     stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n");
                 for (sequence, raw_type) in entries.iter().filter(|(sequence, _)| *sequence > after)
                 {
-                    let event = serde_json::json!({
-                        "type": "run.journal_entry",
-                        "cursor": {"kind": "run_sequence", "value": sequence},
-                        "payload": {"sequence": sequence, "raw_type": raw_type},
-                    });
+                    let event = if *raw_type == "resync_required" {
+                        serde_json::json!({"type": "resync_required", "resource": {"kind": "run", "id": "run-1"}})
+                    } else {
+                        serde_json::json!({
+                            "type": "run.journal_entry",
+                            "cursor": {"kind": "run_sequence", "value": sequence},
+                            "payload": {"sequence": sequence, "raw_type": raw_type},
+                        })
+                    };
                     let _ = write!(stream, "data: {event}\n\n");
                 }
                 if hold_open {
@@ -1641,10 +1645,28 @@ fn process_run_events_until_done_reports_a_stream_lost_before_the_run_ended() {
         error,
         serde_json::json!({
             "ok": false,
-            "error": "The event stream for run run-1 ended before the run did; continue with spark run events run-1 --after 1 --until-done.",
+            "error": "The event stream for run run-1 dropped events or ended before the run did; continue with spark run events run-1 --after 1 --until-done.",
             "exit_code": 1,
             "target": base_url,
             "target_source": "flag",
         })
+    );
+}
+
+#[test]
+fn process_run_events_until_done_reports_a_lagged_stream_with_its_cursor() {
+    // The lag notice stands in for frames that held the run's end.
+    let (base_url, _paths) = serve_run(
+        &[(1, "StageCompleted"), (2, "resync_required")],
+        usize::MAX,
+        true,
+    );
+    let output = run_events_until_done(&base_url, &[]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).expect("stderr json");
+    assert_eq!(
+        error["error"],
+        "The event stream for run run-1 dropped events or ended before the run did; continue with spark run events run-1 --after 1 --until-done."
     );
 }
