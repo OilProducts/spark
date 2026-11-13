@@ -1174,12 +1174,16 @@ fn process_run_list_get_and_cancel_call_their_routes() {
 }
 
 #[test]
-fn process_unknown_short_flow_name_suggests_the_namespaced_one() {
+fn process_unknown_short_flow_name_suggests_the_namespaced_one_from_the_conversations_project() {
     let (base_url, requests) = serve_sequence(vec![
         HttpResponse::json(404, r#"{"detail":"Unknown flow: design-change"}"#),
         HttpResponse::json(
             200,
-            r#"[{"name":"software-development/design-change"},{"name":"examples/simple-linear"}]"#,
+            r#"{"rows":[{"kind":"conversation","payload":{"handle":"other-otter","project_path":"/other"}},{"kind":"conversation","payload":{"handle":"amber-otter","project_path":"/repo"}}]}"#,
+        ),
+        HttpResponse::json(
+            200,
+            r#"[{"name":"team/design-change"},{"name":"examples/simple-linear"}]"#,
         ),
     ]);
     let output = spark_with_stdin(
@@ -1201,19 +1205,23 @@ fn process_unknown_short_flow_name_suggests_the_namespaced_one() {
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     assert_eq!(
         stderr_error(&output),
-        "Unknown flow: design-change; did you mean software-development/design-change?"
+        "Unknown flow: design-change; did you mean team/design-change?"
     );
-    let list = (0..2)
+    let paths = (0..3)
         .map(|_| {
             requests
                 .recv_timeout(Duration::from_secs(2))
                 .expect("request")
+                .path
         })
-        .last()
-        .expect("flow list request");
+        .collect::<Vec<_>>();
     assert_eq!(
-        (list.method.as_str(), list.path.as_str()),
-        ("GET", "/workspace/api/flows")
+        paths,
+        [
+            "/workspace/api/conversations/by-handle/amber-otter/flow-run-requests",
+            "/workspace/api/projects/conversations",
+            "/workspace/api/flows?project_path=%2Frepo",
+        ]
     );
 }
 
@@ -1354,33 +1362,67 @@ fn process_json_flags_take_inline_json_a_file_or_stdin() {
     }
 }
 
-#[test]
-fn process_run_events_until_done_stops_at_the_run_end_on_an_open_stream() {
+/// A run's server for `run events --until-done`. The run reads as ended
+/// after `live_reads` reads; its journal holds `entries` (sequence, raw
+/// type); its event stream replays the entries after the requested cursor,
+/// then stays open when `hold_open`. Sends each request's path.
+fn serve_run(
+    entries: &'static [(u64, &'static str)],
+    live_reads: usize,
+    hold_open: bool,
+) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
     let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
-    let server = thread::spawn(move || {
-        let (mut events, _) = listener.accept().expect("events connection");
-        let events_request = read_http_request(&mut events);
-        let _ = events.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n");
-        for raw_type in ["StageCompleted", "PipelineCompleted"] {
-            let event = serde_json::json!({
-                "type": "run.journal_entry",
-                "payload": {"raw_type": raw_type},
-            });
-            let _ = write!(events, "data: {event}\n\n");
+    let (sender, paths) = mpsc::channel();
+    thread::spawn(move || {
+        let mut run_reads = 0;
+        let mut open_streams = Vec::new();
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let path = read_http_request(&mut stream).path;
+            let _ = sender.send(path.clone());
+            if path.starts_with("/workspace/api/live/events") {
+                let after = path
+                    .split("run_sequence=")
+                    .nth(1)
+                    .map_or(0, |after| after.parse::<u64>().expect("cursor"));
+                let _ =
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n");
+                for (sequence, raw_type) in entries.iter().filter(|(sequence, _)| *sequence > after)
+                {
+                    let event = serde_json::json!({
+                        "type": "run.journal_entry",
+                        "cursor": {"kind": "run_sequence", "value": sequence},
+                        "payload": {"sequence": sequence, "raw_type": raw_type},
+                    });
+                    let _ = write!(stream, "data: {event}\n\n");
+                }
+                if hold_open {
+                    open_streams.push(stream);
+                }
+                continue;
+            }
+            let body = if path.ends_with("/journal?limit=1") {
+                serde_json::json!({"newest_sequence": entries.last().map(|(sequence, _)| sequence)})
+            } else {
+                run_reads += 1;
+                let ended = (run_reads > live_reads).then_some("2026-11-13T00:00:00Z");
+                serde_json::json!({"run_id": "run-1", "ended_at": ended})
+            }
+            .to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
         }
-        let _ = events.flush();
-        let (mut run, _) = listener.accept().expect("run connection");
-        let run_request = read_http_request(&mut run);
-        let body = r#"{"run_id":"run-1","ended_at":"2026-11-13T00:00:00Z"}"#;
-        let _ = write!(
-            run,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        // Returning `events` keeps the stream open while the CLI decides to stop.
-        (events, events_request, run_request)
     });
+    (base_url, paths)
+}
+
+/// `spark run events run-1 --until-done`, failing if it still runs after
+/// ten seconds.
+fn run_events_until_done(base_url: &str, extra: &[&str]) -> std::process::Output {
     let mut child = Command::new(spark_bin())
         .args([
             "run",
@@ -1388,8 +1430,9 @@ fn process_run_events_until_done_stops_at_the_run_end_on_an_open_stream() {
             "run-1",
             "--until-done",
             "--base-url",
-            &base_url,
+            base_url,
         ])
+        .args(extra)
         .env_clear()
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1403,15 +1446,87 @@ fn process_run_events_until_done_stops_at_the_run_end_on_an_open_stream() {
         }
         thread::sleep(Duration::from_millis(20));
     }
-    let output = child.wait_with_output().expect("wait spark");
+    child.wait_with_output().expect("wait spark")
+}
+
+const RUN: &str = "/attractor/pipelines/run-1";
+const JOURNAL: &str = "/attractor/pipelines/run-1/journal?limit=1";
+const EVENTS: &str = "/workspace/api/live/events?run_id=run-1";
+const RETRIED: &[(u64, &str)] = &[
+    (1, "StageCompleted"),
+    (2, "PipelineFailed"),
+    (3, "StageCompleted"),
+    (4, "PipelineCompleted"),
+];
+
+#[test]
+fn process_run_events_until_done_stops_at_a_live_runs_end_on_an_open_stream() {
+    let (base_url, paths) = serve_run(&[(1, "StageCompleted"), (2, "PipelineCompleted")], 1, true);
+    let output = run_events_until_done(&base_url, &[]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert_eq!(stdout.lines().count(), 2, "{stdout}");
-    let (_events, events_request, run_request) = server.join().expect("server");
     assert_eq!(
-        events_request.path,
-        "/workspace/api/live/events?run_id=run-1"
+        paths.try_iter().collect::<Vec<_>>(),
+        [RUN, EVENTS, RUN, JOURNAL]
     );
-    assert_eq!(run_request.path, "/attractor/pipelines/run-1");
+}
+
+#[test]
+fn process_run_events_until_done_replays_a_retried_run_past_its_earlier_failure() {
+    let (base_url, paths) = serve_run(RETRIED, 0, true);
+    let output = run_events_until_done(&base_url, &[]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let raw_types = stdout
+        .lines()
+        .map(|line| {
+            let event: Value = serde_json::from_str(line).expect("event JSON");
+            event["payload"]["raw_type"].as_str().unwrap().to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        raw_types,
+        RETRIED
+            .iter()
+            .map(|(_, raw_type)| *raw_type)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(paths.try_iter().collect::<Vec<_>>(), [RUN, JOURNAL, EVENTS]);
+}
+
+#[test]
+fn process_run_events_until_done_after_an_ended_runs_last_cursor_exits_at_once() {
+    let (base_url, paths) = serve_run(RETRIED, 0, true);
+    let output = run_events_until_done(&base_url, &["--after", "4"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(paths.try_iter().collect::<Vec<_>>(), [RUN, JOURNAL]);
+}
+
+#[test]
+fn process_run_events_until_done_reports_a_stream_lost_before_the_run_ended() {
+    let (base_url, _paths) = serve_run(&[(1, "StageCompleted")], usize::MAX, false);
+    let output = run_events_until_done(&base_url, &[]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
+    assert_eq!(
+        output.stderr.iter().filter(|byte| **byte == b'\n').count(),
+        1
+    );
+    let error: Value = serde_json::from_slice(&output.stderr).expect("stderr json");
+    assert_eq!(
+        error,
+        serde_json::json!({
+            "ok": false,
+            "error": "The event stream for run run-1 ended before the run did; continue with spark run events run-1 --after 1 --until-done.",
+            "exit_code": 1,
+            "target": base_url,
+            "target_source": "flag",
+        })
+    );
 }

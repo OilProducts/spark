@@ -1024,16 +1024,17 @@ async fn mission_create_from_a_conversation_takes_its_project_and_records_the_so
     assert_eq!(created["project_path"], paths.project_path.as_str());
     assert_eq!(created["source_conversation_id"], "conversation-chat");
 
-    let output = create(&["--project", &paths.project_path]);
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-
-    let output = create(&["--project", other.to_str().unwrap()]);
-    assert_ne!(output.status.code(), Some(0));
-    assert!(
-        stderr(&output).contains("does not match"),
-        "{}",
-        stderr(&output)
-    );
+    // The conversation names the project; naming one too is refused before
+    // any request, matching or not.
+    for project in [paths.project_path.as_str(), other.to_str().unwrap()] {
+        let output = create(&["--project", project]);
+        assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+        assert!(
+            stderr(&output).contains("cannot be used with"),
+            "{}",
+            stderr(&output)
+        );
+    }
     let listed: Value = reqwest::Client::new()
         .get(format!("{}/workspace/api/missions", server.base_url))
         .send()
@@ -1048,7 +1049,75 @@ async fn mission_create_from_a_conversation_takes_its_project_and_records_the_so
         .iter()
         .map(|mission| mission["project_path"].as_str().unwrap())
         .collect();
-    assert_eq!(projects, [paths.project_path.as_str(); 2]);
+    assert_eq!(projects, [paths.project_path.as_str()]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_start_from_a_conversation_suggests_flows_its_project_defines() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let project = temp.path().join("chat-project");
+    fs::create_dir_all(&project).unwrap();
+    let paths = spark_storage::ProjectRegistry::new(&settings.data_dir)
+        .ensure_project_paths(project.to_str().unwrap())
+        .unwrap();
+    // Created through a store that closes before the server opens its own.
+    {
+        let repository = spark_storage::ConversationRepository::new(
+            spark_storage::ConversationStore::open(&settings.data_dir).unwrap(),
+        );
+        repository
+            .conversation_handle("conversation-chat", Some("amber-anchor"))
+            .unwrap();
+        repository
+            .touch_conversation("conversation-chat", &paths.project_path)
+            .unwrap();
+    }
+    // Only the project defines the flow.
+    let name = crate::install_org_flow(
+        &project,
+        json!({
+            "schema_version": "2",
+            "id": "design_change",
+            "title": "Design Change",
+            "nodes": {
+                "start": {
+                    "kind": "start",
+                    "config": {"kind": "start"},
+                    "routes": {"next": {"to": "done", "description": "Enter the first workflow step."}},
+                },
+                "done": {
+                    "kind": "exit",
+                    "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}},
+                },
+            },
+        }),
+    );
+    let server = serve(build_app(settings.clone()).expect("app")).await;
+
+    let output = run_spark(
+        temp.path(),
+        [
+            "run",
+            "start",
+            "--conversation",
+            "amber-anchor",
+            "--flow",
+            "design-change",
+            "--summary",
+            "Design it",
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(
+        error["error"],
+        format!("Unknown flow: design-change; did you mean {name}?")
+    );
+    assert_eq!(error["status_code"], 404);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

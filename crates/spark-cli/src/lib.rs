@@ -75,6 +75,7 @@ pub enum View {
     /// The run's event stream, one line per event.
     Events {
         run_id: String,
+        after: Option<u64>,
         text: bool,
         until_done: bool,
     },
@@ -91,10 +92,12 @@ pub enum View {
 /// What a failed request adds to its error to name the next step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hint {
-    /// A 404 for this flow lists the flows whose names end in it.
+    /// A 404 for this flow lists the flows whose names end in it, from the
+    /// project, else the conversation's project.
     Flow {
         name: String,
         project: Option<String>,
+        conversation: Option<String>,
     },
     /// A 409 retry of a run that did not fail names `run continue`.
     Retry { run_id: String },
@@ -448,8 +451,7 @@ fn mission_command() -> Command {
             .group(
                 ArgGroup::new("origin")
                     .args(["project", "conversation"])
-                    .required(true)
-                    .multiple(true),
+                    .required(true),
             ),
         leaf("update", "Change a mission's fields.").args([
             mission_id(),
@@ -769,8 +771,7 @@ fn seconds(value: &str) -> Result<Duration, String> {
         .trim()
         .parse::<f64>()
         .ok()
-        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
-        .map(Duration::from_secs_f64)
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
         .ok_or_else(|| "expected a number of seconds".to_string())
 }
 
@@ -798,11 +799,25 @@ fn clap_failure(error: clap::Error, root: &Command, args: &[String]) -> CommandO
     ) {
         return CommandOutput::stdout(0, error.render().to_string());
     }
+    // The deepest command the arguments name, skipping option values such
+    // as the global `--base-url URL`.
     let mut command = root;
-    for arg in args.iter().filter(|arg| !arg.starts_with('-')) {
-        match command.find_subcommand(arg) {
-            Some(sub) => command = sub,
-            None => break,
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        if let Some(long) = word.strip_prefix("--") {
+            let takes_value = !long.contains('=')
+                && [root, command]
+                    .iter()
+                    .flat_map(|command| command.get_arguments())
+                    .any(|arg| arg.get_long() == Some(long) && arg.get_action().takes_values());
+            if takes_value {
+                words.next();
+            }
+        } else if !word.starts_with('-') {
+            match command.find_subcommand(word) {
+                Some(sub) => command = sub,
+                None => break,
+            }
         }
     }
     let rendered = error.render().to_string();
@@ -879,6 +894,7 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
         Some(Hint::Flow {
             name,
             project: project.clone(),
+            conversation: value_of(m, "conversation"),
         })
     };
     let body = |body: Map<String, Value>| Some(Value::Object(body));
@@ -977,21 +993,20 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
             }
         }
         ["run", "events"] => {
-            let after = m
-                .try_get_one::<u64>("after")
-                .ok()
-                .flatten()
+            let after = m.try_get_one::<u64>("after").ok().flatten().copied();
+            let cursor = after
                 .map(|after| format!("&run_sequence={after}"))
                 .unwrap_or_default();
             ApiRequestPlan {
                 view: View::Events {
                     run_id: id.clone(),
+                    after,
                     text,
                     until_done: switch_of(m, "until-done"),
                 },
                 ..request(
                     Get,
-                    format!("/workspace/api/live/events?run_id={enc_id}{after}"),
+                    format!("/workspace/api/live/events?run_id={enc_id}{cursor}"),
                 )
             }
         }
@@ -1432,9 +1447,10 @@ fn execute(plan: &ApiRequestPlan, env: &impl Environment, out: &mut dyn Write) -
     let payload = match &plan.view {
         View::Events {
             run_id,
+            after,
             text,
             until_done,
-        } => return stream_events(plan, run_id, *text, *until_done, token, out),
+        } => return stream_events(plan, run_id, *after, *text, *until_done, token, out),
         View::DelegationWait { timeout } => return wait_for_delegation(plan, *timeout, token),
         View::AnswerOnce | View::AnswerOpenQuestion => return answer_once(plan, token),
         _ => request_json(plan, token),
@@ -1522,8 +1538,17 @@ fn failure_output(plan: &ApiRequestPlan, error: Failure, token: Option<&str>) ->
         Failure::Http(status, message) => (status, message),
     };
     match &plan.hint {
-        Some(Hint::Flow { name, project }) if status == 404 && message.contains("Unknown flow") => {
-            if let Some(names) = similar_flows(plan, name, project.clone(), token) {
+        Some(Hint::Flow {
+            name,
+            project,
+            conversation,
+        }) if status == 404 && message.contains("Unknown flow") => {
+            let project = project.clone().or_else(|| {
+                conversation
+                    .as_deref()
+                    .and_then(|handle| conversation_project(plan, handle, token))
+            });
+            if let Some(names) = similar_flows(plan, name, project, token) {
                 let _ = write!(message, "; did you mean {names}?");
             }
         }
@@ -1538,6 +1563,29 @@ fn failure_output(plan: &ApiRequestPlan, error: Failure, token: Option<&str>) ->
         _ => {}
     }
     failure(message, http_status_exit_code(status), Some(status), target)
+}
+
+/// The project of the conversation with this handle.
+// ponytail: reads every conversation's summary row, only after a flow 404;
+// add a by-handle read route if this path gets hot.
+fn conversation_project(
+    plan: &ApiRequestPlan,
+    handle: &str,
+    token: Option<&str>,
+) -> Option<String> {
+    let list = ApiRequestPlan {
+        method: HttpMethod::Get,
+        path: "/workspace/api/projects/conversations".to_string(),
+        body: None,
+        ..plan.clone()
+    };
+    let conversations = request_json(&list, token).ok()?;
+    conversations["rows"]
+        .as_array()?
+        .iter()
+        .find(|row| row["kind"] == "conversation" && row["payload"]["handle"] == handle)
+        .and_then(|row| row["payload"]["project_path"].as_str())
+        .map(str::to_string)
 }
 
 /// Flows from `flow list` named `name`, or ending in `/<name>`, with any
@@ -1569,21 +1617,36 @@ fn similar_flows(
     (!names.is_empty()).then(|| names.join(" or "))
 }
 
-/// Prints each event as it arrives. With `until_done`, stops after the
-/// run's final event; otherwise at the client's request timeout.
+/// Prints each event as it arrives. Without `until_done`, stops at the
+/// client's request timeout. With it, stops at the run's last journal entry
+/// once the run has ended, so replayed ends of a retried run do not stop it;
+/// a stream lost before then is an error.
 fn stream_events(
     plan: &ApiRequestPlan,
     run_id: &str,
+    after: Option<u64>,
     text: bool,
     until_done: bool,
     token: Option<&str>,
     out: &mut dyn Write,
 ) -> CommandOutput {
+    let done = CommandOutput::stdout(0, String::new());
+    let mut last = None;
+    if until_done {
+        last = match last_sequence_if_ended(plan, run_id, token) {
+            Ok(last) => last,
+            Err(error) => return failure_output(plan, error, token),
+        };
+        if last.is_some_and(|last| after.unwrap_or(0) >= last) {
+            return done;
+        }
+    }
     let timeout = (!until_done).then_some(REQUEST_TIMEOUT);
     let response = match send(plan, token, timeout).and_then(check_status) {
         Ok(response) => response,
         Err(error) => return failure_output(plan, error, token),
     };
+    let mut cursor = after;
     let mut data = Vec::new();
     let lines = BufReader::new(response).lines().map_while(Result::ok);
     for line in lines.chain([String::new()]) {
@@ -1609,13 +1672,36 @@ fn stream_events(
             .and_then(|()| out.flush())
             .is_err()
         {
-            break;
+            return done;
         }
-        if until_done && is_run_end(&envelope) && run_ended(plan, run_id, token) {
-            break;
+        if envelope["cursor"]["kind"] == "run_sequence" {
+            cursor = envelope["cursor"]["value"].as_u64().or(cursor);
+        }
+        if !until_done {
+            continue;
+        }
+        if last.is_none() && is_run_end(&envelope) {
+            last = match last_sequence_if_ended(plan, run_id, token) {
+                Ok(last) => last,
+                Err(error) => return failure_output(plan, error, token),
+            };
+        }
+        if last.is_some_and(|last| cursor.unwrap_or(0) >= last) {
+            return done;
         }
     }
-    CommandOutput::stdout(0, String::new())
+    if !until_done {
+        return done;
+    }
+    failure(
+        format!(
+            "The event stream for run {run_id} ended before the run did; continue with spark run events {run_id} --after {} --until-done.",
+            cursor.unwrap_or(0)
+        ),
+        EXIT_GENERAL_FAILURE,
+        None,
+        Some((&plan.base_url, plan.target_source)),
+    )
 }
 
 /// A root run's final event: completion, or failure (cancel included).
@@ -1629,18 +1715,26 @@ fn is_run_end(envelope: &Value) -> bool {
         && entry["source_scope"] != "child"
 }
 
-/// Whether the run has ended, so a replayed end that a retry reopened does
-/// not stop the stream. An unreadable run counts as ended.
-// ponytail: a retried run that has ended again stops at its first replayed
-// end; pass --after past it to see the retry's events.
-fn run_ended(plan: &ApiRequestPlan, run_id: &str, token: Option<&str>) -> bool {
-    let run = ApiRequestPlan {
+/// The sequence of the run's last journal entry, once the run has ended.
+/// A retry reopens the run, so only its ended record says the journal is
+/// complete.
+fn last_sequence_if_ended(
+    plan: &ApiRequestPlan,
+    run_id: &str,
+    token: Option<&str>,
+) -> Result<Option<u64>, Failure> {
+    let read = |path: String| ApiRequestPlan {
         method: HttpMethod::Get,
-        path: format!("/attractor/pipelines/{}", encode(run_id)),
+        path,
         body: None,
         ..plan.clone()
     };
-    request_json(&run, token).map_or(true, |run| !run["ended_at"].is_null())
+    let run_path = format!("/attractor/pipelines/{}", encode(run_id));
+    if request_json(&read(run_path.clone()), token)?["ended_at"].is_null() {
+        return Ok(None);
+    }
+    let journal = request_json(&read(format!("{run_path}/journal?limit=1")), token)?;
+    Ok(Some(journal["newest_sequence"].as_u64().unwrap_or(0)))
 }
 
 /// What one server poll of `spark delegation wait` asks for: under the

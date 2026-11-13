@@ -1828,3 +1828,82 @@ fn run_questions_and_answers_use_existing_routes_and_owning_run() {
         assert_ne!(run_with_args_and_env(command, &env).exit_code, 0);
     }
 }
+
+#[test]
+fn a_leading_base_url_keeps_each_commands_error_guidance() {
+    let env = BTreeMap::new();
+    let error = |args: &[&str]| {
+        let output = run_with_args_and_env(
+            [&["spark", "--base-url", "http://127.0.0.1:9"][..], args].concat(),
+            &env,
+        );
+        assert_eq!(output.exit_code, 2, "{args:?}: {output:?}");
+        stderr_json(&output)["error"].as_str().unwrap().to_string()
+    };
+
+    let unknown = error(&["run", "bogus"]);
+    assert!(
+        unknown.contains(
+            "valid subcommands: start, list, get, cancel, retry, continue, events, questions, answer"
+        ),
+        "{unknown}"
+    );
+    let missing = error(&["run", "get"]);
+    assert!(
+        missing.contains("<RUN_ID>: Run id, from spark run list"),
+        "{missing}"
+    );
+}
+
+#[test]
+fn delegation_wait_rejects_an_unrepresentable_timeout_as_a_usage_error() {
+    let env = BTreeMap::new();
+    for timeout in ["1e300", "-1", "inf", "nan"] {
+        let output = run_with_args_and_env(
+            [
+                "spark",
+                "delegation",
+                "wait",
+                "d-1",
+                &format!("--timeout={timeout}"),
+                "--base-url",
+                "http://127.0.0.1:9",
+            ],
+            &env,
+        );
+        assert_eq!(output.exit_code, 2, "{timeout}: {output:?}");
+        let message = stderr_json(&output)["error"].as_str().unwrap().to_string();
+        assert!(
+            message.contains(&format!("invalid value '{timeout}' for '--timeout")),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn mission_create_takes_a_project_or_a_conversation_not_both() {
+    // No target is configured: a usage error proves the check runs before
+    // the target is resolved or any request is sent.
+    let env = BTreeMap::new();
+    let output = run_with_args_and_env(
+        [
+            "spark",
+            "mission",
+            "create",
+            "--project",
+            "/repo",
+            "--conversation",
+            "amber-otter",
+            "--json",
+            "{}",
+        ],
+        &env,
+    );
+
+    assert_eq!(output.exit_code, 2, "{output:?}");
+    let message = stderr_json(&output)["error"].as_str().unwrap().to_string();
+    assert!(
+        message.contains("'--project <PATH>' cannot be used with '--conversation <HANDLE>'"),
+        "{message}"
+    );
+}
