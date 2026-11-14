@@ -840,8 +840,9 @@ export function buildFlowDefinitionFromCanonicalFlowModel(flowName: string, mode
         schema_version: '2',
         id: readStringAttr(flowMetadata, 'id') || String(baseFlow.id ?? sanitizeFlowId(flowName)),
         title: readStringAttr(flowMetadata, 'title').trim() || flowName,
-        description: readStringAttr(flowMetadata, 'description').trim() || String(baseFlow.description ?? ''),
-        goal: readStringAttr(flowMetadata, 'goal').trim() || String(baseFlow.goal ?? ''),
+        // A cleared field stays cleared; only a field the settings never held keeps the flow's own.
+        description: 'description' in flowMetadata ? readStringAttr(flowMetadata, 'description').trim() : String(baseFlow.description ?? ''),
+        goal: 'goal' in flowMetadata ? readStringAttr(flowMetadata, 'goal').trim() : String(baseFlow.goal ?? ''),
         execution_lock: executionLockFromAttrs(flowMetadata, baseFlow.execution_lock),
         inputs: inputs.length > 0 ? inputs : (Array.isArray(baseFlow.inputs) ? baseFlow.inputs : []),
         defaults: flowDefaultsFromAttrs(flowMetadata, asRecord(baseFlow.defaults)),

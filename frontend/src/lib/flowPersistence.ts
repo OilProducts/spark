@@ -27,6 +27,10 @@ function parseErrorDetail(payload: unknown): SaveFlowErrorDetail {
     if ('detail' in payload && payload.detail && typeof payload.detail === 'object') {
         return payload.detail as SaveFlowErrorDetail
     }
+    // The server's plain errors are `{"detail": "why"}`.
+    if ('detail' in payload && typeof payload.detail === 'string' && payload.detail.trim()) {
+        return { error: payload.detail.trim() }
+    }
     return payload as SaveFlowErrorDetail
 }
 

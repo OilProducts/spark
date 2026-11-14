@@ -113,6 +113,8 @@ describe('Editor save state behavior', () => {
     respond(new Response(JSON.stringify({ detail: 'disk full' }), { status: 500, headers: { 'Content-Type': 'application/json' } }))
     await waited
     expect(settled).toBe(true)
+    // The server's reason is the message, not only its status code.
+    expect(useStore.getState().saveErrorMessage).toBe('disk full')
   })
 
   it('sends a flow’s next save only after the one in flight settles, so the newer content lands last', async () => {

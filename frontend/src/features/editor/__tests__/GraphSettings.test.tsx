@@ -322,6 +322,10 @@ describe('Graph and settings behavior', () => {
     const flow = buildFlow([], [], useStore.getState().flowMetadata)
     expect(flow.title).toBe('Implement from plan file')
     expect(flow.description).toBe('Snapshot a plan file, implement it, and iterate until complete.')
+
+    // Clearing the description clears it from the flow, not back to what it was.
+    await user.clear(screen.getByLabelText('Description'))
+    expect(buildFlow([], [], useStore.getState().flowMetadata, flow).description).toBe('')
   })
 
   it('persists launch input declarations as FlowDefinition inputs', async () => {
