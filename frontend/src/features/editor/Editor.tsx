@@ -74,7 +74,7 @@ import {
 import { getReactFlowNodeTypeForShape, getShapeNodeStyle } from '@/lib/workflowNodeShape';
 import { isAbortError } from '@/lib/abortError';
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug';
-import { flowLoadFailed, flowLoadReason, isInvalidFlowError, isMissingFlowError } from './model/flowLoadFailure';
+import { flowLoadFailed, flowLoadReason, flowProblems, isInvalidFlowError, isMissingFlowError } from './model/flowLoadFailure';
 import {
     loadEditorFlowFiles,
     loadEditorFlowPayload,
@@ -82,10 +82,11 @@ import {
     type EditorPreviewResponse,
 } from './services/editorPreview';
 import { projectLabel } from '@/features/projects/model/projectChoices';
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button';
 import { useRegisterEditorGraphBridge } from './EditorGraphBridgeContext';
 import { EditorCanvasToolbar } from './components/EditorCanvasToolbar';
-import { editedFlowFiles, FlowFilesView, type FlowFilesError } from './components/FlowFilesView';
+import { flowFileChanges, FlowFilesView, hasFlowFileChanges, ProblemList, type FlowFileDrafts, type FlowFilesError } from './components/FlowFilesView';
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection';
 
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
@@ -272,7 +273,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const [isDragging, setIsDragging] = useState(false);
     const [flowFiles, setFlowFiles] = useState<FlowFile[]>([]);
     // The file view's unsaved edits by file name, kept here so a mode switch cannot drop them.
-    const [fileDrafts, setFileDrafts] = useState<Record<string, string>>({});
+    const [fileDrafts, setFileDrafts] = useState<FlowFileDrafts>({});
     const [fileSaveError, setFileSaveError] = useState<FlowFilesError | null>(null);
     // A flow that couldn't load, and why: a link to a renamed or deleted flow says so instead of
     // opening an empty canvas that could still be run. The inspector hides for it too.
@@ -337,7 +338,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     : undefined;
 
     // Edits that would be lost on opening another flow: file drafts, and canvas edits a save refused.
-    const hasUnsavedEdits = editedFlowFiles(flowFiles, fileDrafts).length > 0
+    const hasUnsavedEdits = hasFlowFileChanges(flowFileChanges(flowFiles, fileDrafts))
         || saveState === 'error' || saveState === 'conflict';
     useSettingsNavigationProtection(hasUnsavedEdits, false, 'flow edits');
     // Leaving first sends edits still waiting to save and waits for saves in flight: a save refused
@@ -355,7 +356,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     requestNavigation(proceed);
                 } else if (await confirm({
                     title: 'Discard unsaved flow edits?',
-                    description: `${saveErrorMessage ? `${saveErrorMessage} ` : ''}Your unsaved flow edits will be lost.`,
+                    description: `${saveErrorMessage ? `They weren’t saved: ${flowProblems(saveErrorMessage).join(' ')} ` : ''}Your unsaved flow edits will be lost.`,
                     confirmLabel: 'Discard and leave',
                     cancelLabel: 'Keep editing',
                 })) {
@@ -1242,11 +1243,14 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     /** Saves the file view's edited files, then reloads the flow so the canvas shows them. */
     const saveFileDrafts = useCallback(async () => {
         if (!flowName) return false;
-        const changed = editedFlowFiles(flowFiles, fileDrafts);
-        if (changed.length === 0) return true;
-        const saved = await saveFlowContent(flowName, { files: changed });
+        const changes = flowFileChanges(flowFiles, fileDrafts);
+        if (!hasFlowFileChanges(changes)) return true;
+        const saved = await saveFlowContent(flowName, {
+            files: changes.files,
+            ...(changes.deleted.length > 0 ? { deleted_files: changes.deleted } : {}),
+        });
         setFileSaveError(saved ? null : {
-            files: changed.map((file) => file.name),
+            files: [...changes.files.map((file) => file.name), ...changes.deleted],
             message: useStore.getState().saveErrorMessage || 'The files were not saved.',
         });
         if (saved) reloadFlow();
@@ -1460,6 +1464,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const flowOpen = Boolean(flowName) && !loadFailure;
     // An invalid flow opens no canvas, but its files do.
     const canRepairFiles = Boolean(loadFailure && !loadFailure.missing && flowFiles.length > 0);
+    const loadProblems = loadFailure && !loadFailure.missing && loadFailure.reason ? flowProblems(loadFailure.reason) : null;
+    const showFiles = (flowOpen || canRepairFiles) && editorMode === 'files';
     return (
         <div className="flow-surface flex h-full w-full flex-col">
             {flowOpen && flowName && (
@@ -1487,8 +1493,9 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 />
             )}
             <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-            {/* ponytail: phones get the file view alone in Files mode; its list selects files. */}
-            <div ref={canvasPaneRef} className={`relative min-h-0 min-w-0 flex-1 ${editorMode === 'files' ? 'hidden md:block' : ''}`}>
+            {/* ponytail: phones get the file view alone in Files mode; its list selects files. A flow
+                that won't open has no canvas, so its files take the whole width and say what to fix. */}
+            <div ref={canvasPaneRef} className={`relative min-h-0 min-w-0 flex-1 ${showFiles ? (canRepairFiles ? 'hidden' : 'hidden md:block') : ''}`}>
                 {
                     loadFailure ? (
                         <SheetEmpty data-testid="editor-flow-load-failed" icon={GitBranch} title={loadFailure.missing ? 'This flow isn’t here' : 'This flow couldn’t be opened'}>
@@ -1496,13 +1503,13 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                                 {loadFailure.missing
                                     ? <>{projectLabel(projectRegistry, activeProjectPath)} has no flow named “{loadFailure.flow}”. It may have been renamed or deleted. Pick a flow from the list.</>
                                     : canRepairFiles
-                                        ? <>“{loadFailure.flow}” isn’t a valid flow. Fix its files, then save to open it.</>
+                                        ? <>“{loadFailure.flow}” isn’t a valid flow{loadProblems ? <>: {loadProblems.length === 1 ? 'it has a problem' : `it has ${loadProblems.length} problems`}</> : null}. Fix its files, then save to open it.</>
                                         : <>Spark couldn’t load “{loadFailure.flow}”. Try again, or pick another flow from the list.</>}
                             </p>
-                            {!loadFailure.missing && loadFailure.reason ? (
-                                <p data-testid="editor-flow-load-reason" className="mt-2 max-w-prose whitespace-pre-wrap break-words text-left font-mono text-xs text-destructive">
-                                    {loadFailure.reason}
-                                </p>
+                            {loadProblems ? (
+                                <InlineError data-testid="editor-flow-load-reason" role={undefined} className="mt-3 text-left">
+                                    <ProblemList problems={loadProblems} />
+                                </InlineError>
                             ) : null}
                             <div className="mt-3 flex justify-center gap-2">
                                 {canRepairFiles && editorMode !== 'files' ? (
@@ -1641,11 +1648,13 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     </div>
                 ) : null}
             </div>
-            {(flowOpen || canRepairFiles) && editorMode === 'files' ? (
+            {showFiles ? (
                 <FlowFilesView
                     files={flowFiles}
                     drafts={fileDrafts}
                     error={fileSaveError}
+                    loadProblems={canRepairFiles ? (loadProblems ?? []) : null}
+                    className={canRepairFiles ? 'md:w-full md:flex-1 md:border-l-0' : undefined}
                     selectedNodeId={selectedNodeId}
                     onDraftChange={(name, content) => setFileDrafts((current) => ({ ...current, [name]: content }))}
                     onSave={saveFileDrafts}

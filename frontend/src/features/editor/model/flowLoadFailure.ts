@@ -15,3 +15,22 @@ export const flowLoadReason = (error: unknown) => (error instanceof ApiHttpError
 
 /** Whether a flow loaded as files but not as a valid flow, so fixing its files can open it. */
 export const isInvalidFlowError = (error: unknown) => error instanceof ApiHttpError && error.status === 422
+
+// A sentence that starts with a file or node name ("notify.md: …") keeps its case.
+const sentence = (text: string) => {
+    const trimmed = text.trim()
+    const capitalized = /^[a-z]+\s/.test(trimmed) ? `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}` : trimmed
+    return /[.!?]$/.test(capitalized) ? capitalized : `${capitalized}.`
+}
+
+/**
+ * The problems in a server's flow error, one sentence each, without the save verdict, the flow
+ * directory's path or the error count it leads with.
+ */
+export function flowProblems(text: string): string[] {
+    const detail = text
+        .replace(/^Save blocked by (validation errors|a flow parse error): /, '')
+        .replace(/^Flow directory [^\s:]+: /, '')
+    const listed = /^(?:flow definition )?validation failed with \d+ error\(s\): ([\s\S]+)$/i.exec(detail)
+    return (listed ? listed[1].split('; ') : [detail]).filter((problem) => problem.trim()).map(sentence)
+}

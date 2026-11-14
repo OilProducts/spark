@@ -100,7 +100,10 @@ export function RunStream() {
                             : ''
     const remediation = resolveSaveRemediation(saveState, saveErrorKind)
     const shownSaveError = blockedByValidation ? null : saveErrorMessage
-    const shouldShowPersistentSaveIndicator = saveState === 'saving' || saveState === 'error' || saveState === 'conflict'
+    // The file view shows a refused save against its files, where this card would cover them.
+    const fileViewShown = useStore((state) => state.viewMode === 'editor' && state.editorMode === 'files')
+    const shouldShowPersistentSaveIndicator = saveState === 'saving'
+        || (!fileViewShown && (saveState === 'error' || saveState === 'conflict'))
     const showSaveStateIndicator = saveState === 'saved' || showSavedToast || shouldShowPersistentSaveIndicator
     const shouldFadeSaveCard = showSavedToast && !shouldShowPersistentSaveIndicator
 

@@ -42,13 +42,15 @@ export function RunQuestionsPanel({
     const panelRef = useRef<HTMLDivElement>(null)
     // An answer's key moves focus to that answer from anywhere in Runs but a text field, and Enter
     // gives it: an answer can't be taken back, so no single key sends one. With focus in a question,
-    // its own answers win. Capture runs first, so an answer keyed G beats the graph toggle.
+    // its own answers win. Capture runs first, so an answer keyed G beats the graph toggle; a list
+    // that moves on letter keys (`data-own-keys`) keeps them while it has focus.
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
             const target = event.target instanceof Element ? event.target : null
             if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented || event.key.length !== 1
                 || useStore.getState().viewMode !== 'runs'
-                || target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) {
+                || target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')
+                || target?.closest('[data-own-keys]')?.getAttribute('data-own-keys')?.includes(event.key.toLowerCase())) {
                 return
             }
             const panel = panelRef.current

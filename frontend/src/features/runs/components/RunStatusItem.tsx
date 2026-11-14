@@ -185,6 +185,9 @@ export function RunStatusItem({
         // A completed run can reach a failure exit; its result name and evidence say why, above
         // the result. A success exit's evidence is a run fact.
         const outcomeReason = run.outcome === 'failure' ? formatOutcomeReason(run) : null
+        // A result that only restates the reason, such as a gate's choice and note, isn't shown twice.
+        const resultLines = result?.state === 'ready' ? result.body_markdown.split('\n').map((line) => line.trim()).filter(Boolean) : []
+        const resultRestatesReason = Boolean(outcomeReason && resultLines.length > 0 && resultLines.every((line) => outcomeReason!.includes(line)))
         body = (
             <>
                 {outcomeReason ? (
@@ -196,7 +199,7 @@ export function RunStatusItem({
                         {outcomeReason}
                     </p>
                 ) : null}
-                <RunResult result={result} resultError={resultError} />
+                {resultRestatesReason ? null : <RunResult result={result} resultError={resultError} />}
             </>
         )
     } else {

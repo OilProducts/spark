@@ -814,6 +814,17 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   })
 
   await stubRunSummary(page, run)
+  // The context as the run left it: the rejection's required change, its cleared key gone.
+  await page.route(`**/attractor/pipelines/${run.run_id}/context`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        pipeline_id: run.run_id,
+        context: { 'context.review.required_changes': 'Add a regression test for the loop.', last_stage: 'evaluate' },
+      }),
+    })
+  })
   await page.route(`**/attractor/pipelines/${run.run_id}`, async (route) => {
     await route.fulfill({
       status: 200,

@@ -63,7 +63,8 @@ export interface FlowPayloadResponse {
 }
 
 /** A save sends exactly one: the structured editor's flow, or edited files from the file view. */
-export type FlowSaveContent = { flow: FlowDefinitionPayload } | { files: FlowFile[] }
+// A file view save sends edited and new files, and the node files it deletes.
+export type FlowSaveContent = { flow: FlowDefinitionPayload } | { files: FlowFile[]; deleted_files?: string[] }
 
 export interface SaveFlowApiResponse {
     ok: boolean

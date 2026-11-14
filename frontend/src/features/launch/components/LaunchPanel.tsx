@@ -38,6 +38,8 @@ export interface LaunchPanelProps {
     onLaunched: (runId: string | null, queued: boolean) => void
     /** Omitted where the panel's container closes it, as a dialog does with its own button and Escape. */
     onClose?: () => void
+    /** Opens the flow in the editor; offered beside its errors, where the panel isn't already in the editor. */
+    onEditFlow?: () => void
 }
 
 export function LaunchPanel({
@@ -50,6 +52,7 @@ export function LaunchPanel({
     infoNotice,
     onLaunched,
     onClose,
+    onEditFlow,
 }: LaunchPanelProps) {
     const { startFlow, logUnexpectedLaunchError } = useStartPipeline()
     const placement = useExecutionPlacement(true, projectPath)
@@ -392,9 +395,16 @@ export function LaunchPanel({
                     data-testid="launch-panel-diagnostics"
                     className="space-y-2 p-3"
                 >
-                    <p className="text-sm font-semibold text-foreground">
-                        Problems found in this flow
-                    </p>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-foreground">
+                            Problems found in this flow
+                        </p>
+                        {onEditFlow && hasValidationErrors ? (
+                            <Button type="button" size="sm" variant="outline" data-testid="launch-panel-edit-flow" onClick={onEditFlow}>
+                                Fix in the editor
+                            </Button>
+                        ) : null}
+                    </div>
                     <ul className="space-y-2 text-sm">
                         {visibleDiagnostics.map((diagnostic, index) => (
                             <li

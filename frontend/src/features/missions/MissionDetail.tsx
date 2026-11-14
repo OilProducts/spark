@@ -178,7 +178,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                 {status === 'draft' && <><Button type="button" size="sm" disabled={disabled} onClick={() => void control('start')}>Start</Button>
                     <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={edit}>Edit</Button></>}
                 {(status === 'running' || status === 'needs_you') && <><Button type="button" size="sm" variant="outline" aria-label="Mark mission done" disabled={disabled} onClick={() => void end(false)}>Mark done</Button>
-                    <Button type="button" size="sm" variant="ghost" aria-label="Cancel mission" disabled={disabled} onClick={() => void end(true)}>Cancel</Button></>}
+                    <Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => void end(true)}>Cancel mission</Button></>}
                 {closed && <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => void archive(!mission.fields.archived)}>{mission.fields.archived ? 'Restore' : 'Archive'}</Button>}
                 <DropdownMenu.Root>
                     <DropdownMenu.Trigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Mission actions" disabled={disabled}><MoreHorizontal aria-hidden="true" className="size-4" /></Button></DropdownMenu.Trigger>
@@ -191,7 +191,9 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                         </DropdownMenu.Content>
                     </DropdownMenu.Portal>
                 </DropdownMenu.Root>
-                <Button type="button" variant="ghost" size="icon-sm" aria-label="Close details" disabled={busy} onClick={close}><X aria-hidden="true" className="size-4" /></Button>
+                {/* Closing the details is not a mission action; a rule keeps it apart from them. */}
+                <span aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
+                <Button type="button" variant="ghost" size="icon-sm" aria-label="Close details" title="Close details" disabled={busy} onClick={close}><X aria-hidden="true" className="size-4" /></Button>
             </div>
         </header>
         {(error || actionError) && <div className="shrink-0 px-6 pt-4"><InlineError>{error || actionError}</InlineError></div>}

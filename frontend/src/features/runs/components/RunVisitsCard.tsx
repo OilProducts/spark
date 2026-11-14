@@ -249,6 +249,7 @@ export function RunVisitsCard({
                     ref={listRef}
                     role="listbox"
                     aria-label="Visits"
+                    data-own-keys="jk"
                     data-testid="run-visit-list"
                     onKeyDown={onListKeyDown}
                     className={cn('space-y-0.5 overflow-y-auto', isNarrowViewport || railAbove ? 'max-h-72' : 'min-h-0 flex-1')}

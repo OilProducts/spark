@@ -76,6 +76,7 @@ fn save_request(name: &str, flow: FlowDefinition, project: &Path) -> SaveFlowReq
         name: name.to_string(),
         flow: Some(flow),
         files: None,
+        deleted_files: Vec::new(),
         project_path: Some(project.to_string_lossy().to_string()),
     }
 }

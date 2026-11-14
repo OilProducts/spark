@@ -94,7 +94,9 @@ function FlowOption({ flow, onChoose }: { flow: WorkspaceFlowResponse; onChoose:
                     <span className="min-w-0 text-sm font-medium">{flow.title || flow.name}</span>
                     <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{flow.name}</span>
                 </span>
-                {flow.description ? <span className="line-clamp-2 text-xs text-muted-foreground">{flow.description}</span> : null}
+                {flow.error ? (
+                    <span data-testid="run-flow-option-error" className="text-xs text-destructive">Has errors · fix it before running</span>
+                ) : flow.description ? <span className="line-clamp-2 text-xs text-muted-foreground">{flow.description}</span> : null}
             </button>
         </li>
     )
@@ -207,6 +209,14 @@ export function RunFlowDialog() {
 
     const close = () => setRequest(null)
     const projectPath = request?.projectPath && registry[request.projectPath] ? request.projectPath : defaultProjectChoice(registry)
+    // A flow with errors can't run; its problems link to the editor, where they get fixed.
+    const editFlow = (flowName: string) => {
+        close()
+        const state = useStore.getState()
+        state.setActiveProjectPath(projectPath)
+        state.setActiveFlow(flowName)
+        state.setViewMode('editor')
+    }
 
     return (
         <Dialog open={request !== null} onOpenChange={(open) => { if (!open) close() }}>
@@ -234,6 +244,7 @@ export function RunFlowDialog() {
                             target={{ flowName: request.flowName, previewSource: { kind: 'flow', flowName: request.flowName } }}
                             projectPath={projectPath}
                             initialWorkingDirectory={projectPath ?? ''}
+                            onEditFlow={() => editFlow(request.flowName!)}
                             onLaunched={(runId) => {
                                 if (projectPath) void markProjectUsed(projectPath)
                                 close()

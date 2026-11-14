@@ -478,6 +478,59 @@ describe('Editor file view', () => {
     expect(screen.getByTestId('flow-files-save')).toBeDisabled()
   })
 
+  it('adds and deletes node files, sending both in one save', async () => {
+    const user = userEvent.setup()
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: 'saved', name: 'demo' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.spyOn(window, 'prompt').mockReturnValue('Review step')
+    renderEditor()
+    await screen.findByTestId('flow-file-editor')
+    // flow.md is the flow itself, so it can't be deleted.
+    expect(screen.queryByTestId('flow-file-delete')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'node_1.md' }))
+    await user.click(screen.getByTestId('flow-file-delete'))
+    expect(screen.getByTestId('flow-file-deleted')).toHaveTextContent('node_1.md is deleted when you save.')
+    await user.click(screen.getByTestId('flow-file-add'))
+    const added = screen.getByTestId('flow-file-editor')
+    expect(added).toHaveAccessibleName('review_step.md')
+    expect((added as HTMLTextAreaElement).value).toContain('title: Review step')
+    expect(screen.getAllByTestId('flow-file').map((row) => [row.getAttribute('data-file'), row.textContent])).toEqual([
+      ['flow.md', 'flow.md'],
+      ['node_1.md', 'node_1.mddeleted'],
+      ['review_step.md', 'review_step.mdnew'],
+    ])
+
+    await user.click(screen.getByTestId('flow-files-save'))
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(String(init.body))).toEqual({
+      name: 'demo',
+      project_path: '/tmp/project',
+      files: [{ name: 'review_step.md', content: (added as HTMLTextAreaElement).value }],
+      deleted_files: ['node_1.md'],
+    })
+  })
+
+  it('drops a new file not saved yet, and restores a file marked for deletion', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(window, 'prompt').mockReturnValue('node_1')
+    renderEditor()
+    await screen.findByTestId('flow-file-editor')
+
+    // A taken name gets a number instead of replacing the file.
+    await user.click(screen.getByTestId('flow-file-add'))
+    expect(screen.getByTestId('flow-file-editor')).toHaveAccessibleName('node_1_2.md')
+    await user.click(screen.getByRole('button', { name: 'Discard new file' }))
+    expect(screen.getAllByTestId('flow-file').map((row) => row.getAttribute('data-file'))).toEqual(['flow.md', 'node_1.md'])
+
+    await user.click(screen.getByRole('button', { name: 'node_1.md' }))
+    await user.click(screen.getByTestId('flow-file-delete'))
+    await user.click(screen.getByRole('button', { name: 'Restore' }))
+    expect(screen.getByTestId('flow-file-editor')).toHaveValue(files[1].content)
+    expect(screen.getByTestId('flow-files-save')).toBeDisabled()
+  })
+
   it('shows a validation error against the file and does not reload', async () => {
     const user = userEvent.setup()
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
