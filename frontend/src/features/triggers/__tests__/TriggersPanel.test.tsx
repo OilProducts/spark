@@ -424,6 +424,48 @@ describe('TriggersPanel', () => {
     expect(JSON.parse((screen.getByLabelText('Extra data for the run (optional)') as HTMLTextAreaElement).value)).toEqual({ branch: 'main' })
   })
 
+  it('saves a trigger disabled without a required launch input, and refuses it enabled', async () => {
+    const quietCheck = { name: 'quiet-check', title: 'Quiet Check', description: '' }
+    let trigger = makeTrigger({ id: 'quiet', name: 'Quiet check every 30s', flow_name: 'quiet-check' })
+    const patches: Array<Record<string, unknown>> = []
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = resolveRequestUrl(input as RequestInfo | URL)
+      if (url.startsWith('/workspace/api/flows/quiet-check')) {
+        return jsonResponse({ ...quietCheck, inputs: [{ key: 'context.request.branch', label: 'Branch', type: 'string', required: true }] })
+      }
+      if (isFlowList(url)) return jsonResponse([...PROJECT_FLOWS, quietCheck])
+      if (init?.method === 'PATCH') {
+        const patch = JSON.parse(String(init.body))
+        patches.push(patch)
+        trigger = { ...trigger, enabled: patch.enabled, revision: `revision-${patches.length + 1}` }
+        return jsonResponse(trigger)
+      }
+      return jsonResponse([trigger])
+    })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const name = await screen.findByDisplayValue('Quiet check every 30s')
+    const branch = await screen.findByLabelText(/^Branch/)
+
+    // Enabled, it would start runs without Branch.
+    await user.type(name, '!')
+    await user.click(screen.getByTestId('trigger-save-button'))
+    expect(patches).toHaveLength(0)
+    expect(branch).toHaveAccessibleDescription(/Branch is required\./)
+
+    await user.click(screen.getByRole('switch', { name: 'Enabled' }))
+    expect(branch).not.toHaveAttribute('aria-invalid', 'true')
+    await user.click(screen.getByTestId('trigger-save-button'))
+    await waitFor(() => expect(patches).toHaveLength(1))
+    expect(patches[0]).toMatchObject({ enabled: false, action: { flow_name: 'quiet-check', static_context: {} } })
+
+    // Turned back on, it is refused again.
+    await user.click(await screen.findByRole('switch', { name: 'Enabled' }))
+    await user.click(screen.getByTestId('trigger-save-button'))
+    expect(patches).toHaveLength(1)
+    expect(screen.getByLabelText(/^Branch/)).toHaveAccessibleDescription(/Branch is required\./)
+  })
+
   it('waits for the flow\'s launch inputs before a trigger that starts it can be created', async () => {
     const releaseCheck = { name: 'release-check', title: 'Release Check', description: '' }
     let release: () => void = () => undefined

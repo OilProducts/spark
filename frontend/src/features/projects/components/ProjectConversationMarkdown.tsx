@@ -111,10 +111,11 @@ function safeBreaksAndCode(this: { parse: (source: string) => unknown }) {
 /**
  * Markup that isn't HTML, such as a test report's `<testsuite … />` line, shows as the text it is.
  * Markdown would read it as an HTML block and, with HTML skipped, drop it and the lines after it.
- * Real HTML tags and comments stay hidden.
+ * Real HTML tags and comments stay hidden, unless `allHtml` shows them as text too.
  */
-function literalNonHtml() {
+function literalNonHtml({ allHtml = false }: { allHtml?: boolean } = {}) {
     const isHtml = (value: string) => {
+        if (allHtml) return false
         if (value.startsWith('<!--')) return true
         const name = /^<\/?([a-z][a-z\d-]*)/i.exec(value)?.[1]
         return Boolean(name) && !(document.createElement(name!) instanceof HTMLUnknownElement)
@@ -217,7 +218,7 @@ const markdownComponents: Components = {
 interface ProjectConversationMarkdownProps {
     content: string
     enableCodeCopy?: boolean
-    /** Keep single line breaks, for text that may be plain output rather than Markdown, such as a run's result. */
+    /** Keep single line breaks and show HTML as text, for text that may be plain output rather than Markdown, such as a run's result. */
     keepLineBreaks?: boolean
 }
 
@@ -228,7 +229,8 @@ function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false,
         <div className="conversation-markdown min-w-0">
             <ReactMarkdown components={markdownComponents} skipHtml
                 remarkPlugins={keepLineBreaks
-                    ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, literalNonHtml, lineBreaks]
+                    // Plain output shows every line as written, HTML included.
+                    ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, [literalNonHtml, { allHtml: true }], lineBreaks]
                     : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, literalNonHtml]}
                 rehypePlugins={[[footnoteLabels, `markdown-${id}-`], [rehypeKatex, { trust: false, strict: 'error' }], [rehypeHighlight, { detect: false, ignoreMissing: true }]]}
                 remarkRehypeOptions={remarkRehypeOptions}

@@ -216,9 +216,12 @@ const TIME_INPUT = /^([01]\d|2[0-3]):[0-5]\d$/
 
 export type TriggerFieldErrors = Partial<Record<keyof TriggerFormState, string>>
 
-/** What is wrong with each of the flow's launch inputs, by key. */
+/**
+ * What is wrong with each of the flow's launch inputs, by key. A disabled trigger
+ * starts no run, so it may leave a required input unset; a value it sets must still be valid.
+ */
 export const triggerLaunchInputErrors = (form: TriggerFormState, inputs: LaunchInputDefinition[]) => (
-    buildLaunchContextFromValues(inputs, form.launchInputValues).errors
+    buildLaunchContextFromValues(form.enabled ? inputs : inputs.map((entry) => ({ ...entry, required: false })), form.launchInputValues).errors
 )
 
 /**

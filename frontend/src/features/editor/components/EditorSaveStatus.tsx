@@ -5,6 +5,7 @@ import { retryLastSaveContent } from '@/lib/flowPersistence'
 import { resolveSaveRemediation } from '@/lib/saveRemediation'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
+import { flowProblems } from '../model/flowLoadFailure'
 
 const SAVED_SHOWN_MS = 2000
 
@@ -19,6 +20,8 @@ export function EditorSaveStatus({ className, onReload }: { className?: string; 
     const saveStateVersion = useStore((state) => state.saveStateVersion)
     const saveErrorMessage = useStore((state) => state.saveErrorMessage)
     const saveErrorKind = useStore((state) => state.saveErrorKind)
+    const saveErrorProblems = useStore((state) => state.saveErrorProblems)
+    const hasValidationErrors = useStore((state) => state.hasValidationErrors)
     const resetSaveState = useStore((state) => state.resetSaveState)
 
     // "Saved" shows briefly, then clears.
@@ -28,9 +31,11 @@ export function EditorSaveStatus({ className, onReload }: { className?: string; 
         return () => window.clearTimeout(timer)
     }, [resetSaveState, saveState, saveStateVersion])
 
-    const remediation = resolveSaveRemediation(saveState, saveErrorKind)
-    // A flow saves only once it validates; the Validation panel lists what to fix.
-    const blockedByValidation = saveState === 'error' && saveErrorKind === 'validation_error'
+    const refused = saveState === 'error' && saveErrorKind === 'validation_error'
+    // A flow saves only once it validates. The Validation panel lists the errors it knows of; a
+    // refusal for one it doesn't list shows the reason here instead.
+    const blockedByValidation = refused && hasValidationErrors
+    const remediation = refused && !blockedByValidation ? null : resolveSaveRemediation(saveState, saveErrorKind)
     const failed = saveState === 'conflict' || (saveState === 'error' && !blockedByValidation)
     const label = saveState === 'saving'
         ? 'Saving…'
@@ -38,12 +43,15 @@ export function EditorSaveStatus({ className, onReload }: { className?: string; 
             ? 'Saved'
             : saveState === 'conflict'
                 ? 'Save conflict'
-                : blockedByValidation
+                : refused
                     ? 'Not saved'
                     : saveState === 'error'
                         ? 'Save failed'
                         : null
-    const detail = [blockedByValidation ? null : saveErrorMessage, remediation?.message].filter(Boolean).join(' ')
+    const reason = refused && saveErrorMessage
+        ? (saveErrorProblems?.map((problem) => problem.message) ?? flowProblems(saveErrorMessage)).join(' ')
+        : saveErrorMessage
+    const detail = [blockedByValidation ? null : reason, remediation?.message].filter(Boolean).join(' ')
     const reload = saveState === 'conflict' && onReload
 
     return (

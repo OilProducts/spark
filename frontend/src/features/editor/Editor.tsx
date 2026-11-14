@@ -128,9 +128,10 @@ type PreparedHydratedPreview = {
     edgeIdToLayoutKey: Map<string, string>
 }
 
+// A removal saves from the canvas's onDelete, which has the step and its routes together.
 export function shouldPersistNodeChanges(changes: NodeChange<Node>[]): boolean {
     return changes.some((change) => {
-        return change.type !== 'select' && change.type !== 'position' && change.type !== 'dimensions'
+        return change.type !== 'select' && change.type !== 'position' && change.type !== 'dimensions' && change.type !== 'remove'
     })
 }
 
@@ -1111,9 +1112,11 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             if (!latestSelectedEdgeChange && changes.some((change) => change.type === 'select' && change.id === useStore.getState().selectedEdgeId)) {
                 setSelectedEdgeId(null);
             }
-            const shouldSave = changes.some((change) => change.type !== 'select');
-            if (shouldSave) {
-                scheduleSave({ nodes, edges: nextEdges });
+            if (changes.some((change) => change.type !== 'select')) {
+                // A removal saves from onDelete; see shouldPersistNodeChanges.
+                if (changes.some((change) => change.type !== 'select' && change.type !== 'remove')) {
+                    scheduleSave({ nodes, edges: nextEdges });
+                }
                 scheduleEdgeRouting(nodes, nextEdges, {
                     persistAfter: true,
                 })
@@ -1121,6 +1124,49 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             return nextEdges;
         });
     }, [enforceSingleSelectedEdge, expandChildFlows, nodes, scheduleEdgeRouting, scheduleSave, setEdges, setSelectedEdgeId]);
+
+    // What the canvas deleted, latest last, for Cmd/Ctrl+Z to put back.
+    // ponytail: undo covers canvas deletions only; keep a full edit history if other edits need undo.
+    const deletedRef = useRef<Array<{ nodes: Node[]; edges: Edge[] }>>([]);
+    useEffect(() => { deletedRef.current = []; }, [flowName]);
+
+    // React Flow reports a deletion's nodes and edges in separate changes, each handler seeing the
+    // other list from before it; here both come together, so the save drops a step with its routes.
+    const onDelete = useCallback(({ nodes: deletedNodes, edges: deletedEdges }: { nodes: Node[]; edges: Edge[] }) => {
+        deletedRef.current.push({ nodes: deletedNodes, edges: deletedEdges });
+        const deletedIds = new Set([...deletedNodes, ...deletedEdges].map((item) => item.id));
+        scheduleSave({
+            nodes: nodes.filter((node) => !deletedIds.has(node.id)),
+            edges: edges.filter((edge) => !deletedIds.has(edge.id)),
+        });
+    }, [edges, nodes, scheduleSave]);
+
+    useEffect(() => {
+        if (!isActive || isCanvasReadOnly) return;
+        const undoDelete = (event: KeyboardEvent) => {
+            if (event.key.toLowerCase() !== 'z' || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
+            // Text fields keep their own undo.
+            if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+            const deleted = deletedRef.current.pop();
+            if (!deleted) return;
+            event.preventDefault();
+            const { nodes: currentNodes, edges: currentEdges } = canvasGraphRef.current;
+            // Only what still fits: an ID taken meanwhile stays, and a route needs both its steps.
+            const nodeIds = new Set(currentNodes.map((node) => node.id));
+            const nextNodes = [...currentNodes, ...deleted.nodes.filter((node) => !nodeIds.has(node.id)).map((node) => ({ ...node, selected: false }))];
+            nextNodes.forEach((node) => nodeIds.add(node.id));
+            const edgeIds = new Set(currentEdges.map((edge) => edge.id));
+            const nextEdges = [...currentEdges, ...deleted.edges.filter((edge) => (
+                !edgeIds.has(edge.id) && nodeIds.has(edge.source) && nodeIds.has(edge.target)
+            )).map((edge) => ({ ...edge, selected: false }))];
+            setNodes(nextNodes);
+            setEdges(nextEdges);
+            scheduleSave({ nodes: nextNodes, edges: nextEdges });
+            scheduleEdgeRouting(nextNodes, nextEdges, { persistAfter: true });
+        };
+        document.addEventListener('keydown', undoDelete);
+        return () => document.removeEventListener('keydown', undoDelete);
+    }, [isActive, isCanvasReadOnly, scheduleEdgeRouting, scheduleSave, setEdges, setNodes]);
 
     const onConnect = useCallback(
         (params: Connection | Edge) => {
@@ -1605,6 +1651,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                             edges={edges}
                             onNodesChange={onNodesChange}
                             onEdgesChange={onEdgesChange}
+                            onDelete={onDelete}
                             onConnect={onConnect}
                             onNodeClick={onNodeClick}
                             onEdgeClick={onEdgeClick}

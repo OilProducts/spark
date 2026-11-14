@@ -201,6 +201,16 @@ describe('shared Markdown', () => {
         expect(container.querySelector('testsuite, result, b, .conversation-markdown div')).toBeNull()
     })
 
+    it('shows a result\'s HTML-looking lines, and the lines after them, as text', () => {
+        const output = '<testsuite name="release" tests="3" />\n\n<section>Release checks: all pass</section>\nDone\n\nInline <b>bold</b> <!-- note -->'
+        const { container } = render(<ProjectConversationMarkdown content={output} keepLineBreaks />)
+        expect([...container.querySelectorAll('p')].map((p) => p.innerHTML.replace(/\n/g, ''))).toEqual([
+            '&lt;testsuite name="release" tests="3" /&gt;',
+            '&lt;section&gt;Release checks: all pass&lt;/section&gt;<br>Done',
+            'Inline &lt;b&gt;bold&lt;/b&gt; &lt;!-- note --&gt;',
+        ])
+    })
+
     it('renders math safely and only transforms attribute-free HTML breaks outside code', () => {
         const { container } = render(markdown('a<br>b<br/>c<br />d\nsoft\n\n`<br>`\n\n```html\n<br>\n```\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\nx<br onclick="evil()">y\n\n$$x^2$$\n\n$$\n\\frac{1}{2}\n$$\n\n$$\\notACommand{x}$$\n\n$$\\href{javascript:alert(1)}{unsafe}$$\n\nCosts $31.10: $26.97'))
         expect(container.querySelectorAll('br')).toHaveLength(3)

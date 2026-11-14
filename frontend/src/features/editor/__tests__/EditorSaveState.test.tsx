@@ -219,8 +219,20 @@ describe('Editor save state behavior', () => {
       expect(status).toHaveTextContent('')
       expect(useStore.getState().saveState).toBe('idle')
 
+      act(() => useStore.setState({ hasValidationErrors: true }))
       act(() => useStore.getState().markSaveFailure('Save blocked by validation errors: x', 'validation_error'))
       expect(status).toHaveTextContent(/^Not saved: Fix the errors listed under Validation/)
+      expect(screen.queryByTestId('editor-save-retry')).not.toBeInTheDocument()
+
+      // A refusal the Validation panel doesn't list shows the server's reason instead.
+      act(() => useStore.setState({ hasValidationErrors: false }))
+      act(() => useStore.getState().markSaveFailure(
+        "Save blocked by validation errors: flow.md: decision 'held' targets 'held', which is not a node",
+        'validation_error',
+        [{ message: "Decision 'held' targets Held, which is not a step.", file: 'flow.md' }],
+      ))
+      expect(screen.getByText("Decision 'held' targets Held, which is not a step.")).toBeVisible()
+      expect(status).toHaveTextContent(/^Not saved: Decision 'held' targets Held, which is not a step\.$/)
       expect(screen.queryByTestId('editor-save-retry')).not.toBeInTheDocument()
 
       act(() => useStore.getState().markSaveFailure('Flow save failed: offline', 'network'))
