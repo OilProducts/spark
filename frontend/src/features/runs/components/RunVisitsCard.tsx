@@ -90,8 +90,8 @@ interface RunVisitsCardProps {
     onOpenRun: (runId: string) => void
     /** The status item's row: what it says and whether it needs attention. */
     statusRow: { label: string; tone?: StatusTone; detail?: string }
-    /** How many keys the Context item lists. */
-    contextKeyCount: number
+    /** How many keys the Context item lists; null when the context couldn't load. */
+    contextKeyCount: number | null
     renderStatus: (selectVisit: (visit: RunVisit) => void) => ReactNode
     renderContext: (focusKey: string | null, selectVisit: (visit: RunVisit) => void) => ReactNode
     artifactEntries: ArtifactListEntry[]
@@ -272,7 +272,7 @@ export function RunVisitsCard({
                                 {item === 'status' ? statusRow.label : 'Context'}
                             </span>
                             <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-                                {item === 'status' ? statusRow.detail : `${contextKeyCount} ${contextKeyCount === 1 ? 'key' : 'keys'}`}
+                                {item === 'status' ? statusRow.detail : contextKeyCount === null ? 'Not loaded' : `${contextKeyCount} ${contextKeyCount === 1 ? 'key' : 'keys'}`}
                             </span>
                         </button>
                     ))}

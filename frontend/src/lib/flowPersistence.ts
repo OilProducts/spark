@@ -66,6 +66,21 @@ export async function waitForFlowSaves(): Promise<void> {
     await Promise.all([...inFlightSaves])
 }
 
+// Debounced saves not sent yet, one sender per scheduler.
+const pendingSaveSenders = new Set<() => void>()
+
+/** Registers a scheduler's sender for its debounced save; returns the unregister. */
+export function registerPendingFlowSave(send: () => void): () => void {
+    pendingSaveSenders.add(send)
+    return () => { pendingSaveSenders.delete(send) }
+}
+
+/** Sends every debounced save now; true while any save is still in flight. */
+export function sendPendingFlowSaves(): boolean {
+    pendingSaveSenders.forEach((send) => send())
+    return inFlightSaves.size > 0
+}
+
 // Editor fields whose text cannot be applied yet; saving waits for them.
 const invalidDrafts = new Map<string, string>()
 

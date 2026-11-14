@@ -269,6 +269,36 @@ async fn workspace_flow_list_detail_files_and_validate_routes_layer_the_project_
 }
 
 #[tokio::test]
+async fn workspace_flow_list_says_why_a_flow_does_not_load() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    write_flow(&settings, "fine", simple_flow("fine", "Fine"));
+    let broken = settings.bundled_dir().join("flows/broken");
+    std::fs::create_dir_all(&broken).expect("broken dir");
+    std::fs::write(
+        broken.join("flow.md"),
+        "---\ntype: Flow\nid: broken\ntitle: Broken\nschema_version: '2'\n---\n",
+    )
+    .expect("flow.md");
+    std::fs::write(
+        broken.join("start.md"),
+        "---\ntype: start\nroutes:\n  next:\n    to: nowhere\n    description: Begin.\n---\n",
+    )
+    .expect("start.md");
+    let app = build_app(settings).expect("app");
+
+    let (status, flows, _) = request_json(app, "GET", "/workspace/api/flows", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(flows[0]["name"], "broken");
+    assert!(flows[0]["error"]
+        .as_str()
+        .expect("the broken flow's error")
+        .contains("nowhere"));
+    assert_eq!(flows[1]["name"], "fine");
+    assert!(flows[1].get("error").is_none());
+}
+
+#[tokio::test]
 async fn workspace_flow_routes_return_json_errors_for_missing_and_unsafe_names() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

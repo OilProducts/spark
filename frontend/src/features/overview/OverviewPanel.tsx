@@ -31,13 +31,13 @@ import {
     type Started,
 } from './model/overviewModel'
 
-// Colour marks exceptions: failed and waiting carry a word in their tone; the rest read as a dot.
+// Colour marks exceptions: failed, waiting and canceled carry a word in their tone; the rest read as a dot.
 const MARKS: Record<Mark, { label: string; tone: StatusTone; exception?: true }> = {
     waiting: { label: 'Waiting on you', tone: 'warning', exception: true },
     running: { label: 'Running', tone: 'info' },
     completed: { label: 'Completed', tone: 'success' },
     failed: { label: 'Failed', tone: 'destructive', exception: true },
-    ended: { label: 'Canceled', tone: 'neutral' },
+    ended: { label: 'Canceled', tone: 'neutral', exception: true },
     draft: { label: 'Draft', tone: 'neutral' },
 }
 const MARK_ORDER: Mark[] = ['waiting', 'running', 'completed', 'failed', 'ended', 'draft']

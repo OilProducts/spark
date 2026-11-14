@@ -91,7 +91,7 @@ for (const theme of ['light', 'dark']) test(`missions conversation view ${theme}
   await page.getByRole('button', { name: 'Review the ranking change' }).click()
   const detail = page.getByRole('region', { name: 'Mission details' })
   await expect(detail.getByRole('status')).toHaveText(/^Needs you Ship the ranking change\?/)
-  await expect(detail.getByRole('button', { name: 'Close mission' })).toBeVisible()
+  await expect(detail.getByRole('button', { name: 'Mark mission done' })).toBeVisible()
   await expect(detail.getByRole('button', { name: 'Cancel mission' })).toBeVisible()
   const events = detail.getByTestId('mission-event')
   await expect(events).toHaveCount(3)

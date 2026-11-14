@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { RunQuestionsPanel } from '../RunQuestionsPanel'
 import type { PendingInterviewGate } from '../../model/shared'
+import { useStore } from '@/store'
 
 it('offers suggested choices and a custom answer for the owning child run', () => {
   const gate: PendingInterviewGate = {
@@ -49,8 +50,12 @@ it('labels human gate choices with their display text and answers with the decis
   expect(screen.getByTestId('run-pending-human-gate-option-key-approve')).toHaveTextContent('A')
   expect(screen.getByRole('button', { name: 'Approve and ship' })).toHaveAttribute('aria-keyshortcuts', 'A')
   expect(screen.queryByTestId('run-pending-human-gate-option-metadata-approve')).toBeNull()
-  // With focus on an answer, a key moves focus to its answer without sending it; other keys do nothing.
-  screen.getByRole('button', { name: 'Approve and ship' }).focus()
+  // Anywhere in Runs but a text field, a key moves focus to its answer without sending it; other keys do nothing.
+  useStore.setState({ viewMode: 'runs' })
+  fireEvent.keyDown(screen.getByTestId('run-pending-human-gate-note-input-gate'), { key: 'a' })
+  expect(screen.getByRole('button', { name: 'Approve and ship' })).not.toHaveFocus()
+  fireEvent.keyDown(document.body, { key: 'a' })
+  expect(screen.getByRole('button', { name: 'Approve and ship' })).toHaveFocus()
   fireEvent.keyDown(screen.getByRole('button', { name: 'Approve and ship' }), { key: 'x' })
   expect(screen.getByRole('button', { name: 'Approve and ship' })).toHaveFocus()
   fireEvent.keyDown(screen.getByRole('button', { name: 'Approve and ship' }), { key: 's' })

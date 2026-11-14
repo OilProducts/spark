@@ -136,13 +136,13 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     async function end(cancel: boolean) {
         const live = triggers.filter(trigger => trigger.enabled).length
         const confirmed = await confirm({
-            title: cancel ? 'Cancel mission?' : 'Close mission as done?',
+            title: cancel ? 'Cancel mission?' : 'Mark mission done?',
             description: [
                 cancel ? 'Its agent stops and its unfinished runs are canceled.' : 'Its agent stops; runs already going finish on their own.',
                 live ? `${live === 1 ? 'The trigger aimed at it turns' : `The ${live} triggers aimed at it turn`} off.` : '',
                 'A closed mission can’t be reopened.',
             ].filter(Boolean).join(' '),
-            confirmLabel: cancel ? 'Cancel mission' : 'Close mission',
+            confirmLabel: cancel ? 'Cancel mission' : 'Mark done',
             cancelLabel: 'Keep it open',
             confirmVariant: cancel ? 'destructive' : 'default',
         })
@@ -177,7 +177,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             <div className="flex shrink-0 items-center gap-1.5">
                 {status === 'draft' && <><Button type="button" size="sm" disabled={disabled} onClick={() => void control('start')}>Start</Button>
                     <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={edit}>Edit</Button></>}
-                {(status === 'running' || status === 'needs_you') && <><Button type="button" size="sm" variant="outline" aria-label="Close mission" disabled={disabled} onClick={() => void end(false)}>Close</Button>
+                {(status === 'running' || status === 'needs_you') && <><Button type="button" size="sm" variant="outline" aria-label="Mark mission done" disabled={disabled} onClick={() => void end(false)}>Mark done</Button>
                     <Button type="button" size="sm" variant="ghost" aria-label="Cancel mission" disabled={disabled} onClick={() => void end(true)}>Cancel</Button></>}
                 {closed && <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => void archive(!mission.fields.archived)}>{mission.fields.archived ? 'Restore' : 'Archive'}</Button>}
                 <DropdownMenu.Root>

@@ -7,6 +7,7 @@ import {
     MiniMap,
     ReactFlow,
     ReactFlowProvider,
+    type Edge,
     type Node,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -52,11 +53,18 @@ const MINIMAP_SIZE = { width: 120, height: 84 }
 
 const EMPTY_DIAGNOSTICS: import('@/store').DiagnosticEntry[] = []
 const EMPTY_GRAPH_NODES: Node[] = []
+const EMPTY_GRAPH_EDGES: Edge[] = []
+const NO_TAKEN_ROUTES: ReadonlySet<string> = new Set()
+const TAKEN_ROUTE_STYLE = { stroke: 'hsl(var(--foreground))', strokeWidth: 2 }
+
+/** A route as a run's visits name it: the node it leaves and the decision that chose it. */
+export const routeKey = (nodeId: string, decision: unknown) => `${nodeId}\n${String(decision ?? '')}`
 
 type RunGraphCanvasInnerProps = {
     run: RunRecord
     refreshToken: number
     nodeStatusesById: Record<string, NodeStatus>
+    takenRoutes: ReadonlySet<string>
     selectedNodeId: string | null
     onSelectNode: (nodeId: string | null) => void
     paneHeight: number | 'fill'
@@ -67,6 +75,7 @@ function RunGraphCanvasInner({
     run,
     refreshToken,
     nodeStatusesById,
+    takenRoutes,
     selectedNodeId,
     onSelectNode,
     paneHeight,
@@ -81,7 +90,18 @@ function RunGraphCanvasInner({
     const focusNodeIdRef = useRef<string | null>(null)
     const matchingVariant = runDetailSession?.graphExpanded === (runDetailSession?.expandChildFlows ?? false)
     const nodes = matchingVariant ? runDetailSession?.graphNodes ?? EMPTY_GRAPH_NODES : EMPTY_GRAPH_NODES
-    const edges = matchingVariant ? runDetailSession?.graphEdges ?? [] : []
+    const graphEdges = matchingVariant ? runDetailSession?.graphEdges ?? EMPTY_GRAPH_EDGES : EMPTY_GRAPH_EDGES
+    // The routes the run took stand out from the ones it didn't, arrowhead and label too.
+    const edges = useMemo(() => graphEdges.map((edge) => (
+        takenRoutes.has(routeKey(edge.source, edge.data?.decision))
+            ? {
+                ...edge,
+                data: { ...edge.data, taken: true },
+                style: TAKEN_ROUTE_STYLE,
+                markerEnd: { type: MarkerType.ArrowClosed, color: TAKEN_ROUTE_STYLE.stroke },
+            }
+            : edge
+    )), [graphEdges, takenRoutes])
 
     const decoratedNodes = useMemo(() => (
         nodes.map((node) => {
@@ -216,7 +236,10 @@ function RunGraphCanvasInner({
             }
             style={paneHeight === 'fill' ? undefined : { height: `${paneHeight}px` }}
         >
+            {/* Its own id: React Flow names its arrowhead markers and grid pattern by it, and the
+                editor's canvas, mounted but hidden, would otherwise own the shared ids. */}
             <ReactFlow
+                id="run-graph"
                 nodes={decoratedNodes}
                 edges={edges}
                 nodesDraggable={false}
@@ -251,6 +274,8 @@ function RunGraphCanvasInner({
 interface RunGraphCardProps {
     run: RunRecord
     nodeStatusesById: Record<string, NodeStatus>
+    /** The routes the run took, by `routeKey`. */
+    takenRoutes?: ReadonlySet<string>
     selectedNodeId: string | null
     onSelectNode: (nodeId: string | null) => void
     onOpenInEditor?: () => void
@@ -262,6 +287,7 @@ interface RunGraphCardProps {
 export function RunGraphCard({
     run,
     nodeStatusesById,
+    takenRoutes = NO_TAKEN_ROUTES,
     selectedNodeId,
     onSelectNode,
     onOpenInEditor,
@@ -376,6 +402,7 @@ export function RunGraphCard({
                                 run={run}
                                 refreshToken={refreshToken}
                                 nodeStatusesById={nodeStatusesById}
+                                takenRoutes={takenRoutes}
                                 selectedNodeId={selectedNodeId}
                                 onSelectNode={onSelectNode}
                                 paneHeight={fillHeight ? 'fill' : paneHeight}

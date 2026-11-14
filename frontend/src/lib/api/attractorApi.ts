@@ -404,7 +404,7 @@ export function parseFlowListResponse(payload: unknown, endpoint = '/attractor/a
     return [...payload]
 }
 
-function expectFlowFiles(value: unknown, endpoint: string): FlowFile[] {
+export function expectFlowFiles(value: unknown, endpoint: string): FlowFile[] {
     if (!Array.isArray(value)) {
         throw new ApiSchemaError(endpoint, 'Expected files to be an array.')
     }

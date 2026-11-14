@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react'
+
 import type { PendingInterviewGate, PendingInterviewGateGroup } from '../model/shared'
 import { pendingGateSemanticHint, formatTimestamp } from '../model/shared'
 import { formatRunDate } from '../model/runOverviewModel'
@@ -5,6 +7,8 @@ import { InlineError } from '@/components/app/inline-error'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { useStore } from '@/store'
+
 interface RunQuestionsPanelProps {
     confirmedQuestionIds: string[]
     className?: string
@@ -35,6 +39,30 @@ export function RunQuestionsPanel({
     pendingGateActionError,
     submittingGateIds,
 }: RunQuestionsPanelProps) {
+    const panelRef = useRef<HTMLDivElement>(null)
+    // An answer's key moves focus to that answer from anywhere in Runs but a text field, and Enter
+    // gives it: an answer can't be taken back, so no single key sends one. With focus in a question,
+    // its own answers win. Capture runs first, so an answer keyed G beats the graph toggle.
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            const target = event.target instanceof Element ? event.target : null
+            if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented || event.key.length !== 1
+                || useStore.getState().viewMode !== 'runs'
+                || target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) {
+                return
+            }
+            const panel = panelRef.current
+            const question = target && panel?.contains(target) ? target.closest('[data-testid="run-pending-human-gate-item"]') : null
+            const answer = [...(question ?? panel)?.querySelectorAll<HTMLButtonElement>('button[aria-keyshortcuts]') ?? []]
+                .find((button) => !button.disabled && button.getAttribute('aria-keyshortcuts')?.toLowerCase() === event.key.toLowerCase())
+            if (answer) {
+                event.preventDefault()
+                answer.focus()
+            }
+        }
+        window.addEventListener('keydown', onKeyDown, true)
+        return () => window.removeEventListener('keydown', onKeyDown, true)
+    }, [])
     if (groupedPendingInterviewGates.length === 0) {
         return null
     }
@@ -42,6 +70,7 @@ export function RunQuestionsPanel({
 
     return (
         <div
+            ref={panelRef}
             data-testid="run-pending-human-gates-panel"
             className={className}
         >
@@ -135,24 +164,10 @@ export function RunQuestionsPanel({
                                                         />
                                                     </div>
                                                 )}
-                                                {/* With focus on an answer, its flow key moves focus to that answer and Enter gives it:
-                                                    an answer can't be taken back, so no single key sends one. Scoped to the
-                                                    buttons, so typing elsewhere never touches a gate. */}
                                                 <div
                                                     role="group"
                                                     aria-label="Answers"
                                                     className="flex flex-wrap items-start gap-2"
-                                                    onKeyDown={(event) => {
-                                                        if (disabled || event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1) {
-                                                            return
-                                                        }
-                                                        const keyed = gate.options.find((option) => (gate.questionType === 'MULTIPLE_CHOICE' || gate.origin === 'agent_clarification')
-                                                            && option.key?.toLowerCase() === event.key.toLowerCase())
-                                                        if (keyed) {
-                                                            event.preventDefault()
-                                                            event.currentTarget.querySelectorAll('button')[gate.options.indexOf(keyed)]?.focus()
-                                                        }
-                                                    }}
                                                 >
                                                     {gate.options.map((option) => {
                                                         const semanticHint = pendingGateSemanticHint(gate.questionType, option.value)

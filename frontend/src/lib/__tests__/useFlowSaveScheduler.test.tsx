@@ -8,6 +8,7 @@ import { useStore } from '@/store'
 
 vi.mock('@/lib/flowPersistence', () => ({
   saveFlowContent: vi.fn(),
+  registerPendingFlowSave: () => () => undefined,
 }))
 
 function SchedulerHarness() {

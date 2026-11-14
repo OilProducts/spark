@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
-import { saveFlowContent } from '@/lib/flowPersistence'
+import { registerPendingFlowSave, saveFlowContent } from '@/lib/flowPersistence'
 import { useStore } from '@/store'
 import type { FlowSaveContent } from '@/lib/attractorClient'
 
@@ -101,8 +101,10 @@ export function useFlowSaveScheduler<T = void>({
             flushPendingSave()
         }
         window.addEventListener('beforeunload', handleBeforeUnload)
+        const unregister = registerPendingFlowSave(flushPendingSave)
         return () => {
             window.removeEventListener('beforeunload', handleBeforeUnload)
+            unregister()
             flushPendingSave()
         }
     }, [flushPendingSave])

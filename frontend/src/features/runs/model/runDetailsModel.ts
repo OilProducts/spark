@@ -387,15 +387,16 @@ const buildDegradedDetailPanels = ({
     contextError: ContextErrorState | null
     artifactError: ArtifactErrorState | null
 }) => {
+    // Named as the run detail names them: the checkpoint holds each step's outcome, artifacts are Outputs.
     const panels: string[] = []
     if (checkpointError) {
-        panels.push('checkpoint')
+        panels.push('step outcomes')
     }
     if (contextError) {
         panels.push('context')
     }
     if (artifactError) {
-        panels.push('artifacts')
+        panels.push('outputs')
     }
     return panels
 }

@@ -60,7 +60,7 @@ function useFlowCatalogPanel() {
         loadFlowSummaries(summaryProject).then(
             (list) => {
                 if (isMountedRef.current && requestId === refreshRequestIdRef.current) {
-                    setSummaries({ project: summaryProject, labels: Object.fromEntries(list.map((flow) => [flow.name, { title: flow.title, description: flow.description }])) })
+                    setSummaries({ project: summaryProject, labels: Object.fromEntries(list.map((flow) => [flow.name, { title: flow.title, description: flow.description, error: flow.error }])) })
                 }
             },
             () => undefined,
@@ -98,6 +98,14 @@ function useFlowCatalogPanel() {
             isMountedRef.current = false
         }
     }, [activeProjectPath])
+
+    // A flow listed with errors that now saves has been fixed: list it afresh.
+    const savedVersion = useStore((state) => (state.saveState === 'saved' ? state.saveStateVersion : null))
+    const activeFlowHasErrors = Boolean(activeFlow && flowLabels[activeFlow]?.error)
+    useEffect(() => {
+        if (savedVersion !== null && activeFlowHasErrors) void refreshFlows()
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new save refreshes
+    }, [savedVersion])
 
     const createNewFlow = async () => {
         const name = await prompt({

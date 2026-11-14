@@ -18,7 +18,7 @@ import { flattenRunJournalSegments, useRunJournalStore } from './state/runJourna
 import { buildRunVisits, visitFlowNodesFromSnapshot, type VisitFlowNode } from './model/visitModel'
 import { loadRunGraphPreview } from './services/runGraphTransport'
 import { RunVisitsCard } from './components/RunVisitsCard'
-import { RunGraphCard } from './components/RunGraphCard'
+import { RunGraphCard, routeKey } from './components/RunGraphCard'
 import { RunStatusItem } from './components/RunStatusItem'
 import { RunContextItem } from './components/RunContextItem'
 import { RunArtifactViewer } from './components/RunArtifactViewer'
@@ -294,6 +294,10 @@ export function RunsPanel() {
         ? flowNodes[selectedNodeId]?.label ?? selectedNodeId
         : null
     const [showGraph, setShowGraph] = useState(false)
+    const takenRoutes = useMemo(
+        () => new Set(visits.flatMap((visit) => (visit.decision ? [routeKey(visit.nodeId, visit.decision)] : []))),
+        [visits],
+    )
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
             const target = event.target instanceof Element ? event.target : null
@@ -411,6 +415,7 @@ export function RunsPanel() {
             key={`graph-${selectedRun.run_id}`}
             run={selectedRun}
             nodeStatusesById={runNodeStatuses}
+            takenRoutes={takenRoutes}
             selectedNodeId={activeContinuationDraft ? activeContinuationDraft.startNodeId : selectedNodeId}
             onSelectNode={activeContinuationDraft
                 ? (nodeId) => {
@@ -619,7 +624,7 @@ export function RunsPanel() {
                                     ...STATUS_ROWS[statusKind],
                                     detail: formatDuration(selectedRun.started_at, selectedRun.ended_at, selectedRun.status, now),
                                 }}
-                                contextKeyCount={contextOverview.namespaces.reduce((count, namespace) => count + namespace.keys.length, 0)}
+                                contextKeyCount={contextError ? null : contextOverview.namespaces.reduce((count, namespace) => count + namespace.keys.length, 0)}
                                 renderStatus={(selectVisit) => (
                                     <RunStatusItem
                                         run={selectedRun}

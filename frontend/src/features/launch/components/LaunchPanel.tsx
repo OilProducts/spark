@@ -310,7 +310,7 @@ export function LaunchPanel({
                         })
                     }}
                 />
-            </Well> : !isLoadingPreview && !previewLoadError ? (
+            </Well> : !isLoadingPreview && !previewLoadError && !hasValidationErrors ? (
                 <p data-testid="launch-panel-no-inputs" className="text-sm text-muted-foreground">This flow needs no inputs to start.</p>
             ) : null}
 

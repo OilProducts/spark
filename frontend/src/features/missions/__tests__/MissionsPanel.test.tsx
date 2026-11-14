@@ -123,7 +123,7 @@ it('shows a draft with its objective in the rail, Start and Edit, and the reply 
     expect(detail().getByText(/No conversation yet/)).toBeInTheDocument()
     expect(detail().getByLabelText('Reply')).toBeDisabled()
     expect(detail().getByRole('button', { name: 'Edit' })).toBeInTheDocument()
-    expect(detail().queryByRole('button', { name: 'Close mission' })).not.toBeInTheDocument()
+    expect(detail().queryByRole('button', { name: 'Mark mission done' })).not.toBeInTheDocument()
     vi.mocked(fetch).mockImplementationOnce(async (url, init) => {
         calls.push({ url: String(url), body: JSON.parse(String(init?.body)) })
         task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't' })
@@ -196,7 +196,7 @@ it('drives close, cancel and archive from the header, and budget in the rail', a
     await waitFor(() => expect(detail().queryByRole('form', { name: 'Budget' })).not.toBeInTheDocument())
     expect(calls.at(-1)?.body).toEqual({ revision: 1, fields: { budget: { concurrent_runs: 4, total_runs: 40 } }, actor: 'human' })
     expect(detail().getByRole('region', { name: 'Budget' })).toHaveTextContent('0 of 40 runs · up to 4 at once')
-    fireEvent.click(detail().getByRole('button', { name: 'Close mission' }))
+    fireEvent.click(detail().getByRole('button', { name: 'Mark mission done' }))
     await waitFor(() => expect(calls.at(-1)).toEqual({ url: '/workspace/api/missions/task-1/close?project_path=%2Fproject', body: { status: 'done' } }))
     fireEvent.click(detail().getByRole('button', { name: 'Cancel mission' }))
     await waitFor(() => expect(calls.at(-1)?.url).toBe('/workspace/api/missions/task-1/cancel?project_path=%2Fproject'))
@@ -232,7 +232,7 @@ it('asks before closing or canceling a mission, and does nothing when kept open'
     vi.mocked(window.confirm).mockReturnValue(false)
     render(<MissionsPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
-    fireEvent.click(detail().getByRole('button', { name: 'Close mission' }))
+    fireEvent.click(detail().getByRole('button', { name: 'Mark mission done' }))
     fireEvent.click(detail().getByRole('button', { name: 'Cancel mission' }))
     await waitFor(() => expect(window.confirm).toHaveBeenCalledTimes(2))
     expect(vi.mocked(window.confirm).mock.calls.map(([text]) => text)).toEqual([
@@ -285,7 +285,7 @@ it('shows the server reason when a control action is refused', async () => {
     render(<MissionsPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
     vi.mocked(fetch).mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ detail: 'Mission is closed' }) } as Response)
-    fireEvent.click(detail().getByRole('button', { name: 'Close mission' }))
+    fireEvent.click(detail().getByRole('button', { name: 'Mark mission done' }))
     expect(await detail().findByText('Mission is closed')).toBeInTheDocument()
 })
 
@@ -375,7 +375,7 @@ it('ends a closed mission with its outcome once, without cancel, close or the re
     expect(detail().getByRole('region', { name: 'Outcome' })).toHaveTextContent(/^Closed as canceled · Sep 20.*Canceled by human$/)
     expect(detail().getAllByText(/Canceled by human/)).toHaveLength(1)
     expect(detail().getByRole('status')).toHaveTextContent(/^Canceled Sep 20/)
-    expect(detail().queryByRole('button', { name: 'Close mission' })).not.toBeInTheDocument()
+    expect(detail().queryByRole('button', { name: 'Mark mission done' })).not.toBeInTheDocument()
     expect(detail().queryByRole('button', { name: 'Cancel mission' })).not.toBeInTheDocument()
     fireEvent.keyDown(detail().getByRole('button', { name: 'Mission actions' }), { key: 'Enter' })
     expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Edit', 'Model', 'Budget', 'Archive'])
@@ -672,7 +672,7 @@ it('shows waiting in Running and links targeting triggers from mission detail', 
 })
 
 
-it.each(['Close mission', 'Cancel mission', 'agent close'])('%s updates mission detail and the cached Triggers view from live events', async (action) => {
+it.each(['Mark mission done', 'Cancel mission', 'agent close'])('%s updates mission detail and the cached Triggers view from live events', async (action) => {
     task = mission({ status: 'needs_you', started_at: 't' })
     let trigger = { id: 'watcher', project_path: '/project', revision: '1', name: 'Review watcher', source_type: 'schedule', enabled: true, created_at: '', updated_at: '', action: { mode: 'mission', mission_id: task.id }, source: { kind: 'interval', interval_seconds: 60 }, state: { recent_history: [], next_run_at: null } }
     useStore.setState({ viewMode: 'triggers', triggersSession: {

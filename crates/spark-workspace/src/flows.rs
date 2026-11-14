@@ -22,6 +22,9 @@ pub struct WorkspaceFlowSummary {
     pub execution_lock: Option<FlowExecutionLock>,
     pub graph_label: String,
     pub graph_goal: String,
+    /// Why the flow doesn't load, such as its validation errors; absent for a flow that loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,13 +186,14 @@ impl WorkspaceFlowService {
 fn build_flow_summary(flow_path: &Path, flow_name: &str) -> WorkspaceFlowSummary {
     match attractor_dsl::read_flow_dir(flow_path) {
         Ok(flow) => build_flow_summary_from_definition(flow_name, &flow),
-        Err(_) => WorkspaceFlowSummary {
+        Err(error) => WorkspaceFlowSummary {
             name: flow_name.to_string(),
             title: flow_stem(flow_name),
             description: String::new(),
             execution_lock: None,
             graph_label: String::new(),
             graph_goal: String::new(),
+            error: Some(error.detail().to_string()),
         },
     }
 }
@@ -208,6 +212,7 @@ fn build_flow_summary_from_definition(
         execution_lock: flow.execution_lock.clone(),
         graph_label: flow.title.clone(),
         graph_goal: flow.goal.clone(),
+        error: None,
     }
 }
 

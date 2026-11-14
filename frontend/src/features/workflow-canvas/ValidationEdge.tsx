@@ -322,7 +322,7 @@ export function ValidationEdge({
                             <span
                                 data-testid="edge-route-label"
                                 title={routeLabel}
-                                className="canvas-route-label line-clamp-2 max-w-[calc(13.5em+14px)] break-words rounded-md border border-border bg-background px-1.5 py-px text-center font-medium leading-snug text-muted-foreground"
+                                className={`canvas-route-label line-clamp-2 max-w-[calc(13.5em+14px)] break-words rounded-md border bg-background px-1.5 py-px text-center font-medium leading-snug ${data?.taken ? 'border-foreground/40 text-foreground' : 'border-border text-muted-foreground'}`}
                             >
                                 {routeLabel}
                             </span>

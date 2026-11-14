@@ -31,8 +31,11 @@ import { recordFlowLoadDebug, summarizeDiagnosticsForFlowLoadDebug } from '@/lib
 import {
     primeFlowSaveBaseline,
     saveFlowContent,
+    sendPendingFlowSaves,
     waitForFlowSaves,
 } from '@/lib/flowPersistence';
+import { requestNavigation } from '@/state/workspaceSlice';
+import { useDialogController } from '@/components/app/dialog-controller';
 import { CANVAS_INTERACTION_BUDGET_MS } from '@/lib/performanceBudgets';
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler';
 import {
@@ -71,8 +74,9 @@ import {
 import { getReactFlowNodeTypeForShape, getShapeNodeStyle } from '@/lib/workflowNodeShape';
 import { isAbortError } from '@/lib/abortError';
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug';
-import { flowLoadFailed, isMissingFlowError } from './model/flowLoadFailure';
+import { flowLoadFailed, flowLoadReason, isInvalidFlowError, isMissingFlowError } from './model/flowLoadFailure';
 import {
+    loadEditorFlowFiles,
     loadEditorFlowPayload,
     loadEditorPreview,
     type EditorPreviewResponse,
@@ -336,6 +340,32 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const hasUnsavedEdits = editedFlowFiles(flowFiles, fileDrafts).length > 0
         || saveState === 'error' || saveState === 'conflict';
     useSettingsNavigationProtection(hasUnsavedEdits, false, 'flow edits');
+    // Leaving first sends edits still waiting to save and waits for saves in flight: a save refused
+    // after the click still asks before its edits are dropped, and never lands on the next flow.
+    const { confirm } = useDialogController();
+    useEffect(() => {
+        const waitForSaves = (event: Event) => {
+            if (event.defaultPrevented || !sendPendingFlowSaves()) return;
+            event.preventDefault();
+            const { proceed } = (event as CustomEvent<{ proceed: () => void }>).detail;
+            void waitForFlowSaves().then(async () => {
+                const { saveState, saveErrorMessage } = useStore.getState();
+                if (saveState !== 'error' && saveState !== 'conflict') {
+                    // Saved: anything else that guards leaving (file drafts) still gets its say.
+                    requestNavigation(proceed);
+                } else if (await confirm({
+                    title: 'Discard unsaved flow edits?',
+                    description: `${saveErrorMessage ? `${saveErrorMessage} ` : ''}Your unsaved flow edits will be lost.`,
+                    confirmLabel: 'Discard and leave',
+                    cancelLabel: 'Keep editing',
+                })) {
+                    proceed();
+                }
+            });
+        };
+        window.addEventListener('spark:before-navigation', waitForSaves, { capture: true });
+        return () => window.removeEventListener('spark:before-navigation', waitForSaves, { capture: true });
+    }, [confirm]);
 
     useEffect(() => {
         expandChildFlowsRef.current = expandChildFlows;
@@ -868,7 +898,18 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 }
                 console.error(error);
                 if (isCurrentLoad()) {
-                    useStore.getState().setFlowLoadFailure({ flow: flowName, project: activeProjectPath, missing: isMissingFlowError(error) });
+                    useStore.getState().setFlowLoadFailure({
+                        flow: flowName,
+                        project: activeProjectPath,
+                        missing: isMissingFlowError(error),
+                        reason: flowLoadReason(error),
+                    });
+                    // An invalid flow's files still read: they open in the file view to be fixed.
+                    if (isInvalidFlowError(error)) {
+                        loadEditorFlowFiles(flowName, activeProjectPath, { signal: loadAbort.signal })
+                            .then((files) => { if (isCurrentLoad()) setFlowFiles(files); })
+                            .catch(() => undefined);
+                    }
                 }
             }
         };
@@ -1061,9 +1102,12 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 const taken = new Set(currentEdges.filter((edge) => edge.source === params.source).map((edge) => edge.data?.decision))
                 let decision = 'next'
                 for (let suffix = 2; taken.has(decision); suffix += 1) decision = `next_${suffix}`
+                // A route saves only with a description; a new one starts with a plain one to edit.
+                const target = nodes.find((node) => node.id === params.target)
+                const description = `Continue to ${String(target?.data?.label || params.target)}.`
                 const nextEdge: Edge = {
                     ...params,
-                    ...(isFork || ('data' in params && params.data?.decision) ? {} : { data: { ...('data' in params ? params.data : {}), decision } }),
+                    ...(isFork || ('data' in params && params.data?.decision) ? {} : { data: { ...('data' in params ? params.data : {}), decision, description } }),
                     id: buildEdgeIdForConnection(params, currentEdges),
                     type: EDGE_TYPE,
                     className: EDGE_CLASS,
@@ -1414,6 +1458,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
 
     const loadFailure = flowLoadFailed(flowLoadFailure, flowName, activeProjectPath) ? flowLoadFailure : null;
     const flowOpen = Boolean(flowName) && !loadFailure;
+    // An invalid flow opens no canvas, but its files do.
+    const canRepairFiles = Boolean(loadFailure && !loadFailure.missing && flowFiles.length > 0);
     return (
         <div className="flow-surface flex h-full w-full flex-col">
             {flowOpen && flowName && (
@@ -1449,9 +1495,19 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                             <p>
                                 {loadFailure.missing
                                     ? <>{projectLabel(projectRegistry, activeProjectPath)} has no flow named “{loadFailure.flow}”. It may have been renamed or deleted. Pick a flow from the list.</>
-                                    : <>Spark couldn’t load “{loadFailure.flow}”. Try again, or pick another flow from the list.</>}
+                                    : canRepairFiles
+                                        ? <>“{loadFailure.flow}” isn’t a valid flow. Fix its files, then save to open it.</>
+                                        : <>Spark couldn’t load “{loadFailure.flow}”. Try again, or pick another flow from the list.</>}
                             </p>
+                            {!loadFailure.missing && loadFailure.reason ? (
+                                <p data-testid="editor-flow-load-reason" className="mt-2 max-w-prose whitespace-pre-wrap break-words text-left font-mono text-xs text-destructive">
+                                    {loadFailure.reason}
+                                </p>
+                            ) : null}
                             <div className="mt-3 flex justify-center gap-2">
+                                {canRepairFiles && editorMode !== 'files' ? (
+                                    <Button type="button" size="sm" data-testid="editor-flow-edit-files" onClick={() => setEditorMode('files')}>Edit files</Button>
+                                ) : null}
                                 {loadFailure.missing ? null : (
                                     <Button type="button" size="sm" variant="outline" onClick={() => { setFlowLoadFailure(null); reloadFlow(); }}>Try again</Button>
                                 )}
@@ -1460,6 +1516,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                         </SheetEmpty>
                     ) : flowName ? (
                         <ReactFlow
+                            id="flow-editor"
                             className="flow-canvas"
                             style={{ background: 'transparent' }}
                             nodes={nodes}
@@ -1584,7 +1641,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     </div>
                 ) : null}
             </div>
-            {flowOpen && editorMode === 'files' ? (
+            {(flowOpen || canRepairFiles) && editorMode === 'files' ? (
                 <FlowFilesView
                     files={flowFiles}
                     drafts={fileDrafts}
