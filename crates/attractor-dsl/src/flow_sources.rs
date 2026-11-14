@@ -372,6 +372,7 @@ pub fn validate_flow_definition(flow: &FlowDefinition) -> Result<(), FlowDefinit
             node_id: d.node_id,
             edge: None,
             decision: None,
+            node_label: None,
         })
         .collect();
     if !diagnostics.is_empty() {
@@ -434,6 +435,7 @@ fn child_diagnostics(
                 node_id: Some(node_id.clone()),
                 edge: None,
                 decision: None,
+                node_label: None,
             });
         };
         if stack.contains(&child_name) {

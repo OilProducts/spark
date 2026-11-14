@@ -50,8 +50,14 @@ function FiringResult({ entry, run }: { entry: HistoryEntry; run: RunRecord | un
 }
 
 /** Why saving waits: a flow's required inputs are checked before a trigger that starts it is saved. */
-function InputsLoading() {
-  return <p role="status" className="self-center text-xs text-muted-foreground">Reading the flow’s launch inputs…</p>
+/** Saving waits for the flow's launch inputs, so a required one can't be left out. */
+function InputsLoading({ retry }: { retry?: () => void }) {
+  return retry ? (
+    <p role="status" data-testid="trigger-flow-inputs-failed" className="self-center text-xs text-destructive">
+      Couldn’t read the flow’s launch inputs, so this can’t be saved yet.{' '}
+      <button type="button" className="font-medium underline underline-offset-2 hover:no-underline" onClick={retry}>Try again</button>
+    </p>
+  ) : <p role="status" className="self-center text-xs text-muted-foreground">Reading the flow’s launch inputs…</p>
 }
 
 export function TriggersPanel() {
@@ -91,9 +97,11 @@ export function TriggersPanel() {
     editTriggerForm,
     editTriggerErrors,
     editFlowInputs,
+    retryEditFlowInputs,
     newTriggerForm,
     newTriggerErrors,
     newFlowInputs,
+    retryNewFlowInputs,
     onCreateTrigger,
     onDeleteSelectedTrigger,
     onSaveSelectedTrigger,
@@ -300,7 +308,7 @@ export function TriggersPanel() {
                   >
                     Close
                   </Button>
-                  {newFlowInputs === null ? <InputsLoading /> : null}
+                  {newFlowInputs === null ? <InputsLoading retry={retryNewFlowInputs} /> : null}
                 </div>
               </CardContent>
             </Card>
@@ -420,7 +428,7 @@ export function TriggersPanel() {
                     Save
                   </Button>
                   <Button aria-label="Discard selected trigger changes" type="button" variant="ghost" size="sm" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
-                  {editFlowInputs === null ? <InputsLoading /> : null}
+                  {editFlowInputs === null ? <InputsLoading retry={retryEditFlowInputs} /> : null}
                 </div>
               </CardContent>
             </Card>

@@ -25,6 +25,7 @@ import { useStore } from '@/store'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { addsEntry, missionKey, parsePlaceHash, placeHash, placeOf, roleKey, type Place } from './runsRouting'
+import { defaultProjectChoice } from '@/features/projects/model/projectChoices'
 import { refreshAttention } from './useAttention'
 
 type ConversationStreamArgs = Parameters<typeof useConversationStream>[0]
@@ -564,6 +565,12 @@ export function WorkspaceLiveEventsController() {
     return null
 }
 
+/** The project a link without one opens its item in: the one the app shows. */
+function projectInView() {
+    const state = useStore.getState()
+    return state.selectedRole?.projectPath ?? state.activeProjectPath ?? defaultProjectChoice(state.projectRegistry)
+}
+
 /** Moves the app to a place from a history entry or a link; returns whether it got there now. */
 function applyPlace(place: Place): boolean {
     const state = useStore.getState()
@@ -612,10 +619,21 @@ function applyPlace(place: Place): boolean {
  */
 export function HistoryRoutingController() {
     useEffect(() => {
-        const linked = parsePlaceHash(window.location.hash)
+        const hash = window.location.hash
+        const linked = parsePlaceHash(hash, projectInView())
         if (linked) applyPlace(linked)
         let current = placeOf(useStore.getState())
         window.history.replaceState({ sparkPlace: current }, '', placeHash(current))
+        // A trigger, mission or role link without a project names its item in one once the projects load,
+        // unless you have moved on by then.
+        const opened = placeHash(current)
+        const stopWaiting: () => void = projectInView() ? () => {} : useStore.subscribe(() => {
+            const project = projectInView()
+            if (!project) return
+            stopWaiting()
+            const place = parsePlaceHash(hash, project)
+            if (place && placeHash(placeOf(useStore.getState())) === opened) applyPlace(place)
+        })
 
         // One click can change the view and its selection in separate updates; they make one entry.
         let scheduled = false
@@ -640,7 +658,7 @@ export function HistoryRoutingController() {
         // and the link's entry then says where.
         const onNavigate = () => {
             const entry = window.history.state?.sparkPlace as Place | undefined
-            const place = entry ?? parsePlaceHash(window.location.hash)
+            const place = entry ?? parsePlaceHash(window.location.hash, projectInView())
             const held = place !== null && !applyPlace(place)
             current = placeOf(useStore.getState())
             // Back or Forward held is still where it was: put that entry back, so the URL and Back stay true.
@@ -650,6 +668,7 @@ export function HistoryRoutingController() {
         window.addEventListener('hashchange', onNavigate)
         return () => {
             unsubscribe()
+            stopWaiting()
             window.removeEventListener('popstate', onNavigate)
             window.removeEventListener('hashchange', onNavigate)
         }

@@ -5,11 +5,13 @@ import { useStore, type ViewMode } from "@/store"
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import type { AttentionItem } from "@/lib/api/attentionApi"
 import { useOverviewUnread } from '@/features/overview/hooks/useOverviewUnread'
-import { ATTENTION_KIND_LABELS, attentionFlow, attentionTimes, attentionTitle, openAttentionItem, refreshAttention, useAttentionFailed, useAttentionItems } from './useAttention'
+import { ATTENTION_KIND_LABELS, attentionFlow, attentionTimes, attentionTitle, openAttentionItem, openTrigger, refreshAttention, useAttentionFailed, useAttentionItems } from './useAttention'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import { useChatRunning } from '@/features/projects/hooks/useChatRunning'
 import { cn } from '@/lib/utils'
 import { triggerProblem } from '@/features/triggers/model/triggerForm'
+import { formatRunDate } from '@/features/runs/model/runOverviewModel'
+import { triggerKey, type TriggerResponse } from '@/lib/api/triggersApi'
 
 type ActivityItem = { mode: ViewMode; label: string; icon: LucideIcon; testId: string }
 
@@ -53,9 +55,15 @@ export function activityDots(
     }
 }
 
-/** `items` is null until the first check answers; `failed` when the latest check failed. */
-function AttentionBell({ items: loadedItems, failed, narrow }: { items: AttentionItem[] | null; failed: boolean; narrow: boolean }) {
+type FailingTrigger = { trigger: TriggerResponse; problem: { label: string; detail: string } }
+
+/**
+ * `items` is null until the first check answers; `failed` when the latest check failed. Failing
+ * triggers wait on you too, as Overview's Needs you lists them.
+ */
+function AttentionBell({ items: loadedItems, failed, narrow, triggers }: { items: AttentionItem[] | null; failed: boolean; narrow: boolean; triggers: FailingTrigger[] }) {
     const items = loadedItems ?? []
+    const count = items.length + triggers.length
     const registry = useStore((state) => state.projectRegistry)
     const runs = useStore((state) => state.runsListSession.runs)
     const [open, setOpen] = useState(false)
@@ -103,8 +111,8 @@ function AttentionBell({ items: loadedItems, failed, narrow }: { items: Attentio
                 data-testid="attention-bell"
                 aria-expanded={open}
                 aria-controls={open ? listId : undefined}
-                aria-label={items.length > 0
-                    ? `Inbox: ${items.length} ${items.length === 1 ? 'item' : 'items'} waiting on you`
+                aria-label={count > 0
+                    ? `Inbox: ${count} ${count === 1 ? 'item' : 'items'} waiting on you`
                     : failed ? 'Inbox: could not check what is waiting on you' : loadedItems ? 'Inbox: nothing waiting on you' : 'Inbox'}
                 title="Waiting on you"
                 onClick={() => setOpen((previous) => !previous)}
@@ -112,12 +120,12 @@ function AttentionBell({ items: loadedItems, failed, narrow }: { items: Attentio
             >
                 <span className="relative">
                     <Bell className="size-4.5" />
-                    {items.length > 0 ? (
+                    {count > 0 ? (
                         <span
                             data-testid="attention-bell-count"
                             className="absolute -right-2.5 -top-2 flex h-4 min-w-4 items-center justify-center rounded-full bg-warning px-1 text-xs font-medium text-warning-foreground"
                         >
-                            {items.length}
+                            {count}
                         </span>
                     ) : failed ? (
                         <span
@@ -147,7 +155,7 @@ function AttentionBell({ items: loadedItems, failed, narrow }: { items: Attentio
                             <button type="button" onClick={refreshAttention} className="shrink-0 font-medium underline underline-offset-4">Try again</button>
                         </div>
                     ) : null}
-                    {items.length === 0 && !failed ? (
+                    {count === 0 && !failed ? (
                         <div className="px-2 py-1.5 text-xs text-muted-foreground">
                             {loadedItems ? 'Nothing is waiting on you.' : 'Checking…'}
                         </div>
@@ -172,6 +180,24 @@ function AttentionBell({ items: loadedItems, failed, narrow }: { items: Attentio
                             </span>
                         </button>
                     ))}
+                    {triggers.map(({ trigger, problem }) => (
+                        <button
+                            key={`trigger:${triggerKey(trigger)}`}
+                            type="button"
+                            data-testid="attention-bell-trigger"
+                            onClick={() => { setOpen(false); openTrigger(trigger.project_path, trigger.id) }}
+                            className="flex w-full flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-left hover:bg-muted"
+                        >
+                            <span className="flex w-full items-baseline justify-between gap-2 text-xs">
+                                <span className="font-semibold text-destructive">Trigger · {problem.label}</span>
+                                <span className="shrink-0 text-muted-foreground">{trigger.state.last_fired_at ? formatRunDate(trigger.state.last_fired_at, now) : ''}</span>
+                            </span>
+                            <span className="w-full truncate text-sm">{trigger.name}</span>
+                            <span className="w-full truncate text-xs text-muted-foreground" title={problem.detail}>
+                                {[problem.detail, projectLabel(registry, trigger.project_path)].join(' · ')}
+                            </span>
+                        </button>
+                    ))}
                 </div>
             )}
         </div>
@@ -191,7 +217,12 @@ export function ActivityBar() {
     const attention = loadedAttention ?? []
     const overviewUnread = useOverviewUnread(attention)
     // A trigger that can't run, or whose firings fail, starts nothing until someone looks.
-    const triggersFailing = useStore((state) => state.triggersSession.triggers.some((trigger) => triggerProblem(trigger)))
+    const triggers = useStore((state) => state.triggersSession.triggers)
+    const failingTriggers = triggers.flatMap((trigger) => {
+        const problem = triggerProblem(trigger)
+        return problem ? [{ trigger, problem }] : []
+    })
+    const triggersFailing = failingTriggers.length > 0
     const dots = {
         ...activityDots(
             attention,
@@ -258,7 +289,7 @@ export function ActivityBar() {
             <img src="/assets/spark-app-icon.png" alt="Spark" width={28} height={28} className={cn('size-7 rounded-lg', isNarrowViewport ? 'mr-1' : 'mb-3')} />
             {ACTIVITY_ITEMS.map(renderItem)}
             <span className="flex-1 max-sm:hidden" />
-            <AttentionBell items={loadedAttention} failed={attentionFailed} narrow={isNarrowViewport} />
+            <AttentionBell items={loadedAttention} failed={attentionFailed} narrow={isNarrowViewport} triggers={failingTriggers} />
             {renderItem({ mode: 'settings', label: 'Settings', icon: Settings, testId: 'activity-settings' })}
         </nav>
     )

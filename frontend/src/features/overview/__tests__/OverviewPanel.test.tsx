@@ -6,6 +6,7 @@ import type { Mission } from '@/features/missions/MissionsPanel'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { useStore } from '@/store'
 import { OverviewPanel } from '../OverviewPanel'
+import { ActivityBar } from '@/app/ActivityBar'
 import { useOverviewUnread } from '../hooks/useOverviewUnread'
 import { hasUnread, markAttentionSeen, readFinishedWatermark, type Chat } from '../model/overviewModel'
 
@@ -87,8 +88,14 @@ describe('Overview needs you, for triggers', () => {
             created_at: '2026-10-01T09:00:00Z', updated_at: '2026-10-01T09:00:00Z', action: { flow_name: 'release-check', static_context: {} }, source: {}, state,
         }
         useStore.setState({ triggersSession: { ...initial.triggersSession, triggers: [trigger, { ...trigger, id: 'fine', state: { ...state, last_result: 'success', last_error: null } }] } })
-        render(<OverviewPanel />)
+        render(<><OverviewPanel /><ActivityBar /></>)
         const row = await screen.findByTestId('overview-needs-you-trigger')
+        // The Inbox counts and lists it too, as Needs you does.
+        const bell = screen.getByTestId('attention-bell')
+        await waitFor(() => expect(bell).toHaveAccessibleName('Inbox: 1 item waiting on you'))
+        fireEvent.click(bell)
+        expect(screen.getByTestId('attention-bell-trigger')).toHaveTextContent(/^Trigger · Last firing failed.*Nightly releaseRelease version is required\. · app$/)
+        fireEvent.click(bell)
         expect(screen.getAllByTestId('overview-needs-you-trigger')).toHaveLength(1)
         expect(row).toHaveTextContent('Nightly release')
         expect(row).toHaveTextContent('Trigger · Last firing failed: Release version is required.')

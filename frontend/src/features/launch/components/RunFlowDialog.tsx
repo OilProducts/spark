@@ -62,6 +62,21 @@ export function groupFlows(flows: WorkspaceFlowResponse[], query: string, ownFlo
     }
 }
 
+/**
+ * The match Enter picks from `listed`: a flow titled or named exactly as `query`, then one whose title
+ * starts with it, then one whose title contains it, then the first listed.
+ */
+export function bestFlow(listed: WorkspaceFlowResponse[], query: string) {
+    const wanted = query.trim().toLowerCase()
+    const rank = (flow: WorkspaceFlowResponse) => {
+        const title = (flow.title || flow.name).toLowerCase()
+        const name = flow.name.toLowerCase().replace(/\.(ya?ml|dot)$/, '')
+        if (title === wanted || name === wanted || name.endsWith(`/${wanted}`)) return 0
+        return title.startsWith(wanted) ? 1 : title.includes(wanted) ? 2 : 3
+    }
+    return listed.reduce<WorkspaceFlowResponse | null>((best, flow) => best && rank(best) <= rank(flow) ? best : flow, null)
+}
+
 /** The names of a project's own flows, its copies of bundled ones included; null while loading or when unknown. */
 export function useOwnFlows(projectPath: string | null) {
     const [own, setOwn] = useState<{ projectPath: string; names: ReadonlySet<string> | null } | null>(null)
@@ -80,20 +95,28 @@ export function useOwnFlows(projectPath: string | null) {
     return own?.projectPath === projectPath ? own.names : null
 }
 
-function FlowOption({ flow, onChoose, tabbable }: { flow: WorkspaceFlowResponse; onChoose: (flowName: string) => void; tabbable: boolean }) {
+function FlowOption({ flow, onChoose, tabbable, enterPicks }: { flow: WorkspaceFlowResponse; onChoose: (flowName: string) => void; tabbable: boolean; enterPicks: boolean }) {
     return (
         <li>
             <button
                 type="button"
                 data-testid="run-flow-option"
                 data-flow-name={flow.name}
+                data-enter-picks={enterPicks || undefined}
                 // The list is one Tab stop; arrow keys move within it.
                 tabIndex={tabbable ? 0 : -1}
                 onClick={() => onChoose(flow.name)}
-                className="flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                className={cn(
+                    'flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring',
+                    enterPicks && 'bg-muted/70',
+                )}
             >
                 <span className="flex w-full min-w-0 flex-wrap items-baseline justify-between gap-x-3">
-                    <span className="min-w-0 text-sm font-medium">{flow.title || flow.name}</span>
+                    <span className="min-w-0 text-sm font-medium">
+                        {flow.title || flow.name}
+                        {/* While searching, the row Enter would pick says so. */}
+                        {enterPicks ? <kbd aria-hidden="true" className="ml-2 rounded border border-border bg-background px-1 font-sans text-xs font-normal text-muted-foreground">Enter</kbd> : null}
+                    </span>
                     <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{flow.name}</span>
                 </span>
                 {flow.error ? (
@@ -116,9 +139,15 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
     const { own, folders } = useMemo(() => groupFlows(summaries?.flows ?? [], query, ownFlows), [summaries, query, ownFlows])
     const projectName = projectLabel(registry, projectPath)
     const firstFlow = own[0] ?? folders[0]?.items[0] ?? null
+    const enterFlow = query.trim() ? bestFlow([...own, ...folders.flatMap((group) => group.items)], query) : firstFlow
     const searchRef = useRef<HTMLInputElement>(null)
     const listRef = useRef<HTMLDivElement>(null)
-    // Down from the search enters the list, and Enter there picks the first match; in the list,
+    // The row Enter picks stays in view as the search narrows.
+    const enterFlowName = query.trim() ? enterFlow?.name : undefined
+    useEffect(() => {
+        if (enterFlowName) listRef.current?.querySelector(`[data-flow-name="${CSS.escape(enterFlowName)}"]`)?.scrollIntoView?.({ block: 'nearest' })
+    }, [enterFlowName])
+    // Down from the search enters the list, and Enter there picks the closest match; in the list,
     // the arrows, Home and End move between flows, and up from the first returns to the search.
     const moveFocus = (event: KeyboardEvent, from: HTMLElement | null) => {
         const options = Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>('[data-testid="run-flow-option"]') ?? [])
@@ -165,9 +194,9 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
                             value={query}
                             onChange={(event) => setQuery(event.target.value)}
                             onKeyDown={(event) => {
-                                if (event.key === 'Enter' && firstFlow) {
+                                if (event.key === 'Enter' && enterFlow) {
                                     event.preventDefault()
-                                    onChoose(firstFlow.name)
+                                    onChoose(enterFlow.name)
                                     return
                                 }
                                 moveFocus(event, null)
@@ -180,7 +209,7 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
                     </div>
                 </div>
             </div>
-            <p id="run-flow-search-hint" className="sr-only">Enter picks the first match; the down arrow moves into the list.</p>
+            <p id="run-flow-search-hint" className="sr-only">Enter picks the closest match, the row marked Enter; the down arrow moves into the list.</p>
             <div
                 ref={listRef}
                 data-testid="run-flow-list"
@@ -207,7 +236,7 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
                     <section data-testid="run-flow-group-own" aria-label={`${projectName}'s flows`} className="pb-3">
                         <h3 className="px-3 pb-1 pt-2 text-sm font-semibold text-foreground">{projectName}&rsquo;s flows</h3>
                         <ul className="space-y-0.5">
-                            {own.map((flow) => <FlowOption key={flow.name} flow={flow} onChoose={onChoose} tabbable={flow === firstFlow} />)}
+                            {own.map((flow) => <FlowOption key={flow.name} flow={flow} onChoose={onChoose} tabbable={flow === firstFlow} enterPicks={Boolean(enterFlowName) && flow === enterFlow} />)}
                         </ul>
                     </section>
                 ) : null}
@@ -218,7 +247,7 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
                     <section key={group.label} aria-label={ownFlows ? `Bundled with Spark: ${group.label}` : group.label} className="pb-3">
                         <ListGroupLabel>{ownFlows ? <h4>{group.label}</h4> : <h3>{group.label}</h3>}</ListGroupLabel>
                         <ul className="space-y-0.5">
-                            {group.items.map((flow) => <FlowOption key={flow.name} flow={flow} onChoose={onChoose} tabbable={flow === firstFlow} />)}
+                            {group.items.map((flow) => <FlowOption key={flow.name} flow={flow} onChoose={onChoose} tabbable={flow === firstFlow} enterPicks={Boolean(enterFlowName) && flow === enterFlow} />)}
                         </ul>
                     </section>
                 ))}

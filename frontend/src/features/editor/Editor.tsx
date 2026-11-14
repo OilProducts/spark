@@ -1042,6 +1042,10 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             const nextNodes = latestSelectedNodeChange
                 ? enforceSingleSelectedNode(updatedNodes, latestSelectedNodeChange.id)
                 : updatedNodes;
+            // Clicking empty canvas or pressing Escape deselects the step: the inspector goes back to Flow settings.
+            if (!latestSelectedNodeChange && changes.some((change) => change.type === 'select' && change.id === useStore.getState().selectedNodeId)) {
+                setSelectedNodeId(null);
+            }
             const dirtyNodeIds = new Set<string>()
             const dirtyRects: NodeRect[] = []
             changes.forEach((change) => {
@@ -1089,7 +1093,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             }
             return nextNodes;
         });
-    }, [edges, enforceSingleSelectedNode, expandChildFlows, scheduleEdgeRouting, scheduleSave, setNodes]);
+    }, [edges, enforceSingleSelectedNode, expandChildFlows, scheduleEdgeRouting, scheduleSave, setNodes, setSelectedNodeId]);
 
     const onEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
         if (expandChildFlows) {
@@ -1104,6 +1108,9 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             const nextEdges = latestSelectedEdgeChange
                 ? enforceSingleSelectedEdge(updatedEdges, latestSelectedEdgeChange.id)
                 : updatedEdges;
+            if (!latestSelectedEdgeChange && changes.some((change) => change.type === 'select' && change.id === useStore.getState().selectedEdgeId)) {
+                setSelectedEdgeId(null);
+            }
             const shouldSave = changes.some((change) => change.type !== 'select');
             if (shouldSave) {
                 scheduleSave({ nodes, edges: nextEdges });
@@ -1113,7 +1120,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             }
             return nextEdges;
         });
-    }, [enforceSingleSelectedEdge, expandChildFlows, nodes, scheduleEdgeRouting, scheduleSave, setEdges]);
+    }, [enforceSingleSelectedEdge, expandChildFlows, nodes, scheduleEdgeRouting, scheduleSave, setEdges, setSelectedEdgeId]);
 
     const onConnect = useCallback(
         (params: Connection | Edge) => {

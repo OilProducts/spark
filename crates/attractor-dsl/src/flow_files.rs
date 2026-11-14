@@ -436,6 +436,7 @@ pub(crate) fn resolve_flow_roles_with(
                     node_id: Some(node_id.clone()),
                     edge: None,
                     decision: None,
+                    node_label: None,
                 });
                 continue;
             }
@@ -449,6 +450,7 @@ pub(crate) fn resolve_flow_roles_with(
                 node_id: Some(node_id.clone()),
                 edge: None,
                 decision: None,
+                node_label: None,
             });
             continue;
         }

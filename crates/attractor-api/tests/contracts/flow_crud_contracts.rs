@@ -509,6 +509,14 @@ fn files_save_that_fails_validation_or_names_an_unknown_file_writes_nothing() {
         .as_str()
         .expect("error")
         .contains("'extra' is unreachable"));
+    // Each problem names its step's title, which the UI can't read from a flow that won't load.
+    let extra = unreachable.body["detail"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .find(|diagnostic| diagnostic["node_id"] == json!("extra"))
+        .expect("extra's diagnostic");
+    assert_eq!(extra["node_label"], json!("Done"));
 
     // Only plain node files of this flow: no path out of it, no namesake by case, no flow.md deletion.
     for (files, deleted, message) in [

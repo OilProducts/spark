@@ -598,7 +598,7 @@ describe('Editor file view', () => {
         status: 'validation_error',
         error: 'invalid',
         diagnostics: [
-          { message: "node 'node_1' is unreachable: no route leads to it from the start node", file: 'node_1.md' },
+          { message: "node 'node_1' is unreachable: no route leads to it from the start node", file: 'node_1.md', node_id: 'node_1', node_label: 'Draft Plan' },
           { message: 'flow has no start node', file: null },
         ],
       },
@@ -612,7 +612,8 @@ describe('Editor file view', () => {
     expect(failed).toHaveTextContent('Flow has no start node.')
     await user.click(await screen.findByRole('button', { name: 'Open node_1.md' }))
     expect(await screen.findByTestId('flow-file-editor')).toHaveAccessibleName('node_1.md')
-    expect(screen.getByTestId('flow-files-load-problems')).toHaveTextContent("node_1.md: Node 'node_1' is unreachable")
+    // The step goes by its title, not its ID.
+    expect(screen.getByTestId('flow-files-load-problems')).toHaveTextContent('node_1.md: “Draft Plan” is unreachable')
   })
 
   it('shows a validation error against the file and does not reload', async () => {

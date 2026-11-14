@@ -39,13 +39,16 @@ const NO_INPUTS: LaunchInputDefinition[] = []
 
 /**
  * The launch inputs of the flow a form starts: none when it starts no flow (or its flow can't be
- * read, which the server then judges), null while they load.
+ * read, which the server then judges), null while they load or after the request for them failed,
+ * which `retry` asks again.
  */
-function useFlowInputs(form: Pick<TriggerFormState, 'actionMode' | 'flowName' | 'projectPath'> | null | undefined): LaunchInputDefinition[] | null {
+function useFlowInputs(form: Pick<TriggerFormState, 'actionMode' | 'flowName' | 'projectPath'> | null | undefined): { inputs: LaunchInputDefinition[] | null; retry?: () => void } {
     const flowName = form?.actionMode === 'static' ? form.flowName.trim() : ''
     const flow = useFlowLaunchMetadata(flowName || null, form?.projectPath || null)
-    if (!flowName) return NO_INPUTS
-    return flow && flow.name === flowName ? flow.inputs ?? NO_INPUTS : null
+    if (!flowName) return { inputs: NO_INPUTS }
+    if (!flow || flow.name !== flowName) return { inputs: null }
+    // Without the inputs, a required one can't be checked, so saving waits for them.
+    return flow.retry ? { inputs: null, retry: flow.retry } : { inputs: flow.inputs ?? NO_INPUTS }
 }
 
 export function useTriggerEditor({
@@ -68,7 +71,7 @@ export function useTriggerEditor({
         actionMode: selectedTrigger.action.mode ?? 'static',
         flowName: selectedTrigger.action.flow_name,
         projectPath: selectedTrigger.project_path,
-    } : null)
+    } : null).inputs
     const selectedTriggerForm = useMemo(
         () => (selectedTrigger ? triggerToFormState(selectedTrigger, savedFlowInputs ?? []) : null),
         [selectedTrigger, savedFlowInputs],
@@ -77,8 +80,8 @@ export function useTriggerEditor({
     const currentEditDraft = selectedTrigger ? editTriggerDraftsByTriggerId[triggerKey(selectedTrigger)] ?? null : null
     const resolvedEditTriggerForm = currentEditDraft?.form ?? selectedTriggerForm
     const dirty = Boolean(currentEditDraft?.form)
-    const newFlowInputs = useFlowInputs(newTriggerForm)
-    const editFlowInputs = useFlowInputs(resolvedEditTriggerForm)
+    const { inputs: newFlowInputs, retry: retryNewFlowInputs } = useFlowInputs(newTriggerForm)
+    const { inputs: editFlowInputs, retry: retryEditFlowInputs } = useFlowInputs(resolvedEditTriggerForm)
     // Field errors show once a save is refused ('new' or the trigger's key), then follow the edits.
     const [errorsShownFor, setErrorsShownFor] = useState<string | null>(null)
     const newTriggerErrors = errorsShownFor === 'new' ? validateTriggerForm(newTriggerForm, false, newFlowInputs ?? []) : {}
@@ -201,9 +204,11 @@ export function useTriggerEditor({
         editTriggerForm: resolvedEditTriggerForm,
         editTriggerErrors,
         editFlowInputs,
+        retryEditFlowInputs,
         newTriggerForm,
         newTriggerErrors,
         newFlowInputs,
+        retryNewFlowInputs,
         onCreateTrigger,
         onDeleteSelectedTrigger,
         onSaveSelectedTrigger,

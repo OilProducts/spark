@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import rehypeHighlight from 'rehype-highlight'
-import type { Root, RootContent } from 'mdast'
+import type { PhrasingContent, Root, RootContent } from 'mdast'
 import type { Root as HastRoot, Element } from 'hast'
 import { isTauri } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -108,6 +108,36 @@ function safeBreaksAndCode(this: { parse: (source: string) => unknown }) {
     }
 }
 
+/**
+ * Markup that isn't HTML, such as a test report's `<testsuite … />` line, shows as the text it is.
+ * Markdown would read it as an HTML block and, with HTML skipped, drop it and the lines after it.
+ * Real HTML tags and comments stay hidden.
+ */
+function literalNonHtml() {
+    const isHtml = (value: string) => {
+        if (value.startsWith('<!--')) return true
+        const name = /^<\/?([a-z][a-z\d-]*)/i.exec(value)?.[1]
+        return Boolean(name) && !(document.createElement(name!) instanceof HTMLUnknownElement)
+    }
+    return (tree: Root) => {
+        const walk = (parent: Root | Extract<RootContent, { children: unknown }>) => {
+            parent.children = parent.children.flatMap((node): RootContent | RootContent[] => {
+                if (node.type === 'html' && !isHtml(node.value)) {
+                    if (!['root', 'blockquote', 'listItem', 'footnoteDefinition'].includes(parent.type)) return { type: 'text', value: node.value }
+                    // A block keeps its lines.
+                    return { type: 'paragraph', children: node.value.split(/\r?\n/).flatMap((value, index): PhrasingContent[] => [
+                        ...(index > 0 ? [{ type: 'break' } as const] : []),
+                        ...(value ? [{ type: 'text', value } as const] : []),
+                    ]) }
+                }
+                if ('children' in node) walk(node)
+                return node
+            }) as typeof parent.children
+        }
+        walk(tree)
+    }
+}
+
 /** Every line break is kept, as a tool's plain-text output needs: a single newline doesn't join lines. */
 function lineBreaks() {
     return (tree: Root) => {
@@ -198,8 +228,8 @@ function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false,
         <div className="conversation-markdown min-w-0">
             <ReactMarkdown components={markdownComponents} skipHtml
                 remarkPlugins={keepLineBreaks
-                    ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, lineBreaks]
-                    : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode]}
+                    ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, literalNonHtml, lineBreaks]
+                    : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, literalNonHtml]}
                 rehypePlugins={[[footnoteLabels, `markdown-${id}-`], [rehypeKatex, { trust: false, strict: 'error' }], [rehypeHighlight, { detect: false, ignoreMissing: true }]]}
                 remarkRehypeOptions={remarkRehypeOptions}
                 urlTransform={(url) => destination(url) === 'unsafe' ? '' : url}

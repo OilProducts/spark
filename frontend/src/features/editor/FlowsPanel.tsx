@@ -292,7 +292,10 @@ export function FlowsPanelList({ catalog }: { catalog: ReturnType<typeof useFlow
                 projectLabel={catalog.activeProjectPath ? projectLabel(registry, catalog.activeProjectPath) : undefined}
                 flowLabels={catalog.flowLabels}
                 selectedFlow={catalog.activeFlow}
-                onSelectFlow={catalog.setActiveFlow}
+                // Picking the open flow again shows its Flow settings, as clicking empty canvas does.
+                onSelectFlow={(flow) => flow === catalog.activeFlow
+                    ? useStore.setState({ selectedNodeId: null, selectedEdgeId: null })
+                    : catalog.setActiveFlow(flow)}
                 onDeleteFlow={catalog.handleDeleteFlow}
                 // Bundled flows can't be deleted; a project's copy of one can, which brings the bundled flow back.
                 canDeleteFlow={(flow) => catalog.flowDefinitions[flow]?.layer !== 'bundled'}

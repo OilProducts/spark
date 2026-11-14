@@ -96,6 +96,8 @@ export interface DiagnosticEntry {
     message: string
     line?: number
     node_id?: string | null
+    /** The node's title, sent with problems in a flow that doesn't load, where no graph names it. */
+    node_label?: string | null
     edge?: [string, string] | null
     decision?: string | null
     fix?: string | null

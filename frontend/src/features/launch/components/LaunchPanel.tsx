@@ -110,10 +110,19 @@ export function LaunchPanel({
         })
     }, [initialInputValues, initialLaunchContext, parsedLaunchInputs.entries])
 
+    // Once the inputs load, a still-untouched panel hands focus to the first one the run needs.
+    const firstRequiredKey = parsedLaunchInputs.entries.find((entry) => entry.required)?.key
+    useEffect(() => {
+        if (!firstRequiredKey || document.activeElement !== panelRef.current) return
+        panelRef.current?.querySelector<HTMLElement>(`[data-testid="execution-launch-input-${CSS.escape(firstRequiredKey)}"]`)?.focus()
+    }, [firstRequiredKey])
+
     const showValidationWarningBanner = diagnostics.some((diag) => diag.severity === 'warning') && !hasValidationErrors
     const visibleDiagnostics = diagnostics.slice(0, 8)
     const nodeLabel = (nodeId: string) => {
+        // A flow that won't load has no graph; its problems carry each step's title.
         const label = hydratedGraph?.nodes.find((node) => node.id === nodeId)?.data?.label
+            ?? diagnostics.find((diagnostic) => diagnostic.node_id === nodeId && diagnostic.node_label)?.node_label
         return typeof label === 'string' && label.trim() ? label.trim() : nodeId
     }
     const projectRegistry = useStore((state) => state.projectRegistry)
@@ -225,6 +234,12 @@ export function LaunchPanel({
                 if (onClose && event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) {
                     event.stopPropagation()
                     onClose()
+                }
+                // Enter in a one-line field runs, as it submits a form; multi-line fields keep Enter for new lines.
+                if (event.key === 'Enter' && !event.defaultPrevented && !event.nativeEvent.isComposing
+                    && event.target instanceof HTMLInputElement && !['checkbox', 'radio', 'button', 'submit', 'reset', 'file'].includes(event.target.type)) {
+                    event.preventDefault()
+                    void requestStart()
                 }
             }}
         >

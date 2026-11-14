@@ -87,8 +87,11 @@ export function placeHash(place: Place): string {
     return project ? `${hash}?project=${encodeURIComponent(project)}` : hash
 }
 
-/** The place a link names, or null when it names none. */
-export function parsePlaceHash(hash: string): Place | null {
+/**
+ * The place a link names, or null when it names none. A trigger, mission or role link without a
+ * project names it in `projectInView`, the project the app shows, as a flow link without one does.
+ */
+export function parsePlaceHash(hash: string, projectInView: string | null = null): Place | null {
     const [path, query] = hash.split('?')
     if (!path.startsWith('#/')) return null
     let segments: string[]
@@ -102,7 +105,7 @@ export function parsePlaceHash(hash: string): Place | null {
     const view = VIEWS.find((mode) => viewName(mode) === name || mode === name)
     if (!view) return null
     if (view === 'runs' && item) return { view, runId: item, nodeId: nodeId ?? null }
-    const projectPath = new URLSearchParams(query).get('project')
+    const projectPath = new URLSearchParams(query).get('project') ?? (view === 'editor' ? null : projectInView)
     if (view === 'triggers' && item && projectPath) return { view, triggerId: triggerKey({ project_path: projectPath, id: item }) }
     if (view === 'missions' && item && projectPath) return { view, missionId: missionKey({ projectPath, id: item }) }
     if (view === 'roles' && item && projectPath) return { view, roleId: roleKey({ projectPath, name: item }) }

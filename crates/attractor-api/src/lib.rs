@@ -4017,6 +4017,7 @@ fn flow_diagnostics_payload(diagnostics: &[FlowDiagnostic]) -> Vec<Value> {
                 "line": 0,
                 "node": diagnostic.node_id,
                 "node_id": diagnostic.node_id,
+                "node_label": diagnostic.node_label,
                 "edge": diagnostic.edge,
                 "decision": diagnostic.decision,
                 // A node's problems are in its file.

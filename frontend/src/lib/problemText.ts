@@ -11,6 +11,10 @@ export function problemSentence(text: string): string {
     return /[.!?]$/.test(capitalized) ? capitalized : `${capitalized}.`
 }
 
+/** `message` with each node it names by ID ("node 'step_1'") named by its label instead. */
+export const nameNodes = (message: string, nodeLabel: (nodeId: string) => string) =>
+    message.replace(/\bnode '([^']+)'/g, (_, nodeId: string) => `“${nodeLabel(nodeId)}”`)
+
 /**
  * A diagnostic's message as a sentence, without the `<node>.md: ` prefix when the node is named
  * beside it. Given `nodeLabel`, a node the message names by ID ("node 'step_1'") goes by its label.
@@ -18,5 +22,5 @@ export function problemSentence(text: string): string {
 export function diagnosticSentence(diagnostic: { message: string; node_id?: string | null }, nodeLabel?: (nodeId: string) => string): string {
     const prefix = diagnostic.node_id ? `${diagnostic.node_id}.md: ` : ''
     const message = prefix && diagnostic.message.startsWith(prefix) ? diagnostic.message.slice(prefix.length) : diagnostic.message
-    return problemSentence(nodeLabel ? message.replace(/\bnode '([^']+)'/g, (_, nodeId: string) => `“${nodeLabel(nodeId)}”`) : message)
+    return problemSentence(nodeLabel ? nameNodes(message, nodeLabel) : message)
 }

@@ -238,12 +238,13 @@ export function GraphLaunchInputsSection({
             {triggersMissingInputs.length > 0 ? (
                 <Alert data-testid="graph-launch-inputs-trigger-gaps" className="border-warning/40 py-2">
                     <AlertDescription className="text-xs text-foreground">
-                        <p>{triggersMissingInputs.length === 1 ? 'A trigger starts this flow without a required input, so its runs fail:' : 'Triggers start this flow without a required input, so their runs fail:'}</p>
+                        {/* Said of the runs a trigger would start, so it holds for one that is turned off too. */}
+                        <p>{triggersMissingInputs.length === 1 ? 'A trigger doesn’t set a required input, so a run it starts fails:' : 'Triggers don’t set a required input, so a run they start fails:'}</p>
                         <ul className="mt-1 space-y-0.5">
                             {triggersMissingInputs.map(({ trigger, missing }) => (
                                 <li key={`${trigger.project_path}\u0000${trigger.id}`}>
                                     <Button type="button" variant="link" className="h-auto p-0 text-xs" onClick={() => openTrigger(trigger.project_path, trigger.id)}>{trigger.name}</Button>
-                                    <span className="text-muted-foreground"> needs {missing.join(', ')}</span>
+                                    <span className="text-muted-foreground"> needs {missing.join(', ')}{trigger.enabled ? null : ' · turned off'}</span>
                                 </li>
                             ))}
                         </ul>

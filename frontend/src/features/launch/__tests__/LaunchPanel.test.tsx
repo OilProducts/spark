@@ -203,6 +203,25 @@ useStore.getState().setRunsSelectedRunId(null);
     expect(screen.queryByTestId('execution-launch-input-error-context.topic')).toBeNull()
   })
 
+  it('hands focus to the first required input once loaded, and runs on Enter in a one-line field', async () => {
+    const fetchMock = installLaunchFetchMock({
+      inputs: [
+        { key: 'context.notes', label: 'Notes', type: 'string' },
+        { key: 'context.version', label: 'Version', type: 'string', required: true },
+      ],
+    })
+    const user = userEvent.setup()
+    const { onLaunched } = renderLaunchPanel()
+
+    const version = await screen.findByTestId('execution-launch-input-context.version')
+    await waitFor(() => expect(version).toHaveFocus())
+    await waitFor(() => expect(screen.getByTestId('launch-panel-start-button')).toBeEnabled())
+    await user.keyboard('1.4.0{Enter}')
+
+    await waitFor(() => expect(onLaunched).toHaveBeenCalledWith('run-123', false))
+    expect(startedPipelinePayload(fetchMock)).toMatchObject({ launch_context: { 'context.version': '1.4.0' } })
+  })
+
   it('closes on Escape from inside the panel', async () => {
     installLaunchFetchMock()
     const user = userEvent.setup()

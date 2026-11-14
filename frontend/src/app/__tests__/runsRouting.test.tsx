@@ -52,6 +52,11 @@ describe('runsRouting helpers', () => {
         expect(placeHash(places[4])).toBe('#/roles/reviewer?project=%2Ftmp%2Fa')
         // Without a project, a flow link opens the flow in the project Flows shows.
         expect(parsePlaceHash('#/flows/fix-bug')).toEqual({ view: 'editor', flow: 'fix-bug' })
+        expect(parsePlaceHash('#/flows/fix-bug', '/tmp/a')).toEqual({ view: 'editor', flow: 'fix-bug' })
+        // A role, trigger or mission link without one names its item in the project in view.
+        expect(parsePlaceHash('#/roles/reviewer', '/tmp/a')).toEqual(places[4])
+        expect(parsePlaceHash('#/triggers/nightly', '/tmp/a')).toEqual(places[2])
+        expect(parsePlaceHash('#/roles/reviewer?project=%2Ftmp%2Fb', '/tmp/a')).toEqual({ view: 'roles', roleId: roleKey({ projectPath: '/tmp/b', name: 'reviewer' }) })
     })
 
     it('names no place for unknown or malformed hashes', () => {
@@ -325,6 +330,19 @@ describe('HistoryRoutingController', () => {
         await waitFor(() => {
             expect(useStore.getState().selectedRole).toEqual({ projectPath: '/tmp/project-a', name: 'reviewer' })
         })
+    })
+
+    it('opens a role linked without a project in the project in view, once the projects have loaded', async () => {
+        useStore.setState({ selectedRole: null, viewMode: 'overview', projectRegistry: {} })
+        window.history.replaceState(null, '', '#/roles/reviewer')
+        render(<HistoryRoutingController />)
+        expect(useStore.getState()).toMatchObject({ viewMode: 'roles', selectedRole: null })
+
+        act(() => {
+            useStore.setState({ projectRegistry: { '/tmp/project-a': { directoryPath: '/tmp/project-a', isFavorite: false, lastAccessedAt: null } } })
+        })
+        expect(useStore.getState().selectedRole).toEqual({ projectPath: '/tmp/project-a', name: 'reviewer' })
+        await waitFor(() => expect(window.location.hash).toBe('#/roles/reviewer?project=%2Ftmp%2Fproject-a'))
     })
 
     it('reopens a linked mission, and Back returns to the list', async () => {

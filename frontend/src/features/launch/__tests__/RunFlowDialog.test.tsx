@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import { useStore } from '@/store'
-import { RunFlowDialog, groupFlows, openRunFlowDialog } from '../components/RunFlowDialog'
+import { RunFlowDialog, bestFlow, groupFlows, openRunFlowDialog } from '../components/RunFlowDialog'
 
 const flowsByProject: Record<string, Array<{ name: string; title: string; description: string; error?: string }>> = {
     '/tmp/alpha': [
@@ -57,6 +57,19 @@ it('puts the project\'s own flows first, groups the rest by folder, and matches 
     expect(names(groupFlows(flows, 'nothing-like-this'))).toEqual([[], []])
 })
 
+it('picks on Enter the flow titled or named as typed, before other matches listed ahead of it', () => {
+    const flows = [
+        { name: 'release/quiet-check', title: 'Quiet Check', description: 'A release check that prints nothing.' },
+        { name: 'release/release-check', title: 'Release Check', description: '' },
+        { name: 'release/release-check-full', title: 'Release Check (full)', description: '' },
+    ].map((flow) => ({ ...flow, execution_lock: null, graph_label: '', graph_goal: '' }))
+    expect(bestFlow(flows, 'release check')?.name).toBe('release/release-check')
+    expect(bestFlow(flows, 'release-check')?.name).toBe('release/release-check')
+    expect(bestFlow(flows, 'release ch')?.name).toBe('release/release-check')
+    expect(bestFlow(flows, 'prints')?.name).toBe('release/quiet-check')
+    expect(bestFlow([], 'release')).toBeNull()
+})
+
 it('lists the chosen project\'s flows by title and opens the chosen flow\'s run form', async () => {
     const user = userEvent.setup()
     render(<RunFlowDialog />)
@@ -75,6 +88,8 @@ it('lists the chosen project\'s flows by title and opens the chosen flow\'s run 
 
     await user.type(within(dialog).getByTestId('run-flow-search'), 'review')
     expect(within(dialog).getAllByTestId('run-flow-option').map((option) => option.dataset.flowName)).toEqual(['software-development/review-change'])
+    // The row Enter picks says so.
+    expect(within(dialog).getByTestId('run-flow-option')).toHaveAttribute('data-enter-picks', 'true')
 
     await user.selectOptions(within(dialog).getByTestId('run-flow-project-select'), '/tmp/beta')
     expect(await within(dialog).findByText('No flow matches that search.')).toBeVisible()

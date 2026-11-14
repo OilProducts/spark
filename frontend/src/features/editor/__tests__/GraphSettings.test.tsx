@@ -342,7 +342,7 @@ describe('Graph and settings behavior', () => {
     wrapWithFlowProvider(<GraphSettings inline />)
 
     const gaps = await screen.findByTestId('graph-launch-inputs-trigger-gaps')
-    expect(gaps).toHaveTextContent('A trigger starts this flow without a required input, so its runs fail:Trigger nightly needs Release version')
+    expect(gaps).toHaveTextContent('A trigger doesn’t set a required input, so a run it starts fails:Trigger nightly needs Release version')
     expect(gaps).not.toHaveTextContent('Trigger weekly')
     await user.click(within(gaps).getByRole('button', { name: 'Trigger nightly' }))
     expect(useStore.getState().viewMode).toBe('triggers')

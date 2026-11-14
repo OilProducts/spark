@@ -452,6 +452,35 @@ describe('TriggersPanel', () => {
     expect(screen.getByTestId('trigger-create-button')).toBeEnabled()
   })
 
+  it('keeps a trigger from being created while the flow\'s launch inputs failed to load, until they load on Try again', async () => {
+    const releaseCheck = { name: 'release-check', title: 'Release Check', description: '' }
+    let available = false
+    vi.mocked(global.fetch).mockImplementation(async (input) => {
+      const url = resolveRequestUrl(input as RequestInfo | URL)
+      if (url.startsWith('/workspace/api/flows/release-check')) {
+        return available
+          ? jsonResponse({ ...releaseCheck, inputs: [{ key: 'context.request.version', label: 'Version', type: 'string', required: true }] })
+          : new Response(JSON.stringify({ detail: 'Spark is busy.' }), { status: 503, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (isFlowList(url)) return jsonResponse([...PROJECT_FLOWS, releaseCheck])
+      return jsonResponse([])
+    })
+    useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const form = await openCreateTriggerForm(user)
+    await user.type(form.getByLabelText('Name'), 'Nightly')
+    await user.selectOptions(form.getByLabelText('Flow to start'), await form.findByRole('option', { name: 'Release Check' }))
+
+    // A failed request says nothing of the flow's required inputs, so saving waits for them.
+    expect(await form.findByTestId('trigger-flow-inputs-failed')).toHaveTextContent('Couldn’t read the flow’s launch inputs')
+    expect(screen.getByTestId('trigger-create-button')).toBeDisabled()
+    available = true
+    await user.click(form.getByRole('button', { name: 'Try again' }))
+    expect(await form.findByLabelText(/^Version/)).toBeVisible()
+    expect(screen.getByTestId('trigger-create-button')).toBeEnabled()
+  })
+
   it('marks a trigger whose last firing failed in the list, with the reason on hover', async () => {
     const failing = makeTrigger({ id: 'nightly', name: 'Nightly' })
     failing.state = { ...failing.state, last_result: 'failed', last_error: 'Release version is required.' }

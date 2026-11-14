@@ -11,6 +11,8 @@ import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
 import { openChat } from '@/app/useAttention'
+import { useFlowSummaries } from '@/features/launch/hooks/useFlowSummaries'
+import { flowTitle } from '@/features/runs/model/runOverviewModel'
 import { cn } from '@/lib/utils'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import {
@@ -45,6 +47,9 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 /** Each flow and step that uses the role, as links that open it in the flow editor. */
 export function RoleUsage({ project, item }: { project: string; item: DefinitionItem }) {
     const flows = usageByFlow(item.usage ?? [])
+    // A flow goes by its title, as in Flows; its path is a hover away.
+    const summaries = useFlowSummaries(project)
+    const titleOf = (flow: string) => summaries?.flows.find((summary) => summary.name === flow)?.title || flowTitle(flow)
     const open = (flowName: string, nodeId: string | null) => {
         const state = useStore.getState()
         state.setActiveProjectPath(project)
@@ -55,11 +60,11 @@ export function RoleUsage({ project, item }: { project: string; item: Definition
     const link = 'h-auto p-0 text-sm font-normal'
     return flows.length
         ? <ul data-testid="role-usage" className="flex flex-col gap-0.5 text-sm">{flows.map(([flow, nodes]) => <li key={flow}>
-            <Button type="button" variant="link" className={link} onClick={() => open(flow, null)}>{flow}</Button>
+            <Button type="button" variant="link" className={link} title={flow} onClick={() => open(flow, null)}>{titleOf(flow)}</Button>
             <span className="text-muted-foreground"> · </span>
             {nodes.map(({ node, label }, index) => <span key={node}>
                 {index > 0 ? <span className="text-muted-foreground">, </span> : null}
-                <Button type="button" variant="link" className={link} aria-label={`${label || node} in ${flow}`} onClick={() => open(flow, node)}>{label || node}</Button>
+                <Button type="button" variant="link" className={link} aria-label={`${label || node} in ${titleOf(flow)}`} onClick={() => open(flow, node)}>{label || node}</Button>
             </span>)}
         </li>)}</ul>
         : <p className="text-sm text-muted-foreground">No flow node uses this role.</p>
@@ -167,7 +172,8 @@ export function RolesPanel() {
     // The open role is the app's, so Back and a link reopen it.
     const selectedRole = useStore((state) => state.selectedRole)
     const setSelectedRole = useStore((state) => state.setSelectedRole)
-    const [project, setProject] = useState(() => selectedRole?.projectPath ?? activeProjectPath ?? defaultProjectChoice(registry))
+    const fallbackProject = activeProjectPath ?? defaultProjectChoice(registry)
+    const [project, setProject] = useState(() => selectedRole?.projectPath ?? fallbackProject)
     const [list, setList] = useState<DefinitionList | null>(null)
     const selected = selectedRole?.projectPath === project ? selectedRole.name : null
     const [error, setError] = useState('')
@@ -182,8 +188,11 @@ export function RolesPanel() {
         if (selectedRole && selectedRole.projectPath !== project) {
             setProject(selectedRole.projectPath)
             setList(null)
+        } else if (!project && fallbackProject) {
+            // Opened before the projects loaded: show the default project's roles once they have.
+            setProject(fallbackProject)
         }
-    }, [selectedRole, project])
+    }, [selectedRole, project, fallbackProject])
     useEffect(() => {
         projectRef.current = project
         if (!project) return

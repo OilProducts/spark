@@ -192,6 +192,15 @@ describe('shared Markdown', () => {
         await waitFor(() => expect(writeText).toHaveBeenCalledWith('<br>\n<br/>\n<br />\n'))
     })
 
+    it('shows markup that isn\'t HTML, such as a test report, with the lines after it, and still hides HTML', () => {
+        const report = '<testsuite name="release" tests="246" failures="0" />\nUnit checks: 246 passed\n<testcase name="logout" />\nRelease status: ready'
+        const { container } = render(markdown(`${report}\n\nInline <result ok="true"/> and <b>bold</b> <!-- hidden -->\n\n<div>block</div>`))
+        expect(container.querySelector('p')?.innerHTML.replace(/\n/g, '')).toBe('&lt;testsuite name="release" tests="246" failures="0" /&gt;<br>Unit checks: 246 passed<br>&lt;testcase name="logout" /&gt;<br>Release status: ready')
+        expect(container.textContent).toContain('Inline <result ok="true"/> and bold')
+        expect(container.textContent).not.toMatch(/<b>|hidden|block/)
+        expect(container.querySelector('testsuite, result, b, .conversation-markdown div')).toBeNull()
+    })
+
     it('renders math safely and only transforms attribute-free HTML breaks outside code', () => {
         const { container } = render(markdown('a<br>b<br/>c<br />d\nsoft\n\n`<br>`\n\n```html\n<br>\n```\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\nx<br onclick="evil()">y\n\n$$x^2$$\n\n$$\n\\frac{1}{2}\n$$\n\n$$\\notACommand{x}$$\n\n$$\\href{javascript:alert(1)}{unsafe}$$\n\nCosts $31.10: $26.97'))
         expect(container.querySelectorAll('br')).toHaveLength(3)

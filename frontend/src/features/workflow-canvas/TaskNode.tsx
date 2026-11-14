@@ -495,10 +495,11 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         {visibility.showToolCommand && (
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Tool command</label>
-                                <input
+                                <textarea
                                     value={draftToolCommand}
                                     onChange={(event) => setDraftToolCommand(event.target.value)}
-                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    spellCheck={false}
+                                    className="nodrag nowheel h-20 w-full resize-none rounded-md border border-input bg-background px-2 py-1 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     placeholder="e.g. cargo test -p spark-cli"
                                 />
                             </div>

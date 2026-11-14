@@ -30,8 +30,9 @@ export function RunArtifactViewer({
     return (
         <Dialog open={open && Boolean(entry)} onOpenChange={onOpenChange}>
             <DialogContent data-testid="run-artifact-viewer" className="flex max-h-[85vh] flex-col gap-3 overflow-hidden sm:max-w-3xl">
-                <div className="flex items-center gap-3 pr-8">
-                    <DialogTitle className="min-w-0 truncate font-mono text-sm font-normal" title={entry?.path}>
+                {/* On a phone the file's path takes a line of its own, whole, and its actions go below it. */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pr-8">
+                    <DialogTitle className="min-w-0 truncate font-mono text-sm font-normal max-sm:basis-full max-sm:whitespace-normal max-sm:[overflow-wrap:anywhere]" title={entry?.path}>
                         {entry?.path}
                     </DialogTitle>
                     <span className="flex-1" />

@@ -191,11 +191,13 @@ export function NodeInspectorPanel({
                         {visibility.showToolCommand ? (
                             <div className="space-y-1.5">
                                 <Label htmlFor={`${id}-tool-command`}>Tool command</Label>
-                                <Input
+                                {/* A tool command is a shell script: keep its lines. */}
+                                <Textarea
                                     id={`${id}-tool-command`}
                                     value={(selectedNode?.data?.['tool.command'] as string) || ''}
                                     onChange={(event) => onPropertyChange('tool.command', event.target.value)}
-                                    className="font-mono text-sm"
+                                    className="max-h-96 min-h-24 font-mono text-sm"
+                                    spellCheck={false}
                                     placeholder="e.g. cargo test -p spark-cli"
                                 />
                             </div>
