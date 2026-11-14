@@ -1,19 +1,35 @@
-import { createContext, memo, useContext, useId, useMemo, useState, type ComponentProps } from 'react'
+import { createContext, memo, useContext, useEffect, useId, useMemo, useState, type ComponentProps } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
-import rehypeHighlight from 'rehype-highlight'
 import type { PhrasingContent, Root, RootContent } from 'mdast'
 import type { Root as HastRoot, Element } from 'hast'
 import { isTauri } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { TranscriptCopyButton } from '@/components/app/transcript/TranscriptCopyButton'
 import { MarkdownMermaid } from './MarkdownMermaid'
-import 'katex/dist/katex.min.css'
 import './conversation-markdown.css'
 
 const MarkdownContext = createContext(false)
+
+// Math and code highlighting are a third of the app's script: loaded on their own, as soon as the
+// app starts, so the app shows first; until then math shows as its source and code plain.
+type RichPlugins = NonNullable<ComponentProps<typeof ReactMarkdown>['rehypePlugins']>
+let richPlugins: RichPlugins | null = null
+const richPluginsLoad = Promise.all([import('rehype-katex'), import('rehype-highlight'), import('katex/dist/katex.min.css')])
+    .then(([{ default: rehypeKatex }, { default: rehypeHighlight }]): RichPlugins => (richPlugins = [
+        [rehypeKatex, { trust: false, strict: 'error' }],
+        [rehypeHighlight, { detect: false, ignoreMissing: true }],
+    ]))
+    .catch(() => null)
+
+function useRichPlugins(): RichPlugins {
+    const [plugins, setPlugins] = useState(richPlugins)
+    useEffect(() => {
+        if (!plugins) void richPluginsLoad.then(setPlugins)
+    }, [plugins])
+    return plugins ?? []
+}
 
 function footnoteLabels(prefix: string) {
     return (tree: HastRoot) => {
@@ -229,6 +245,7 @@ interface ProjectConversationMarkdownProps {
 function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false, keepLineBreaks = false }: ProjectConversationMarkdownProps) {
     const id = useId()
     const remarkRehypeOptions = useMemo(() => ({ clobberPrefix: `markdown-${id}-`, footnoteLabel: 'Footnotes' }), [id])
+    const rich = useRichPlugins()
     return <MarkdownContext.Provider value={enableCodeCopy}>
         <div className="conversation-markdown min-w-0">
             <ReactMarkdown components={markdownComponents} skipHtml
@@ -236,7 +253,7 @@ function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false,
                     // Plain output shows every line as written, HTML included.
                     ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], [safeBreaksAndCode, PLAIN_OUTPUT], [literalNonHtml, PLAIN_OUTPUT], lineBreaks]
                     : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, literalNonHtml]}
-                rehypePlugins={[[footnoteLabels, `markdown-${id}-`], [rehypeKatex, { trust: false, strict: 'error' }], [rehypeHighlight, { detect: false, ignoreMissing: true }]]}
+                rehypePlugins={[[footnoteLabels, `markdown-${id}-`], ...rich]}
                 remarkRehypeOptions={remarkRehypeOptions}
                 urlTransform={(url) => destination(url) === 'unsafe' ? '' : url}
             >{content}</ReactMarkdown>
