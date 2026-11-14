@@ -2,6 +2,7 @@ import { useStore, type SaveErrorKind } from '@/store'
 import { saveFlowValidated, type FlowSaveContent } from '@/lib/attractorClient'
 import { recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 import { duplicateDecisionsInFlow } from '@/lib/canonicalFlowModel'
+import { flowProblemsFromDetail } from '@/features/editor/model/flowLoadFailure'
 
 interface SaveFlowErrorDetail {
     status?: string
@@ -93,10 +94,22 @@ export function setInvalidDraft(id: string, message: string | null) {
     }
 }
 
+// The last save sent for each flow. A flow's saves go one at a time, in order: two requests in
+// flight together could land out of order and leave older content on disk.
+const lastSaveByScope = new Map<string, Promise<boolean>>()
+
 export function saveFlowContent(name: string, content: FlowSaveContent, projectPath = activeProjectPath()): Promise<boolean> {
-    const save = persistFlowContent(name, content, projectPath)
+    const scopeKey = getSaveScopeKey(name, projectPath)
+    const previous = lastSaveByScope.get(scopeKey)
+    const save = previous
+        ? previous.catch(() => false).then(() => persistFlowContent(name, content, projectPath))
+        : persistFlowContent(name, content, projectPath)
+    lastSaveByScope.set(scopeKey, save)
     inFlightSaves.add(save)
-    void save.finally(() => inFlightSaves.delete(save))
+    void save.finally(() => {
+        inFlightSaves.delete(save)
+        if (lastSaveByScope.get(scopeKey) === save) lastSaveByScope.delete(scopeKey)
+    })
     return save
 }
 
@@ -108,6 +121,9 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
             contentLength: serialized.length,
             reason: 'baseline_match',
         })
+        // The edits a save refused are undone: nothing is left unsaved.
+        const { saveState, resetSaveState } = useStore.getState()
+        if (saveState === 'error' || saveState === 'conflict') resetSaveState()
         return true
     }
     const { markSaveInFlight, markSaveSuccess, markSaveFailure, markSaveConflict } = useStore.getState()
@@ -151,7 +167,7 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
             } else if (detail.status === 'validation_error') {
                 errorKind = 'validation_error'
             }
-            markSaveFailure(message, errorKind)
+            markSaveFailure(message, errorKind, flowProblemsFromDetail(detail))
             return false
         }
 

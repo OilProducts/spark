@@ -448,7 +448,8 @@ describe('TriggersPanel', () => {
       await waitFor(() => expect(useStore.getState().triggersSession.status).toBe('ready'))
       expect(useStore.getState().triggersSession.selectedTriggerId).toBeNull()
       expect(screen.queryByTestId('trigger-save-button')).not.toBeInTheDocument()
-      expect(screen.getByText('No trigger selected')).toBeVisible()
+      // The list alone shows: no empty detail pane under it.
+      expect(screen.queryByTestId('view-main')).not.toBeInTheDocument()
       // No protected triggers, so no System section.
       expect(screen.queryByRole('heading', { name: 'System' })).not.toBeInTheDocument()
 
@@ -456,7 +457,7 @@ describe('TriggersPanel', () => {
       expect(await screen.findByDisplayValue('Second')).toBeVisible()
       await user.click(screen.getByRole('button', { name: 'All triggers' }))
       expect(useStore.getState().triggersSession.selectedTriggerId).toBeNull()
-      expect(screen.queryByTestId('trigger-save-button')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('view-main')).not.toBeInTheDocument()
       expect(second).toHaveFocus()
     } finally {
       window.innerWidth = 1024

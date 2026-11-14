@@ -277,6 +277,51 @@ fn get_flow_returns_the_exact_files_flow_md_first_and_the_flow_json() {
 }
 
 #[test]
+fn get_flow_lists_a_broken_flows_problems_with_their_files_and_no_directory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let dir = settings.bundled_dir().join("flows/with space/work");
+    write_flow_dir(&dir, &valid_flow()).expect("write flow");
+    fs::write(
+        dir.join("stray.md"),
+        "---\ntype: agent_task\n---\n\nDo more.\n",
+    )
+    .expect("stray");
+    let service = AttractorApiService::new(settings);
+
+    let invalid = service.get_flow("with space/work", None);
+
+    assert_eq!(invalid.status_code, 422, "{}", invalid.body);
+    assert!(
+        !invalid.body.to_string().contains("with space"),
+        "{}",
+        invalid.body
+    );
+    let diagnostics = invalid.body["detail"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics");
+    assert!(diagnostics.len() > 1, "{}", invalid.body);
+    assert!(
+        diagnostics
+            .iter()
+            .all(|problem| problem["file"] == "stray.md"),
+        "{}",
+        invalid.body
+    );
+
+    fs::write(dir.join("stray.md"), "---\ntype: [\n---\n").expect("unparseable");
+    let unparseable = service.get_flow("with space/work", None);
+    assert_eq!(unparseable.status_code, 422, "{}", unparseable.body);
+    assert_eq!(
+        unparseable.body["detail"]["diagnostics"][0]["file"],
+        "stray.md"
+    );
+    assert!(unparseable.body["detail"]["error"]
+        .as_str()
+        .is_some_and(|error| error.starts_with("stray.md: ")));
+}
+
+#[test]
 fn flow_save_rewrites_only_the_changed_files() {
     let temp = tempfile::tempdir().expect("tempdir");
     let project = temp.path().join("project");

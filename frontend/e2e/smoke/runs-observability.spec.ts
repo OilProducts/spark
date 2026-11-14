@@ -548,6 +548,43 @@ test('run journal inspector hydrates durable history, pages older entries, and a
   await expect.poll(() => answers).toEqual([expect.objectContaining({ question_id: 'gate-approve', selected_value: 'approve' })])
 })
 
+test('on a phone a waiting run leads with its question, and its graph opens just below the Graph toggle', async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-phone-${Date.now()}`
+  const run = buildSmokeRun(projectPath, {
+    run_id: `run-phone-${Date.now()}`,
+    status: 'running',
+    outcome: null,
+    ended_at: null,
+    current_node: 'approve_release',
+  })
+  await installMockEventSource(page)
+  await stubRunSummary(page, run)
+  await stubJson(page, `**/attractor/pipelines/${run.run_id}/questions`, {
+    pipeline_id: run.run_id,
+    questions: [{
+      question_id: 'gate-approve',
+      node_id: 'approve_release',
+      prompt: 'Approve production deploy?',
+      question_type: 'MULTIPLE_CHOICE',
+      options: [{ label: 'Approve', value: 'approve', key: 'A' }, { label: 'Hold', value: 'hold', key: 'H' }],
+    }],
+  })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await openRunsForSmokeTest(page, projectPath)
+
+  const answer = page.getByTestId('run-pending-human-gate-answer-approve')
+  const toggle = page.getByTestId('run-graph-toggle')
+  await expect(answer).toBeVisible()
+  await toggle.click()
+  const graph = page.getByTestId('run-graph-panel')
+  await expect(graph).toBeVisible()
+  const [answerBox, toggleBox, graphBox] = await Promise.all([answer.boundingBox(), toggle.boundingBox(), graph.boundingBox()])
+  // The question comes before the graph, and the toggle that hides the graph sits less than half a screen above it.
+  expect(answerBox!.y).toBeLessThan(graphBox!.y)
+  expect(toggleBox!.y).toBeLessThan(graphBox!.y)
+  expect(graphBox!.y - toggleBox!.y).toBeLessThan(844 / 2)
+})
+
 test('run checkpoint refreshes on revisit for item 9.2-01', async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-runs-checkpoint-${Date.now()}`
   const run = buildSmokeRun(projectPath, {

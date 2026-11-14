@@ -832,12 +832,12 @@ describe('RunsPanel', () => {
     await user.click(screen.getByTestId('run-graph-toggle'))
     const runGraphPanel = screen.getByTestId('run-graph-panel')
     expect(runGraphPanel).toBeVisible()
-    // The masthead leads, then the graph/work-pane row.
+    // The masthead leads, then the work pane, then the graph beside it.
     expect(
-      runSummaryPanel.compareDocumentPosition(runGraphPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      runSummaryPanel.compareDocumentPosition(visitsPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
-      runGraphPanel.compareDocumentPosition(visitsPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      visitsPanel.compareDocumentPosition(runGraphPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
 
     // Run facts live collapsed in the status item; context is its own item.

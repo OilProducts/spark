@@ -12,6 +12,7 @@ import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import { DefinitionBadges } from '@/features/roles/RolesPanel'
 import { fetchDefinitions, type DefinitionItem } from '@/features/roles/rolesModel'
+import { flowTitle } from '@/features/runs/model/runOverviewModel'
 
 import { deleteFlowCatalogEntry, loadFlowCatalog, loadFlowSummaries } from './services/flowCatalog'
 
@@ -37,6 +38,22 @@ function useFlowCatalogPanel() {
     const refreshRequestIdRef = useRef(0)
     activeFlowRef.current = activeFlow
 
+    // Titles and descriptions; only the latest request's answer shows.
+    const summaryRequestIdRef = useRef(0)
+    const refreshSummaries = () => {
+        const requestId = summaryRequestIdRef.current + 1
+        summaryRequestIdRef.current = requestId
+        const project = activeProjectPath
+        loadFlowSummaries(project).then(
+            (list) => {
+                if (isMountedRef.current && requestId === summaryRequestIdRef.current) {
+                    setSummaries({ project, labels: Object.fromEntries(list.map((flow) => [flow.name, { title: flow.error ? flowTitle(flow.name) : flow.title, description: flow.description, error: flow.error }])) })
+                }
+            },
+            () => undefined,
+        )
+    }
+
     const refreshFlows = async () => {
         const requestId = refreshRequestIdRef.current + 1
         refreshRequestIdRef.current = requestId
@@ -56,15 +73,7 @@ function useFlowCatalogPanel() {
             )
         }
 
-        const summaryProject = activeProjectPath
-        loadFlowSummaries(summaryProject).then(
-            (list) => {
-                if (isMountedRef.current && requestId === refreshRequestIdRef.current) {
-                    setSummaries({ project: summaryProject, labels: Object.fromEntries(list.map((flow) => [flow.name, { title: flow.title, description: flow.description, error: flow.error }])) })
-                }
-            },
-            () => undefined,
-        )
+        refreshSummaries()
 
         try {
             const data = await loadFlowCatalog(activeProjectPath)
@@ -99,11 +108,17 @@ function useFlowCatalogPanel() {
         }
     }, [activeProjectPath])
 
-    // A flow listed with errors that now saves has been fixed: list it afresh.
+    // A save can retitle the open flow, so its title is read afresh; a flow listed with errors that
+    // now saves has been fixed, so the whole list is.
     const savedVersion = useStore((state) => (state.saveState === 'saved' ? state.saveStateVersion : null))
     const activeFlowHasErrors = Boolean(activeFlow && flowLabels[activeFlow]?.error)
     useEffect(() => {
-        if (savedVersion !== null && activeFlowHasErrors) void refreshFlows()
+        if (savedVersion === null) return
+        if (activeFlowHasErrors) {
+            void refreshFlows()
+        } else {
+            refreshSummaries()
+        }
         // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new save refreshes
     }, [savedVersion])
 

@@ -20,7 +20,7 @@ useStore.getState().setRunsSelectedRunId(null);
 }
 }
 
-describe('RunStream save indicator', () => {
+describe('RunStream', () => {
   beforeEach(() => {
     resetRunStreamState()
     vi.useFakeTimers()
@@ -31,29 +31,6 @@ describe('RunStream save indicator', () => {
     vi.useRealTimers()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
-  })
-
-  it('shows a single saved toast and dismisses it after the fade window', () => {
-    render(<RunStream />)
-
-    act(() => {
-      useStore.getState().markSaveSuccess()
-    })
-
-    expect(screen.getByTestId('global-save-state-indicator')).toHaveTextContent('Saved')
-
-    act(() => {
-      vi.advanceTimersByTime(1000)
-    })
-
-    expect(screen.getByTestId('global-save-state-indicator').className).toContain('opacity-0')
-
-    act(() => {
-      vi.advanceTimersByTime(1000)
-    })
-
-    expect(screen.queryByTestId('global-save-state-indicator')).not.toBeInTheDocument()
-    expect(useStore.getState().saveState).toBe('idle')
   })
 
   it('updates the selected run to a terminal state from the streamed runtime event', async () => {

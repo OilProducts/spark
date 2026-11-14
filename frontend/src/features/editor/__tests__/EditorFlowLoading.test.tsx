@@ -9,11 +9,13 @@ import type { EditorPreviewResponse } from '@/features/editor/services/editorPre
 import { resetFlowSaveBaselines } from '@/lib/flowPersistence'
 import { ApiHttpError } from '@/lib/attractorClient'
 import {
+  loadEditorFlowFiles,
   loadEditorFlowPayload,
   loadEditorPreview,
 } from '@/features/editor/services/editorPreview'
 
 vi.mock('@/features/editor/services/editorPreview', () => ({
+  loadEditorFlowFiles: vi.fn(),
   loadEditorFlowPayload: vi.fn(),
   loadEditorPreview: vi.fn(),
 }))
@@ -529,6 +531,58 @@ describe('Editor file view', () => {
     await user.click(screen.getByRole('button', { name: 'Restore' }))
     expect(screen.getByTestId('flow-file-editor')).toHaveValue(files[1].content)
     expect(screen.getByTestId('flow-files-save')).toBeDisabled()
+  })
+
+  it('links a refused save’s problems to their files, and clears them once the edit is put back', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      detail: {
+        status: 'validation_error',
+        error: 'flow definition validation failed with 1 error(s): node_1.md: agent_task nodes need at least one route',
+        diagnostics: [{ message: 'node_1.md: agent_task nodes need at least one route', file: 'node_1.md' }],
+      },
+    }), { status: 422 })))
+    renderEditor()
+    await screen.findByTestId('flow-file-editor')
+    await user.click(screen.getByRole('button', { name: 'node_1.md' }))
+    fireEvent.change(screen.getByTestId('flow-file-editor'), { target: { value: '---\nkind: agent_task\n---\nPrompt 2\n' } })
+    await user.click(screen.getByTestId('flow-files-save'))
+
+    const error = await screen.findByTestId('flow-files-error')
+    expect(error).toHaveTextContent('node_1.md: agent_task nodes need at least one route.')
+    await user.click(screen.getByRole('button', { name: 'flow.md' }))
+    await user.click(screen.getByRole('button', { name: 'Open node_1.md' }))
+    expect(screen.getByTestId('flow-file-editor')).toHaveAccessibleName('node_1.md')
+    expect(useStore.getState().saveState).toBe('error')
+
+    fireEvent.change(screen.getByTestId('flow-file-editor'), { target: { value: files[1].content } })
+    await waitFor(() => expect(screen.queryByTestId('flow-files-error')).not.toBeInTheDocument())
+    expect(useStore.getState().saveState).toBe('idle')
+    expect(screen.getByTestId('flow-files-save')).toBeDisabled()
+  })
+
+  it('opens a broken flow’s files on the file a problem names', async () => {
+    const user = userEvent.setup()
+    vi.mocked(loadEditorFlowPayload).mockRejectedValue(new ApiHttpError('/attractor/api/flows/{name}', 422, 'invalid', {
+      detail: {
+        status: 'validation_error',
+        error: 'invalid',
+        diagnostics: [
+          { message: "node 'node_1' is unreachable: no route leads to it from the start node", file: 'node_1.md' },
+          { message: 'flow has no start node', file: null },
+        ],
+      },
+    }))
+    vi.mocked(loadEditorFlowFiles).mockResolvedValue(files)
+    useStore.setState({ preferredEditorMode: 'structured' })
+    renderEditor()
+
+    const failed = await screen.findByTestId('editor-flow-load-failed')
+    expect(failed).toHaveTextContent('it has 2 problems')
+    expect(failed).toHaveTextContent('Flow has no start node.')
+    await user.click(await screen.findByRole('button', { name: 'Open node_1.md' }))
+    expect(await screen.findByTestId('flow-file-editor')).toHaveAccessibleName('node_1.md')
+    expect(screen.getByTestId('flow-files-load-problems')).toHaveTextContent("node_1.md: Node 'node_1' is unreachable")
   })
 
   it('shows a validation error against the file and does not reload', async () => {

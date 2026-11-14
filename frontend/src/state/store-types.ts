@@ -1,3 +1,4 @@
+import type { FlowProblem } from '@/features/editor/model/flowLoadFailure'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import type {
     HomeSessionSlice,
@@ -195,7 +196,7 @@ export interface WorkspaceSlice {
     setActiveFlow: (flow: string | null) => void
     /** The open flow that couldn't load, in its project, whether that project has no such flow, and the
      *  server's reason when it gave one (an invalid flow's validation errors). */
-    flowLoadFailure: { flow: string; project: string | null; missing: boolean; reason?: string | null } | null
+    flowLoadFailure: { flow: string; project: string | null; missing: boolean; problems?: FlowProblem[] | null } | null
     setFlowLoadFailure: (failure: WorkspaceSlice['flowLoadFailure']) => void
     updateProjectSessionState: (projectPath: string, patch: ProjectSessionStatePatch) => void
 }
@@ -257,6 +258,8 @@ export interface EditorSlice {
     saveStateVersion: number
     saveErrorMessage: string | null
     saveErrorKind: SaveErrorKind | null
+    /** A refused save's problems, each with its file, when the server listed them. */
+    saveErrorProblems: FlowProblem[] | null
     preferredAdvancedControls: boolean
     preferredExpandChildFlows: boolean
     preferredGraphSettingsOpen: boolean
@@ -281,7 +284,7 @@ export interface EditorSlice {
     markSaveInFlight: () => void
     markSaveSuccess: () => void
     markSaveConflict: (message: string) => void
-    markSaveFailure: (message: string, kind?: SaveErrorKind) => void
+    markSaveFailure: (message: string, kind?: SaveErrorKind, problems?: FlowProblem[] | null) => void
     resetSaveState: () => void
 }
 

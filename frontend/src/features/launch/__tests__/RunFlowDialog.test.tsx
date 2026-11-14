@@ -5,13 +5,15 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { useStore } from '@/store'
 import { RunFlowDialog, groupFlows, openRunFlowDialog } from '../components/RunFlowDialog'
 
-const flowsByProject: Record<string, Array<{ name: string; title: string; description: string }>> = {
+const flowsByProject: Record<string, Array<{ name: string; title: string; description: string; error?: string }>> = {
     '/tmp/alpha': [
         { name: 'software-development/review-change', title: 'Review a change', description: 'Reviews the diff.' },
         { name: 'software-development/implement-change', title: 'Implement a change', description: 'Plans and builds it.' },
         { name: 'nightly', title: 'Nightly audit', description: 'Checks the build.' },
     ],
     '/tmp/beta': [{ name: 'beta-only', title: 'Beta only', description: '' }],
+    // The server titles a flow that doesn't load by its file name.
+    '/tmp/gamma': [{ name: 'release-check', title: 'release-check', description: '', error: 'flow.yaml: unknown field' }],
 }
 
 vi.mock('@/lib/api/flowsApi', async (original) => ({
@@ -83,6 +85,19 @@ it('lists the chosen project\'s flows by title and opens the chosen flow\'s run 
     expect(await screen.findByTestId('run-flow-back')).toBeVisible()
     await user.click(screen.getByTestId('run-flow-back'))
     expect(await screen.findByTestId('run-flow-search')).toBeVisible()
+})
+
+it('titles a flow that doesn\'t load as its run form does, not by its file name', async () => {
+    const user = userEvent.setup()
+    useStore.setState((state) => ({
+        projectRegistry: { ...state.projectRegistry, '/tmp/gamma': { directoryPath: '/tmp/gamma', isFavorite: false, lastAccessedAt: null } },
+    }))
+    render(<RunFlowDialog />)
+    act(() => openRunFlowDialog({ projectPath: '/tmp/gamma' }))
+    const option = await within(await screen.findByTestId('run-flow-dialog')).findByTestId('run-flow-option')
+    expect(option).toHaveTextContent(/^Release Checkrelease-checkHas errors/)
+    await user.click(option)
+    expect(await screen.findByTestId('launch-panel-title')).toHaveTextContent('Release Check')
 })
 
 it('opens in the project of the latest run when that is more recent than the last project used', async () => {

@@ -295,12 +295,14 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
     saveStateVersion: 0,
     saveErrorMessage: null,
     saveErrorKind: null,
+    saveErrorProblems: null,
     markSaveInFlight: () =>
         set((state) => ({
             saveState: 'saving',
             saveStateVersion: state.saveStateVersion + 1,
             saveErrorMessage: null,
             saveErrorKind: null,
+            saveErrorProblems: null,
         })),
     markSaveSuccess: () =>
         set((state) => ({
@@ -308,6 +310,7 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
             saveStateVersion: state.saveStateVersion + 1,
             saveErrorMessage: null,
             saveErrorKind: null,
+            saveErrorProblems: null,
         })),
     markSaveConflict: (message) =>
         set((state) => ({
@@ -315,18 +318,21 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
             saveStateVersion: state.saveStateVersion + 1,
             saveErrorMessage: message || 'Flow save conflict detected.',
             saveErrorKind: 'conflict',
+            saveErrorProblems: null,
         })),
-    markSaveFailure: (message, kind = 'unknown') =>
+    markSaveFailure: (message, kind = 'unknown', problems = null) =>
         set((state) => ({
             saveState: 'error',
             saveStateVersion: state.saveStateVersion + 1,
             saveErrorMessage: message || 'Flow save failed.',
             saveErrorKind: kind,
+            saveErrorProblems: problems,
         })),
     resetSaveState: () =>
         set({
             saveState: 'idle',
             saveErrorMessage: null,
             saveErrorKind: null,
+            saveErrorProblems: null,
         }),
 })

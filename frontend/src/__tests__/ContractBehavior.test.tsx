@@ -738,7 +738,6 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('runs-transport-reconnect-banner')).toHaveTextContent(
       'Live updates for this run stopped; what you see may be out of date.',
     )
-    expect(screen.queryByTestId('global-save-state-indicator')).not.toBeInTheDocument()
   })
 
   it('[CID:12.2.02] keeps non-dependent run-inspector surfaces functional under partial API failure', async () => {

@@ -1120,7 +1120,7 @@ impl FlowDefinition {
             }
             (NodeKind::AgentTask | NodeKind::HumanGate, _) => {
                 if decisions.is_empty() {
-                    domain(format!("{} nodes declare at least one decision", node.kind.as_str()));
+                    domain(format!("{} nodes need at least one route", node.kind.as_str()));
                 }
             }
             (
@@ -1152,7 +1152,7 @@ impl FlowDefinition {
                         domain("decision_field must be nonempty".to_string());
                     }
                     if decisions.is_empty() {
-                        domain("tool nodes declare at least one decision".to_string());
+                        domain("tool nodes need at least one route".to_string());
                     }
                 }
                 _ => domain(
@@ -1289,7 +1289,9 @@ impl FlowDefinition {
             .map(|node_id| {
                 node_diagnostic(
                     "reachability",
-                    format!("node '{node_id}' is unreachable from start node"),
+                    format!(
+                        "node '{node_id}' is unreachable: no route leads to it from the start node"
+                    ),
                     node_id,
                 )
             })
@@ -1312,7 +1314,7 @@ impl FlowDefinition {
             {
                 diagnostics.push(node_diagnostic(
                     "nonterminal_leaf",
-                    format!("node '{node_id}' is not an exit and declares no routes"),
+                    format!("node '{node_id}' has no routes; only exit nodes can end the flow"),
                     node_id,
                 ));
             } else if !reaches_exit.contains(node_id.as_str()) {

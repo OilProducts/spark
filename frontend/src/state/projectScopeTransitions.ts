@@ -38,6 +38,7 @@ type ProjectScopeTransitionState = Pick<
     | 'saveStateVersion'
     | 'saveErrorMessage'
     | 'saveErrorKind'
+    | 'saveErrorProblems'
     | 'runsListSession'
     | 'runDetailSessionsByRunId'
 > & Partial<Pick<
@@ -128,6 +129,7 @@ const preserveEditorSession = (state: AppState, nextActiveProjectPath: string | 
     saveStateVersion: state.saveStateVersion,
     saveErrorMessage: state.saveErrorMessage,
     saveErrorKind: state.saveErrorKind,
+    saveErrorProblems: state.saveErrorProblems,
 })
 
 export const buildRegisteredProject = (project: HydratedProjectRecord): RegisteredProject | null => {

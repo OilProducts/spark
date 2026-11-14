@@ -583,6 +583,8 @@ it('stacks the list above the mission at the narrow breakpoint and dismisses on 
     expect(screen.getByRole('region', { name: 'Drafts' })).toBeInTheDocument()
     fireEvent.keyDown(detail().getByRole('heading', { level: 1 }), { key: 'Escape' })
     expect(screen.queryByRole('region', { name: 'Mission details' })).not.toBeInTheDocument()
+    // The list alone shows: no "No mission selected" pane under it.
+    expect(screen.queryByTestId('view-main')).not.toBeInTheDocument()
     // jsdom lays nothing out, so focus falls back to the list's search.
     await waitFor(() => expect(screen.getByLabelText('Search titles')).toHaveFocus())
 })

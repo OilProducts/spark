@@ -1,0 +1,71 @@
+import { useEffect } from 'react'
+
+import { Button } from '@/components/ui/button'
+import { retryLastSaveContent } from '@/lib/flowPersistence'
+import { resolveSaveRemediation } from '@/lib/saveRemediation'
+import { cn } from '@/lib/utils'
+import { useStore } from '@/store'
+
+const SAVED_SHOWN_MS = 2000
+
+/**
+ * The flow's save state, in a corner of the canvas below the toolbar, so it never covers or moves
+ * the actions it gates: "Saving…", a brief "Saved", or why the edits aren't saved yet, with Retry
+ * when trying again can help.
+ */
+export function EditorSaveStatus({ className }: { className?: string }) {
+    const saveState = useStore((state) => state.saveState)
+    const saveStateVersion = useStore((state) => state.saveStateVersion)
+    const saveErrorMessage = useStore((state) => state.saveErrorMessage)
+    const saveErrorKind = useStore((state) => state.saveErrorKind)
+    const resetSaveState = useStore((state) => state.resetSaveState)
+
+    // "Saved" shows briefly, then clears.
+    useEffect(() => {
+        if (saveState !== 'saved') return
+        const timer = window.setTimeout(resetSaveState, SAVED_SHOWN_MS)
+        return () => window.clearTimeout(timer)
+    }, [resetSaveState, saveState, saveStateVersion])
+
+    const remediation = resolveSaveRemediation(saveState, saveErrorKind)
+    // A flow saves only once it validates; the Validation panel lists what to fix.
+    const blockedByValidation = saveState === 'error' && saveErrorKind === 'validation_error'
+    const label = saveState === 'saving'
+        ? 'Saving…'
+        : saveState === 'saved'
+            ? 'Saved'
+            : saveState === 'conflict'
+                ? 'Save conflict'
+                : blockedByValidation
+                    ? 'Not saved'
+                    : saveState === 'error'
+                        ? 'Save failed'
+                        : null
+    const detail = [blockedByValidation ? null : saveErrorMessage, remediation?.message].filter(Boolean).join(' ')
+
+    return (
+        <div role="status" data-testid="editor-save-status" className={cn('pointer-events-none', className)}>
+            {label ? (
+                <div
+                    title={detail || undefined}
+                    className={cn(
+                        'pointer-events-auto flex max-w-xs items-center gap-2 rounded-md border bg-background px-2 py-1 text-xs font-medium shadow-sm',
+                        saveState === 'error' && !blockedByValidation ? 'text-destructive'
+                            : saveState === 'conflict' || blockedByValidation ? 'text-warning'
+                                : saveState === 'saved' ? 'text-success' : 'text-muted-foreground',
+                    )}
+                >
+                    <span>
+                        {label}
+                        {detail ? <span className="sr-only">: {detail}</span> : null}
+                    </span>
+                    {remediation?.allowRetry ? (
+                        <Button type="button" data-testid="editor-save-retry" size="xs" variant="outline" onClick={() => void retryLastSaveContent()}>
+                            Retry save
+                        </Button>
+                    ) : null}
+                </div>
+            ) : null}
+        </div>
+    )
+}

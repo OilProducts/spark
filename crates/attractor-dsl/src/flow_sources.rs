@@ -16,6 +16,8 @@ pub struct FlowSourceError {
     status_code: u16,
     detail: String,
     diagnostics: Vec<FlowDiagnostic>,
+    /// The flow file the error is in, when it is one file's.
+    file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -31,7 +33,18 @@ impl FlowSourceError {
             status_code,
             detail: detail.into(),
             diagnostics: Vec::new(),
+            file: None,
         }
+    }
+
+    /// The same error, located in the flow file `file`.
+    pub fn in_file(mut self, file: impl Into<String>) -> Self {
+        self.file = Some(file.into());
+        self
+    }
+
+    pub fn file(&self) -> Option<&str> {
+        self.file.as_deref()
     }
 
     pub fn status_code(&self) -> u16 {
@@ -469,6 +482,7 @@ impl From<FlowDefinitionError> for FlowSourceError {
             status_code: 422,
             detail: error.to_string(),
             diagnostics: error.diagnostics,
+            file: None,
         }
     }
 }

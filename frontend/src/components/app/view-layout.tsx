@@ -36,7 +36,8 @@ export const revealSelection = () => window.dispatchEvent(new Event(REVEAL_SELEC
  * A view's side panel (on the ground) beside its sheet, narrower below 1280px so the sheet keeps
  * room; on a desktop it can be hidden, leaving the sheet (a canvas or run graph) the width. On a
  * narrow viewport they stack in the view's one scroll, the panel at full length, and picking
- * something (`selected` changes) scrolls the sheet into view.
+ * something (`selected` changes) scrolls the sheet into view. Without children there is no sheet:
+ * a phone with nothing picked shows just the list.
  */
 export function ViewLayout({
     view,
@@ -145,9 +146,11 @@ export function ViewLayout({
                 {/* Hidden, not unmounted, so the list keeps its search, scroll and expanded folders. */}
                 <div hidden={hidden} className="min-h-0 flex-1 overflow-y-auto px-2 pb-4" onClick={revealPickedRow}>{panel}</div>
             </aside>
-            <Sheet ref={sheetRef} data-testid="view-main" className={isNarrowViewport ? 'min-h-[calc(100dvh-3.25rem)]' : 'ml-0'}>
-                {children}
-            </Sheet>
+            {children == null ? null : (
+                <Sheet ref={sheetRef} data-testid="view-main" className={isNarrowViewport ? 'min-h-[calc(100dvh-3.25rem)]' : 'ml-0'}>
+                    {children}
+                </Sheet>
+            )}
         </div>
     )
 }

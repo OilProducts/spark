@@ -8,13 +8,16 @@ export const flowLoadFailed = (
     failure: { flow: string; project: string | null } | null,
     flow: string | null,
     project: string | null,
-): failure is { flow: string; project: string | null; missing: boolean; reason?: string | null } => Boolean(failure && flow && failure.flow === flow && failure.project === project);
-
-/** The server's reason a flow couldn't load, when it gave one (an invalid flow names its errors). */
-export const flowLoadReason = (error: unknown) => (error instanceof ApiHttpError && error.detail ? error.message : null)
+): failure is { flow: string; project: string | null; missing: boolean; problems?: FlowProblem[] | null } => Boolean(failure && flow && failure.flow === flow && failure.project === project);
 
 /** Whether a flow loaded as files but not as a valid flow, so fixing its files can open it. */
 export const isInvalidFlowError = (error: unknown) => error instanceof ApiHttpError && error.status === 422
+
+/** One thing wrong with a flow, and the flow file it is in when it is one file's. */
+export interface FlowProblem {
+    message: string
+    file: string | null
+}
 
 // A sentence that starts with a file or node name ("notify.md: …") keeps its case.
 const sentence = (text: string) => {
@@ -24,13 +27,31 @@ const sentence = (text: string) => {
 }
 
 /**
- * The problems in a server's flow error, one sentence each, without the save verdict, the flow
- * directory's path or the error count it leads with.
+ * The problems in a server's flow error, one sentence each, without the save verdict or the
+ * error count it leads with.
  */
 export function flowProblems(text: string): string[] {
-    const detail = text
-        .replace(/^Save blocked by (validation errors|a flow parse error): /, '')
-        .replace(/^Flow directory [^\s:]+: /, '')
+    const detail = text.replace(/^Save blocked by (validation errors|a flow parse error): /, '')
     const listed = /^(?:flow definition )?validation failed with \d+ error\(s\): ([\s\S]+)$/i.exec(detail)
     return (listed ? listed[1].split('; ') : [detail]).filter((problem) => problem.trim()).map(sentence)
+}
+
+/** The problems a server's flow error lists in `diagnostics`, each with its file; null when it lists none. */
+export function flowProblemsFromDetail(detail: unknown): FlowProblem[] | null {
+    const diagnostics = detail && typeof detail === 'object' ? (detail as { diagnostics?: unknown }).diagnostics : null
+    if (!Array.isArray(diagnostics)) return null
+    const problems = diagnostics.flatMap((diagnostic: { message?: unknown; file?: unknown } | null) => (
+        typeof diagnostic?.message === 'string' && diagnostic.message.trim()
+            ? [{ message: sentence(diagnostic.message), file: typeof diagnostic.file === 'string' ? diagnostic.file : null }]
+            : []
+    ))
+    return problems.length > 0 ? problems : null
+}
+
+/** A failed flow load's problems: the server's list, else its reason as sentences. */
+export function flowLoadProblems(error: unknown): FlowProblem[] | null {
+    if (!(error instanceof ApiHttpError)) return null
+    const payload = error.payload && typeof error.payload === 'object' ? (error.payload as { detail?: unknown }) : null
+    return flowProblemsFromDetail(payload?.detail)
+        ?? (error.detail ? flowProblems(error.message).map((message) => ({ message, file: null })) : null)
 }

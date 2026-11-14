@@ -582,19 +582,8 @@ export function RunsPanel() {
                         ? 'space-y-6'
                         : 'flex min-h-0 flex-1 gap-6'}
                     >
-                        {/* A continuation picks its restart node on the graph. Beside the details it
-                            sits last, so toggling it never moves the Steps rail. */}
-                        {graphCard ? (
                         <div className={isNarrowViewport
                             ? undefined
-                            // With the rail above the details, the graph takes the larger share.
-                            : cn('order-last flex min-h-0 min-w-0 flex-col', railBeside ? 'flex-[1_1_0%]' : 'flex-[3_1_0%]')}
-                        >
-                            {graphCard}
-                        </div>
-                        ) : null}
-                        <div className={isNarrowViewport
-                            ? 'mt-6'
                             : cn('flex min-h-0 min-w-0 flex-col', !graphCard ? 'flex-[1_1_0%]' : railBeside ? 'flex-[1_1_17.5rem]' : 'flex-[2_1_0%]')}
                         >
                         <div
@@ -690,6 +679,18 @@ export function RunsPanel() {
                             />
                         </div>
                         </div>
+                        {/* After the details, so on a phone a question to answer comes first and the
+                            rail's Graph toggle sits just above the graph; beside them it never moves the
+                            Steps rail. A continuation picks its restart node on it. */}
+                        {graphCard ? (
+                        <div className={isNarrowViewport
+                            ? undefined
+                            // With the rail above the details, the graph takes the larger share.
+                            : cn('flex min-h-0 min-w-0 flex-col', railBeside ? 'flex-[1_1_0%]' : 'flex-[3_1_0%]')}
+                        >
+                            {graphCard}
+                        </div>
+                        ) : null}
                     </div>
                 )}
             </div>

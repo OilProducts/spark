@@ -62,7 +62,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                     data-testid={`graph-launch-input-row-${index}`}
                     className="space-y-3 rounded-lg bg-background px-3 py-3"
                 >
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid gap-3">
                         <Field>
                             <FieldLabel htmlFor={`${fieldId}-label-${index}`}>Label</FieldLabel>
                             <Input

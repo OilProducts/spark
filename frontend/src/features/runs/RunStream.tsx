@@ -1,10 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect } from 'react'
 
-import { retryLastSaveContent } from '@/lib/flowPersistence'
 import { type PipelineStatusResponse } from '@/lib/attractorClient'
-import { resolveSaveRemediation } from '@/lib/saveRemediation'
 import { useStore, type NodeStatus, type RuntimeStatus } from '@/store'
-import { Button } from '@/components/ui/button'
 import { toRunRecord } from '@/state/runRecordReconciliation'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { toTimelineEvent } from './model/timelineModel'
@@ -74,77 +71,7 @@ export function RunStream() {
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const reconcileRunRecord = useStore((state) => state.reconcileRunRecord)
     const clearRunDetailSession = useStore((state) => state.clearRunDetailSession)
-    const saveState = useStore((state) => state.saveState)
-    const saveStateVersion = useStore((state) => state.saveStateVersion)
-    const saveErrorMessage = useStore((state) => state.saveErrorMessage)
-    const saveErrorKind = useStore((state) => state.saveErrorKind)
-    const resetSaveState = useStore((state) => state.resetSaveState)
     const reconnectSignal = useRunsTransportReconnectSignal(true)
-    const [showSavedToast, setShowSavedToast] = useState(false)
-    const [fadeSavedToast, setFadeSavedToast] = useState(false)
-    const savedToastFadeTimerRef = useRef<number | null>(null)
-    const savedToastDismissTimerRef = useRef<number | null>(null)
-    // A flow saves only once it validates; the Validation panel lists what to fix, so the raw text stays in the tooltip.
-    const blockedByValidation = saveState === 'error' && saveErrorKind === 'validation_error'
-    const saveStateLabel =
-        saveState === 'saving'
-            ? 'Saving…'
-            : saveState === 'saved'
-                ? 'Saved'
-                : saveState === 'conflict'
-                    ? 'Save conflict'
-                    : blockedByValidation
-                        ? 'Not saved yet'
-                        : saveState === 'error'
-                            ? 'Save failed'
-                            : ''
-    const remediation = resolveSaveRemediation(saveState, saveErrorKind)
-    const shownSaveError = blockedByValidation ? null : saveErrorMessage
-    // The file view shows a refused save against its files, where this card would cover them.
-    const fileViewShown = useStore((state) => state.viewMode === 'editor' && state.editorMode === 'files')
-    const shouldShowPersistentSaveIndicator = saveState === 'saving'
-        || (!fileViewShown && (saveState === 'error' || saveState === 'conflict'))
-    const showSaveStateIndicator = saveState === 'saved' || showSavedToast || shouldShowPersistentSaveIndicator
-    const shouldFadeSaveCard = showSavedToast && !shouldShowPersistentSaveIndicator
-
-    useEffect(() => {
-        if (savedToastFadeTimerRef.current) {
-            window.clearTimeout(savedToastFadeTimerRef.current)
-            savedToastFadeTimerRef.current = null
-        }
-        if (savedToastDismissTimerRef.current) {
-            window.clearTimeout(savedToastDismissTimerRef.current)
-            savedToastDismissTimerRef.current = null
-        }
-
-        if (saveState !== 'saved') {
-            setShowSavedToast(false)
-            setFadeSavedToast(false)
-            return
-        }
-
-        setShowSavedToast(true)
-        setFadeSavedToast(false)
-        savedToastFadeTimerRef.current = window.setTimeout(() => {
-            setFadeSavedToast(true)
-        }, 1000)
-        savedToastDismissTimerRef.current = window.setTimeout(() => {
-            setShowSavedToast(false)
-            setFadeSavedToast(false)
-            resetSaveState()
-        }, 2000)
-
-        return () => {
-            if (savedToastFadeTimerRef.current) {
-                window.clearTimeout(savedToastFadeTimerRef.current)
-                savedToastFadeTimerRef.current = null
-            }
-            if (savedToastDismissTimerRef.current) {
-                window.clearTimeout(savedToastDismissTimerRef.current)
-                savedToastDismissTimerRef.current = null
-            }
-        }
-    }, [resetSaveState, saveState, saveStateVersion])
 
     useEffect(() => {
         if (!selectedRunId) {
@@ -634,49 +561,5 @@ export function RunStream() {
         clearRunDetailSession,
     ])
 
-    const handleRetrySave = () => {
-        void retryLastSaveContent()
-    }
-
-    return (
-        <div data-testid="execution-runtime-stream-indicator" className="pointer-events-none fixed right-4 top-16 z-[70]">
-            {showSaveStateIndicator ? (
-                <div
-                    data-testid="global-save-state-indicator"
-                    role="status"
-                    className={`pointer-events-auto max-w-sm rounded-md border px-2 py-1 text-xs font-medium shadow-sm transition-opacity duration-1000 ${
-                        blockedByValidation
-                            ? 'border-border bg-background text-warning'
-                            : saveState === 'error'
-                            ? 'border-border bg-background text-destructive'
-                            : saveState === 'conflict'
-                                ? 'border-border bg-background text-warning'
-                                : saveState === 'saved'
-                                    ? 'border-border bg-background text-success'
-                                    : 'border-border bg-background text-muted-foreground'
-                    } ${shouldFadeSaveCard && fadeSavedToast ? 'opacity-0' : 'opacity-100'}`}
-                    title={saveErrorMessage || undefined}
-                >
-                    {saveStateLabel ? <span>{saveStateLabel}</span> : null}
-                    {shownSaveError ? <span className="ml-1 break-words">– {shownSaveError}</span> : null}
-                    {remediation ? (
-                        <p data-testid="global-save-remediation-hint" className="mt-1 text-xs font-normal leading-4">
-                            {remediation.message}
-                        </p>
-                    ) : null}
-                    {remediation?.allowRetry ? (
-                        <Button
-                            data-testid="global-save-remediation-retry"
-                            onClick={handleRetrySave}
-                            variant="outline"
-                            size="xs"
-                            className="mt-2 border-current bg-transparent text-xs hover:bg-current/10"
-                        >
-                            Retry Save
-                        </Button>
-                    ) : null}
-                </div>
-            ) : null}
-        </div>
-    )
+    return null
 }

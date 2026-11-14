@@ -104,6 +104,32 @@ const stubResponsiveSmokeApis = async (page: Page) => {
       return
     }
 
+    // A mission and no triggers, so a phone opens Missions and Triggers with nothing picked.
+    if (pathname === '/workspace/api/missions' && requestMethod === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          missions: [{
+            id: 'mission-mobile',
+            project_path: MOBILE_PROJECT_PATH,
+            revision: 1,
+            created_at: '2026-03-11T09:00:00Z',
+            updated_at: '2026-03-11T09:00:00Z',
+            status: 'draft',
+            fields: { title: 'Mobile mission', description: '', archived: false },
+            activity: [],
+          }],
+        }),
+      })
+      return
+    }
+
+    if (pathname === '/workspace/api/triggers' && requestMethod === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+      return
+    }
+
     if (pathname === '/attractor/api/flows' && requestMethod === 'GET') {
       await route.fulfill({
         status: 200,
@@ -215,6 +241,8 @@ const VIEWS = [
   { icon: 'activity-triggers', view: 'triggers-view' },
   { icon: 'activity-flows', view: 'flows-view' },
 ] as const
+// With nothing picked, these views show their list alone on a phone, not an empty main area under it.
+const LIST_ONLY_ON_PHONES = new Set<string>(['missions-view', 'triggers-view'])
 
 test('a narrow viewport stacks each view\'s panel above its main area and keeps every view reachable', async ({ page }) => {
   await seedRouteState(page)
@@ -239,9 +267,13 @@ test('a narrow viewport stacks each view\'s panel above its main area and keeps 
     const shown = page.getByTestId(view)
     await expect(shown).toHaveAttribute('data-responsive-layout', 'stacked')
     const panel = await shown.getByTestId('side-panel').boundingBox()
-    const main = await shown.getByTestId('view-main').boundingBox()
     expect(panel!.width).toBeGreaterThan(300)
-    expect(main!.y).toBeGreaterThanOrEqual(panel!.y + panel!.height - 1)
+    if (LIST_ONLY_ON_PHONES.has(view)) {
+      await expect(shown.getByTestId('view-main')).toHaveCount(0)
+    } else {
+      const main = await shown.getByTestId('view-main').boundingBox()
+      expect(main!.y).toBeGreaterThanOrEqual(panel!.y + panel!.height - 1)
+    }
     await expect(activityBar).toBeInViewport()
   }
   await page.getByTestId('activity-runs').click()

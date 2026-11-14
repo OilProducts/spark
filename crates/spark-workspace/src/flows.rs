@@ -238,7 +238,8 @@ pub(crate) fn flow_source_error(
     missing_name: Option<&str>,
 ) -> WorkspaceError {
     match error.status_code() {
-        400 => WorkspaceError::Validation(error.detail().to_string()),
+        // 422: the flow's files don't make a valid flow.
+        400 | 422 => WorkspaceError::Validation(error.detail().to_string()),
         404 => WorkspaceError::NotFound(format!(
             "Unknown flow: {}",
             missing_name.unwrap_or_else(|| error.detail())

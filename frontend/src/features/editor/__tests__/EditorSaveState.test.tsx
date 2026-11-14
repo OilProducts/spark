@@ -7,7 +7,9 @@ import {
 } from '@/lib/flowPersistence'
 import { resolveSaveRemediation } from '@/lib/saveRemediation'
 import { useStore } from '@/store'
+import { act, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { EditorSaveStatus } from '../components/EditorSaveStatus'
 
 const DEMO_FLOW = { flow: { schema_version: '2', id: 'demo', nodes: {} } }
 
@@ -113,6 +115,26 @@ describe('Editor save state behavior', () => {
     expect(settled).toBe(true)
   })
 
+  it('sends a flow’s next save only after the one in flight settles, so the newer content lands last', async () => {
+    const responders: Array<(response: Response) => void> = []
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { responders.push(resolve) }))
+    vi.stubGlobal('fetch', fetchMock)
+    const saved = () => new Response(JSON.stringify({ status: 'saved' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    const older = saveFlowContent('demo', { flow: { ...DEMO_FLOW.flow, title: 'Older' } })
+    const newer = saveFlowContent('demo', { flow: { ...DEMO_FLOW.flow, title: 'Newer' } })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    responders[0](saved())
+    expect(await older).toBe(true)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String((call as unknown as [string, RequestInit])[1].body)).flow.title)
+    expect(bodies).toEqual(['Older', 'Newer'])
+    responders[1](saved())
+    expect(await newer).toBe(true)
+    expect(useStore.getState().saveState).toBe('saved')
+  })
+
   it('supports retrying a transient network failure', async () => {
     vi.stubGlobal(
       'fetch',
@@ -181,5 +203,28 @@ describe('Editor save state behavior', () => {
     expect(saveState.saveState).toBe('idle')
     expect(saveState.saveErrorMessage).toBeNull()
     expect(saveState.saveErrorKind).toBeNull()
+  })
+
+  it('shows the save state in the toolbar: a brief Saved, and why edits are not saved', () => {
+    vi.useFakeTimers()
+    try {
+      render(<EditorSaveStatus />)
+      const status = screen.getByTestId('editor-save-status')
+      act(() => useStore.getState().markSaveSuccess())
+      expect(status).toHaveTextContent('Saved')
+      act(() => { vi.advanceTimersByTime(2000) })
+      expect(status).toHaveTextContent('')
+      expect(useStore.getState().saveState).toBe('idle')
+
+      act(() => useStore.getState().markSaveFailure('Save blocked by validation errors: x', 'validation_error'))
+      expect(status).toHaveTextContent(/^Not saved: Fix the errors listed under Validation/)
+      expect(screen.queryByTestId('editor-save-retry')).not.toBeInTheDocument()
+
+      act(() => useStore.getState().markSaveFailure('Flow save failed: offline', 'network'))
+      expect(status).toHaveTextContent('Save failed: Flow save failed: offline')
+      expect(screen.getByTestId('editor-save-retry')).toBeVisible()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

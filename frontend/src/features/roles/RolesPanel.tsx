@@ -12,6 +12,7 @@ import { ProjectConversationMarkdown } from '@/features/projects/components/Proj
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
 import { openChat } from '@/app/useAttention'
 import { cn } from '@/lib/utils'
+import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import {
     budgetLine, definitionBadges, fetchDefinitions, fetchRoleFile, fetchRoleMemory, frontmatterFields, renderableMarkdown, roleAction, startRole,
     usageByFlow, usageSummary, type DefinitionItem, type DefinitionList, type LiveRole, type RoleFileDetail,
@@ -154,6 +155,7 @@ export function RolesPanel() {
     const [list, setList] = useState<DefinitionList | null>(null)
     const [selected, setSelected] = useState<string | null>(null)
     const [error, setError] = useState('')
+    const narrow = useNarrowViewport()
     const [refreshes, setRefreshes] = useState(0)
     // Starts in flight and their failures, by project and role, so a start outlives a project switch.
     const [starting, setStarting] = useState<ReadonlySet<string>>(new Set())
@@ -220,7 +222,8 @@ export function RolesPanel() {
     </>}>
         {project && item
             ? <RoleDetail key={`${project}:${item.name}:${refreshes}`} {...control(item)} startError={startError(item)} />
-            : <SheetEmpty data-testid="roles-empty-state" icon={Network} title="No role selected">
+            // On a phone the list alone shows until a role is picked.
+            : narrow ? null : <SheetEmpty data-testid="roles-empty-state" icon={Network} title="No role selected">
                 Select a role to see its prompt and where it is used. Start a standing role to open its conversation.
             </SheetEmpty>}
     </ViewLayout>

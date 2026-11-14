@@ -137,6 +137,7 @@ export function TriggersPanel() {
   }, [isNarrowViewport, selectedTriggerId, setSelectedTriggerId, status, visibleTriggers])
 
   const createFormOpen = triggersSession.createFormOpen
+  const nothingPicked = !createFormOpen && !(selectedTrigger && editTriggerForm)
   const openCreateForm = () => {
     // An untouched draft starts in the project worked in most recently, as Run a flow does.
     if (!newTriggerForm.name.trim() && !newTriggerForm.projectPath) {
@@ -235,6 +236,8 @@ export function TriggersPanel() {
       panel={panel}
       selected={createFormOpen ? 'new' : selectedTriggerId}
     >
+    {/* On a phone the list alone shows until a trigger is picked, unless there's a problem to say. */}
+    {isNarrowViewport && nothingPicked && !error && issues.length === 0 ? null : (
     <section data-testid="triggers-panel" className="flex h-full flex-col overflow-auto p-6">
       <div className="flex w-full max-w-3xl flex-col gap-6">
         {error ? (
@@ -411,12 +414,13 @@ export function TriggersPanel() {
             </Card>
           ) : null}
       </div>
-      {!createFormOpen && !(selectedTrigger && editTriggerForm) ? (
+      {nothingPicked && !isNarrowViewport ? (
         <SheetEmpty icon={Zap} title="No trigger selected" className="h-auto flex-1">
           Triggers start flows on a schedule, on events, or from webhooks. Select one or create a new one.
         </SheetEmpty>
       ) : null}
     </section>
+    )}
     </ViewLayout>
   )
 }

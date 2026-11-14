@@ -8,18 +8,38 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import type { FlowFile } from '@/lib/attractorClient'
 import { cn } from '@/lib/utils'
-import { flowProblems } from '../model/flowLoadFailure'
+import type { FlowProblem } from '../model/flowLoadFailure'
 
 export interface FlowFilesError {
     files: string[]
-    message: string
+    problems: FlowProblem[]
 }
 
-/** Problems as a list, or as one line when there is only one. */
-export function ProblemList({ problems }: { problems: string[] }) {
+/**
+ * Problems as a list, or as one line when there is only one. With `onOpenFile`, a problem in a
+ * file leads with that file's name as a link to it.
+ */
+export function ProblemList({ problems, onOpenFile }: { problems: FlowProblem[]; onOpenFile?: (file: string) => void }) {
+    const problem = ({ message, file }: FlowProblem) => {
+        if (!file || !onOpenFile) return message
+        const rest = message.startsWith(`${file}: `) ? message.slice(file.length + 2) : message
+        return (
+            <>
+                <button
+                    type="button"
+                    aria-label={`Open ${file}`}
+                    className="font-medium underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-ring"
+                    onClick={() => onOpenFile(file)}
+                >
+                    {file}
+                </button>
+                : {rest}
+            </>
+        )
+    }
     return problems.length === 1
-        ? <p className="[overflow-wrap:anywhere]">{problems[0]}</p>
-        : <ul className="list-disc space-y-0.5 pl-4 [overflow-wrap:anywhere]">{problems.map((problem) => <li key={problem}>{problem}</li>)}</ul>
+        ? <p className="[overflow-wrap:anywhere]">{problem(problems[0])}</p>
+        : <ul className="list-disc space-y-0.5 pl-4 [overflow-wrap:anywhere]">{problems.map((item, index) => <li key={index}>{problem(item)}</li>)}</ul>
 }
 
 /** Drafts by file name: a file's new text, or `null` for a node file to delete. */
@@ -52,11 +72,24 @@ export const hasFlowFileChanges = (changes: FlowFileChanges) => changes.files.le
 // server requires of node ids.
 const nodeIdFrom = (text: string) => text.trim().toLowerCase().replace(/\.md$/i, '').replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^(?=[^A-Za-z_])/, '_')
 
-const newNodeFile = (nodeId: string) => `---
+// A flow's exit node to route a new node to: a successful one when there is one.
+const exitNodeId = (files: FlowFile[]) => {
+    const exits = files.filter((file) => /^type:\s*exit\s*$/m.test(file.content))
+    const exit = exits.find((file) => /^\s*outcome:\s*success\s*$/m.test(file.content)) ?? exits[0]
+    return exit?.name.replace(/\.md$/, '') ?? null
+}
+
+// An agent task with one route, to the flow's exit when it has one. Another node must still
+// route to it before the flow is valid.
+const newNodeFile = (nodeId: string, exitId: string | null) => `---
 type: agent_task
 title: ${nodeId.replace(/[_-]+/g, ' ').trim().replace(/^./, (first) => first.toUpperCase()) || nodeId}
 contracts:
   response: decision_envelope
+routes:
+  done:
+    to: ${exitId ?? 'done'}
+    description: This step's work is complete.
 ---
 
 Describe what this step should do.
@@ -67,12 +100,14 @@ Describe what this step should do.
  * the save error belong to the editor, so they outlive this view across mode switches. Node
  * files can be added and deleted; `flow.md` always stays.
  */
-export function FlowFilesView({ files, drafts, error, loadProblems, selectedNodeId, onDraftChange, onSave, className }: {
+export function FlowFilesView({ files, drafts, error, loadProblems, initialFile, selectedNodeId, onDraftChange, onSave, className }: {
     files: FlowFile[]
     drafts: FlowFileDrafts
     error: FlowFilesError | null
     /** Why the flow won't open, while it doesn't: fixing these files and saving opens it. */
-    loadProblems?: string[] | null
+    loadProblems?: FlowProblem[] | null
+    /** The file to show first, such as the one a problem names. */
+    initialFile?: string | null
     /** A node selected on the canvas selects its `<node>.md`. */
     selectedNodeId: string | null
     /** A file's new text, or `null` to delete it (or drop a new file not saved yet). */
@@ -83,7 +118,7 @@ export function FlowFilesView({ files, drafts, error, loadProblems, selectedNode
 }) {
     const { prompt } = useDialogController()
     const nodeFile = (nodeId: string | null) => (nodeId ? `${nodeId}.md` : null)
-    const [selectedName, setSelectedName] = useState(() => nodeFile(selectedNodeId))
+    const [selectedName, setSelectedName] = useState(() => initialFile ?? nodeFile(selectedNodeId))
     const [lastNodeId, setLastNodeId] = useState(selectedNodeId)
     const [saving, setSaving] = useState(false)
 
@@ -104,11 +139,15 @@ export function FlowFilesView({ files, drafts, error, loadProblems, selectedNode
                 : changes.files.some((file) => file.name === name) ? 'edited' : undefined
     )
     const selectedDeleted = selectedFile !== null && drafts[selectedFile] === null
+    // A problem's file links to it once the list has it.
+    const linked = (problems: FlowProblem[]) => problems.map((problem) => (
+        problem.file && names.includes(problem.file) ? problem : { ...problem, file: null }
+    ))
 
     const addFile = async () => {
         const answer = await prompt({
             title: 'New node file',
-            description: 'Each node of the flow is a file named after its ID. Save to add it.',
+            description: 'Each node of the flow is a file named after its ID. The new file routes to the flow’s exit; route to it from another node’s file too, then save.',
             label: 'Node ID',
             placeholder: 'review',
             confirmLabel: 'Add file',
@@ -120,7 +159,7 @@ export function FlowFilesView({ files, drafts, error, loadProblems, selectedNode
         const taken = (name: string) => names.some((existing) => existing.toLowerCase() === name.toLowerCase())
         let name = `${id}.md`
         for (let n = 2; taken(name); n += 1) name = `${id}_${n}.md`
-        onDraftChange(name, newNodeFile(name.slice(0, -3)))
+        onDraftChange(name, newNodeFile(name.slice(0, -3), exitNodeId(files)))
         setSelectedName(name)
     }
     const save = async () => {
@@ -157,7 +196,7 @@ export function FlowFilesView({ files, drafts, error, loadProblems, selectedNode
                 {loadProblems && !error ? (
                     <InlineError data-testid="flow-files-load-problems" title="This flow couldn’t be opened">
                         <p>Fix {loadProblems.length === 0 ? 'its files' : loadProblems.length === 1 ? 'this problem in its files' : `these ${loadProblems.length} problems in its files`}, then save to open it.</p>
-                        {loadProblems.length > 0 ? <div className="mt-1"><ProblemList problems={loadProblems} /></div> : null}
+                        {loadProblems.length > 0 ? <div className="mt-1"><ProblemList problems={linked(loadProblems)} onOpenFile={setSelectedName} /></div> : null}
                     </InlineError>
                 ) : null}
                 {selectedFile && selectedDeleted ? (
@@ -180,7 +219,7 @@ export function FlowFilesView({ files, drafts, error, loadProblems, selectedNode
                 ) : <p className="text-sm text-muted-foreground">This flow has no files.</p>}
                 {error ? (
                     <InlineError dense data-testid="flow-files-error" title={`Not saved: ${error.files.join(', ')}`}>
-                        <ProblemList problems={flowProblems(error.message)} />
+                        <ProblemList problems={linked(error.problems)} onOpenFile={setSelectedName} />
                     </InlineError>
                 ) : null}
                 <div className="flex items-center justify-end gap-2">

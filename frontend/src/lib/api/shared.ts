@@ -19,14 +19,17 @@ export class ApiHttpError extends Error {
     endpoint: string
     status: number
     detail: string | null
+    /** The error's JSON body, for callers that read more than its reason. */
+    payload: unknown
 
-    constructor(endpoint: string, status: number, detail: string | null) {
+    constructor(endpoint: string, status: number, detail: string | null, payload: unknown = null) {
         // People read the message: the server's reason when it gives one; the endpoint stays on the error.
         super(detail ? detail.charAt(0).toUpperCase() + detail.slice(1) : `Spark couldn’t complete the request (HTTP ${status}).`)
         this.name = 'ApiHttpError'
         this.endpoint = endpoint
         this.status = status
         this.detail = detail
+        this.payload = payload
     }
 }
 
@@ -169,11 +172,12 @@ export async function parseJsonPayload(response: Response, endpoint: string): Pr
 
 export async function extractHttpError(response: Response, endpoint: string): Promise<ApiHttpError> {
     let detail: string | null = null
+    let payload: unknown = null
     try {
         const bodyText = await response.text()
         if (bodyText.trim().length > 0) {
             try {
-                const payload = JSON.parse(bodyText) as unknown
+                payload = JSON.parse(bodyText) as unknown
                 detail = parseHttpErrorDetail(payload)
             } catch {
                 detail = bodyText.trim()
@@ -182,7 +186,7 @@ export async function extractHttpError(response: Response, endpoint: string): Pr
     } catch {
         detail = null
     }
-    return new ApiHttpError(endpoint, response.status, detail)
+    return new ApiHttpError(endpoint, response.status, detail, payload)
 }
 
 export async function fetchJsonWithValidation<T>(

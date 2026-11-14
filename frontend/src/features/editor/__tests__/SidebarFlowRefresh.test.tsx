@@ -276,6 +276,26 @@ describe('Editor sidebar manual refresh', () => {
 describe('Flows panel layer badges', () => {
     afterEach(() => { vi.unstubAllGlobals() })
 
+    it('shows a saved flow\'s new title in the list without a manual refresh', async () => {
+        resetSidebarState('alpha')
+        fetchFlowListMock.mockResolvedValue(['alpha'])
+        let title = 'Old title'
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            const url = String(input)
+            const body = /\/workspace\/api\/flows\?/.test(url)
+                ? [{ name: 'alpha', title, description: '', graph_label: '', graph_goal: '' }]
+                : { items: [] }
+            return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+        }))
+        renderWithFlowProvider(<FlowsPanelHarness />)
+        expect(await screen.findByRole('button', { name: 'Old title (alpha)' })).toBeVisible()
+
+        title = 'New title'
+        useStore.getState().markSaveSuccess()
+
+        expect(await screen.findByRole('button', { name: 'New title (alpha)' })).toBeVisible()
+    })
+
     it('marks only customized bundled flows; the project heading already marks the project\'s own', async () => {
         resetSidebarState()
         fetchFlowListMock.mockReset()

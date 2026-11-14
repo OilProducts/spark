@@ -779,7 +779,7 @@ fn render_command_block(command: &str) -> String {
 }
 
 fn file_error(file_name: &str, error: impl std::fmt::Display) -> FlowSourceError {
-    FlowSourceError::new(422, format!("{file_name}: {error}"))
+    FlowSourceError::new(422, format!("{file_name}: {error}")).in_file(file_name)
 }
 
 fn read_error(path: &Path, error: std::io::Error) -> FlowSourceError {

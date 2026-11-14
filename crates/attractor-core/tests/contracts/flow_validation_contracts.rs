@@ -218,7 +218,7 @@ fn kinds_declare_their_decision_domains() {
         has(
             &found,
             "decision_domain",
-            "agent_task nodes declare at least one decision"
+            "agent_task nodes need at least one route"
         ),
         "{found:?}"
     );

@@ -1538,15 +1538,16 @@ impl AttractorApiService {
     }
 
     /// A flow's files with their exact text, the flow they assemble into
-    /// (authored form: roles referenced, not merged), and its layer.
+    /// (authored form: roles referenced, not merged), and its layer. Files
+    /// that don't assemble answer 422 with their problems, as a refused save
+    /// does.
     pub fn get_flow(&self, name: &str, project_path: Option<&str>) -> RuntimeRouteResponse {
         let loaded = self
             .flow_roots(project_path)
             .resolve_flow(name)
             .and_then(|resolved| {
                 let texts = attractor_dsl::read_flow_dir_texts(&resolved.path)?;
-                let flow = assemble_flow_files(&texts)
-                    .map_err(|error| attractor_dsl::in_flow_dir(&resolved.path, error))?;
+                let flow = assemble_flow_files(&texts)?;
                 Ok((resolved, texts, flow))
             });
         match loaded {
@@ -1559,6 +1560,7 @@ impl AttractorApiService {
                     "flow": flow,
                 }),
             ),
+            Err(error) if error.status_code() == 422 => flow_definition_error_response(error),
             Err(error) => flow_source_error_response(error),
         }
     }
@@ -1582,12 +1584,12 @@ impl AttractorApiService {
         let (flow, files) = match (req.flow, req.files) {
             (Some(flow), None) if deleted.is_empty() => match validated_flow(flow) {
                 Ok(flow) => (flow, None),
-                Err(error) => return flow_save_definition_error_response(error),
+                Err(error) => return flow_definition_error_response(error),
             },
             (None, Some(files)) => match overlay_flow_files(&roots, &req.name, &files, &deleted) {
                 Ok(flow) => (flow, Some(files)),
                 Err(error) if error.status_code() == 422 => {
-                    return flow_save_definition_error_response(error)
+                    return flow_definition_error_response(error)
                 }
                 Err(error) => return flow_source_error_response(error),
             },
@@ -1601,10 +1603,10 @@ impl AttractorApiService {
         // Validate the resolved form, so role-provided profiles are checked too.
         let resolved = match resolve_flow_roles(&flow, &roots) {
             Ok(resolved) => resolved,
-            Err(error) => return flow_save_definition_error_response(error),
+            Err(error) => return flow_definition_error_response(error),
         };
         if let Err(error) = attractor_dsl::validate_flow_children(&roots, Some(&req.name), &flow) {
-            return flow_save_definition_error_response(error.into());
+            return flow_definition_error_response(error.into());
         }
         if let Err(error) = spark_storage::settings::validate_profile_references(
             &self.settings.config_dir,
@@ -3536,7 +3538,7 @@ fn copy_flow_files(source: &Path, target: &Path) -> std::result::Result<(), Stri
     })
 }
 
-fn flow_save_definition_error_response(error: FlowSourceError) -> RuntimeRouteResponse {
+fn flow_definition_error_response(error: FlowSourceError) -> RuntimeRouteResponse {
     RuntimeRouteResponse::json(
         422,
         json!({
@@ -3667,6 +3669,7 @@ fn flow_definition_validation_payload(error: &FlowSourceError) -> Value {
             "line": 0,
             "node": null,
             "node_id": null,
+            "file": error.file(),
         })]
     } else {
         flow_diagnostics_payload(error.diagnostics())
@@ -4009,6 +4012,8 @@ fn flow_diagnostics_payload(diagnostics: &[FlowDiagnostic]) -> Vec<Value> {
                 "node_id": diagnostic.node_id,
                 "edge": diagnostic.edge,
                 "decision": diagnostic.decision,
+                // A node's problems are in its file.
+                "file": diagnostic.node_id.as_ref().map(|node_id| format!("{node_id}.md")),
             })
         })
         .collect()
