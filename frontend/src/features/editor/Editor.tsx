@@ -1125,19 +1125,22 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         });
     }, [enforceSingleSelectedEdge, expandChildFlows, nodes, scheduleEdgeRouting, scheduleSave, setEdges, setSelectedEdgeId]);
 
-    // What the canvas deleted, latest last, for Cmd/Ctrl+Z to put back.
+    // What the canvas deleted, latest last, for Cmd/Ctrl+Z to put back. It belongs to the open flow:
+    // the same name in another project is another flow, so opening either forgets it.
     // ponytail: undo covers canvas deletions only; keep a full edit history if other edits need undo.
     const deletedRef = useRef<Array<{ nodes: Node[]; edges: Edge[] }>>([]);
-    useEffect(() => { deletedRef.current = []; }, [flowName]);
+    useEffect(() => { deletedRef.current = []; }, [flowName, activeProjectPath]);
 
     // React Flow reports a deletion's nodes and edges in separate changes, each handler seeing the
     // other list from before it; here both come together, so the save drops a step with its routes.
     const onDelete = useCallback(({ nodes: deletedNodes, edges: deletedEdges }: { nodes: Node[]; edges: Edge[] }) => {
         deletedRef.current.push({ nodes: deletedNodes, edges: deletedEdges });
-        const deletedIds = new Set([...deletedNodes, ...deletedEdges].map((item) => item.id));
+        // Apart: a step's ID can be spelled like a route's generated one.
+        const nodeIds = new Set(deletedNodes.map((node) => node.id));
+        const edgeIds = new Set(deletedEdges.map((edge) => edge.id));
         scheduleSave({
-            nodes: nodes.filter((node) => !deletedIds.has(node.id)),
-            edges: edges.filter((edge) => !deletedIds.has(edge.id)),
+            nodes: nodes.filter((node) => !nodeIds.has(node.id)),
+            edges: edges.filter((edge) => !edgeIds.has(edge.id)),
         });
     }, [edges, nodes, scheduleSave]);
 

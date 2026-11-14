@@ -31,7 +31,11 @@ function footnoteLabels(prefix: string) {
     }
 }
 
-function safeBreaksAndCode(this: { parse: (source: string) => unknown }) {
+/** Options for text that may be plain output rather than Markdown: its HTML, `<br>` included, shows as text. */
+type PlainOutput = { literalHtml?: boolean }
+const PLAIN_OUTPUT: PlainOutput = { literalHtml: true }
+
+function safeBreaksAndCode(this: { parse: (source: string) => unknown }, { literalHtml = false }: PlainOutput = {}) {
     const parse = this.parse.bind(this)
     return (tree: Root, file: { value: unknown }) => {
         const source = String(file.value)
@@ -62,7 +66,7 @@ function safeBreaksAndCode(this: { parse: (source: string) => unknown }) {
             return changed
         }
         // ponytail: reparse per newly exposed HTML block; batch only if large messages need it.
-        while (recoverBreaks(tree)) tree.children = (parse(recoveredSource) as Root).children
+        while (!literalHtml && recoverBreaks(tree)) tree.children = (parse(recoveredSource) as Root).children
         const breakPattern = new RegExp(`(${marker}b{2,4}${marker})`, 'g')
         const definitions = new Map<string, string>()
         const collectDefinitions = (node: Root | RootContent) => {
@@ -111,11 +115,11 @@ function safeBreaksAndCode(this: { parse: (source: string) => unknown }) {
 /**
  * Markup that isn't HTML, such as a test report's `<testsuite … />` line, shows as the text it is.
  * Markdown would read it as an HTML block and, with HTML skipped, drop it and the lines after it.
- * Real HTML tags and comments stay hidden, unless `allHtml` shows them as text too.
+ * Real HTML tags and comments stay hidden, unless `literalHtml` shows them as text too.
  */
-function literalNonHtml({ allHtml = false }: { allHtml?: boolean } = {}) {
+function literalNonHtml({ literalHtml = false }: PlainOutput = {}) {
     const isHtml = (value: string) => {
-        if (allHtml) return false
+        if (literalHtml) return false
         if (value.startsWith('<!--')) return true
         const name = /^<\/?([a-z][a-z\d-]*)/i.exec(value)?.[1]
         return Boolean(name) && !(document.createElement(name!) instanceof HTMLUnknownElement)
@@ -230,7 +234,7 @@ function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false,
             <ReactMarkdown components={markdownComponents} skipHtml
                 remarkPlugins={keepLineBreaks
                     // Plain output shows every line as written, HTML included.
-                    ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, [literalNonHtml, { allHtml: true }], lineBreaks]
+                    ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], [safeBreaksAndCode, PLAIN_OUTPUT], [literalNonHtml, PLAIN_OUTPUT], lineBreaks]
                     : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, literalNonHtml]}
                 rehypePlugins={[[footnoteLabels, `markdown-${id}-`], [rehypeKatex, { trust: false, strict: 'error' }], [rehypeHighlight, { detect: false, ignoreMissing: true }]]}
                 remarkRehypeOptions={remarkRehypeOptions}

@@ -211,6 +211,20 @@ describe('shared Markdown', () => {
         ])
     })
 
+    it.each(['<br>', '<br/>', '<br />'])('shows a result\'s %s as text, with the text after it, where conversation renders a break', (tag) => {
+        const output = `${tag}\nAfter the tag\n\nInline${tag}after`
+        const literal = tag.replace('<', '&lt;').replace('>', '&gt;')
+        const { container } = render(<ProjectConversationMarkdown content={output} keepLineBreaks />)
+        expect([...container.querySelectorAll('p')].map((p) => p.innerHTML.replace(/\n/g, ''))).toEqual([
+            `${literal}<br>After the tag`,
+            `Inline${literal}after`,
+        ])
+        const conversation = render(markdown(output)).container
+        expect(conversation.textContent).not.toContain('<br')
+        expect(conversation.querySelectorAll('br')).toHaveLength(2)
+        expect(conversation.textContent).toContain('After the tag')
+    })
+
     it('renders math safely and only transforms attribute-free HTML breaks outside code', () => {
         const { container } = render(markdown('a<br>b<br/>c<br />d\nsoft\n\n`<br>`\n\n```html\n<br>\n```\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\nx<br onclick="evil()">y\n\n$$x^2$$\n\n$$\n\\frac{1}{2}\n$$\n\n$$\\notACommand{x}$$\n\n$$\\href{javascript:alert(1)}{unsafe}$$\n\nCosts $31.10: $26.97'))
         expect(container.querySelectorAll('br')).toHaveLength(3)
