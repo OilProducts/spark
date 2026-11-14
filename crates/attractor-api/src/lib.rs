@@ -1551,15 +1551,31 @@ impl AttractorApiService {
                 Ok((resolved, texts, flow))
             });
         match loaded {
-            Ok((resolved, texts, flow)) => RuntimeRouteResponse::json(
-                200,
-                json!({
-                    "name": resolved.name,
-                    "layer": resolved.layer,
-                    "files": flow_file_list(texts),
-                    "flow": flow,
-                }),
-            ),
+            Ok((resolved, texts, flow)) => {
+                // JSON objects here sort their keys, so each step's routes also
+                // come as a list in the order written, the order a gate offers them.
+                let route_order = flow
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| node.routes.len() > 1)
+                    .map(|(node_id, node)| {
+                        (
+                            node_id.clone(),
+                            json!(node.routes.keys().collect::<Vec<_>>()),
+                        )
+                    })
+                    .collect::<serde_json::Map<_, _>>();
+                RuntimeRouteResponse::json(
+                    200,
+                    json!({
+                        "name": resolved.name,
+                        "layer": resolved.layer,
+                        "files": flow_file_list(texts),
+                        "flow": flow,
+                        "route_order": route_order,
+                    }),
+                )
+            }
             Err(error) if error.status_code() == 422 => flow_definition_error_response(error),
             Err(error) => flow_source_error_response(error),
         }

@@ -10,8 +10,11 @@ type EditorGraphBridge = {
   setEdges: Dispatch<SetStateAction<Edge[]>>
   /** The loaded flow definition, which carries what the canvas does not edit. */
   getFlow: () => CanonicalFlowDefinition | null
-  /** Adds a route between two steps, as dragging one on the canvas does; `data` sets its fields. */
-  connect: (params: Connection & { data?: Record<string, unknown> }) => void
+  /**
+   * Adds a route between two steps, as dragging one on the canvas does; `data` sets its fields.
+   * Given a route's own ID, it replaces that route where it stands, such as with a new target.
+   */
+  connect: (params: (Connection & { data?: Record<string, unknown> }) | Edge) => void
 }
 
 const EditorGraphBridgeContext = createContext<MutableRefObject<EditorGraphBridge | null> | null>(null)

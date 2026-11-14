@@ -463,7 +463,7 @@ test("inspector field-level diagnostics map to matching fields for item 7.1-03",
 test("validation diagnostics navigate to matching canvas entities for item 7.3-03", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-diagnostic-nav-${Date.now()}`
   const promptToken = `diagnostic-nav-${Date.now()}`
-  const nodeDiagnosticMessage = `Node navigation diagnostic ${Date.now()}`
+  const nodeDiagnosticMessage = `Step navigation diagnostic ${Date.now()}`
   const edgeDiagnosticMessage = `Edge navigation diagnostic ${Date.now()}`
   const edgeSource = "audit_human_gate"
   const edgeTarget = "audit_rework"

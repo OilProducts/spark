@@ -547,11 +547,13 @@ describe('Accessible node inspector fields', () => {
   it('lists a step\'s routes and adds one from the keyboard', async () => {
     const user = userEvent.setup()
     const props = panelProps()
-    props.selectedNodeRoutes = [{ id: 'e1', name: 'done', label: 'Done', target: 'Ship' }]
+    props.selectedNodeRoutes = [{ id: 'e1', name: 'done', label: 'Done', target: 'Ship' }, { id: 'e2', name: 'ready_for_review', label: '', target: 'Review' }]
     props.routeTargets = [{ id: 'node', title: 'Implement' }, { id: 'ship', title: 'Ship' }]
     const { rerender } = render(<NodeInspectorPanel {...props} />)
     const routes = screen.getByRole('region', { name: 'Routes' })
-    await user.click(within(routes).getByRole('button', { name: 'done (Done) to Ship' }))
+    // Named as the canvas names them, with the decision ID the files use beside the name.
+    expect(within(routes).getByRole('button', { name: 'ready for review to Review decision ready_for_review' })).toBeVisible()
+    await user.click(within(routes).getByRole('button', { name: 'Done to Ship decision done' }))
     expect(props.onOpenRoute).toHaveBeenCalledWith('e1')
 
     const target = within(routes).getByRole('combobox', { name: 'New route to' })

@@ -15,6 +15,7 @@ import { FlowsPanelActions, FlowsPanelList, useFlowCatalogPanel } from './FlowsP
 import { ViewLayout } from '@/components/app/view-layout'
 import { Button } from '@/components/ui/button'
 import { CanvasSessionModeProvider } from '@/features/workflow-canvas'
+import { flowTitle } from '@/features/runs/model/runOverviewModel'
 
 const MIN_EDITOR_SIDEBAR_WIDTH = 256
 const MIN_EDITOR_CANVAS_WIDTH = 480
@@ -40,6 +41,8 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     const editorSidebarWidth = useStore((state) => state.editorSidebarWidth)
     const setEditorSidebarWidth = useStore((state) => state.setEditorSidebarWidth)
     const activeFlow = useStore((state) => state.activeFlow)
+    // A phone shows the open flow under the flow list, so it names the flow it opened.
+    const openFlowTitle = useStore((state) => state.flowMetadata.title?.trim()) || flowTitle(activeFlow)
     // A flow that failed to load has no inspector to resize.
     const hasActiveFlow = useStore((state) => Boolean(state.activeFlow) && !flowLoadFailed(state.flowLoadFailure, state.activeFlow, state.activeProjectPath))
     // Files mode has no inspector either.
@@ -191,11 +194,13 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                 className={`flex h-full overflow-hidden ${isNarrowViewport ? 'flex-col' : 'flex-row'}`}
             >
                 {isNarrowViewport && activeFlow ? (
-                    <div className="shrink-0 px-3 pt-2">
-                        <Button type="button" variant="link" size="sm" className="h-auto p-0 text-muted-foreground" onClick={showFlowList}>
+                    <div className="flex shrink-0 items-baseline gap-2 px-3 pt-2">
+                        <Button type="button" variant="link" size="sm" className="h-auto shrink-0 p-0 text-muted-foreground" onClick={showFlowList}>
                             <ArrowLeft aria-hidden="true" />
                             All flows
                         </Button>
+                        <span aria-hidden="true" className="text-muted-foreground">/</span>
+                        <h2 data-testid="editor-open-flow-title" className="min-w-0 truncate text-sm font-semibold text-foreground">{openFlowTitle}</h2>
                     </div>
                 ) : null}
                 <ReactFlowProvider>

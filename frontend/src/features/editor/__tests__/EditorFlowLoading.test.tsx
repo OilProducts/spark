@@ -609,7 +609,7 @@ describe('Editor file view', () => {
 
     const failed = await screen.findByTestId('editor-flow-load-failed')
     expect(failed).toHaveTextContent('it has 2 problems')
-    expect(failed).toHaveTextContent('Flow has no start node.')
+    expect(failed).toHaveTextContent('Flow has no start step.')
     await user.click(await screen.findByRole('button', { name: 'Open node_1.md' }))
     expect(await screen.findByTestId('flow-file-editor')).toHaveAccessibleName('node_1.md')
     // The step goes by its title, not its ID.

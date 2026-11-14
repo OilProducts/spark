@@ -797,21 +797,25 @@ function StepRoutes({
                 <p className="text-xs text-muted-foreground">{isFork ? 'No branches yet.' : 'No routes yet.'}</p>
             ) : (
                 <ul className="space-y-1">
-                    {routes.map((route) => (
-                        <li key={route.id}>
-                            <Button
-                                type="button"
-                                variant="link"
-                                className="block h-auto whitespace-normal p-0 text-left font-normal"
-                                onClick={() => onOpenRoute(route.id)}
-                            >
-                                <span className="font-mono">{route.name}</span>
-                                {route.label && route.label !== route.name ? ` (${route.label})` : null}
-                                {' '}<span aria-hidden="true">→</span><span className="sr-only">to</span>{' '}
-                                {route.target}
-                            </Button>
-                        </li>
-                    ))}
+                    {routes.map((route) => {
+                        // Named as the canvas names it, with its decision ID beside it for the files.
+                        const shown = route.label || route.name.replace(/_/g, ' ')
+                        return (
+                            <li key={route.id}>
+                                <Button
+                                    type="button"
+                                    variant="link"
+                                    className="block h-auto whitespace-normal p-0 text-left font-normal"
+                                    onClick={() => onOpenRoute(route.id)}
+                                >
+                                    {shown}
+                                    {' '}<span aria-hidden="true">→</span><span className="sr-only">to</span>{' '}
+                                    {route.target}
+                                    {shown === route.name ? null : <>{' '}<span className="ml-1 font-mono text-xs text-muted-foreground"><span className="sr-only">decision</span>{' '}{route.name}</span></>}
+                                </Button>
+                            </li>
+                        )
+                    })}
                 </ul>
             )}
             {single && routes.length > 0 ? null : (

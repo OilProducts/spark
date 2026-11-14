@@ -439,6 +439,10 @@ describe('Frontend contract behavior', () => {
     const flowFiles = [{ name: 'flow.md', content: '---\nid: a\n---\n' }, { name: 'start.md', content: '---\ntype: start\n---\n' }]
     expect(parseFlowPayloadResponse({ files: flowFiles, flow: { id: 'a' }, layer: 'org' }))
       .toEqual({ name: '', files: flowFiles, flow: { id: 'a' }, layer: 'org' })
+    // Routes come back in the order written, which the response lists beside its sorted maps.
+    const gate = { kind: 'human_gate', routes: { hold: { to: 'held' }, later: { to: 'held' }, ship: { to: 'shipped' } } }
+    const ordered = parseFlowPayloadResponse({ files: flowFiles, flow: { id: 'a', nodes: { gate } }, route_order: { gate: ['ship', 'hold'] } })
+    expect(Object.keys((ordered.flow.nodes as { gate: typeof gate }).gate.routes)).toEqual(['ship', 'hold', 'later'])
     expect(() => parseFlowPayloadResponse({})).toThrow(ApiSchemaError)
     expect(() => parseFlowPayloadResponse({ files: [{ name: 'flow.md' }], flow: {} })).toThrow(ApiSchemaError)
     expect(() => parseFlowPayloadResponse({ files: [], content: 'id: a' })).toThrow(ApiSchemaError)

@@ -191,6 +191,57 @@ describe('Editor step deletion', () => {
     expect(useStore.getState().selectedNodeId).toBe('step_1')
   })
 
+  it('saves a new step without a model of its own, so it follows the flow default', async () => {
+    vi.mocked(loadEditorPreview).mockImplementation(previewOf(REVIEW_FLOW))
+    useStore.setState({ uiDefaults: { ...useStore.getState().uiDefaults, llm_model: 'default-model', reasoning_effort: 'high' } })
+    const user = userEvent.setup()
+    render(<ReactFlowProvider><EditorGraphBridgeProvider><Editor /><Sidebar /></EditorGraphBridgeProvider></ReactFlowProvider>)
+    await waitFor(() => expect(canvasNode('step_1')).not.toBeNull())
+    await user.click(screen.getByRole('button', { name: 'Add step' }))
+    const addRouteTo = async (target: string) => {
+      const routes = await screen.findByRole('region', { name: 'Routes' })
+      await user.selectOptions(within(routes).getByRole('combobox', { name: 'New route to' }), target)
+      await user.click(within(routes).getByRole('button', { name: 'Add route' }))
+    }
+    await addRouteTo('Done')
+    fireEvent.click(canvasNode('step_1') as HTMLElement)
+    await addRouteTo('New step 2')
+    await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_2).toBeDefined())
+    expect(saves.at(-1)!.flow.nodes.step_2).not.toHaveProperty('execution')
+  })
+
+  it('moves a route to another step and deletes it from the route inspector', async () => {
+    const flow = {
+      ...REVIEW_FLOW,
+      nodes: {
+        ...REVIEW_FLOW.nodes,
+        step_1: { ...REVIEW_FLOW.nodes.step_1, routes: { approved: { to: 'done', description: 'Continue to Done.' }, held: { to: 'held', description: 'Held for a person.' } } },
+        held: { kind: 'exit', label: 'Held', config: { kind: 'exit', result: { name: 'held', outcome: 'failure' } } },
+      },
+    }
+    vi.mocked(loadEditorPreview).mockImplementation(previewOf(flow as unknown as typeof REVIEW_FLOW))
+    const user = userEvent.setup()
+    render(<ReactFlowProvider><EditorGraphBridgeProvider><Editor /><Sidebar /></EditorGraphBridgeProvider></ReactFlowProvider>)
+    await waitFor(() => expect(canvasNode('step_1')).not.toBeNull())
+    fireEvent.click(canvasNode('step_1') as HTMLElement)
+    await user.click(within(await screen.findByRole('region', { name: 'Routes' })).getByRole('button', { name: 'approved to Done' }))
+
+    // Moved where it stands, keeping its decision; the description it was given names the new step.
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Goes to' }), 'Held')
+    await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1.routes).toEqual({
+      approved: { to: 'held', description: 'Continue to Held.' },
+      held: { to: 'held', description: 'Held for a person.' },
+    }))
+    expect(Object.keys(saves.at(-1)!.flow.nodes.step_1.routes!)).toEqual(['approved', 'held'])
+
+    // Deleting it returns to the step it left; Cmd/Ctrl+Z puts it back.
+    await user.click(screen.getByRole('button', { name: 'Delete route' }))
+    expect(screen.getByRole('heading', { name: 'Step settings' })).toHaveFocus()
+    await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1.routes).toEqual({ held: { to: 'held', description: 'Held for a person.' } }))
+    await user.keyboard('{Meta>}z{/Meta}')
+    await waitFor(() => expect(Object.keys(saves.at(-1)?.flow.nodes.step_1.routes ?? {}).sort()).toEqual(['approved', 'held']))
+  })
+
   it('does not undo a deletion into the same flow name in another project', async () => {
     graphs['/project-b'] = {
       nodes: [node('start', 'Start', 'start'), node('review', 'Review'), node('done', 'Done', 'exit')],

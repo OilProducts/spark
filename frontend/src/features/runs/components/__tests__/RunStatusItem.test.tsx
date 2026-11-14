@@ -121,12 +121,27 @@ describe('RunStatusItem', () => {
   })
 
   it('does not read a completed run that reached a failure exit as a success', () => {
-    renderStatus(run({ outcome: 'failure', outcome_reason_code: 'blocked', outcome_reason_message: 'review chose blocked: no tests' }), [])
+    const blocked = run({ outcome: 'failure', outcome_reason_code: 'blocked', outcome_reason_message: 'review chose blocked: no tests' })
+    const props = {
+      run: blocked, kind: 'completed' as const, now: Date.parse('2026-09-29T11:00:00Z'), visits: [], flowNodes: {}, resultError: null,
+      artifactEntries: [], question: null, onSelectVisit: vi.fn(), onViewArtifact: vi.fn(),
+    }
+    const { rerender } = render(<RunStatusItem {...props} result={{ ...result, state: 'unavailable', body_markdown: '' }} />)
     const item = screen.getByTestId('run-status-item')
     expect(item).toHaveTextContent('Blocked · 14m')
     expect(item).not.toHaveTextContent('Completed ·')
+    // Without a result of its own, the route it took says why.
     expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent(/^review chose blocked: no tests$/)
     expect(screen.getByTestId('run-status-outcome-reason')).toHaveClass('text-warning')
+
+    // The flow's own result says why; the route is then a run fact, as for a success exit.
+    rerender(<RunStatusItem {...props} result={result} />)
+    expect(screen.queryByTestId('run-status-outcome-reason')).not.toBeInTheDocument()
+    expect(screen.getByTestId('run-result-body')).toHaveTextContent('Committed the change.')
+    expect(screen.getByTestId('run-fact-outcome')).toHaveTextContent(/review chose blocked: no tests$/)
+    // Nothing shows above a result still loading.
+    rerender(<RunStatusItem {...props} result={null} />)
+    expect(screen.queryByTestId('run-status-outcome-reason')).not.toBeInTheDocument()
   })
 
   it('indents a raw JSON result in a code block', () => {

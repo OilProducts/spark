@@ -127,7 +127,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const preferredAdvancedControls = useStore((state) => state.preferredAdvancedControls)
     const updateEditorNodeInspectorSession = useStore((state) => state.updateEditorNodeInspectorSession)
     const editorGraphBridgeRef = useEditorGraphBridgeRef()
-    const { getNodes, setNodes, getEdges, setEdges } = useReactFlow()
+    const { getNodes, setNodes, getEdges, setEdges, deleteElements } = useReactFlow()
     const nodes = useReactFlowStore((state) => state.nodes)
     const edges = useReactFlowStore((state) => state.edges)
     const readNodes = () => editorGraphBridgeRef?.current?.getNodes() ?? getNodes()
@@ -229,6 +229,32 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
 
     const selectedNode = nodes.find(n => n.id === selectedNodeId);
     const selectedEdge = edges.find(e => e.id === selectedEdgeId);
+
+    // The same route, with its decision and fields, to another step.
+    const retargetRoute = (target: string) => {
+        const edge = readEdges().find((candidate) => candidate.id === selectedEdgeId)
+        if (!edge || !target || target === edge.target) return
+        // A new route's own description names its target; it follows the route to the new one.
+        const description = edge.data?.description === `Continue to ${stepTitle(edge.target)}.`
+            ? `Continue to ${stepTitle(target)}.`
+            : edge.data?.description
+        editorGraphBridgeRef?.current?.connect({
+            ...edge,
+            target,
+            sourceHandle: null,
+            targetHandle: null,
+            ...(edge.data ? { data: { ...edge.data, description } } : {}),
+        })
+    }
+
+    // As Backspace on the canvas does, so Cmd/Ctrl+Z puts it back. The step it left opens, where
+    // its replacement can be added.
+    const deleteRoute = () => {
+        const edge = readEdges().find((candidate) => candidate.id === selectedEdgeId)
+        if (!edge) return
+        void deleteElements({ edges: [{ id: edge.id }] })
+        openOnCanvas(edge.source, null)
+    }
     const selectedNodeExtensionEntries = useMemo(
         () => toExtensionAttrEntries(
             (selectedNode?.data ?? {}) as Record<string, unknown>,
@@ -569,7 +595,10 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                         edgeFieldDiagnostics={edgeFieldDiagnostics}
                         isForkEdge={selectedEdgeIsFork}
                         stepTitle={stepTitle}
+                        targets={routeTargets}
                         onOpenStep={(nodeId) => openOnCanvas(nodeId, null)}
+                        onTargetChange={retargetRoute}
+                        onDelete={deleteRoute}
                         onPropertyChange={handleEdgePropertyChange}
                         onExtensionValueChange={handleEdgeExtensionValueChange}
                         onExtensionRemove={handleEdgeExtensionRemove}

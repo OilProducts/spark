@@ -253,7 +253,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const activeProjectPath = useStore((state) => state.activeProjectPath);
     const model = useStore((state) => state.model);
     const setViewMode = useStore((state) => state.setViewMode);
-    const { setCenter, getZoom } = useReactFlow();
+    const { setViewport, getZoom } = useReactFlow();
     const [nodes, setNodes] = useNodesState<Node>([]);
     const [edges, setEdges] = useEdgesState<Edge>([]);
     const hydratedRef = useRef(false);
@@ -1202,7 +1202,10 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     className: EDGE_CLASS,
                     interactionWidth: EDGE_INTERACTION_WIDTH,
                 }
-                const newEdges = [...currentEdges, nextEdge]
+                // A route given again by its ID keeps its place, as the flow keeps its routes in order.
+                const newEdges = currentEdges.some((edge) => edge.id === nextEdge.id)
+                    ? currentEdges.map((edge) => (edge.id === nextEdge.id ? nextEdge : edge))
+                    : [...currentEdges, nextEdge]
                 const edgeIdToLayoutKey = buildEdgeLayoutKeyMap(newEdges)
                 const layoutKey = edgeIdToLayoutKey.get(nextEdge.id)
                 if (layoutKey) {
@@ -1230,10 +1233,6 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
 
     const onAddNode = useCallback(() => {
         if (!flowName || expandChildFlows) return;
-        const defaultModel = flowMetadata.llm_model || uiDefaults.llm_model || '';
-        const defaultProfile = flowMetadata.llm_profile || uiDefaults.llm_profile || '';
-        const defaultProvider = defaultProfile ? '' : (flowMetadata.llm_provider || uiDefaults.llm_provider || '');
-        const defaultReasoning = flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || '';
         // A deleted step that Cmd/Ctrl+Z can still put back keeps its ID.
         const ids = new Set([...nodes, ...deletedRef.current.flatMap((entry) => entry.nodes)].map((node) => node.id));
         let count = 1;
@@ -1245,6 +1244,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         const position = rects.length > 0
             ? { x: Math.max(...rects.map((rect) => rect.x + rect.width)) + 80, y: Math.min(...rects.map((rect) => rect.y)) }
             : { x: 0, y: 0 };
+        // No model of its own: the step follows the flow's default, and later changes to it.
         const newNode: Node = {
             id: newNodeId,
             type: getReactFlowNodeTypeForShape(shape),
@@ -1256,10 +1256,6 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 kind: 'agent_task',
                 shape,
                 status: 'idle',
-                llm_model: defaultModel,
-                llm_provider: defaultProvider,
-                llm_profile: defaultProfile,
-                reasoning_effort: defaultReasoning,
             }
         };
 
@@ -1272,13 +1268,25 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             })
             return newNodes;
         });
+        // Centred in the canvas, and again once the inspector and Validation panel that open for
+        // the new step have narrowed it, so it never ends up off screen.
         const rect = readNodeRect(newNode);
-        // In the upper third of the canvas, clear of the Validation panel that opens at its bottom
-        // for the new step's missing route.
-        const zoom = getZoom();
-        const lift = (canvasPaneRef.current?.clientHeight ?? 0) / 6 / zoom;
-        void setCenter(rect.x + rect.width / 2, rect.y + rect.height / 2 + lift, { zoom, duration: 200 });
-    }, [edges, enforceSingleSelectedNode, expandChildFlows, flowMetadata, flowName, getZoom, nodes, scheduleEdgeRouting, scheduleSave, setCenter, setNodes, uiDefaults]);
+        const canvas = canvasPaneRef.current;
+        if (!canvas) return;
+        const center = () => {
+            const zoom = getZoom();
+            void setViewport({
+                x: canvas.clientWidth / 2 - (rect.x + rect.width / 2) * zoom,
+                y: canvas.clientHeight / 2 - (rect.y + rect.height / 2) * zoom,
+                zoom,
+            }, { duration: 200 });
+        };
+        center();
+        if (typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(center);
+        observer.observe(canvas);
+        window.setTimeout(() => observer.disconnect(), 1000);
+    }, [edges, enforceSingleSelectedNode, expandChildFlows, flowName, getZoom, nodes, scheduleEdgeRouting, scheduleSave, setNodes, setViewport]);
 
     const applyLaidOutGraph = useCallback((layoutGraph: LaidOutFlowGraph) => {
         layoutStateRef.current = layoutGraph.layout
@@ -1642,7 +1650,9 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             <div className="flex min-h-0 flex-1 flex-col md:flex-row">
             {/* ponytail: phones get the file view alone in Files mode; its list selects files. A flow
                 that won't open has no canvas, so its files take the whole width and say what to fix. */}
-            <div ref={canvasPaneRef} className={`relative min-h-0 min-w-0 flex-1 ${showFiles ? (canRepairFiles ? 'hidden' : 'hidden md:block') : ''}`}>
+            <div className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${showFiles ? (canRepairFiles ? 'hidden' : 'hidden md:flex') : ''}`}>
+            {/* The canvas, above the Validation panel rather than under it, so no problem hides the graph. */}
+            <div ref={canvasPaneRef} className="relative min-h-0 flex-1">
                 {
                     loadFailure ? (
                         <SheetEmpty data-testid="editor-flow-load-failed" icon={GitBranch} title={loadFailure.missing ? 'This flow isn’t here' : 'This flow couldn’t be opened'}>
@@ -1760,6 +1770,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                         ) : null}
                     </div>
                 )}
+
+            </div>
 
                 {flowOpen && editorMode === 'structured' && <ValidationPanel />}
 

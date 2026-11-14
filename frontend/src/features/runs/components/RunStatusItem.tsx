@@ -182,12 +182,14 @@ export function RunStatusItem({
                 ) : null}
             </>
         )
-        // A completed run can reach a failure exit; its result name and evidence say why, above
-        // the result. A success exit's evidence is a run fact.
-        const outcomeReason = run.outcome === 'failure' ? formatOutcomeReason(run) : null
-        // A result that only restates the reason, such as a gate's choice and note, isn't shown twice.
+        // A completed run can reach a failure exit. The flow's own result says why; the route that
+        // led there is a run fact, as for a success exit, and stands in for a result the flow
+        // didn't write. A result that only restates it, such as a gate's choice and note, gives way to it.
+        const reason = run.outcome === 'failure' ? formatOutcomeReason(run) : null
         const resultLines = result?.state === 'ready' ? result.body_markdown.split('\n').map((line) => line.trim()).filter(Boolean) : []
-        const resultRestatesReason = Boolean(outcomeReason && resultLines.length > 0 && resultLines.every((line) => outcomeReason!.includes(line)))
+        const resultRestatesReason = Boolean(reason && resultLines.length > 0 && resultLines.every((line) => reason.includes(line)))
+        const resultSettled = Boolean(resultError) || (result !== null && result.state !== 'pending')
+        const outcomeReason = reason && resultSettled && (resultLines.length === 0 || resultRestatesReason) ? reason : null
         body = (
             <>
                 {outcomeReason ? (
@@ -377,7 +379,7 @@ function RunFacts({ run, now }: { run: RunRecord; now: number }) {
     const tokenBreakdown = (bucket: TokenUsageBucketResponse) => (
         `${formatTokenCount(bucket.total_tokens)} (${formatTokenCount(bucket.input_tokens)} in, ${formatTokenCount(bucket.cached_input_tokens)} cached, ${formatTokenCount(bucket.output_tokens)} out)`
     )
-    const outcome = run.status === 'completed' && run.outcome !== 'failure' && run.outcome_reason_code ? formatOutcomeReason(run) : null
+    const outcome = run.status === 'completed' && run.outcome_reason_code ? formatOutcomeReason(run) : null
     const facts: Array<[id: string, label: string, value: ReactNode]> = [
         ...(outcome ? [['outcome', 'Outcome', outcome] as [string, string, ReactNode]] : []),
         ['model', 'Model', [run.model || 'default', provider, run.reasoning_effort].filter(Boolean).join(' · ')],
