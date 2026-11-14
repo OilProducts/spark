@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use attractor_core::{FlowDefinition, FlowExecutionLock, NodeKind};
+use attractor_core::{FlowDefinition, FlowExecutionLock, FlowInput, NodeKind};
 use attractor_dsl::{FlowRoots, FlowSourceError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -22,15 +22,20 @@ pub struct WorkspaceFlowSummary {
     pub execution_lock: Option<FlowExecutionLock>,
     pub graph_label: String,
     pub graph_goal: String,
+    /// Why the flow doesn't load, such as its validation errors; absent for a flow that loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceFlowDescription {
     #[serde(flatten)]
     pub summary: WorkspaceFlowSummary,
     pub node_count: usize,
     pub edge_count: usize,
     pub features: WorkspaceFlowFeatures,
+    /// What a run of the flow asks for at launch.
+    pub inputs: Vec<FlowInput>,
 }
 
 /// A flow's files with their exact text, and where they live.
@@ -96,6 +101,7 @@ impl WorkspaceFlowService {
                     .values()
                     .any(|node| node.kind == NodeKind::Subflow),
             },
+            inputs: source.flow.inputs.clone(),
             summary,
         })
     }
@@ -183,13 +189,14 @@ impl WorkspaceFlowService {
 fn build_flow_summary(flow_path: &Path, flow_name: &str) -> WorkspaceFlowSummary {
     match attractor_dsl::read_flow_dir(flow_path) {
         Ok(flow) => build_flow_summary_from_definition(flow_name, &flow),
-        Err(_) => WorkspaceFlowSummary {
+        Err(error) => WorkspaceFlowSummary {
             name: flow_name.to_string(),
             title: flow_stem(flow_name),
             description: String::new(),
             execution_lock: None,
             graph_label: String::new(),
             graph_goal: String::new(),
+            error: Some(error.detail().to_string()),
         },
     }
 }
@@ -208,6 +215,7 @@ fn build_flow_summary_from_definition(
         execution_lock: flow.execution_lock.clone(),
         graph_label: flow.title.clone(),
         graph_goal: flow.goal.clone(),
+        error: None,
     }
 }
 
@@ -233,7 +241,8 @@ pub(crate) fn flow_source_error(
     missing_name: Option<&str>,
 ) -> WorkspaceError {
     match error.status_code() {
-        400 => WorkspaceError::Validation(error.detail().to_string()),
+        // 422: the flow's files don't make a valid flow.
+        400 | 422 => WorkspaceError::Validation(error.detail().to_string()),
         404 => WorkspaceError::NotFound(format!(
             "Unknown flow: {}",
             missing_name.unwrap_or_else(|| error.detail())

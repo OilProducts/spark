@@ -11,7 +11,10 @@ import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
 import { openChat } from '@/app/useAttention'
+import { useFlowSummaries } from '@/features/launch/hooks/useFlowSummaries'
+import { flowTitle } from '@/features/runs/model/runOverviewModel'
 import { cn } from '@/lib/utils'
+import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import {
     budgetLine, definitionBadges, fetchDefinitions, fetchRoleFile, fetchRoleMemory, frontmatterFields, renderableMarkdown, roleAction, startRole,
     usageByFlow, usageSummary, type DefinitionItem, type DefinitionList, type LiveRole, type RoleFileDetail,
@@ -41,12 +44,28 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
     </section>
 }
 
-/** The flow nodes that use a role, each flow's nodes together. */
-export function RoleUsage({ item }: { item: DefinitionItem }) {
+/** Each flow and step that uses the role, as links that open it in the flow editor. */
+export function RoleUsage({ project, item }: { project: string; item: DefinitionItem }) {
     const flows = usageByFlow(item.usage ?? [])
+    // A flow goes by its title, as in Flows; its path is a hover away.
+    const summaries = useFlowSummaries(project)
+    const titleOf = (flow: string) => summaries?.flows.find((summary) => summary.name === flow)?.title || flowTitle(flow)
+    const open = (flowName: string, nodeId: string | null) => {
+        const state = useStore.getState()
+        state.setActiveProjectPath(project)
+        state.setActiveFlow(flowName)
+        state.setPendingEditorNodeSelection({ flowName, nodeId })
+        state.setViewMode('editor')
+    }
+    const link = 'h-auto p-0 text-sm font-normal'
     return flows.length
         ? <ul data-testid="role-usage" className="flex flex-col gap-0.5 text-sm">{flows.map(([flow, nodes]) => <li key={flow}>
-            {flow} <span className="text-muted-foreground">· {nodes.join(', ')}</span>
+            <Button type="button" variant="link" className={link} title={flow} onClick={() => open(flow, null)}>{titleOf(flow)}</Button>
+            <span className="text-muted-foreground"> · </span>
+            {nodes.map(({ node, label }, index) => <span key={node}>
+                {index > 0 ? <span className="text-muted-foreground">, </span> : null}
+                <Button type="button" variant="link" className={link} aria-label={`${label || node} in ${titleOf(flow)}`} onClick={() => open(flow, node)}>{label || node}</Button>
+            </span>)}
         </li>)}</ul>
         : <p className="text-sm text-muted-foreground">No flow node uses this role.</p>
 }
@@ -133,7 +152,7 @@ function RoleDetail({ project, item, pending, onStart, startError }: RoleControl
         <p className="text-xs text-muted-foreground">{item.path}</p>
         {error && <InlineError dense>{error}</InlineError>}
         {item.live && <Section title="Live status"><LiveDetails project={project} role={item.live} /></Section>}
-        <Section title="Used in"><RoleUsage item={item} /></Section>
+        <Section title="Used in"><RoleUsage project={project} item={item} /></Section>
         <Section title="Prompt">
             {detail ? detail.files.map((file) => <div key={file.name} data-testid="role-file" className="rounded-md border p-3">
                 <RolePrompt content={file.content} />
@@ -150,15 +169,30 @@ function RoleDetail({ project, item, pending, onStart, startError }: RoleControl
 export function RolesPanel() {
     const registry = useStore((state) => state.projectRegistry)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
-    const [project, setProject] = useState(() => activeProjectPath ?? defaultProjectChoice(registry))
+    // The open role is the app's, so Back and a link reopen it.
+    const selectedRole = useStore((state) => state.selectedRole)
+    const setSelectedRole = useStore((state) => state.setSelectedRole)
+    const fallbackProject = activeProjectPath ?? defaultProjectChoice(registry)
+    const [project, setProject] = useState(() => selectedRole?.projectPath ?? fallbackProject)
     const [list, setList] = useState<DefinitionList | null>(null)
-    const [selected, setSelected] = useState<string | null>(null)
+    const selected = selectedRole?.projectPath === project ? selectedRole.name : null
     const [error, setError] = useState('')
+    const narrow = useNarrowViewport()
     const [refreshes, setRefreshes] = useState(0)
     // Starts in flight and their failures, by project and role, so a start outlives a project switch.
     const [starting, setStarting] = useState<ReadonlySet<string>>(new Set())
     const [startErrors, setStartErrors] = useState<Record<string, string>>({})
     const projectRef = useRef(project)
+    // Back or a link can open a role of another project: show that project's roles.
+    useEffect(() => {
+        if (selectedRole && selectedRole.projectPath !== project) {
+            setProject(selectedRole.projectPath)
+            setList(null)
+        } else if (!project && fallbackProject) {
+            // Opened before the projects loaded: show the default project's roles once they have.
+            setProject(fallbackProject)
+        }
+    }, [selectedRole, project, fallbackProject])
     useEffect(() => {
         projectRef.current = project
         if (!project) return
@@ -203,7 +237,7 @@ export function RolesPanel() {
                             {/* Badges sit below the text so the title and meta keep the row's width. */}
                             {definitionBadges(entry).length > 0 && <span className="flex flex-wrap gap-1 pt-1"><DefinitionBadges item={entry} /></span>}
                         </>}
-                        onClick={() => setSelected(entry.name)} />
+                        onClick={() => setSelectedRole({ projectPath: project!, name: entry.name })} />
                     <RoleButton {...control(entry)} compact />
                 </div>
                 {startError(entry) && <InlineError dense>{startError(entry)}</InlineError>}
@@ -214,13 +248,14 @@ export function RolesPanel() {
     </div>
     return <ViewLayout view="roles" title="Roles" panel={panel} selected={item?.name ?? null} actions={<>
         <Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh roles" title="Refresh roles" onClick={() => setRefreshes((value) => value + 1)}><RefreshCw aria-hidden="true" /></Button>
-        <ProjectPicker heading="Show the roles of" testId="roles-project-picker" defaultProjectPath={project} onPick={(path) => { setProject(path); setSelected(null); setList(null) }}>
+        <ProjectPicker heading="Show the roles of" testId="roles-project-picker" defaultProjectPath={project} onPick={(path) => { setProject(path); setSelectedRole(null); setList(null) }}>
             <Button type="button" variant="outline" size="sm" className="max-w-36" title={project ?? undefined}><span className="truncate">{project ? projectLabel(registry, project) : 'Project'}</span><ChevronDown aria-hidden="true" className="text-muted-foreground" /></Button>
         </ProjectPicker>
     </>}>
         {project && item
             ? <RoleDetail key={`${project}:${item.name}:${refreshes}`} {...control(item)} startError={startError(item)} />
-            : <SheetEmpty data-testid="roles-empty-state" icon={Network} title="No role selected">
+            // On a phone the list alone shows until a role is picked.
+            : narrow ? null : <SheetEmpty data-testid="roles-empty-state" icon={Network} title="No role selected">
                 Select a role to see its prompt and where it is used. Start a standing role to open its conversation.
             </SheetEmpty>}
     </ViewLayout>

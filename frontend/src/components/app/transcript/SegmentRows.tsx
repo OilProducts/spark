@@ -560,6 +560,15 @@ export const MessageRow = memo(function MessageRow({
         && isCodexAuthError(entry.error || entry.content)
     const needsClaudeLogin = entry.role === 'assistant' && entry.status === 'failed'
         && isClaudeCodeAuthError(entry.error || entry.content)
+    // A sign-in failure reads as what to do, not the CLI's raw text.
+    const failureText = (text: string) => needsCodexLogin && isCodexAuthError(text)
+        ? 'Your Codex connection needs sign-in. Your conversation is saved.'
+        : needsClaudeLogin && isClaudeCodeAuthError(text)
+            ? 'Claude Code needs sign-in. Your conversation is saved.' : text
+    // A failed turn's error shows below the partial answer it wrote, unless that answer is the error.
+    const partialAnswerError = entry.role === 'assistant' && entry.status === 'failed' && entry.content.trim() && entry.error?.trim()
+        && failureText(entry.error.trim()) !== failureText(entry.content.trim())
+        ? failureText(entry.error.trim()) : null
     const turnId = entry.turnId
     const retry = entry.role === 'assistant' && entry.status === 'failed' && turnId && onRetryTurn
         ? () => onRetryTurn(turnId) : undefined
@@ -608,11 +617,11 @@ export const MessageRow = memo(function MessageRow({
                             entry.presentation === 'thinking' ? 'italic' : ''
                         }`}
                     >
-                        {needsCodexLogin && isCodexAuthError(literalContent)
-                            ? 'Your Codex connection needs sign-in. Your conversation is saved.'
-                            : needsClaudeLogin && isClaudeCodeAuthError(literalContent)
-                                ? 'Claude Code needs sign-in. Your conversation is saved.' : literalContent}
+                        {failureText(literalContent)}
                     </p>
+                ) : null}
+                {partialAnswerError ? (
+                    <p data-testid="message-error" className="mt-1 whitespace-pre-wrap text-sm leading-6 [overflow-wrap:anywhere]">{partialAnswerError}</p>
                 ) : null}
                 {entry.attachments?.length && attachmentUrl ? (
                     <MessageAttachments attachments={entry.attachments} attachmentUrl={attachmentUrl} />

@@ -498,6 +498,16 @@ function readNumberAttr(attrs: CanonicalAttrMap, key: string): number | undefine
     return undefined
 }
 
+// A field the editor holds wins, even when cleared; only a field it never
+// held keeps the stored value.
+function editedText(attrs: CanonicalAttrMap, key: string, stored: unknown): unknown {
+    return key in attrs ? readStringAttr(attrs, key) || undefined : stored
+}
+
+function editedNumber(attrs: CanonicalAttrMap, key: string, stored: unknown): unknown {
+    return key in attrs ? readNumberAttr(attrs, key) : stored
+}
+
 function readBooleanAttr(attrs: CanonicalAttrMap, key: string): boolean | undefined {
     const value = attrs[key]
     if (typeof value === 'boolean') {
@@ -705,11 +715,11 @@ function flowInputsFromAttrs(attrs: CanonicalAttrMap): unknown[] {
 function flowDefaultsFromAttrs(attrs: CanonicalAttrMap, baseDefaults?: Record<string, unknown> | null): Record<string, unknown> {
     return compactObject({
         ...(baseDefaults ?? {}),
-        max_retries: readNumberAttr(attrs, 'max_retries') ?? baseDefaults?.max_retries,
-        llm_model: readStringAttr(attrs, 'llm_model') || baseDefaults?.llm_model,
-        llm_provider: readStringAttr(attrs, 'llm_provider') || baseDefaults?.llm_provider,
-        llm_profile: readStringAttr(attrs, 'llm_profile') || baseDefaults?.llm_profile,
-        reasoning_effort: readStringAttr(attrs, 'reasoning_effort') || baseDefaults?.reasoning_effort,
+        max_retries: editedNumber(attrs, 'max_retries', baseDefaults?.max_retries),
+        llm_model: editedText(attrs, 'llm_model', baseDefaults?.llm_model),
+        llm_provider: editedText(attrs, 'llm_provider', baseDefaults?.llm_provider),
+        llm_profile: editedText(attrs, 'llm_profile', baseDefaults?.llm_profile),
+        reasoning_effort: editedText(attrs, 'reasoning_effort', baseDefaults?.reasoning_effort),
         thinking: 'thinking' in attrs ? readStringAttr(attrs, 'thinking') || undefined : baseDefaults?.thinking,
         thinking_budget_tokens: 'thinking_budget_tokens' in attrs ? attrs.thinking_budget_tokens == null || attrs.thinking_budget_tokens === '' ? undefined : Number(attrs.thinking_budget_tokens) : baseDefaults?.thinking_budget_tokens,
         reasoning_mode: 'reasoning_mode' in attrs ? readStringAttr(attrs, 'reasoning_mode') || undefined : baseDefaults?.reasoning_mode,
@@ -721,18 +731,18 @@ function flowDefaultsFromAttrs(attrs: CanonicalAttrMap, baseDefaults?: Record<st
 function retryFromAttrs(attrs: CanonicalAttrMap, baseRetry?: Record<string, unknown> | null): Record<string, unknown> | undefined {
     return compactObject({
         ...(baseRetry ?? {}),
-        policy: readStringAttr(attrs, 'retry_policy') || baseRetry?.policy,
-        max_retries: readNumberAttr(attrs, 'max_retries') ?? baseRetry?.max_retries,
+        policy: editedText(attrs, 'retry_policy', baseRetry?.policy),
+        max_retries: editedNumber(attrs, 'max_retries', baseRetry?.max_retries),
     })
 }
 
 function executionFromAttrs(attrs: CanonicalAttrMap, baseExecution?: Record<string, unknown> | null): Record<string, unknown> | undefined {
     return compactObject({
         ...(baseExecution ?? {}),
-        llm_model: readStringAttr(attrs, 'llm_model') || baseExecution?.llm_model,
-        llm_provider: readStringAttr(attrs, 'llm_provider') || baseExecution?.llm_provider,
-        llm_profile: readStringAttr(attrs, 'llm_profile') || baseExecution?.llm_profile,
-        reasoning_effort: readStringAttr(attrs, 'reasoning_effort') || baseExecution?.reasoning_effort,
+        llm_model: editedText(attrs, 'llm_model', baseExecution?.llm_model),
+        llm_provider: editedText(attrs, 'llm_provider', baseExecution?.llm_provider),
+        llm_profile: editedText(attrs, 'llm_profile', baseExecution?.llm_profile),
+        reasoning_effort: editedText(attrs, 'reasoning_effort', baseExecution?.reasoning_effort),
         thinking: 'thinking' in attrs ? readStringAttr(attrs, 'thinking') || undefined : baseExecution?.thinking,
         thinking_budget_tokens: 'thinking_budget_tokens' in attrs ? attrs.thinking_budget_tokens == null || attrs.thinking_budget_tokens === '' ? undefined : Number(attrs.thinking_budget_tokens) : baseExecution?.thinking_budget_tokens,
         reasoning_mode: 'reasoning_mode' in attrs ? readStringAttr(attrs, 'reasoning_mode') || undefined : baseExecution?.reasoning_mode,
@@ -744,19 +754,21 @@ function executionFromAttrs(attrs: CanonicalAttrMap, baseExecution?: Record<stri
 function runtimeFromAttrs(attrs: CanonicalAttrMap, baseRuntime?: Record<string, unknown> | null): Record<string, unknown> | undefined {
     return compactObject({
         ...(baseRuntime ?? {}),
-        session: 'session' in attrs ? readStringAttr(attrs, 'session') || undefined : baseRuntime?.session,
-        class: readStringAttr(attrs, 'class') || baseRuntime?.class,
-        timeout: readStringAttr(attrs, 'timeout') || baseRuntime?.timeout,
+        session: editedText(attrs, 'session', baseRuntime?.session),
+        class: editedText(attrs, 'class', baseRuntime?.class),
+        timeout: editedText(attrs, 'timeout', baseRuntime?.timeout),
     })
 }
 
-function contractsFromAttrs(attrs: CanonicalAttrMap, baseContracts?: Record<string, unknown> | null): Record<string, unknown> | undefined {
+function contractsFromAttrs(attrs: CanonicalAttrMap, kind: string, baseContracts?: Record<string, unknown> | null): Record<string, unknown> | undefined {
     return compactObject({
         ...(baseContracts ?? {}),
-        reads_context: parseStringArrayJson(attrs['spark.reads_context']).length > 0
+        // Agent tasks answer with the one response contract there is; no other kind takes one.
+        response: kind === 'agent_task' ? 'decision_envelope' : undefined,
+        reads_context: 'spark.reads_context' in attrs
             ? parseStringArrayJson(attrs['spark.reads_context'])
             : baseContracts?.reads_context,
-        writes_context: parseStringArrayJson(attrs['spark.writes_context']).length > 0
+        writes_context: 'spark.writes_context' in attrs
             ? parseStringArrayJson(attrs['spark.writes_context'])
             : baseContracts?.writes_context,
     })
@@ -766,14 +778,14 @@ function managerFromAttrs(attrs: CanonicalAttrMap, baseManager?: Record<string, 
     const actions = readStringAttr(attrs, 'manager.actions')
     return compactObject({
         ...(baseManager ?? {}),
-        poll_interval: readStringAttr(attrs, 'manager.poll_interval') || baseManager?.poll_interval,
-        max_cycles: readNumberAttr(attrs, 'manager.max_cycles') ?? baseManager?.max_cycles,
-        stop_condition: readStringAttr(attrs, 'manager.stop_condition') || baseManager?.stop_condition,
-        actions: actions
+        poll_interval: editedText(attrs, 'manager.poll_interval', baseManager?.poll_interval),
+        max_cycles: editedNumber(attrs, 'manager.max_cycles', baseManager?.max_cycles),
+        stop_condition: editedText(attrs, 'manager.stop_condition', baseManager?.stop_condition),
+        actions: 'manager.actions' in attrs
             ? actions.split(',').map((entry) => entry.trim()).filter(Boolean)
             : baseManager?.actions,
-        steer_cooldown: readStringAttr(attrs, 'manager.steer_cooldown') || baseManager?.steer_cooldown,
-        child_autostart: readBooleanAttr(attrs, 'stack.child_autostart') ?? baseManager?.child_autostart,
+        steer_cooldown: editedText(attrs, 'manager.steer_cooldown', baseManager?.steer_cooldown),
+        child_autostart: 'stack.child_autostart' in attrs ? readBooleanAttr(attrs, 'stack.child_autostart') : baseManager?.child_autostart,
     })
 }
 
@@ -800,11 +812,11 @@ function nodeFromCanonicalAttrs(
         ...(baseNode ?? {}),
         kind,
         label: readStringAttr(attrs, 'label') || String(baseNode?.label ?? nodeId),
-        description: readStringAttr(attrs, 'description') || baseNode?.description,
-        role: 'role' in attrs ? readStringAttr(attrs, 'role') || undefined : baseNode?.role,
+        description: editedText(attrs, 'description', baseNode?.description),
+        role: editedText(attrs, 'role', baseNode?.role),
         config: nodeConfigFromAttrs(kind, attrs, asRecord(baseNode?.config), fork),
         context: asRecord(attrs.context) ?? asRecord(baseNode?.context) ?? undefined,
-        contracts: contractsFromAttrs(attrs, asRecord(baseNode?.contracts)),
+        contracts: contractsFromAttrs(attrs, kind, asRecord(baseNode?.contracts)),
         runtime: runtimeFromAttrs(attrs, asRecord(baseNode?.runtime)),
         manager: managerFromAttrs(attrs, asRecord(baseNode?.manager)),
         retry: retryFromAttrs(attrs, asRecord(baseNode?.retry)),
@@ -837,13 +849,15 @@ export function buildFlowDefinitionFromCanonicalFlowModel(flowName: string, mode
         ...baseFlow,
         schema_version: '2',
         id: readStringAttr(flowMetadata, 'id') || String(baseFlow.id ?? sanitizeFlowId(flowName)),
-        title: readStringAttr(flowMetadata, 'title') || flowName,
-        description: readStringAttr(flowMetadata, 'description') || String(baseFlow.description ?? ''),
-        goal: readStringAttr(flowMetadata, 'goal') || String(baseFlow.goal ?? ''),
+        title: readStringAttr(flowMetadata, 'title').trim() || flowName,
+        // A cleared field stays cleared; only a field the settings never held keeps the flow's own.
+        description: 'description' in flowMetadata ? readStringAttr(flowMetadata, 'description').trim() : String(baseFlow.description ?? ''),
+        goal: 'goal' in flowMetadata ? readStringAttr(flowMetadata, 'goal').trim() : String(baseFlow.goal ?? ''),
         execution_lock: executionLockFromAttrs(flowMetadata, baseFlow.execution_lock),
-        inputs: inputs.length > 0 ? inputs : (Array.isArray(baseFlow.inputs) ? baseFlow.inputs : []),
+        inputs: 'inputs' in flowMetadata ? inputs : (Array.isArray(baseFlow.inputs) ? baseFlow.inputs : []),
         defaults: flowDefaultsFromAttrs(flowMetadata, asRecord(baseFlow.defaults)),
         nodes,
-        metadata: mergeExtensions(asRecord(baseFlow.metadata), flowMetadata, FLOW_METADATA_CORE_KEYS),
+        // The editor holds every metadata key, so one it no longer holds was removed.
+        metadata: compactObject(extensionAttrs(flowMetadata, FLOW_METADATA_CORE_KEYS)),
     }
 }

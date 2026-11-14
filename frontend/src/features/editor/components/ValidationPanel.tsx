@@ -1,10 +1,12 @@
 import { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useReactFlow } from '@xyflow/react';
 import { useStore } from '@/store';
 import { useNarrowViewport } from '@/lib/useNarrowViewport';
 import { Button } from '@/components/ui/button';
 import { NativeSelect } from '@/components/ui/native-select';
 import { SegmentedControl } from '@/components/app/segmented-control';
+import { diagnosticSentence } from '@/lib/problemText';
 
 const severityStyles: Record<string, string> = {
     error: 'text-destructive',
@@ -38,10 +40,17 @@ export function ValidationPanel() {
     const { getNode, getEdges, setCenter, setNodes, setEdges } = useReactFlow();
     const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
     const [sortMode, setSortMode] = useState<SortMode>('severity');
+    const [collapsed, setCollapsed] = useState(false);
 
     if (viewMode !== 'editor' || diagnostics.length === 0) {
         return null;
     }
+
+    const counts = (['error', 'warning', 'info'] as const)
+        .map((severity) => [severity, diagnostics.filter((diag) => diag.severity === severity).length] as const)
+        .filter(([, count]) => count > 0)
+        .map(([severity, count]) => `${count} ${severity === 'info' ? 'note' : severity}${count === 1 ? '' : 's'}`)
+        .join(' · ');
 
     const filteredDiagnostics = diagnostics.filter((diag) =>
         severityFilter === 'all' ? true : diag.severity === severityFilter,
@@ -65,6 +74,12 @@ export function ValidationPanel() {
         }
         return left.message.localeCompare(right.message);
     });
+
+    // The node by its label, as the canvas shows it.
+    const nodeLabel = (nodeId: string) => {
+        const label = getNode(nodeId)?.data?.label;
+        return typeof label === 'string' && label.trim() ? label.trim() : nodeId;
+    };
 
     const centerOnNode = (nodeId: string) => {
         const node = getNode(nodeId);
@@ -151,22 +166,35 @@ export function ValidationPanel() {
                 isNarrowViewport ? 'bottom-2 left-2 right-2 w-auto' : 'bottom-4 left-4 w-80'
             }`}
         >
-            <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-foreground">Validation</div>
-                <div className="text-xs font-medium text-muted-foreground">
-                    {hasValidationErrors ? 'Errors present' : 'Warnings only'}
-                </div>
-            </div>
+            <button
+                type="button"
+                data-testid="validation-panel-toggle"
+                aria-expanded={!collapsed}
+                onClick={() => setCollapsed((value) => !value)}
+                className="flex w-full items-center justify-between gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+            >
+                <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                    {collapsed ? <ChevronRight aria-hidden="true" className="size-4" /> : <ChevronDown aria-hidden="true" className="size-4" />}
+                    Validation
+                </span>
+                <span className={`text-xs font-medium ${hasValidationErrors ? 'text-destructive' : 'text-warning'}`}>{counts}</span>
+            </button>
+            {collapsed ? null : <>
+            {hasValidationErrors ? (
+                <p className="mt-1 text-xs text-muted-foreground">Fix the errors to save and run this flow.</p>
+            ) : null}
             <div className="mt-2 flex items-center justify-between gap-2">
                 <NativeSelect
                     data-testid="validation-sort-select"
+                    aria-label="Sort"
                     value={sortMode}
                     onChange={(event) => setSortMode(event.target.value as SortMode)}
-                    className="h-7 w-auto px-2 text-sm"
+                    size="sm"
+                    className="h-7 py-0 pl-2 pr-8 text-xs"
                 >
                     <option value="severity">Sort: severity</option>
                     <option value="line">Sort: line</option>
-                    <option value="rule">Sort: rule</option>
+                    <option value="rule">Sort: problem type</option>
                 </NativeSelect>
                 <div data-testid="validation-visible-count" className="text-xs text-muted-foreground">
                     {sortedDiagnostics.length} visible
@@ -189,7 +217,13 @@ export function ValidationPanel() {
                         key={`${diag.rule_id}-${index}`}
                         data-testid="validation-diagnostic-item"
                         onClick={() => {
-                            if (diag.node_id && getNode(diag.node_id)) {
+                            // A problem with one of a node's decisions is the route's to fix.
+                            const route = diag.node_id && diag.decision
+                                ? getEdges().find((edge) => edge.source === diag.node_id && edge.data?.decision === diag.decision)
+                                : undefined;
+                            if (route) {
+                                selectEdge(route.source, route.target, diag.decision);
+                            } else if (diag.node_id && getNode(diag.node_id)) {
                                 selectNode(diag.node_id);
                             } else if (
                                 diag.edge &&
@@ -217,12 +251,16 @@ export function ValidationPanel() {
                                 {diag.severity}
                             </span>
                             <div className="min-w-0 flex-1 break-words">
-                                <div className="text-foreground">{diag.message}</div>
-                                <div className="text-xs text-muted-foreground">
-                                    {diag.rule_id}
-                                    {diag.decision ? ` • decision ${diag.decision}` : ''}
-                                    {diag.line ? ` • line ${diag.line}` : ''}
-                                </div>
+                                <div className="text-foreground">{diagnosticSentence(diag, nodeLabel)}</div>
+                                {diag.node_id || diag.decision || diag.line ? (
+                                    <div className="text-xs text-muted-foreground">
+                                        {[
+                                            diag.node_id ? nodeLabel(diag.node_id) : null,
+                                            diag.decision ? `route ${diag.decision}` : null,
+                                            diag.line ? `line ${diag.line}` : null,
+                                        ].filter(Boolean).join(' · ')}
+                                    </div>
+                                ) : null}
                                 {!hasDirectMapping(diag) ? (
                                     <div data-testid="validation-diagnostic-fallback-hint" className="mt-1 text-xs text-muted-foreground">
                                         Applies to the whole flow.
@@ -238,6 +276,7 @@ export function ValidationPanel() {
                     </div>
                 )}
             </div>
+            </>}
         </div>
     );
 }

@@ -7,6 +7,7 @@ import {
     MarkerType,
     useNodesState,
     useEdgesState,
+    useReactFlow,
     applyNodeChanges,
     applyEdgeChanges,
 } from '@xyflow/react';
@@ -30,8 +31,11 @@ import { recordFlowLoadDebug, summarizeDiagnosticsForFlowLoadDebug } from '@/lib
 import {
     primeFlowSaveBaseline,
     saveFlowContent,
+    sendPendingFlowSaves,
     waitForFlowSaves,
 } from '@/lib/flowPersistence';
+import { requestNavigation } from '@/state/workspaceSlice';
+import { useDialogController } from '@/components/app/dialog-controller';
 import { CANVAS_INTERACTION_BUDGET_MS } from '@/lib/performanceBudgets';
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler';
 import {
@@ -70,17 +74,21 @@ import {
 import { getReactFlowNodeTypeForShape, getShapeNodeStyle } from '@/lib/workflowNodeShape';
 import { isAbortError } from '@/lib/abortError';
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug';
-import { flowLoadFailed, isMissingFlowError } from './model/flowLoadFailure';
+import { flowLoadFailed, flowLoadProblems, flowProblems, isInvalidFlowError, isMissingFlowError, type FlowProblem } from './model/flowLoadFailure';
 import {
+    loadEditorFlowFiles,
     loadEditorFlowPayload,
     loadEditorPreview,
     type EditorPreviewResponse,
 } from './services/editorPreview';
 import { projectLabel } from '@/features/projects/model/projectChoices';
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button';
 import { useRegisterEditorGraphBridge } from './EditorGraphBridgeContext';
 import { EditorCanvasToolbar } from './components/EditorCanvasToolbar';
-import { editedFlowFiles, FlowFilesView, type FlowFilesError } from './components/FlowFilesView';
+import { EditorSaveStatus } from './components/EditorSaveStatus';
+import { flowFileChanges, FlowFilesView, hasFlowFileChanges, ProblemList, type FlowFileDrafts, type FlowFilesError } from './components/FlowFilesView';
+import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection';
 
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
 const MEDIUM_GRAPH_PREVIEW_DEBOUNCE_MS = 600;
@@ -120,9 +128,10 @@ type PreparedHydratedPreview = {
     edgeIdToLayoutKey: Map<string, string>
 }
 
+// A removal saves from the canvas's onDelete, which has the step and its routes together.
 export function shouldPersistNodeChanges(changes: NodeChange<Node>[]): boolean {
     return changes.some((change) => {
-        return change.type !== 'select' && change.type !== 'position' && change.type !== 'dimensions'
+        return change.type !== 'select' && change.type !== 'position' && change.type !== 'dimensions' && change.type !== 'remove'
     })
 }
 
@@ -174,6 +183,13 @@ function buildDirtyRect(previousRect: NodeRect | null, nextRect: NodeRect | null
         width: right - left,
         height: bottom - top,
     }
+}
+
+/** A fresh graph's nodes or edges, marked with the selection the store holds, as the canvas shows it. */
+function withStoreSelection<T extends Node | Edge>(items: T[], kind: 'node' | 'edge'): T[] {
+    const { selectedNodeId, selectedEdgeId } = useStore.getState();
+    const selectedId = kind === 'edge' ? selectedEdgeId : selectedEdgeId ? null : selectedNodeId;
+    return items.map((item) => (item.id === selectedId) === Boolean(item.selected) ? item : { ...item, selected: item.id === selectedId });
 }
 
 function buildAuthoredFlow(
@@ -234,6 +250,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const activeProjectPath = useStore((state) => state.activeProjectPath);
     const model = useStore((state) => state.model);
     const setViewMode = useStore((state) => state.setViewMode);
+    const { setCenter, getZoom } = useReactFlow();
     const [nodes, setNodes] = useNodesState<Node>([]);
     const [edges, setEdges] = useEdgesState<Edge>([]);
     const hydratedRef = useRef(false);
@@ -265,8 +282,12 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const [isDragging, setIsDragging] = useState(false);
     const [flowFiles, setFlowFiles] = useState<FlowFile[]>([]);
     // The file view's unsaved edits by file name, kept here so a mode switch cannot drop them.
-    const [fileDrafts, setFileDrafts] = useState<Record<string, string>>({});
+    const [fileDrafts, setFileDrafts] = useState<FlowFileDrafts>({});
+    const fileDraftsRef = useRef(fileDrafts);
+    useEffect(() => { fileDraftsRef.current = fileDrafts; }, [fileDrafts]);
     const [fileSaveError, setFileSaveError] = useState<FlowFilesError | null>(null);
+    // The file a broken flow's problem link opens the file view on.
+    const [filesFocus, setFilesFocus] = useState<string | null>(null);
     // A flow that couldn't load, and why: a link to a renamed or deleted flow says so instead of
     // opening an empty canvas that could still be run. The inspector hides for it too.
     const flowLoadFailure = useStore((state) => state.flowLoadFailure);
@@ -295,6 +316,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const canvasPaneRef = useRef<HTMLDivElement>(null);
     const frame = useReadableFraming(canvasPaneRef);
     const [showMinimap, setShowMinimap] = useState(false);
+    // A view switch saves the view it leaves first; the toolbar says so while it does.
+    const [switchingEditorMode, setSwitchingEditorMode] = useState(false);
     // A newly opened flow, or a switch between its parent and expanded views, opens framed;
     // edits and reloads of the same graph keep the viewport where the user left it.
     const framedGraphRef = useRef<string | null>(null);
@@ -319,6 +342,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
 
     useEffect(() => {
         setRunProjectPath(null);
+        setFilesFocus(null);
     }, [flowName]);
 
     const runDisabledReason = hasValidationErrors
@@ -328,6 +352,44 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 : saveState === 'error' || saveState === 'conflict'
                     ? 'Resolve the flow save error before running.'
                     : undefined;
+
+    const fileChangesPending = hasFlowFileChanges(flowFileChanges(flowFiles, fileDrafts));
+    // Edits that would be lost on opening another flow: file drafts, and canvas edits a save refused.
+    const hasUnsavedEdits = fileChangesPending || saveState === 'error' || saveState === 'conflict';
+    // File edits a save refused, since put back or discarded, leave nothing unsaved and no error.
+    useEffect(() => {
+        if (editorMode !== 'files' || fileChangesPending) return;
+        setFileSaveError(null);
+        const { saveState, resetSaveState } = useStore.getState();
+        if (saveState === 'error' || saveState === 'conflict') resetSaveState();
+    }, [editorMode, fileChangesPending]);
+    useSettingsNavigationProtection(hasUnsavedEdits, false, 'flow edits');
+    // Leaving first sends edits still waiting to save and waits for saves in flight: a save refused
+    // after the click still asks before its edits are dropped, and never lands on the next flow.
+    const { confirm } = useDialogController();
+    useEffect(() => {
+        const waitForSaves = (event: Event) => {
+            if (event.defaultPrevented || !sendPendingFlowSaves()) return;
+            event.preventDefault();
+            const { proceed } = (event as CustomEvent<{ proceed: () => void }>).detail;
+            void waitForFlowSaves().then(async () => {
+                const { saveState, saveErrorMessage, saveErrorProblems } = useStore.getState();
+                if (saveState !== 'error' && saveState !== 'conflict') {
+                    // Saved: anything else that guards leaving (file drafts) still gets its say.
+                    requestNavigation(proceed);
+                } else if (await confirm({
+                    title: 'Discard unsaved flow edits?',
+                    description: `${saveErrorMessage ? `They weren’t saved: ${(saveErrorProblems?.map((problem) => problem.message) ?? flowProblems(saveErrorMessage)).join(' ')} ` : ''}Your unsaved flow edits will be lost.`,
+                    confirmLabel: 'Discard and leave',
+                    cancelLabel: 'Keep editing',
+                })) {
+                    proceed();
+                }
+            });
+        };
+        window.addEventListener('spark:before-navigation', waitForSaves, { capture: true });
+        return () => window.removeEventListener('spark:before-navigation', waitForSaves, { capture: true });
+    }, [confirm]);
 
     useEffect(() => {
         expandChildFlowsRef.current = expandChildFlows;
@@ -365,7 +427,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         });
     }, [setNodes, setSelectedEdgeId, setSelectedNodeId]);
 
-    const { flushPendingSave, saveNow, scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
+    const { clearPendingSave, flushPendingSave, saveNow, scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
         flowName,
         debounceMs: 250,
         buildContent: (snapshot, currentFlowName) => ({
@@ -714,6 +776,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             setFlowFiles([]);
             setFileDrafts({});
             setFileSaveError(null);
+            useStore.getState().resetSaveState();
             setEditorMode('structured');
             hydratedFlowNameRef.current = null;
             setLastLayoutMs(0);
@@ -770,6 +833,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             setFlowFiles([]);
             setFileDrafts({});
             setFileSaveError(null);
+            // The last flow's save outcome is not this one's.
+            useStore.getState().resetSaveState();
             setEditorMode('structured');
             setLastLayoutMs(0);
             setLastPreviewMs(0);
@@ -830,8 +895,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 setLastLayoutMs(hydrated.layoutDurationMs);
                 layoutStateRef.current = hydrated.layout;
                 edgeIdToLayoutKeyRef.current = hydrated.edgeIdToLayoutKey;
-                setNodes(hydrated.nodes);
-                setEdges(hydrated.edges);
+                setNodes(withStoreSelection(hydrated.nodes, 'node'));
+                setEdges(withStoreSelection(hydrated.edges, 'edge'));
                 frameNewGraph(hydrated.nodes);
                 if (!expandChildFlowsRef.current) {
                     persistLayoutState(hydrated.layout, false);
@@ -855,9 +920,21 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 if (loadAbort.signal.aborted || isAbortError(error)) {
                     return;
                 }
-                console.error(error);
+                // A missing or invalid flow is explained on the page; anything else is unexpected.
+                if (!isMissingFlowError(error) && !isInvalidFlowError(error)) console.error(error);
                 if (isCurrentLoad()) {
-                    useStore.getState().setFlowLoadFailure({ flow: flowName, project: activeProjectPath, missing: isMissingFlowError(error) });
+                    useStore.getState().setFlowLoadFailure({
+                        flow: flowName,
+                        project: activeProjectPath,
+                        missing: isMissingFlowError(error),
+                        problems: flowLoadProblems(error),
+                    });
+                    // An invalid flow's files still read: they open in the file view to be fixed.
+                    if (isInvalidFlowError(error)) {
+                        loadEditorFlowFiles(flowName, activeProjectPath, { signal: loadAbort.signal })
+                            .then((files) => { if (isCurrentLoad()) setFlowFiles(files); })
+                            .catch(() => undefined);
+                    }
                 }
             }
         };
@@ -966,6 +1043,10 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             const nextNodes = latestSelectedNodeChange
                 ? enforceSingleSelectedNode(updatedNodes, latestSelectedNodeChange.id)
                 : updatedNodes;
+            // Clicking empty canvas or pressing Escape deselects the step: the inspector goes back to Flow settings.
+            if (!latestSelectedNodeChange && changes.some((change) => change.type === 'select' && change.id === useStore.getState().selectedNodeId)) {
+                setSelectedNodeId(null);
+            }
             const dirtyNodeIds = new Set<string>()
             const dirtyRects: NodeRect[] = []
             changes.forEach((change) => {
@@ -1013,7 +1094,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             }
             return nextNodes;
         });
-    }, [edges, enforceSingleSelectedNode, expandChildFlows, scheduleEdgeRouting, scheduleSave, setNodes]);
+    }, [edges, enforceSingleSelectedNode, expandChildFlows, scheduleEdgeRouting, scheduleSave, setNodes, setSelectedNodeId]);
 
     const onEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
         if (expandChildFlows) {
@@ -1028,16 +1109,71 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             const nextEdges = latestSelectedEdgeChange
                 ? enforceSingleSelectedEdge(updatedEdges, latestSelectedEdgeChange.id)
                 : updatedEdges;
-            const shouldSave = changes.some((change) => change.type !== 'select');
-            if (shouldSave) {
-                scheduleSave({ nodes, edges: nextEdges });
+            if (!latestSelectedEdgeChange && changes.some((change) => change.type === 'select' && change.id === useStore.getState().selectedEdgeId)) {
+                setSelectedEdgeId(null);
+            }
+            if (changes.some((change) => change.type !== 'select')) {
+                // A removal saves from onDelete; see shouldPersistNodeChanges.
+                if (changes.some((change) => change.type !== 'select' && change.type !== 'remove')) {
+                    scheduleSave({ nodes, edges: nextEdges });
+                }
                 scheduleEdgeRouting(nodes, nextEdges, {
                     persistAfter: true,
                 })
             }
             return nextEdges;
         });
-    }, [enforceSingleSelectedEdge, expandChildFlows, nodes, scheduleEdgeRouting, scheduleSave, setEdges]);
+    }, [enforceSingleSelectedEdge, expandChildFlows, nodes, scheduleEdgeRouting, scheduleSave, setEdges, setSelectedEdgeId]);
+
+    // What the canvas deleted, latest last, for Cmd/Ctrl+Z to put back. It belongs to the open flow:
+    // the same name in another project is another flow, so opening either forgets it.
+    // ponytail: undo covers canvas deletions only; keep a full edit history if other edits need undo.
+    const deletedRef = useRef<Array<{ nodes: Node[]; edges: Edge[] }>>([]);
+    useEffect(() => { deletedRef.current = []; }, [flowName, activeProjectPath]);
+
+    // React Flow reports a deletion's nodes and edges in separate changes, each handler seeing the
+    // other list from before it; here both come together, so the save drops a step with its routes.
+    const onDelete = useCallback(({ nodes: deletedNodes, edges: deletedEdges }: { nodes: Node[]; edges: Edge[] }) => {
+        deletedRef.current.push({ nodes: deletedNodes, edges: deletedEdges });
+        // Apart: a step's ID can be spelled like a route's generated one.
+        const nodeIds = new Set(deletedNodes.map((node) => node.id));
+        const edgeIds = new Set(deletedEdges.map((edge) => edge.id));
+        scheduleSave({
+            nodes: nodes.filter((node) => !nodeIds.has(node.id)),
+            edges: edges.filter((edge) => !edgeIds.has(edge.id)),
+        });
+    }, [edges, nodes, scheduleSave]);
+
+    useEffect(() => {
+        if (!isActive || isCanvasReadOnly) return;
+        const undoDelete = (event: KeyboardEvent) => {
+            if (event.key.toLowerCase() !== 'z' || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
+            // Text fields keep their own undo.
+            if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+            const deleted = deletedRef.current.pop();
+            if (!deleted) return;
+            event.preventDefault();
+            const { nodes: currentNodes, edges: currentEdges } = canvasGraphRef.current;
+            // Only what still fits: an ID taken meanwhile stays, and a route goes back only between its
+            // own steps, never onto another step that now holds a deleted one's ID.
+            const nodeIds = new Set(currentNodes.map((node) => node.id));
+            const deletedIds = new Set(deleted.nodes.map((node) => node.id));
+            const restored = deleted.nodes.filter((node) => !nodeIds.has(node.id));
+            const restoredIds = new Set(restored.map((node) => node.id));
+            const isOwnStep = (id: string) => restoredIds.has(id) || (!deletedIds.has(id) && nodeIds.has(id));
+            const nextNodes = [...currentNodes, ...restored.map((node) => ({ ...node, selected: false }))];
+            const edgeIds = new Set(currentEdges.map((edge) => edge.id));
+            const nextEdges = [...currentEdges, ...deleted.edges.filter((edge) => (
+                !edgeIds.has(edge.id) && isOwnStep(edge.source) && isOwnStep(edge.target)
+            )).map((edge) => ({ ...edge, selected: false }))];
+            setNodes(nextNodes);
+            setEdges(nextEdges);
+            scheduleSave({ nodes: nextNodes, edges: nextEdges });
+            scheduleEdgeRouting(nextNodes, nextEdges, { persistAfter: true });
+        };
+        document.addEventListener('keydown', undoDelete);
+        return () => document.removeEventListener('keydown', undoDelete);
+    }, [isActive, isCanvasReadOnly, scheduleEdgeRouting, scheduleSave, setEdges, setNodes]);
 
     const onConnect = useCallback(
         (params: Connection | Edge) => {
@@ -1045,8 +1181,17 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 return
             }
             setEdges((currentEdges) => {
+                // A route is named by its decision: show the one it saves under, as the flow does.
+                const isFork = nodes.find((node) => node.id === params.source)?.data?.kind === 'parallel'
+                const taken = new Set(currentEdges.filter((edge) => edge.source === params.source).map((edge) => edge.data?.decision))
+                let decision = 'next'
+                for (let suffix = 2; taken.has(decision); suffix += 1) decision = `next_${suffix}`
+                // A route saves only with a description; a new one starts with a plain one to edit.
+                const target = nodes.find((node) => node.id === params.target)
+                const description = `Continue to ${String(target?.data?.label || params.target)}.`
                 const nextEdge: Edge = {
                     ...params,
+                    ...(isFork || ('data' in params && params.data?.decision) ? {} : { data: { ...('data' in params ? params.data : {}), decision, description } }),
                     id: buildEdgeIdForConnection(params, currentEdges),
                     type: EDGE_TYPE,
                     className: EDGE_CLASS,
@@ -1082,15 +1227,25 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         const defaultProfile = flowMetadata.llm_profile || uiDefaults.llm_profile || '';
         const defaultProvider = defaultProfile ? '' : (flowMetadata.llm_provider || uiDefaults.llm_provider || '');
         const defaultReasoning = flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || '';
-        const newNodeId = `node_${Math.floor(Math.random() * 10000)}`;
+        // A deleted step that Cmd/Ctrl+Z can still put back keeps its ID.
+        const ids = new Set([...nodes, ...deletedRef.current.flatMap((entry) => entry.nodes)].map((node) => node.id));
+        let count = 1;
+        while (ids.has(`step_${count}`)) count += 1;
+        const newNodeId = `step_${count}`;
         const shape = 'box'
+        // Beside the graph, level with its top, so it never lands on another step.
+        const rects = filterAuthoredNodes(nodes).map(readNodeRect);
+        const position = rects.length > 0
+            ? { x: Math.max(...rects.map((rect) => rect.x + rect.width)) + 80, y: Math.min(...rects.map((rect) => rect.y)) }
+            : { x: 0, y: 0 };
         const newNode: Node = {
             id: newNodeId,
             type: getReactFlowNodeTypeForShape(shape),
             style: getShapeNodeStyle(shape),
-            position: { x: Math.random() * 200 + 100, y: Math.random() * 200 + 100 },
+            position,
+            selected: true,
             data: {
-                label: 'New Node',
+                label: count === 1 ? 'New step' : `New step ${count}`,
                 kind: 'agent_task',
                 shape,
                 status: 'idle',
@@ -1102,14 +1257,21 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         };
 
         setNodes(nds => {
-            const newNodes = [...nds, newNode];
+            // Selected, so the inspector opens on it.
+            const newNodes = [...enforceSingleSelectedNode(nds, newNodeId), newNode];
             scheduleSave({ nodes: newNodes, edges });
             scheduleEdgeRouting(newNodes, edges, {
                 persistAfter: true,
             })
             return newNodes;
         });
-    }, [edges, expandChildFlows, flowMetadata, flowName, scheduleEdgeRouting, scheduleSave, setNodes, uiDefaults]);
+        const rect = readNodeRect(newNode);
+        // In the upper third of the canvas, clear of the Validation panel that opens at its bottom
+        // for the new step's missing route.
+        const zoom = getZoom();
+        const lift = (canvasPaneRef.current?.clientHeight ?? 0) / 6 / zoom;
+        void setCenter(rect.x + rect.width / 2, rect.y + rect.height / 2 + lift, { zoom, duration: 200 });
+    }, [edges, enforceSingleSelectedNode, expandChildFlows, flowMetadata, flowName, getZoom, nodes, scheduleEdgeRouting, scheduleSave, setCenter, setNodes, uiDefaults]);
 
     const applyLaidOutGraph = useCallback((layoutGraph: LaidOutFlowGraph) => {
         layoutStateRef.current = layoutGraph.layout
@@ -1166,15 +1328,33 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         setFlowReloadToken((token) => token + 1);
     }, []);
 
+    // After a save conflict, the way out: drop the unsaved edits and load the flow as saved.
+    const reloadSavedFlow = useCallback(async () => {
+        if (!(await confirm({
+            title: 'Reload the saved flow?',
+            description: 'Your edits since the last save are replaced by the flow as it is saved now.',
+            confirmLabel: 'Reload flow',
+            cancelLabel: 'Keep editing',
+        }))) return;
+        clearPendingSave();
+        useStore.getState().resetSaveState();
+        reloadFlow();
+    }, [clearPendingSave, confirm, reloadFlow]);
+
     /** Saves the file view's edited files, then reloads the flow so the canvas shows them. */
     const saveFileDrafts = useCallback(async () => {
         if (!flowName) return false;
-        const changed = editedFlowFiles(flowFiles, fileDrafts);
-        if (changed.length === 0) return true;
-        const saved = await saveFlowContent(flowName, { files: changed });
+        const changes = flowFileChanges(flowFiles, fileDrafts);
+        if (!hasFlowFileChanges(changes)) return true;
+        const saved = await saveFlowContent(flowName, {
+            files: changes.files,
+            ...(changes.deleted.length > 0 ? { deleted_files: changes.deleted } : {}),
+        });
+        const { saveErrorMessage, saveErrorProblems } = useStore.getState();
         setFileSaveError(saved ? null : {
-            files: changed.map((file) => file.name),
-            message: useStore.getState().saveErrorMessage || 'The files were not saved.',
+            files: [...changes.files.map((file) => file.name), ...changes.deleted],
+            problems: saveErrorProblems
+                ?? flowProblems(saveErrorMessage || 'The files were not saved.').map((message) => ({ message, file: null })),
         });
         if (saved) reloadFlow();
         return saved;
@@ -1188,23 +1368,31 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             return;
         }
         // Each view leaves only once its edits are saved; a refused save keeps them, and its error, in view.
-        if (editorMode === 'files') {
-            if (!(await saveFileDrafts())) return;
-            setFileDrafts({});
-            setFileSaveError(null);
-        } else {
-            // The files show the structured state as saved: save it (a no-op when unchanged, and it
-            // covers edits still debounced elsewhere, such as graph settings), then read the files.
-            // A refused save is reported by the save indicator.
-            flushPendingSave();
-            await waitForFlowSaves();
-            if (!(await saveNow({ nodes, edges }))) return;
-            reloadFlow();
+        setSwitchingEditorMode(true);
+        try {
+            if (editorMode === 'files') {
+                const savedDrafts = fileDrafts;
+                if (!(await saveFileDrafts())) return;
+                // Edits typed while the save ran aren't in it: stay in the files with them unsaved.
+                if (fileDraftsRef.current !== savedDrafts) return;
+                setFileDrafts({});
+                setFileSaveError(null);
+            } else {
+                // The files show the structured state as saved: save it (a no-op when unchanged, and it
+                // covers edits still debounced elsewhere, such as graph settings), then read the files.
+                // A refused save is reported by the save indicator.
+                flushPendingSave();
+                await waitForFlowSaves();
+                if (!(await saveNow({ nodes, edges }))) return;
+                reloadFlow();
+            }
+            setEditorMode(mode);
+            useStore.setState({ preferredEditorMode: mode });
+            completePreferenceInteraction({ editor_mode: mode });
+        } finally {
+            setSwitchingEditorMode(false);
         }
-        setEditorMode(mode);
-        useStore.setState({ preferredEditorMode: mode });
-        completePreferenceInteraction({ editor_mode: mode });
-    }, [editorMode, edges, flowName, flushPendingSave, isHydrated, nodes, reloadFlow, saveFileDrafts, saveNow, setEditorMode]);
+    }, [editorMode, edges, fileDrafts, flowName, flushPendingSave, isHydrated, nodes, reloadFlow, saveFileDrafts, saveNow, setEditorMode]);
 
     useEffect(() => {
         if (!isHydrated) { initialModeFlowRef.current = null; return; }
@@ -1280,13 +1468,20 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             }
             return;
         }
+        // Until this flow hydrates, the canvas still holds the last flow's nodes.
+        if (hydratedFlowNameRef.current !== flowName) {
+            return;
+        }
         const { nodeId } = pendingEditorNodeSelection;
         if (nodeId && nodes.some((node) => node.id === nodeId)) {
             setSelectedEdgeId(null);
             setSelectedNodeId(nodeId);
+            // The linked step is in view, even in a flow too big to show whole.
+            frame(nodes, { padding: FRAME_PADDING, focusNodeId: nodeId });
         }
         setPendingEditorNodeSelection(null);
     }, [
+        frame,
         flowName,
         isHydrated,
         nodes,
@@ -1351,8 +1546,9 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 setLastLayoutMs(hydrated.layoutDurationMs)
                 layoutStateRef.current = hydrated.layout
                 edgeIdToLayoutKeyRef.current = hydrated.edgeIdToLayoutKey
-                setNodes(hydrated.nodes)
-                setEdges(hydrated.edges)
+                // The fresh graph replaces the canvas's nodes; what is selected stays marked on it.
+                setNodes(withStoreSelection(hydrated.nodes, 'node'))
+                setEdges(withStoreSelection(hydrated.edges, 'edge'))
                 frameNewGraph(hydrated.nodes)
                 if (!expandChildFlowsRef.current) {
                     persistLayoutState(hydrated.layout, false)
@@ -1385,13 +1581,26 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
 
     const loadFailure = flowLoadFailed(flowLoadFailure, flowName, activeProjectPath) ? flowLoadFailure : null;
     const flowOpen = Boolean(flowName) && !loadFailure;
+    // An invalid flow opens no canvas, but its files do.
+    const canRepairFiles = Boolean(loadFailure && !loadFailure.missing && flowFiles.length > 0);
+    const loadProblems: FlowProblem[] | null = loadFailure && !loadFailure.missing ? loadFailure.problems ?? null : null;
+    // A problem's file, while the flow's files have it.
+    const flowFileNamed = (file: string | null) => (file && flowFiles.some((flowFile) => flowFile.name === file) ? file : null);
+    const linkedLoadProblems = loadProblems?.map((problem) => ({ ...problem, file: flowFileNamed(problem.file) })) ?? null;
+    const openFileToFix = (file: string | null) => {
+        setFilesFocus(file);
+        setEditorMode('files');
+    };
+    const showFiles = (flowOpen || canRepairFiles) && editorMode === 'files';
     return (
         <div className="flow-surface flex h-full w-full flex-col">
             {flowOpen && flowName && (
                 <EditorCanvasToolbar
                     mode={editorMode}
-                    modeDisabled={!isHydrated}
+                    modeDisabled={!isHydrated || switchingEditorMode}
+                    switchingMode={switchingEditorMode}
                     childFlowsExpanded={expandChildFlows}
+                    hasChildFlows={nodes.some((node) => node.data?.kind === 'subflow')}
                     runDisabledReason={runDisabledReason}
                     onSelectStructured={() => void selectEditorMode('structured')}
                     onSelectFiles={() => void selectEditorMode('files')}
@@ -1411,18 +1620,30 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     }}
                 />
             )}
+            {flowOpen && editorMode === 'structured' && <EditorSaveStatus onReload={() => void reloadSavedFlow()} />}
             <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-            {/* ponytail: phones get the file view alone in Files mode; its list selects files. */}
-            <div ref={canvasPaneRef} className={`relative min-h-0 min-w-0 flex-1 ${editorMode === 'files' ? 'hidden md:block' : ''}`}>
+            {/* ponytail: phones get the file view alone in Files mode; its list selects files. A flow
+                that won't open has no canvas, so its files take the whole width and say what to fix. */}
+            <div ref={canvasPaneRef} className={`relative min-h-0 min-w-0 flex-1 ${showFiles ? (canRepairFiles ? 'hidden' : 'hidden md:block') : ''}`}>
                 {
                     loadFailure ? (
                         <SheetEmpty data-testid="editor-flow-load-failed" icon={GitBranch} title={loadFailure.missing ? 'This flow isn’t here' : 'This flow couldn’t be opened'}>
                             <p>
                                 {loadFailure.missing
                                     ? <>{projectLabel(projectRegistry, activeProjectPath)} has no flow named “{loadFailure.flow}”. It may have been renamed or deleted. Pick a flow from the list.</>
-                                    : <>Spark couldn’t load “{loadFailure.flow}”. Try again, or pick another flow from the list.</>}
+                                    : canRepairFiles
+                                        ? <>“{loadFailure.flow}” isn’t a valid flow{loadProblems ? <>: {loadProblems.length === 1 ? 'it has a problem' : `it has ${loadProblems.length} problems`}</> : null}. Fix its files, then save to open it.</>
+                                        : <>Spark couldn’t load “{loadFailure.flow}”. Try again, or pick another flow from the list.</>}
                             </p>
+                            {loadProblems ? (
+                                <InlineError data-testid="editor-flow-load-reason" role={undefined} className="mt-3 text-left">
+                                    <ProblemList problems={linkedLoadProblems ?? []} onOpenFile={canRepairFiles ? openFileToFix : undefined} />
+                                </InlineError>
+                            ) : null}
                             <div className="mt-3 flex justify-center gap-2">
+                                {canRepairFiles && editorMode !== 'files' ? (
+                                    <Button type="button" size="sm" data-testid="editor-flow-edit-files" onClick={() => openFileToFix(null)}>Edit files</Button>
+                                ) : null}
                                 {loadFailure.missing ? null : (
                                     <Button type="button" size="sm" variant="outline" onClick={() => { setFlowLoadFailure(null); reloadFlow(); }}>Try again</Button>
                                 )}
@@ -1431,12 +1652,14 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                         </SheetEmpty>
                     ) : flowName ? (
                         <ReactFlow
+                            id="flow-editor"
                             className="flow-canvas"
                             style={{ background: 'transparent' }}
                             nodes={nodes}
                             edges={edges}
                             onNodesChange={onNodesChange}
                             onEdgesChange={onEdgesChange}
+                            onDelete={onDelete}
                             onConnect={onConnect}
                             onNodeClick={onNodeClick}
                             onEdgeClick={onEdgeClick}
@@ -1555,11 +1778,14 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     </div>
                 ) : null}
             </div>
-            {flowOpen && editorMode === 'files' ? (
+            {showFiles ? (
                 <FlowFilesView
                     files={flowFiles}
                     drafts={fileDrafts}
                     error={fileSaveError}
+                    loadProblems={canRepairFiles ? (loadProblems ?? []) : null}
+                    initialFile={canRepairFiles ? filesFocus ?? linkedLoadProblems?.find((problem) => problem.file)?.file : null}
+                    className={canRepairFiles ? 'md:w-full md:flex-1 md:border-l-0' : undefined}
                     selectedNodeId={selectedNodeId}
                     onDraftChange={(name, content) => setFileDrafts((current) => ({ ...current, [name]: content }))}
                     onSave={saveFileDrafts}

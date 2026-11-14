@@ -427,12 +427,16 @@ fn an_invalid_project_copy_rejects_launch_with_its_path_instead_of_running_the_b
         old.body["diagnostics"][0]["rule_id"],
         json!("schema_version")
     );
+    // The editor reads the copy's own files, so its problems come listed, without the path.
     let read = service.get_flow("shared", Some(&project_path));
     assert_eq!(read.status_code, 422, "{}", read.body);
-    assert!(read.body["detail"]
-        .as_str()
-        .expect("detail")
-        .contains(&copy_text));
+    assert_eq!(
+        read.body["detail"]["diagnostics"][0]["rule_id"],
+        json!("schema_version"),
+        "{}",
+        read.body
+    );
+    assert!(!read.body.to_string().contains(&copy_text), "{}", read.body);
 
     // A current-schema copy whose nodes do not load.
     fs::write(

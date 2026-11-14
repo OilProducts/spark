@@ -18,6 +18,8 @@ export const folderTitle = (folder: string) => folder.charAt(0).toUpperCase() + 
 export interface FlowLabel {
     title: string
     description: string
+    /** Why the flow doesn't load; the row says it won't open. */
+    error?: string
 }
 
 interface FlowTreeProps {
@@ -126,12 +128,13 @@ function FlowTreeNodeRow({
     const label = flowLabels?.[node.path]
     const title = label?.title.trim() || null
     const description = label?.description.trim() || null
+    const error = label?.error || null
     return (
         <div className="group relative">
             <Button
                 type="button"
-                aria-label={title ? `${title} (${node.path})` : node.path}
-                title={node.path}
+                aria-label={`${title ? `${title} (${node.path})` : node.path}${error ? ', has errors' : ''}`}
+                title={error ? `${node.path}\n${error}` : node.path}
                 onClick={() => onSelectFlow(node.path)}
                 variant="ghost"
                 className={`h-auto min-h-9 w-full justify-start rounded-md px-3 py-2 pr-8 text-left text-sm transition-colors ${
@@ -149,7 +152,9 @@ function FlowTreeNodeRow({
                             <span className="min-w-0 max-w-full truncate">{title ?? node.name}</span>
                             {renderFlowIndicator?.(node.path)}
                         </span>
-                        {description ? <span data-testid="flow-tree-description" className="block w-full truncate text-xs font-normal text-muted-foreground">{description}</span> : null}
+                        {error ? (
+                            <span data-testid="flow-tree-error" className="block w-full truncate text-xs font-normal text-destructive">Has errors · won’t open until fixed</span>
+                        ) : description ? <span data-testid="flow-tree-description" className="block w-full truncate text-xs font-normal text-muted-foreground">{description}</span> : null}
                     </span>
                 </span>
             </Button>

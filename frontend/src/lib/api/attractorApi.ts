@@ -12,6 +12,7 @@ import {
     expectObjectRecord,
     expectString,
     fetchJsonWithValidation,
+    fetchSpark,
     fetchTextWithValidation,
     parseDiagnosticList,
 } from './shared'
@@ -62,7 +63,8 @@ export interface FlowPayloadResponse {
 }
 
 /** A save sends exactly one: the structured editor's flow, or edited files from the file view. */
-export type FlowSaveContent = { flow: FlowDefinitionPayload } | { files: FlowFile[] }
+// A file view save sends edited and new files, and the node files it deletes.
+export type FlowSaveContent = { flow: FlowDefinitionPayload } | { files: FlowFile[]; deleted_files?: string[] }
 
 export interface SaveFlowApiResponse {
     ok: boolean
@@ -403,7 +405,7 @@ export function parseFlowListResponse(payload: unknown, endpoint = '/attractor/a
     return [...payload]
 }
 
-function expectFlowFiles(value: unknown, endpoint: string): FlowFile[] {
+export function expectFlowFiles(value: unknown, endpoint: string): FlowFile[] {
     if (!Array.isArray(value)) {
         throw new ApiSchemaError(endpoint, 'Expected files to be an array.')
     }
@@ -916,7 +918,7 @@ export async function saveFlowValidated(
     content: FlowSaveContent,
     projectPath: string | null,
 ): Promise<SaveFlowApiResponse> {
-    const response = await fetch(attractorUrl('/api/flows'), {
+    const response = await fetchSpark(attractorUrl('/api/flows'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

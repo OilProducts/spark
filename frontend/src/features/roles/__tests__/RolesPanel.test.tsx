@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { useStore } from '@/store'
 import { RolesPanel } from '../RolesPanel'
@@ -14,7 +14,7 @@ const role = (name: string, fields: Record<string, unknown> = {}) =>
 const items = [
     { kind: 'flow', name: 'local', layer: 'project', path: 'flows/local' },
     role('reviewer', { title: 'Reviewer', description: 'Reviews work.',
-        usage: [{ flow: 'local', node: 'review' }, { flow: 'other', node: 'check' }, { flow: 'local', node: 'recheck' }] }),
+        usage: [{ flow: 'local', node: 'review' }, { flow: 'other', node: 'check' }, { flow: 'local', node: 'recheck', label: 'Check again' }] }),
     role('helper', { layer: 'project' }),
     role('author', { layer: 'project_copy' }),
     role('keeper', { title: 'Keeper', standing: true, live: live('keeper', 'keeper-1') }),
@@ -32,7 +32,7 @@ beforeEach(() => {
     window.innerWidth = 1440
     calls = []
     starts = []
-    useStore.setState({ activeProjectPath: '/project', viewMode: 'roles', projectPagePath: null, projectRegistry: {
+    useStore.setState({ activeProjectPath: '/project', viewMode: 'roles', projectPagePath: null, selectedRole: null, projectRegistry: {
         '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-10-24T10:00:00Z' },
         '/other': { directoryPath: '/other', isFavorite: false, lastAccessedAt: '2026-10-23T10:00:00Z' },
     } })
@@ -44,6 +44,7 @@ beforeEach(() => {
         const json = (value: unknown) => ({ ok: true, json: async () => value })
         if (method === 'POST') return new Promise((resolve, reject) => starts.push({ resolve, reject }))
         if (path === '/workspace/api/definitions') return json({ items: lists[params.get('project_path')!] })
+        if (path === '/workspace/api/flows') return json([{ name: 'local', title: 'Local Checks', description: '' }])
         const route = /^\/workspace\/api\/roles\/([^/]+)\/(file|memory)$/.exec(path)
         if (route?.[2] === 'memory') return json(params.get('file') ? { role: route[1], file: 'index.md', content: '# Known\n\nThe build is slow.' } : { role: route[1], files: ['index.md'] })
         if (route?.[2] === 'file') {
@@ -95,11 +96,19 @@ it('shows a copy with its prompt and bundled diff', async () => {
 })
 
 it('groups usage by flow and shows a started role\'s live status once, with its memory', async () => {
-    render(<RolesPanel />)
+    const { unmount } = render(<RolesPanel />)
     await screen.findByRole('region', { name: 'Roles' })
     fireEvent.click(row('reviewer'))
     const usage = await screen.findByTestId('role-usage')
-    expect(within(usage).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['local · review, recheck', 'other · check'])
+    // Flows go by their titles; one the list doesn't have is titled from its name.
+    await waitFor(() => expect(within(usage).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['Local Checks · review, Check again', 'Other · check']))
+    fireEvent.click(within(usage).getByRole('button', { name: 'Check again in Local Checks' }))
+    expect(useStore.getState()).toMatchObject({ viewMode: 'editor', activeFlow: 'local', pendingEditorNodeSelection: { flowName: 'local', nodeId: 'recheck' } })
+    // Coming back to Roles reopens the role the link left.
+    act(() => useStore.setState({ viewMode: 'roles' }))
+    unmount()
+    render(<RolesPanel />)
+    expect(await screen.findByRole('heading', { level: 1, name: 'Reviewer' })).toBeInTheDocument()
     expect(screen.queryByTestId('role-live-status')).not.toBeInTheDocument()
     fireEvent.click(row('keeper'))
     expect(await screen.findAllByTestId('role-live-status')).toHaveLength(1)

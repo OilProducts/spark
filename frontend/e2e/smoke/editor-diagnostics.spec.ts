@@ -131,10 +131,10 @@ test("prompt edits trigger live preview diagnostics before blur for item 5.1-03"
     await flowButton.click()
 
     await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
-    await expect(page.getByRole("button", { name: "+ Node", exact: true })).toBeVisible()
-    await page.getByRole("button", { name: "+ Node", exact: true }).click()
+    await expect(page.getByRole("button", { name: "Add node", exact: true })).toBeVisible()
+    await page.getByRole("button", { name: "Add node", exact: true }).click()
 
-    const newNode = page.locator(".react-flow__node").filter({ hasText: "New Node" }).last()
+    const newNode = page.locator(".react-flow__node").filter({ hasText: "New step" }).last()
     await expect(newNode).toBeVisible()
     await newNode.click()
 
@@ -334,10 +334,10 @@ test("inline node and edge diagnostic badges render for item 7.1-02", async ({ p
     await flowButton.click()
 
     await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
-    await expect(page.getByRole("button", { name: "+ Node", exact: true })).toBeVisible()
-    await page.getByRole("button", { name: "+ Node", exact: true }).click()
+    await expect(page.getByRole("button", { name: "Add node", exact: true })).toBeVisible()
+    await page.getByRole("button", { name: "Add node", exact: true }).click()
 
-    const newNode = page.locator(".react-flow__node").filter({ hasText: "New Node" }).last()
+    const newNode = page.locator(".react-flow__node").filter({ hasText: "New step" }).last()
     await expect(newNode).toBeVisible()
     await newNode.click()
 
@@ -358,8 +358,8 @@ test("inline node and edge diagnostic badges render for item 7.1-02", async ({ p
     await promptField.fill(promptToken)
     await previewRequest
 
-    await expect(page.getByTestId("node-diagnostic-badge")).toContainText("1 Warn")
-    await expect(page.getByTestId("edge-diagnostic-badge").first()).toContainText("1 Error")
+    await expect(page.getByTestId("node-diagnostic-badge")).toContainText("1 warning")
+    await expect(page.getByTestId("edge-diagnostic-badge").first()).toContainText("1 error")
     await page.screenshot({ path: screenshotPath("14-inline-diagnostic-badges.png"), fullPage: true })
   } finally {
     await deleteFlowAfterSmoke(page, flowName)
@@ -648,12 +648,13 @@ test("files mode keeps structured controls read-only so file saves cannot erase 
       }
     })
 
-    // Canvas selection still picks the node's file, but neither the inspector nor the node edits it.
+    // Canvas selection still picks the node's file, but the inspector gives the files its room
+    // and the node does not edit.
     await node.click()
     const fileEditor = page.getByTestId("flow-file-editor")
     await expect(fileEditor).toHaveAccessibleName("ingest_spec.md")
-    await expect(page.getByTestId("inspector-files-mode-notice")).toBeVisible()
-    await expect(page.getByLabel("Prompt instruction")).toBeDisabled()
+    await expect(page.getByTestId("inspector-panel")).toHaveCount(0)
+    expect((await fileEditor.boundingBox())!.width).toBeGreaterThan(400)
     await expect(node.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0)
     await node.dblclick()
     await expect(node.locator("input")).toHaveCount(0)

@@ -18,7 +18,7 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { formatTimestamp, type ArtifactListEntry, type TimelineEventEntry } from '../model/shared'
-import { journalEntrySummary } from '../model/timelineModel'
+import { journalEntriesShown, journalEntrySummary } from '../model/timelineModel'
 import {
     VISIT_OUTCOME_LABELS,
     formatVisitDuration,
@@ -82,7 +82,7 @@ interface RunVisitsCardProps {
     now: number
     isNarrowViewport: boolean
     isLive: boolean
-    transcriptError: string | null
+    /** Why the journal couldn't load; the steps it lists are then unknown, not none. */
     timelineError: string | null
     /** The node selected on the graph; its visits are highlighted. */
     selectedNodeId: string | null
@@ -90,8 +90,8 @@ interface RunVisitsCardProps {
     onOpenRun: (runId: string) => void
     /** The status item's row: what it says and whether it needs attention. */
     statusRow: { label: string; tone?: StatusTone; detail?: string }
-    /** How many keys the Context item lists. */
-    contextKeyCount: number
+    /** How many keys the Context item lists; null when the context couldn't load. */
+    contextKeyCount: number | null
     renderStatus: (selectVisit: (visit: RunVisit) => void) => ReactNode
     renderContext: (focusKey: string | null, selectVisit: (visit: RunVisit) => void) => ReactNode
     artifactEntries: ArtifactListEntry[]
@@ -111,7 +111,6 @@ export function RunVisitsCard({
     now,
     isNarrowViewport,
     isLive,
-    transcriptError,
     timelineError,
     selectedNodeId,
     onSelectNode,
@@ -130,6 +129,7 @@ export function RunVisitsCard({
         () => allVisits.filter((visit) => visit.kind !== 'exit' || visit.outcome !== 'completed'),
         [allVisits],
     )
+    const stepsUnavailable = Boolean(timelineError) && visits.length === 0
     // The status item leads and is selected when a run opens.
     const [selectedKey, setSelectedKey] = useState<string>('status')
     const [contextFocusKey, setContextFocusKey] = useState<string | null>(null)
@@ -245,11 +245,11 @@ export function RunVisitsCard({
                         Journal update budget: {TIMELINE_UPDATE_BUDGET_MS}ms max per live update batch.
                     </p>
                 ) : null}
-                {transcriptError ? <InlineError data-testid="run-transcript-error">{transcriptError}</InlineError> : null}
                 <div
                     ref={listRef}
                     role="listbox"
                     aria-label="Visits"
+                    data-own-keys="jk"
                     data-testid="run-visit-list"
                     onKeyDown={onListKeyDown}
                     className={cn('space-y-0.5 overflow-y-auto', isNarrowViewport || railAbove ? 'max-h-72' : 'min-h-0 flex-1')}
@@ -273,18 +273,22 @@ export function RunVisitsCard({
                                 {item === 'status' ? statusRow.label : 'Context'}
                             </span>
                             <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-                                {item === 'status' ? statusRow.detail : `${contextKeyCount} ${contextKeyCount === 1 ? 'key' : 'keys'}`}
+                                {item === 'status' ? statusRow.detail : contextKeyCount === null ? 'Not loaded' : `${contextKeyCount} ${contextKeyCount === 1 ? 'key' : 'keys'}`}
                             </span>
                         </button>
                     ))}
                     <div className="flex items-center justify-between gap-2 px-2.5 pb-1 pt-3 text-xs font-semibold text-muted-foreground">
                         <span>Steps</span>
                         <span className="font-normal">
-                            {visits.length} {visits.length === 1 ? 'visit' : 'visits'}
+                            {stepsUnavailable ? null : <>{visits.length} {visits.length === 1 ? 'visit' : 'visits'}</>}
                             {isLive ? <span className="ml-1.5 text-info">Live</span> : null}
                         </span>
                     </div>
-                    {visits.length === 0 ? (
+                    {stepsUnavailable ? (
+                        <p data-testid="run-visits-unavailable" className="px-2.5 py-2 text-sm text-muted-foreground">
+                            The steps couldn’t load.
+                        </p>
+                    ) : visits.length === 0 ? (
                         <p data-testid="run-visits-empty" className="px-2.5 py-2 text-sm text-muted-foreground">
                             No visits have been recorded for this run yet.
                         </p>
@@ -824,13 +828,14 @@ function RunJournal({ journal, flowNodes, timelineError }: {
     const nodeLabel = (nodeId: string, scope: TimelineEventEntry['sourceScope']) => (
         (scope === 'root' ? flowNodes[nodeId]?.label : null) ?? humanizeNodeId(nodeId)
     )
+    const entries = journalEntriesShown(journal)
     let previousDay = ''
     return (
         <section data-testid="run-journal-panel" className="flex flex-col gap-3">
             <h2 className="text-base font-semibold text-foreground">Journal</h2>
             {timelineError ? <InlineError data-testid="run-event-timeline-error">{timelineError}</InlineError> : null}
             <ol className="flex flex-col gap-1 text-sm">
-                {journal.map((event) => {
+                {entries.map((event) => {
                     const date = new Date(event.receivedAt)
                     const valid = !Number.isNaN(date.getTime())
                     const day = valid ? JOURNAL_DAY.format(date) : ''

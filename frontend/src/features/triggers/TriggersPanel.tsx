@@ -7,6 +7,7 @@ import {
   formatTriggerResult,
   formatTriggerTimestamp,
   SHARED_WEBHOOK_ENDPOINT,
+  triggerProblem,
   triggerProjectSummary,
   triggerSourceSummary,
 } from "./model/triggerForm"
@@ -48,6 +49,17 @@ function FiringResult({ entry, run }: { entry: HistoryEntry; run: RunRecord | un
   )
 }
 
+/** Why saving waits: a flow's required inputs are checked before a trigger that starts it is saved. */
+/** Saving waits for the flow's launch inputs, so a required one can't be left out. */
+function InputsLoading({ retry }: { retry?: () => void }) {
+  return retry ? (
+    <p role="status" data-testid="trigger-flow-inputs-failed" className="self-center text-xs text-destructive">
+      Couldn’t read the flow’s launch inputs, so this can’t be saved yet.{' '}
+      <button type="button" className="font-medium underline underline-offset-2 hover:no-underline" onClick={retry}>Try again</button>
+    </p>
+  ) : <p role="status" className="self-center text-xs text-muted-foreground">Reading the flow’s launch inputs…</p>
+}
+
 export function TriggersPanel() {
   const projectRegistry = useStore((state) => state.projectRegistry)
   const runs = useStore((state) => state.runsListSession.runs)
@@ -84,8 +96,12 @@ export function TriggersPanel() {
     discard,
     editTriggerForm,
     editTriggerErrors,
+    editFlowInputs,
+    retryEditFlowInputs,
     newTriggerForm,
     newTriggerErrors,
+    newFlowInputs,
+    retryNewFlowInputs,
     onCreateTrigger,
     onDeleteSelectedTrigger,
     onSaveSelectedTrigger,
@@ -137,6 +153,7 @@ export function TriggersPanel() {
   }, [isNarrowViewport, selectedTriggerId, setSelectedTriggerId, status, visibleTriggers])
 
   const createFormOpen = triggersSession.createFormOpen
+  const nothingPicked = !createFormOpen && !(selectedTrigger && editTriggerForm)
   const openCreateForm = () => {
     // An untouched draft starts in the project worked in most recently, as Run a flow does.
     if (!newTriggerForm.name.trim() && !newTriggerForm.projectPath) {
@@ -174,7 +191,7 @@ export function TriggersPanel() {
           ) : null}
           {group.triggers.map((trigger) => {
             const unregistered = isUnregisteredTarget(projectRegistry, trigger.project_path)
-            const activationError = trigger.state.activation_error
+            const problem = triggerProblem(trigger)
             return (
               <SidePanelRow
                 key={triggerKey(trigger)}
@@ -183,15 +200,15 @@ export function TriggersPanel() {
                 data-unregistered-target={unregistered ? 'true' : undefined}
                 selected={selectedTriggerId === triggerKey(trigger) && !createFormOpen}
                 // A disabled trigger is the exception: hollow dot plus the word.
-                // One the server could not turn on is a problem: red dot plus why.
-                tone={activationError ? 'danger' : 'neutral'}
-                hollow={!trigger.enabled && !activationError}
+                // One the server could not turn on, or whose last firing failed, is a problem: red dot plus why.
+                tone={problem ? 'danger' : 'neutral'}
+                hollow={!trigger.enabled && !problem}
                 title={trigger.name}
                 meta={(
                   <>
                     {/* First, so a narrow row never truncates it away. */}
-                    {activationError ? <span className="text-destructive" title={activationError}>Not running · </span> : null}
-                    {trigger.enabled || activationError ? null : 'Disabled · '}
+                    {problem ? <span data-testid="trigger-row-problem" className="text-destructive" title={problem.detail}>{problem.label} · </span> : null}
+                    {trigger.enabled || problem ? null : 'Disabled · '}
                     <span
                       data-testid="trigger-row-project"
                       title={trigger.project_path}
@@ -235,6 +252,8 @@ export function TriggersPanel() {
       panel={panel}
       selected={createFormOpen ? 'new' : selectedTriggerId}
     >
+    {/* On a phone the list alone shows until a trigger is picked, unless there's a problem to say. */}
+    {isNarrowViewport && nothingPicked && !error && issues.length === 0 ? null : (
     <section data-testid="triggers-panel" className="flex h-full flex-col overflow-auto p-6">
       <div className="flex w-full max-w-3xl flex-col gap-6">
         {error ? (
@@ -265,13 +284,14 @@ export function TriggersPanel() {
                   mode="create"
                   protectedTrigger={false}
                   errors={newTriggerErrors}
+                  flowInputs={newFlowInputs}
                 />
                 <div className="mt-6 flex flex-wrap gap-2">
                   <Button
                     type="button"
                     data-testid="trigger-create-button"
                     size="sm"
-                    disabled={pending || isRegenerating || !newTriggerForm.projectPath}
+                    disabled={pending || isRegenerating || !newTriggerForm.projectPath || newFlowInputs === null}
                     onClick={() => void onCreateTrigger()}
                   >
                     Create trigger
@@ -288,6 +308,7 @@ export function TriggersPanel() {
                   >
                     Close
                   </Button>
+                  {newFlowInputs === null ? <InputsLoading retry={retryNewFlowInputs} /> : null}
                 </div>
               </CardContent>
             </Card>
@@ -333,6 +354,7 @@ export function TriggersPanel() {
                   mode="edit"
                   protectedTrigger={selectedTrigger.protected}
                   errors={editTriggerErrors}
+                  flowInputs={editFlowInputs}
                 />
 
                 {selectedTrigger.source_type === 'webhook' ? (
@@ -400,23 +422,25 @@ export function TriggersPanel() {
                     type="button"
                     data-testid="trigger-save-button"
                     size="sm"
-                    disabled={pending || isRegenerating}
+                    disabled={pending || isRegenerating || editFlowInputs === null}
                     onClick={() => void onSaveSelectedTrigger()}
                   >
                     Save
                   </Button>
                   <Button aria-label="Discard selected trigger changes" type="button" variant="ghost" size="sm" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
+                  {editFlowInputs === null ? <InputsLoading retry={retryEditFlowInputs} /> : null}
                 </div>
               </CardContent>
             </Card>
           ) : null}
       </div>
-      {!createFormOpen && !(selectedTrigger && editTriggerForm) ? (
+      {nothingPicked && !isNarrowViewport ? (
         <SheetEmpty icon={Zap} title="No trigger selected" className="h-auto flex-1">
           Triggers start flows on a schedule, on events, or from webhooks. Select one or create a new one.
         </SheetEmpty>
       ) : null}
     </section>
+    )}
     </ViewLayout>
   )
 }

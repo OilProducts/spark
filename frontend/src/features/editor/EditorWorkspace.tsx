@@ -39,11 +39,23 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     const activeFlow = useStore((state) => state.activeFlow)
     // A flow that failed to load has no inspector to resize.
     const hasActiveFlow = useStore((state) => Boolean(state.activeFlow) && !flowLoadFailed(state.flowLoadFailure, state.activeFlow, state.activeProjectPath))
+    // Files mode has no inspector either.
+    const isFilesMode = useStore((state) => state.editorMode === 'files')
     const catalog = useFlowCatalogPanel()
     const [isEditorSidebarResizing, setIsEditorSidebarResizing] = useState(false)
     const workspaceRef = useRef<HTMLDivElement | null>(null)
     const editorSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
     const effectiveIsEditorSidebarResizing = isEditorSidebarResizing && !isNarrowViewport
+    // A narrowing window takes width from the sidebar, down to its minimum, before the canvas; the saved width returns as it widens.
+    const [workspaceWidth, setWorkspaceWidth] = useState(0)
+    useEffect(() => {
+        const element = workspaceRef.current
+        if (!element || typeof ResizeObserver === 'undefined') return
+        const observer = new ResizeObserver(([entry]) => setWorkspaceWidth(entry.contentRect.width))
+        observer.observe(element)
+        return () => observer.disconnect()
+    }, [])
+    const sidebarWidth = clampEditorSidebarWidth(editorSidebarWidth, workspaceWidth)
 
     const persistSidebarWidth = () => completePreferenceInteraction({ editor_sidebar_width: useStore.getState().editorSidebarWidth })
 
@@ -52,7 +64,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
         if (containerWidth <= 0) {
             return
         }
-        setEditorSidebarWidth(clampEditorSidebarWidth(editorSidebarWidth + delta, containerWidth))
+        setEditorSidebarWidth(clampEditorSidebarWidth(sidebarWidth + delta, containerWidth))
         persistSidebarWidth()
     }
 
@@ -62,7 +74,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
         }
         editorSidebarResizeRef.current = {
             startX: event.clientX,
-            startWidth: editorSidebarWidth,
+            startWidth: sidebarWidth,
         }
         setIsEditorSidebarResizing(true)
         document.body.style.cursor = 'col-resize'
@@ -105,26 +117,11 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
             document.body.style.userSelect = ''
             return
         }
-
-        const syncEditorSidebarWidth = () => {
-            const containerWidth = workspaceRef.current?.getBoundingClientRect().width || 0
-            if (containerWidth <= 0) {
-                return
-            }
-            const nextWidth = clampEditorSidebarWidth(editorSidebarWidth, containerWidth)
-            if (nextWidth !== editorSidebarWidth) {
-                setEditorSidebarWidth(nextWidth)
-            }
-        }
-
-        syncEditorSidebarWidth()
-        window.addEventListener('resize', syncEditorSidebarWidth)
         return () => {
-            window.removeEventListener('resize', syncEditorSidebarWidth)
             document.body.style.cursor = ''
             document.body.style.userSelect = ''
         }
-    }, [editorSidebarWidth, isNarrowViewport, setEditorSidebarWidth])
+    }, [isNarrowViewport])
 
     useEffect(() => {
         if (!effectiveIsEditorSidebarResizing) {
@@ -184,8 +181,8 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                 <ReactFlowProvider>
                     <CanvasSessionModeProvider mode="editor">
                         <EditorGraphBridgeProvider>
-                            {isNarrowViewport ? null : <Sidebar desktopWidthPx={editorSidebarWidth} />}
-                            {!isNarrowViewport && hasActiveFlow ? (
+                            {isNarrowViewport ? null : <Sidebar desktopWidthPx={sidebarWidth} />}
+                            {!isNarrowViewport && hasActiveFlow && !isFilesMode ? (
                                 <div
                                     data-testid="editor-sidebar-resize-handle"
                                     role="separator"
@@ -205,7 +202,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                                 <Editor isActive={isActive} flowList={{ failed: catalog.loadFailed, retry: () => void catalog.refreshFlows() }} />
                             </div>
                             {/* Stacked, the canvas comes first, right under the flow list, and the inspector follows. */}
-                            {isNarrowViewport ? <Sidebar desktopWidthPx={editorSidebarWidth} /> : null}
+                            {isNarrowViewport ? <Sidebar desktopWidthPx={sidebarWidth} /> : null}
                         </EditorGraphBridgeProvider>
                     </CanvasSessionModeProvider>
                 </ReactFlowProvider>

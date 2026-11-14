@@ -442,6 +442,34 @@ describe('ProjectConversationHistory', () => {
         expect(onRetryTurn).toHaveBeenCalledWith('turn-failed')
     })
 
+    it.each([
+        ['with no segments', []],
+        ['with its failed answer segment', [{
+            id: 'answer', turn_id: 'turn-failed', order: 1, kind: 'assistant_message', role: 'assistant', status: 'failed', timestamp: '2026-03-10T10:00:00Z',
+            updated_at: '2026-03-10T10:00:00Z', completed_at: '2026-03-10T10:00:00Z', content: 'Ack', artifact_id: null,
+            error: 'codex app-server completed the turn without a final answer item.', source: null, tool_call: null,
+        }]],
+    ])('shows a failed chat turn\'s error beside its partial answer, %s', async (_label, segments) => {
+        const at = '2026-03-10T10:00:00Z'
+        const entries = getConversationTimelineEntries(applyConversationPage(undefined, parseConversationPageResponse(conversationPage({
+            revision: 0, conversation_id: 'conversation-1', conversation_handle: 'thread-1', project_path: '/tmp/project',
+            chat_mode: 'chat', title: 'Chat', created_at: at, updated_at: at,
+            turns: [
+                { id: 'turn-user', role: 'user', content: 'Hi', timestamp: at, kind: 'message', status: 'complete', artifact_id: null, position: 1 },
+                { id: 'turn-failed', role: 'assistant', content: 'Ack', timestamp: at, kind: 'message', status: 'failed', artifact_id: null, error: 'codex app-server completed the turn without a final answer item.', position: 2 },
+            ],
+            segments,
+            flow_run_requests: [], flow_launches: [], proposed_plans: [],
+        })), 'window') ?? null)
+        const onRetryTurn = vi.fn()
+        renderHistory(entries, { onRetryTurn })
+
+        expect(screen.getByText('Ack')).toBeInTheDocument()
+        expect(screen.getByText('codex app-server completed the turn without a final answer item.')).toBeInTheDocument()
+        await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+        expect(onRetryTurn).toHaveBeenCalledWith('turn-failed')
+    })
+
     it('keeps successful copy feedback for 2 seconds, restarts it, and cleans up on unmount', async () => {
         vi.useFakeTimers()
         const writeText = vi.fn().mockResolvedValue(undefined)

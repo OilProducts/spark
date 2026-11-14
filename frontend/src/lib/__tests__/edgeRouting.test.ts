@@ -131,4 +131,22 @@ describe('edgeRouting', () => {
         const taken = { left: 30, right: 115, top: 30, bottom: 50 }
         expect(routeLabelAnchor(route, [crossing, alongside], [taken])).toEqual({ x: 0, y: 20 })
     })
+
+    it('sets a self-loop\'s label beside the loop when every spot on it covers the node', () => {
+        const node = { left: 0, right: 200, top: 0, bottom: 80 }
+        const loop = [{ x: 200, y: 20 }, { x: 220, y: 20 }, { x: 220, y: 60 }, { x: 200, y: 60 }]
+        expect(routeLabelAnchor(loop, [], [node])).toEqual({ x: 250, y: 40 })
+        // Routes running past the loop's far side still beat hiding the label under the node.
+        const past = [0, 1, 2].map((at) => [{ x: 240 + 10 * at, y: -50 }, { x: 240 + 10 * at, y: 150 }])
+        const size = { width: 80, height: 20 }
+        const anchor = routeLabelAnchor(loop, past, [node], size, [node])
+        expect(anchor.x - size.width / 2).toBeGreaterThanOrEqual(node.right)
+        // With a neighbour 40px away, too close for the label, it clears both nodes past the loop's end.
+        const neighbour = { left: 240, right: 440, top: 0, bottom: 80 }
+        const hemmed = routeLabelAnchor(loop, [], [node, neighbour], size, [node, neighbour])
+        const box = { left: hemmed.x - 40, right: hemmed.x + 40, top: hemmed.y - 10, bottom: hemmed.y + 10 }
+        for (const other of [node, neighbour]) {
+            expect(box.right <= other.left || box.left >= other.right || box.bottom <= other.top || box.top >= other.bottom).toBe(true)
+        }
+    })
 })

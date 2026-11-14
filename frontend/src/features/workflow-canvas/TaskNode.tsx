@@ -193,7 +193,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const displayStatus = isWaiting ? 'waiting' : status
     const containerStyle = getWorkflowNodeContainerStyle(renderedShape)
     const handleClassName = cn(
-        'h-2.5 w-2.5 transition-opacity',
+        // Above the content layer, so a drag from anywhere on a handle wires a route instead of moving the node.
+        'z-20 h-2.5 w-2.5 transition-opacity',
         isEditorCanvas && !isReadOnlyEditorCanvas
             ? 'border-border/70 bg-background opacity-0 group-hover:opacity-100'
             : 'pointer-events-none border-transparent bg-transparent opacity-0',
@@ -398,7 +399,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         )}
                         title={diagnosticsForNode.map((diag) => diag.message).join('\n')}
                     >
-                        {diagnosticsCount} {hasDiagnosticError ? 'Error' : hasDiagnosticWarning ? 'Warn' : 'Info'}
+                        {diagnosticsCount} {hasDiagnosticError ? 'error' : hasDiagnosticWarning ? 'warning' : 'note'}{diagnosticsCount === 1 ? '' : 's'}
                     </div>
                 )}
             </div>
@@ -494,10 +495,11 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         {visibility.showToolCommand && (
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-foreground">Tool command</label>
-                                <input
+                                <textarea
                                     value={draftToolCommand}
                                     onChange={(event) => setDraftToolCommand(event.target.value)}
-                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    spellCheck={false}
+                                    className="nodrag nowheel h-20 w-full resize-none rounded-md border border-input bg-background px-2 py-1 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     placeholder="e.g. cargo test -p spark-cli"
                                 />
                             </div>

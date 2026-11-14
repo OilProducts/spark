@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 
 import { buildHydratedFlowGraph, layoutWithElk } from '@/features/workflow-canvas/flowCanvasShared'
 import { filterAuthoredEdges, filterAuthoredNodes } from '@/features/workflow-canvas/derivedPreview'
+import { routeLabels } from '@/features/workflow-canvas/ValidationEdge'
 import { EDGE_RENDER_ROUTE_KEY } from '@/lib/flowLayout'
 import type { PreviewResponsePayload } from '@/lib/attractorClient'
 import {
@@ -663,8 +664,8 @@ describe('flowCanvasShared', () => {
             title: 'Roles',
             nodes: {
                 start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'first', description: 'Enter the first workflow step.' } } },
-                first: { kind: 'agent_task', label: 'First', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review A.' }, routes: { done: { to: 'second', description: 'Reviewed.' } } },
-                second: { kind: 'agent_task', label: 'Second', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review B.' }, routes: done },
+                first: { kind: 'agent_task', label: 'First', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review A.' }, contracts: { response: 'decision_envelope' }, routes: { done: { to: 'second', description: 'Reviewed.' } } },
+                second: { kind: 'agent_task', label: 'Second', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review B.' }, contracts: { response: 'decision_envelope' }, routes: done },
                 done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
             },
         }
@@ -721,6 +722,62 @@ describe('flowCanvasShared', () => {
         expect(cleared.nodes.work.runtime?.session).toBeUndefined()
         const reloaded = saveWith(cleared as typeof flow, (data) => data)
         expect(reloaded.nodes.work.runtime?.session).toBeUndefined()
+    })
+
+    it('saves cleared flow inputs, defaults, metadata and node fields as cleared, and the result settings where the runtime reads them', () => {
+        const flow = {
+            schema_version: '2',
+            id: 'cleared',
+            title: 'Cleared',
+            inputs: [{ key: 'context.request.version', label: 'Version', type: 'string', required: true }],
+            defaults: { llm_model: 'model-a', llm_provider: 'provider-a', reasoning_effort: 'high', max_retries: 2 },
+            metadata: { team: 'ops', 'spark.result_node': 'work' },
+            nodes: {
+                start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'work', description: 'Enter the first workflow step.' } } },
+                work: { kind: 'agent_task', label: 'Work', description: 'Does the work.', execution: { llm_model: 'model-b', reasoning_effort: 'low' }, retry: { max_retries: 3 }, runtime: { class: 'heavy' }, config: { kind: 'agent_task', prompt: 'Work.' }, contracts: { response: 'decision_envelope', reads_context: ['context.request.version'] }, routes: { done: { to: 'done', description: 'Worked.' } } },
+                done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
+            },
+        }
+        const hydrated = buildHydratedFlowGraph('cleared', { status: 'ok', flow, graph: flowDefinitionToPreviewGraph(flow) }, {
+            llm_model: '',
+            llm_provider: '',
+            reasoning_effort: '',
+        })
+        const unchanged = buildFlow('cleared', hydrated?.nodes ?? [], hydrated?.edges ?? [], hydrated?.flowMetadata ?? {}, hydrated?.flow)
+        expect(unchanged.inputs).toEqual(flow.inputs)
+        expect(unchanged.defaults).toEqual(flow.defaults)
+        expect(unchanged.metadata).toEqual(flow.metadata)
+        expect(unchanged.nodes.work).toEqual(flow.nodes.work)
+
+        const metadata = { ...hydrated?.flowMetadata, inputs: '', llm_model: '', llm_provider: '', reasoning_effort: '', max_retries: '' } as Record<string, unknown>
+        delete metadata.team
+        const nodes = (hydrated?.nodes ?? []).map((node) => {
+            if (node.id === 'work') {
+                return { ...node, data: { ...node.data, description: '', llm_model: '', reasoning_effort: '', max_retries: '', class: '', 'spark.reads_context': '[]' } }
+            }
+            if (node.id === 'done') {
+                return { ...node, data: { ...node.data, config: { ...(node.data.config as object), result_summary: true, result_summary_prompt: 'Say what shipped.' } } }
+            }
+            return node
+        })
+        const saved = buildFlow('cleared', nodes, hydrated?.edges ?? [], metadata, hydrated?.flow)
+
+        expect(saved.inputs).toEqual([])
+        expect(saved.defaults ?? {}).toEqual({})
+        expect(saved.metadata).toEqual({ 'spark.result_node': 'work' })
+        expect(saved.nodes.work).toEqual({
+            kind: 'agent_task',
+            label: 'Work',
+            config: { kind: 'agent_task', prompt: 'Work.' },
+            contracts: { response: 'decision_envelope' },
+            routes: { done: { to: 'done', description: 'Worked.' } },
+        })
+        expect(saved.nodes.done.config).toEqual({
+            kind: 'exit',
+            result: { name: 'completed', outcome: 'success' },
+            result_summary: true,
+            result_summary_prompt: 'Say what shipped.',
+        })
     })
 
     it('does not materialize implicit node or graph defaults when saving after apply-to-nodes style edits', () => {
@@ -841,7 +898,9 @@ describe('flowCanvasShared', () => {
         ).toBe(true)
         expect(firstLayout.edges.every((edge) => (getRenderRoute(edge)?.length ?? 0) >= 2)).toBe(true)
         expect(summarizeLaidOutGraph(secondLayout)).toEqual(summarizeLaidOutGraph(firstLayout))
-    })
+    // Two full layouts of the largest bundled flows; on a machine busy with the rest of the suite
+    // that is several seconds.
+    }, 30_000)
 
     it('filters derived child preview nodes and edges out of the saved flow', () => {
         const preview: PreviewResponsePayload = {
@@ -1051,8 +1110,8 @@ describe('schema-2 routes and fork structure', () => {
             nodes: {
                 start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'fork', description: 'Enter the first workflow step.' } } },
                 fork: { kind: 'parallel', label: 'Fork', config: { kind: 'parallel', branches: ['a', 'b'], join: 'join', tolerate_branch_execution_errors: true } },
-                a: { kind: 'agent_task', label: 'A', config: { kind: 'agent_task', prompt: 'A.' }, routes: { done: { to: 'join', description: 'Done.' } } },
-                b: { kind: 'agent_task', label: 'B', config: { kind: 'agent_task', prompt: 'B.' }, routes: { done: { to: 'join', description: 'Done.' } } },
+                a: { kind: 'agent_task', label: 'A', config: { kind: 'agent_task', prompt: 'A.' }, contracts: { response: 'decision_envelope' }, routes: { done: { to: 'join', description: 'Done.' } } },
+                b: { kind: 'agent_task', label: 'B', config: { kind: 'agent_task', prompt: 'B.' }, contracts: { response: 'decision_envelope' }, routes: { done: { to: 'join', description: 'Done.' } } },
                 join: { kind: 'fan_in', label: 'Join', config: { kind: 'fan_in' }, routes: { next: { to: 'done', description: 'All branches settled.' } } },
                 done: exitNode('completed', 'success'),
             },
@@ -1069,5 +1128,37 @@ describe('schema-2 routes and fork structure', () => {
         const withoutB = hydrated.edges.filter((edge) => !(edge.source === 'fork' && edge.target === 'b'))
         expect(buildFlow('forking', hydrated.nodes, withoutB, hydrated.flowMetadata, hydrated.flow).nodes.fork.config)
             .toEqual({ ...forkFlow.nodes.fork.config, branches: ['a'] })
+    })
+
+    it('gives every agent task the decision response contract and drops it from other kinds', () => {
+        const hydrated = hydrate({
+            schema_version: '2',
+            id: 'kinds',
+            title: 'Kinds',
+            nodes: {
+                start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'work', description: 'Begin.' } } },
+                work: { kind: 'agent_task', label: 'Work', config: { kind: 'agent_task', prompt: 'Work.' }, routes: { done: { to: 'done', description: 'Done.' } } },
+                done: exitNode('completed', 'success'),
+            },
+        })
+        const added = { ...hydrated.nodes[1], id: 'step_1', data: { label: 'New step', kind: 'agent_task' } }
+        const saved = buildFlow('kinds', [...hydrated.nodes, added], hydrated.edges, hydrated.flowMetadata, hydrated.flow)
+        expect(saved.nodes.work.contracts).toEqual({ response: 'decision_envelope' })
+        expect(saved.nodes.step_1.contracts).toEqual({ response: 'decision_envelope' })
+        const gate = hydrated.nodes.map((node) => node.id === 'work' ? { ...node, data: { ...node.data, kind: 'human_gate' } } : node)
+        expect(buildFlow('kinds', gate, hydrated.edges, hydrated.flowMetadata, saved).nodes.work.contracts).toBeUndefined()
+    })
+})
+
+describe('routeLabels', () => {
+    const edge = (id: string, source: string, data: Record<string, unknown>, hidden = false) => ({ id, source, target: `${id}_to`, data, hidden })
+    it('names a choosing node\'s routes by decision, keeps explicit labels and leaves a lone route bare', () => {
+        const labels = routeLabels([
+            edge('a', 'review', { decision: 'needs_changes' }),
+            edge('b', 'review', { decision: 'approved', label: 'Ship it' }),
+            edge('c', 'build', { decision: 'done' }),
+            edge('d', 'build', { decision: 'retry' }, true),
+        ])
+        expect(Object.fromEntries(labels)).toEqual({ a: 'needs changes', b: 'Ship it', c: '', d: '' })
     })
 })

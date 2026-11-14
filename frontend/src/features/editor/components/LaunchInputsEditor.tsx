@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import type { LaunchInputDefinition, LaunchInputType } from '@/lib/flowContracts'
 import { Button } from '@/components/ui/button'
 import { Well } from '@/components/app/well'
@@ -23,6 +24,8 @@ interface LaunchInputsEditorProps {
 }
 
 export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEditorProps) {
+    // Each field is named by its visible label.
+    const fieldId = `${useId()}-launch-input`
     const updateEntry = (index: number, patch: Partial<LaunchInputDefinition>) => {
         onChange(entries.map((entry, entryIndex) => (
             entryIndex === index ? { ...entry, ...patch } : entry
@@ -59,10 +62,11 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                     data-testid={`graph-launch-input-row-${index}`}
                     className="space-y-3 rounded-lg bg-background px-3 py-3"
                 >
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid gap-3">
                         <Field>
-                            <FieldLabel>Label</FieldLabel>
+                            <FieldLabel htmlFor={`${fieldId}-label-${index}`}>Label</FieldLabel>
                             <Input
+                                id={`${fieldId}-label-${index}`}
                                 data-testid={`graph-launch-input-label-${index}`}
                                 value={entry.label}
                                 onChange={(event) => updateEntry(index, { label: event.target.value })}
@@ -71,8 +75,9 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                             />
                         </Field>
                         <Field>
-                            <FieldLabel>Type</FieldLabel>
+                            <FieldLabel htmlFor={`${fieldId}-type-${index}`}>Type</FieldLabel>
                             <NativeSelect
+                                id={`${fieldId}-type-${index}`}
                                 data-testid={`graph-launch-input-type-${index}`}
                                 value={entry.type}
                                 onChange={(event) => updateEntry(index, { type: event.target.value as LaunchInputType })}
@@ -87,8 +92,9 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                         </Field>
                     </div>
                     <Field>
-                        <FieldLabel>Context key</FieldLabel>
+                        <FieldLabel htmlFor={`${fieldId}-key-${index}`}>Context key</FieldLabel>
                         <Input
+                            id={`${fieldId}-key-${index}`}
                             data-testid={`graph-launch-input-key-${index}`}
                             value={entry.key}
                             onChange={(event) => updateEntry(index, { key: event.target.value })}
@@ -97,8 +103,9 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                         />
                     </Field>
                     <Field>
-                        <FieldLabel>Description</FieldLabel>
+                        <FieldLabel htmlFor={`${fieldId}-description-${index}`}>Description</FieldLabel>
                         <Textarea
+                            id={`${fieldId}-description-${index}`}
                             data-testid={`graph-launch-input-description-${index}`}
                             value={entry.description}
                             onChange={(event) => updateEntry(index, { description: event.target.value })}
@@ -120,6 +127,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                             type="button"
                             data-testid={`graph-launch-input-remove-${index}`}
                             onClick={() => removeEntry(index)}
+                            aria-label={`Remove launch input ${entry.label.trim() || index + 1}`}
                             variant="outline"
                             size="sm"
                             className="text-muted-foreground hover:text-foreground"

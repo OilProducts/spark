@@ -2,6 +2,7 @@ import type { TriggerResponse, TriggerSourceType } from '@/lib/workspaceClient'
 import { normalizeProjectPath } from '@/lib/projectPaths'
 import type { RegisteredProject } from '@/state/store-types'
 import { isUnregisteredTarget, projectLabel } from '@/features/projects/model/projectChoices'
+import { buildLaunchContextFromValues, launchContextToFormValues, type LaunchInputDefinition } from '@/lib/flowContracts'
 
 export type { TriggerSourceType }
 
@@ -16,6 +17,8 @@ export type TriggerFormState = {
     /** The project the trigger belongs to; chosen only on create. */
     projectPath: string
     staticContextText: string
+    /** The flow's launch inputs as typed, by input key; saved into the static context under those keys. */
+    launchInputValues: Record<string, string>
     scheduleKind: 'once' | 'interval' | 'weekly'
     /** A `datetime-local` value, in the browser's time zone. */
     scheduleRunAt: string
@@ -47,6 +50,7 @@ const BASE_TRIGGER_FORM: Omit<TriggerFormState, 'projectPath' | 'scheduleTimezon
     roleName: '',
     flowName: '',
     staticContextText: '',
+    launchInputValues: {},
     scheduleKind: 'interval',
     scheduleRunAt: '',
     scheduleInterval: '5',
@@ -96,6 +100,18 @@ export function formatTriggerTimestamp(value?: string | null, now = Date.now()):
 }
 
 /** A trigger result in a word: "Succeeded", "Failed", else the status capitalized. */
+/**
+ * What is wrong with a trigger, for its row and the views that flag it; null when nothing is.
+ * A disabled trigger fires no more, so only a failed activation still counts for it.
+ */
+export function triggerProblem(trigger: Pick<TriggerResponse, 'enabled' | 'state'>): { label: string; detail: string } | null {
+    if (trigger.state.activation_error) return { label: 'Not running', detail: trigger.state.activation_error }
+    if (trigger.enabled && (trigger.state.last_result === 'failed' || trigger.state.last_result === 'failure')) {
+        return { label: 'Last firing failed', detail: trigger.state.last_error || 'Its last firing failed.' }
+    }
+    return null
+}
+
 export function formatTriggerResult(status?: string | null): string {
     if (!status) return 'Never'
     if (status === 'success') return 'Succeeded'
@@ -201,10 +217,18 @@ const TIME_INPUT = /^([01]\d|2[0-3]):[0-5]\d$/
 export type TriggerFieldErrors = Partial<Record<keyof TriggerFormState, string>>
 
 /**
- * What must be fixed before saving, by field, in plain words. A protected
- * trigger only edits its name and flow.
+ * What is wrong with each of the flow's launch inputs, by key. A disabled trigger
+ * starts no run, so it may leave a required input unset; a value it sets must still be valid.
  */
-export function validateTriggerForm(form: TriggerFormState, protectedTrigger = false): TriggerFieldErrors {
+export const triggerLaunchInputErrors = (form: TriggerFormState, inputs: LaunchInputDefinition[]) => (
+    buildLaunchContextFromValues(form.enabled ? inputs : inputs.map((entry) => ({ ...entry, required: false })), form.launchInputValues).errors
+)
+
+/**
+ * What must be fixed before saving, by field, in plain words. A protected
+ * trigger only edits its name and flow. `inputs` are the chosen flow's launch inputs.
+ */
+export function validateTriggerForm(form: TriggerFormState, protectedTrigger = false, inputs: LaunchInputDefinition[] = []): TriggerFieldErrors {
     const errors: TriggerFieldErrors = {}
     const json = (key: 'staticContextText' | 'pollHeadersText', example: string) => {
         if (!parseJsonObject(form[key])) errors[key] = `This isn't a valid JSON object. Write it in braces, like ${example}, or leave it empty.`
@@ -214,6 +238,9 @@ export function validateTriggerForm(form: TriggerFormState, protectedTrigger = f
     if (protectedTrigger) return errors
     if (form.actionMode === 'role' && !form.roleName.trim()) errors.roleName = 'Enter the standing role to send to.'
     if (form.actionMode === 'static') json('staticContextText', '{"branch": "main"}')
+    if (form.actionMode === 'static' && Object.keys(triggerLaunchInputErrors(form, inputs)).length) {
+        errors.launchInputValues = 'Fill in what each run needs.'
+    }
     if (form.sourceType === 'schedule' && form.scheduleKind === 'interval' && !intervalSeconds(form.scheduleInterval, form.scheduleIntervalUnit)) {
         errors.scheduleInterval = 'Enter a number greater than zero.'
     }
@@ -275,21 +302,33 @@ export function buildTriggerSourcePayload(form: TriggerFormState): Record<string
     return {}
 }
 
-export function buildTriggerActionPayload(form: TriggerFormState): Record<string, unknown> {
+/** The action as the server takes it; launch inputs join the static context under their keys. */
+export function buildTriggerActionPayload(form: TriggerFormState, inputs: LaunchInputDefinition[] = []): Record<string, unknown> {
     if (form.actionMode === 'mission') return { mode: 'mission', mission_id: form.missionId }
     if (form.actionMode === 'role') return { mode: 'role', role: form.roleName.trim() }
 
     return {
         flow_name: form.flowName.trim(),
-        static_context: parseJsonObject(form.staticContextText),
+        static_context: {
+            ...parseJsonObject(form.staticContextText),
+            ...buildLaunchContextFromValues(inputs, form.launchInputValues).launchContext,
+        },
     }
 }
 
 const pad = (value: number) => String(value).padStart(2, '0')
 const jsonText = (value: unknown) => value && typeof value === 'object' && Object.keys(value).length ? JSON.stringify(value, null, 2) : ''
 
-export function triggerToFormState(trigger: TriggerResponse): TriggerFormState {
+/**
+ * The trigger as a form. The flow's launch inputs (`inputs`, when known)
+ * come out of the static context into their own fields; the rest stays extra data.
+ */
+export function triggerToFormState(trigger: TriggerResponse, inputs: LaunchInputDefinition[] = []): TriggerFormState {
     const source = trigger.source
+    const staticContext = { ...trigger.action.static_context }
+    const setInputs = inputs.filter((entry) => entry.key in staticContext)
+    const launchInputValues = launchContextToFormValues(setInputs, staticContext)
+    setInputs.forEach((entry) => delete staticContext[entry.key])
     const interval = splitInterval(typeof source.interval_seconds === 'number' ? source.interval_seconds : 300)
     return {
         name: trigger.name,
@@ -300,7 +339,8 @@ export function triggerToFormState(trigger: TriggerResponse): TriggerFormState {
         roleName: trigger.action.role ?? '',
         flowName: trigger.action.flow_name,
         projectPath: trigger.project_path,
-        staticContextText: jsonText(trigger.action.static_context),
+        staticContextText: jsonText(staticContext),
+        launchInputValues,
         scheduleKind: (typeof source.kind === 'string' ? source.kind : 'interval') as 'once' | 'interval' | 'weekly',
         scheduleRunAt: typeof source.run_at === 'string' ? toLocalDateTimeInput(source.run_at) : '',
         scheduleInterval: interval.value,

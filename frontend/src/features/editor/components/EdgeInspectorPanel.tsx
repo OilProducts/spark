@@ -31,6 +31,9 @@ interface EdgeInspectorPanelProps {
     ) => ReactNode
 }
 
+/** Marks a field a route can't save without; the field itself says so with aria-required. */
+const RequiredMark = () => <span aria-hidden="true" className="text-destructive">*</span>
+
 export function EdgeInspectorPanel({
     selectedEdge,
     selectedEdgeExtensionEntries,
@@ -70,9 +73,10 @@ export function EdgeInspectorPanel({
                         ) : (
                             <>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-decision`}>Decision ID</Label>
+                                    <Label htmlFor={`${id}-decision`}>Decision ID<RequiredMark /></Label>
                                     <Input
                                         id={`${id}-decision`}
+                                        aria-required
                                         value={(selectedEdge.data?.decision as string) || ''}
                                         onChange={(event) => onPropertyChange('decision', event.target.value)}
                                         className="font-mono text-sm"
@@ -81,9 +85,10 @@ export function EdgeInspectorPanel({
                                     {renderFieldDiagnostics('edge', 'decision', edgeFieldDiagnostics, 'edge-field-diagnostics-decision')}
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label htmlFor={`${id}-description`}>Description</Label>
+                                    <Label htmlFor={`${id}-description`}>Description<RequiredMark /></Label>
                                     <Textarea
                                         id={`${id}-description`}
+                                        aria-required
                                         value={(selectedEdge.data?.description as string) || ''}
                                         onChange={(event) => onPropertyChange('description', event.target.value)}
                                         placeholder="What choosing this decision means."

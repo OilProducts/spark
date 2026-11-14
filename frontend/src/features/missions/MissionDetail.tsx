@@ -136,13 +136,13 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     async function end(cancel: boolean) {
         const live = triggers.filter(trigger => trigger.enabled).length
         const confirmed = await confirm({
-            title: cancel ? 'Cancel mission?' : 'Close mission as done?',
+            title: cancel ? 'Cancel mission?' : 'Mark mission done?',
             description: [
                 cancel ? 'Its agent stops and its unfinished runs are canceled.' : 'Its agent stops; runs already going finish on their own.',
                 live ? `${live === 1 ? 'The trigger aimed at it turns' : `The ${live} triggers aimed at it turn`} off.` : '',
                 'A closed mission can’t be reopened.',
             ].filter(Boolean).join(' '),
-            confirmLabel: cancel ? 'Cancel mission' : 'Close mission',
+            confirmLabel: cancel ? 'Cancel mission' : 'Mark done',
             cancelLabel: 'Keep it open',
             confirmVariant: cancel ? 'destructive' : 'default',
         })
@@ -177,8 +177,8 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             <div className="flex shrink-0 items-center gap-1.5">
                 {status === 'draft' && <><Button type="button" size="sm" disabled={disabled} onClick={() => void control('start')}>Start</Button>
                     <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={edit}>Edit</Button></>}
-                {(status === 'running' || status === 'needs_you') && <><Button type="button" size="sm" variant="outline" aria-label="Close mission" disabled={disabled} onClick={() => void end(false)}>Close</Button>
-                    <Button type="button" size="sm" variant="ghost" aria-label="Cancel mission" disabled={disabled} onClick={() => void end(true)}>Cancel</Button></>}
+                {(status === 'running' || status === 'needs_you') && <><Button type="button" size="sm" variant="outline" aria-label="Mark mission done" disabled={disabled} onClick={() => void end(false)}>Mark done</Button>
+                    <Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => void end(true)}>Cancel mission</Button></>}
                 {closed && <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => void archive(!mission.fields.archived)}>{mission.fields.archived ? 'Restore' : 'Archive'}</Button>}
                 <DropdownMenu.Root>
                     <DropdownMenu.Trigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Mission actions" disabled={disabled}><MoreHorizontal aria-hidden="true" className="size-4" /></Button></DropdownMenu.Trigger>
@@ -191,11 +191,13 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                         </DropdownMenu.Content>
                     </DropdownMenu.Portal>
                 </DropdownMenu.Root>
-                <Button type="button" variant="ghost" size="icon-sm" aria-label="Close details" disabled={busy} onClick={close}><X aria-hidden="true" className="size-4" /></Button>
+                {/* Closing the details is not a mission action; a rule keeps it apart from them. */}
+                <span aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
+                <Button type="button" variant="ghost" size="icon-sm" aria-label="Close details" title="Close details" disabled={busy} onClick={close}><X aria-hidden="true" className="size-4" /></Button>
             </div>
         </header>
         {(error || actionError) && <div className="shrink-0 px-6 pt-4"><InlineError>{error || actionError}</InlineError></div>}
-        <div data-testid="mission-body" {...(narrow ? { ref: follow.ref, onScroll: follow.onScroll } : {})} className={narrow ? 'min-h-0 flex-1 overflow-y-auto' : 'flex min-h-0 flex-1'}>
+        <div data-testid="mission-body" {...(narrow ? { ref: follow.ref, onScroll: follow.onScroll } : {})} className={narrow ? 'flex min-h-0 flex-1 flex-col overflow-y-auto' : 'flex min-h-0 flex-1'}>
             <div data-testid="mission-conversation" className={`flex min-w-0 flex-col ${narrow ? '' : 'min-h-0 flex-1'}`}>
                 <ChatPane follow={follow} scrolls={!narrow} hasContent={status !== 'draft'} composer={closed ? undefined : {
                     label: 'Reply',
@@ -230,7 +232,8 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                     </div>
                 </ChatPane>
             </div>
-            <aside aria-label="Mission overview" className={narrow ? 'px-6 pb-6' : 'w-64 shrink-0 overflow-y-auto py-5 pr-6 xl:w-80'}>
+            {/* Stacked, the overview leads, so the conversation, its question and the reply box end the scroll. */}
+            <aside aria-label="Mission overview" className={narrow ? 'order-first px-6 pt-5' : 'w-64 shrink-0 overflow-y-auto py-5 pr-6 xl:w-80'}>
                 <Well className="flex flex-col gap-5 text-sm">
                     <RailSection label="Objective">
                         <p ref={objectiveText} tabIndex={0} className={`leading-relaxed whitespace-pre-wrap break-words focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${objectiveOpen ? '' : 'line-clamp-4'}`}>{objective}</p>

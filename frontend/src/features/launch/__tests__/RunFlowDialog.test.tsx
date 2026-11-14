@@ -1,17 +1,19 @@
-import { act, render, screen, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import { useStore } from '@/store'
-import { RunFlowDialog, groupFlows, openRunFlowDialog } from '../components/RunFlowDialog'
+import { RunFlowDialog, bestFlow, groupFlows, openRunFlowDialog } from '../components/RunFlowDialog'
 
-const flowsByProject: Record<string, Array<{ name: string; title: string; description: string }>> = {
+const flowsByProject: Record<string, Array<{ name: string; title: string; description: string; error?: string }>> = {
     '/tmp/alpha': [
         { name: 'software-development/review-change', title: 'Review a change', description: 'Reviews the diff.' },
         { name: 'software-development/implement-change', title: 'Implement a change', description: 'Plans and builds it.' },
         { name: 'nightly', title: 'Nightly audit', description: 'Checks the build.' },
     ],
     '/tmp/beta': [{ name: 'beta-only', title: 'Beta only', description: '' }],
+    // The server titles a flow that doesn't load by its file name.
+    '/tmp/gamma': [{ name: 'release-check', title: 'release-check', description: '', error: 'flow.yaml: unknown field' }],
 }
 
 vi.mock('@/lib/api/flowsApi', async (original) => ({
@@ -55,6 +57,19 @@ it('puts the project\'s own flows first, groups the rest by folder, and matches 
     expect(names(groupFlows(flows, 'nothing-like-this'))).toEqual([[], []])
 })
 
+it('picks on Enter the flow titled or named as typed, before other matches listed ahead of it', () => {
+    const flows = [
+        { name: 'release/quiet-check', title: 'Quiet Check', description: 'A release check that prints nothing.' },
+        { name: 'release/release-check', title: 'Release Check', description: '' },
+        { name: 'release/release-check-full', title: 'Release Check (full)', description: '' },
+    ].map((flow) => ({ ...flow, execution_lock: null, graph_label: '', graph_goal: '' }))
+    expect(bestFlow(flows, 'release check')?.name).toBe('release/release-check')
+    expect(bestFlow(flows, 'release-check')?.name).toBe('release/release-check')
+    expect(bestFlow(flows, 'release ch')?.name).toBe('release/release-check')
+    expect(bestFlow(flows, 'prints')?.name).toBe('release/quiet-check')
+    expect(bestFlow([], 'release')).toBeNull()
+})
+
 it('lists the chosen project\'s flows by title and opens the chosen flow\'s run form', async () => {
     const user = userEvent.setup()
     render(<RunFlowDialog />)
@@ -73,6 +88,8 @@ it('lists the chosen project\'s flows by title and opens the chosen flow\'s run 
 
     await user.type(within(dialog).getByTestId('run-flow-search'), 'review')
     expect(within(dialog).getAllByTestId('run-flow-option').map((option) => option.dataset.flowName)).toEqual(['software-development/review-change'])
+    // The row Enter picks says so.
+    expect(within(dialog).getByTestId('run-flow-option')).toHaveAttribute('data-enter-picks', 'true')
 
     await user.selectOptions(within(dialog).getByTestId('run-flow-project-select'), '/tmp/beta')
     expect(await within(dialog).findByText('No flow matches that search.')).toBeVisible()
@@ -83,6 +100,19 @@ it('lists the chosen project\'s flows by title and opens the chosen flow\'s run 
     expect(await screen.findByTestId('run-flow-back')).toBeVisible()
     await user.click(screen.getByTestId('run-flow-back'))
     expect(await screen.findByTestId('run-flow-search')).toBeVisible()
+})
+
+it('titles a flow that doesn\'t load as its run form does, not by its file name', async () => {
+    const user = userEvent.setup()
+    useStore.setState((state) => ({
+        projectRegistry: { ...state.projectRegistry, '/tmp/gamma': { directoryPath: '/tmp/gamma', isFavorite: false, lastAccessedAt: null } },
+    }))
+    render(<RunFlowDialog />)
+    act(() => openRunFlowDialog({ projectPath: '/tmp/gamma' }))
+    const option = await within(await screen.findByTestId('run-flow-dialog')).findByTestId('run-flow-option')
+    expect(option).toHaveTextContent(/^Release Checkrelease-checkHas errors/)
+    await user.click(option)
+    expect(await screen.findByTestId('launch-panel-title')).toHaveTextContent('Release Check')
 })
 
 it('opens in the project of the latest run when that is more recent than the last project used', async () => {
@@ -97,4 +127,34 @@ it('opens in the project of the latest run when that is more recent than the las
     const dialog = await screen.findByTestId('run-flow-dialog')
     expect(within(dialog).getByTestId<HTMLSelectElement>('run-flow-project-select').value).toBe('/tmp/beta')
     expect(await within(dialog).findByText('Beta only')).toBeVisible()
+})
+
+it('is one Tab stop that the arrow keys move through, picks the first match on Enter, and gives focus back on close', async () => {
+    const user = userEvent.setup()
+    render(<><button type="button" onClick={() => openRunFlowDialog({ projectPath: '/tmp/alpha' })}>Open</button><RunFlowDialog /></>)
+    const opener = screen.getByRole('button', { name: 'Open' })
+    await user.click(opener)
+    const dialog = await screen.findByTestId('run-flow-dialog')
+    await within(dialog).findByRole('heading', { name: 'alpha’s flows' })
+    const search = within(dialog).getByTestId('run-flow-search')
+    expect(search).toHaveFocus()
+    const options = within(dialog).getAllByTestId('run-flow-option')
+    expect(options.map((option) => option.tabIndex)).toEqual([0, -1, -1])
+
+    await user.keyboard('{ArrowDown}')
+    expect(options[0]).toHaveFocus()
+    await user.keyboard('{ArrowDown}')
+    expect(options[1]).toHaveFocus()
+    await user.keyboard('{End}')
+    expect(options[2]).toHaveFocus()
+    await user.keyboard('{Home}{ArrowUp}')
+    expect(search).toHaveFocus()
+
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByTestId('run-flow-dialog')).not.toBeInTheDocument())
+    expect(opener).toHaveFocus()
+
+    await user.click(opener)
+    await user.type(await screen.findByTestId('run-flow-search'), 'review{Enter}')
+    expect(await screen.findByTestId('run-flow-back')).toBeVisible()
 })

@@ -24,6 +24,8 @@ const RECENT_WAKES: usize = 10;
 pub struct RoleUsage {
     pub flow: String,
     pub node: String,
+    /// The node's label, or its ID when it has none, as the flow editor shows it.
+    pub label: String,
 }
 
 /// A started role's record and its newest inbox events.
@@ -121,6 +123,11 @@ impl WorkspaceDefinitionService {
                         usage.entry(role.clone()).or_default().push(RoleUsage {
                             flow: flow.name.clone(),
                             node: node.clone(),
+                            label: if definition.label.trim().is_empty() {
+                                node.clone()
+                            } else {
+                                definition.label.clone()
+                            },
                         });
                     }
                 }

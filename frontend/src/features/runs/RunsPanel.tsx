@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { cn } from '@/lib/utils'
+import { useNow } from '@/lib/useNow'
 import { useRunsList } from './hooks/useRunsList'
 import { useRunActions } from './hooks/useRunActions'
 import { useRunDetails } from './hooks/useRunDetails'
@@ -17,7 +18,7 @@ import { flattenRunJournalSegments, useRunJournalStore } from './state/runJourna
 import { buildRunVisits, visitFlowNodesFromSnapshot, type VisitFlowNode } from './model/visitModel'
 import { loadRunGraphPreview } from './services/runGraphTransport'
 import { RunVisitsCard } from './components/RunVisitsCard'
-import { RunGraphCard } from './components/RunGraphCard'
+import { RunGraphCard, routeKey } from './components/RunGraphCard'
 import { RunStatusItem } from './components/RunStatusItem'
 import { RunContextItem } from './components/RunContextItem'
 import { RunArtifactViewer } from './components/RunArtifactViewer'
@@ -32,7 +33,6 @@ import { buildRunContextOverview, runStatusKind, type RunStatusKind } from './mo
 import type { StatusTone } from '@/components/app/status'
 import { SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Play, Plus, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
@@ -134,6 +134,7 @@ export function RunsPanel() {
         selectedRunId ? state.runDetailSessionsByRunId[selectedRunId] ?? null : null
     ))
     const selectedRun = selectedRunDetailSession?.record ?? selectedRunSummary
+    const isSelectedRunLive = selectedRun ? !runHasEnded(selectedRun.status) : false
     // The editor opens a run's flow from the run's own project.
     const runProjectPath = selectedRun?.project_path ?? null
     const flowCatalog = useFlowCatalog(runProjectPath, Boolean(selectedRunId))
@@ -141,6 +142,7 @@ export function RunsPanel() {
     const {
         artifactDownloadHref,
         artifactEntries,
+        artifactError,
         artifactViewerError,
         artifactViewerPayload,
         checkpointCurrentNode,
@@ -195,17 +197,19 @@ export function RunsPanel() {
     const selectedRunSessionState = useStore((state) => (
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
     ))
-    const degradedRunPanels = timelineError
-        ? [...degradedDetailPanels, 'run journal']
-        : degradedDetailPanels
+    const degradedRunPanels = [
+        ...(resultError ? ['result'] : []),
+        ...(timelineError ? ['steps'] : []),
+        ...(transcriptError ? ['agent transcripts'] : []),
+        ...degradedDetailPanels,
+    ]
     const showRunSelectionEmptyState = !selectedRunId && hasRuns && !selectedRun
     const showRunDetailsRestoringState =
         Boolean(selectedRunId)
         && !selectedRun
         && status !== 'ready'
         && status !== 'error'
-    // eslint-disable-next-line react-hooks/purity -- intentional render-time clock snapshot for elapsed-time labels; re-renders are driven by stream events
-    const now = Date.now()
+    const now = useNow(isSelectedRunLive)
     const [artifactViewerPath, setArtifactViewerPath] = useState<string | null>(null)
     const openArtifact = useCallback((entry: { path: string; viewable: boolean }) => {
         setArtifactViewerPath(entry.path)
@@ -290,6 +294,10 @@ export function RunsPanel() {
         ? flowNodes[selectedNodeId]?.label ?? selectedNodeId
         : null
     const [showGraph, setShowGraph] = useState(false)
+    const takenRoutes = useMemo(
+        () => new Set(visits.flatMap((visit) => (visit.decision ? [routeKey(visit.nodeId, visit.decision)] : []))),
+        [visits],
+    )
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
             const target = event.target instanceof Element ? event.target : null
@@ -330,11 +338,11 @@ export function RunsPanel() {
     }, [selectedRun?.run_id])
 
     const selectNode = useCallback((nodeId: string | null) => {
-        if (!selectedRun?.run_id) {
+        if (!selectedRunTimelineId) {
             return
         }
-        updateRunDetailSession(selectedRun.run_id, { selectedNodeId: nodeId })
-    }, [selectedRun?.run_id, updateRunDetailSession])
+        updateRunDetailSession(selectedRunTimelineId, { selectedNodeId: nodeId })
+    }, [selectedRunTimelineId, updateRunDetailSession])
 
     useEffect(() => {
         if (!selectedNodeId) {
@@ -407,6 +415,7 @@ export function RunsPanel() {
             key={`graph-${selectedRun.run_id}`}
             run={selectedRun}
             nodeStatusesById={runNodeStatuses}
+            takenRoutes={takenRoutes}
             selectedNodeId={activeContinuationDraft ? activeContinuationDraft.startNodeId : selectedNodeId}
             onSelectNode={activeContinuationDraft
                 ? (nodeId) => {
@@ -500,25 +509,22 @@ export function RunsPanel() {
                 </div>
             )}
             <div className={isNarrowViewport ? 'space-y-6 p-4' : 'flex min-h-0 flex-1 flex-col gap-4 px-6 py-5'}>
-                {selectedRunStatusSync === 'degraded' ? (
-                    <Alert
-                        data-testid="runs-transport-reconnect-banner"
-                        className="border-0 border-l border-warning px-3 py-2 text-warning"
+                {/* One notice for whatever of this run couldn't load or stopped updating; the
+                    parts it names say so in place instead of looking empty. */}
+                {selectedRunStatusSync === 'degraded' || (selectedRun && degradedRunPanels.length > 0) ? (
+                    <div
+                        data-testid={selectedRunStatusSync === 'degraded' ? 'runs-transport-reconnect-banner' : 'run-partial-api-failure-banner'}
+                        role="status"
+                        className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border-0 border-l border-warning px-3 py-2 text-sm text-warning"
                     >
-                        <AlertDescription className="text-inherit">
-                            {selectedRunStatusError}
-                            <button
-                                type="button"
-                                data-testid="runs-transport-reconnect-button"
-                                onClick={() => {
-                                    requestRunsTransportReconnect()
-                                }}
-                                className="ml-2 inline-flex text-xs font-semibold underline underline-offset-4"
-                            >
-                                Reconnect
-                            </button>
-                        </AlertDescription>
-                    </Alert>
+                        <span>
+                            {selectedRunStatusSync === 'degraded' ? selectedRunStatusError : 'Some run details couldn\'t load.'}
+                            {degradedRunPanels.length > 0 ? (
+                                <span className="ml-1 text-xs">Not loaded: {degradedRunPanels.join(', ')}.</span>
+                            ) : null}
+                        </span>
+                        <Button data-testid="runs-transport-reconnect-button" type="button" variant="outline" size="xs" onClick={requestRunsTransportReconnect}>Try again</Button>
+                    </div>
                 ) : null}
                 {!selectedRunId && missingRunId ? (
                     <InlineError data-testid="run-missing" title="This run isn’t here">
@@ -553,17 +559,6 @@ export function RunsPanel() {
                         onContinued={() => setContinuationDraft(null)}
                     />
                 )}
-                {selectedRun && degradedRunPanels.length > 0 && (
-                    <div
-                        data-testid="run-partial-api-failure-banner"
-                        className="rounded-md border-0 border-l border-warning px-3 py-2 text-sm text-warning"
-                    >
-                        Some run details couldn't load.
-                        <span className="ml-1 text-xs">
-                            Affected surfaces: {degradedRunPanels.join(', ')}.
-                        </span>
-                    </div>
-                )}
                 {/* Until the history loads, no runs says nothing; a failed load says so once, here. */}
                 {!selectedRun && !hasRuns && status === 'error' && (
                     <SheetEmpty
@@ -587,19 +582,8 @@ export function RunsPanel() {
                         ? 'space-y-6'
                         : 'flex min-h-0 flex-1 gap-6'}
                     >
-                        {/* A continuation picks its restart node on the graph. Beside the details it
-                            sits last, so toggling it never moves the Steps rail. */}
-                        {graphCard ? (
                         <div className={isNarrowViewport
                             ? undefined
-                            // With the rail above the details, the graph takes the larger share.
-                            : cn('order-last flex min-h-0 min-w-0 flex-col', railBeside ? 'flex-[1_1_0%]' : 'flex-[3_1_0%]')}
-                        >
-                            {graphCard}
-                        </div>
-                        ) : null}
-                        <div className={isNarrowViewport
-                            ? 'mt-6'
                             : cn('flex min-h-0 min-w-0 flex-col', !graphCard ? 'flex-[1_1_0%]' : railBeside ? 'flex-[1_1_17.5rem]' : 'flex-[2_1_0%]')}
                         >
                         <div
@@ -617,7 +601,6 @@ export function RunsPanel() {
                                 now={now}
                                 isNarrowViewport={isNarrowViewport}
                                 isLive={isTimelineLive && isSelectedRunActive}
-                                transcriptError={transcriptError}
                                 timelineError={timelineError}
                                 selectedNodeId={selectedNodeId}
                                 onSelectNode={selectNode}
@@ -630,7 +613,7 @@ export function RunsPanel() {
                                     ...STATUS_ROWS[statusKind],
                                     detail: formatDuration(selectedRun.started_at, selectedRun.ended_at, selectedRun.status, now),
                                 }}
-                                contextKeyCount={contextOverview.namespaces.reduce((count, namespace) => count + namespace.keys.length, 0)}
+                                contextKeyCount={contextError ? null : contextOverview.namespaces.reduce((count, namespace) => count + namespace.keys.length, 0)}
                                 renderStatus={(selectVisit) => (
                                     <RunStatusItem
                                         run={selectedRun}
@@ -641,6 +624,7 @@ export function RunsPanel() {
                                         result={resultData}
                                         resultError={resultError}
                                         artifactEntries={artifactEntries}
+                                        artifactsUnavailable={Boolean(artifactError)}
                                         onSelectVisit={selectVisit}
                                         onViewArtifact={openArtifact}
                                         question={
@@ -695,6 +679,18 @@ export function RunsPanel() {
                             />
                         </div>
                         </div>
+                        {/* After the details, so on a phone a question to answer comes first and the
+                            rail's Graph toggle sits just above the graph; beside them it never moves the
+                            Steps rail. A continuation picks its restart node on it. */}
+                        {graphCard ? (
+                        <div className={isNarrowViewport
+                            ? undefined
+                            // With the rail above the details, the graph takes the larger share.
+                            : cn('flex min-h-0 min-w-0 flex-col', railBeside ? 'flex-[1_1_0%]' : 'flex-[3_1_0%]')}
+                        >
+                            {graphCard}
+                        </div>
+                        ) : null}
                     </div>
                 )}
             </div>
@@ -742,7 +738,6 @@ export function RunsPanel() {
                             onLaunched={() => {
                                 setRerunRun(null)
                             }}
-                            onClose={() => setRerunRun(null)}
                         />
                     ) : null}
                 </DialogContent>

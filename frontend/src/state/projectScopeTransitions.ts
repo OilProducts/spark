@@ -38,12 +38,14 @@ type ProjectScopeTransitionState = Pick<
     | 'saveStateVersion'
     | 'saveErrorMessage'
     | 'saveErrorKind'
+    | 'saveErrorProblems'
     | 'runsListSession'
     | 'runDetailSessionsByRunId'
 > & Partial<Pick<
     AppState,
     | 'projectPagePath'
     | 'selectedMission'
+    | 'selectedRole'
     | 'missionBoard'
     | 'homeConversationCache'
     | 'homeConversationSessionsById'
@@ -128,6 +130,7 @@ const preserveEditorSession = (state: AppState, nextActiveProjectPath: string | 
     saveStateVersion: state.saveStateVersion,
     saveErrorMessage: state.saveErrorMessage,
     saveErrorKind: state.saveErrorKind,
+    saveErrorProblems: state.saveErrorProblems,
 })
 
 export const buildRegisteredProject = (project: HydratedProjectRecord): RegisteredProject | null => {
@@ -282,6 +285,7 @@ export const buildRemoveProjectTransition = (
         activeProjectPath: nextResolvedActiveProjectPath,
         projectPagePath: state.projectPagePath === normalizedPath ? null : state.projectPagePath,
         selectedMission: state.selectedMission?.projectPath === normalizedPath ? null : state.selectedMission,
+        selectedRole: state.selectedRole?.projectPath === normalizedPath ? null : state.selectedRole,
         missionBoard: state.missionBoard.filter((mission) => mission.project_path !== normalizedPath),
         viewMode: nextViewMode,
         ...nextRunsSessions,

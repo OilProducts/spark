@@ -51,15 +51,16 @@ export const requestNavigation = (proceed: () => void) => {
 }
 
 export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice> = (rawSet, get) => {
-    // Leaving Settings or a project page unmounts their editors, so those
-    // transitions ask first and unsaved edits can block them. Other views stay
-    // mounted and keep their drafts.
+    // Leaving Settings or a project page unmounts their editors, and opening another
+    // flow replaces the editor's, so those transitions ask first and unsaved edits can
+    // block them. Other views stay mounted and keep their drafts.
     const set = (update: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => {
         const next = typeof update === 'function' ? update(get()) : update
         const proceed = () => rawSet((state) => typeof update === 'function' ? update(state) : update)
         const current = get()
         const navigates = (next.projectPagePath !== undefined && next.projectPagePath !== current.projectPagePath)
             || (current.viewMode === 'settings' && next.viewMode !== undefined && next.viewMode !== current.viewMode)
+            || (next.activeFlow !== undefined && next.activeFlow !== current.activeFlow)
         if (navigates) requestNavigation(proceed)
         else proceed()
     }
@@ -77,6 +78,8 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
     openProjectPage: (projectPath) => set({ projectPagePath: projectPath }),
     selectedMission: restoredRouteState.selectedMission,
     setSelectedMission: (selection) => set({ selectedMission: selection }),
+    selectedRole: null,
+    setSelectedRole: (selection) => set({ selectedRole: selection }),
     settingsCategory: restoredRouteState.settingsCategory,
     setSettingsCategory: (category) => set({ settingsCategory: category }),
     missionBoard: [],

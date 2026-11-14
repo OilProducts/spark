@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Layers, Search } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
+import { useNow } from '@/lib/useNow'
 import { InlineError } from '@/components/app/inline-error'
 import { ListGroupLabel, SidePanelRow } from '@/components/app/side-panel-row'
 import {
@@ -13,7 +14,7 @@ import {
 import { useStore } from '@/store'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import type { RunRecord } from '../model/shared'
-import { formatDuration, formatRunStatusLabel, formatTimestamp, isCompletedFailure, runRecordTone } from '../model/shared'
+import { formatDuration, formatRunStatusLabel, formatTimestamp, isCompletedFailure, runHasEnded, runRecordTone } from '../model/shared'
 import { requestRunsTransportReconnect } from '../services/runsTransportReconnect'
 import { flowTitle, formatRunDate, formatRunTime, runDayLabel, runKind, runMatchesSearch, runTitle, type RunStatusKind } from '../model/runOverviewModel'
 
@@ -25,9 +26,11 @@ const ACTIVE_LIST_STATUSES = new Set([
     'cancel_requested',
 ])
 
-// A status word only when the run needs attention, and never one the group label
-// already says ("Running" under Running).
+// A status word when the run needs attention, or when its dot alone wouldn't say how it ended
+// (a canceled run's grey), and never one the group label already says ("Running" under Running).
 const ATTENTION: Record<string, { label: string; className: string }> = {
+    canceled: { label: 'Canceled', className: 'text-muted-foreground' },
+    aborted: { label: 'Canceled', className: 'text-muted-foreground' },
     failed: { label: 'Failed', className: 'text-destructive' },
     validation_error: { label: 'Failed', className: 'text-destructive' },
     unreadable: { label: 'Unreadable', className: 'text-destructive' },
@@ -92,8 +95,7 @@ export function RunList({
     const [expandedParents, setExpandedParents] = useState<Set<string>>(() => new Set())
     // How many runs each open fold lists, by fold key; REPEATS_PAGE when absent.
     const [foldShown, setFoldShown] = useState<Record<string, number>>({})
-    // eslint-disable-next-line react-hooks/purity -- render-time clock for run ages; the list re-renders on run updates
-    const now = Date.now()
+    const now = useNow(runs.some((run) => !run.ended_at && !runHasEnded(run.status) && run.status !== 'queued'))
     const query = searchQuery.trim().toLowerCase()
     const statusCounts = runs.reduce<Partial<Record<RunStatusKind, number>>>((counts, run) => {
         const kind = runKind(run)

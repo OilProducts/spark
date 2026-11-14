@@ -1,4 +1,7 @@
 import type { DiagnosticEntry } from '@/state/store-types'
+import { fetchSpark } from '../fetchSpark'
+
+export { fetchSpark }
 
 type UnknownRecord = Record<string, unknown>
 
@@ -16,14 +19,17 @@ export class ApiHttpError extends Error {
     endpoint: string
     status: number
     detail: string | null
+    /** The error's JSON body, for callers that read more than its reason. */
+    payload: unknown
 
-    constructor(endpoint: string, status: number, detail: string | null) {
+    constructor(endpoint: string, status: number, detail: string | null, payload: unknown = null) {
         // People read the message: the server's reason when it gives one; the endpoint stays on the error.
         super(detail ? detail.charAt(0).toUpperCase() + detail.slice(1) : `Spark couldn’t complete the request (HTTP ${status}).`)
         this.name = 'ApiHttpError'
         this.endpoint = endpoint
         this.status = status
         this.detail = detail
+        this.payload = payload
     }
 }
 
@@ -120,6 +126,7 @@ export function parseDiagnosticEntry(value: unknown, endpoint: string): Diagnost
             : typeof record.node === 'string'
                 ? record.node
                 : undefined,
+        node_label: typeof record.node_label === 'string' ? record.node_label : undefined,
         edge,
         decision: typeof record.decision === 'string' ? record.decision : undefined,
         fix: typeof record.fix === 'string' ? record.fix : undefined,
@@ -166,11 +173,12 @@ export async function parseJsonPayload(response: Response, endpoint: string): Pr
 
 export async function extractHttpError(response: Response, endpoint: string): Promise<ApiHttpError> {
     let detail: string | null = null
+    let payload: unknown = null
     try {
         const bodyText = await response.text()
         if (bodyText.trim().length > 0) {
             try {
-                const payload = JSON.parse(bodyText) as unknown
+                payload = JSON.parse(bodyText) as unknown
                 detail = parseHttpErrorDetail(payload)
             } catch {
                 detail = bodyText.trim()
@@ -179,7 +187,7 @@ export async function extractHttpError(response: Response, endpoint: string): Pr
     } catch {
         detail = null
     }
-    return new ApiHttpError(endpoint, response.status, detail)
+    return new ApiHttpError(endpoint, response.status, detail, payload)
 }
 
 export async function fetchJsonWithValidation<T>(
@@ -188,7 +196,7 @@ export async function fetchJsonWithValidation<T>(
     endpoint: string,
     parser: (payload: unknown, endpoint: string) => T,
 ): Promise<T> {
-    const response = await fetch(url, init)
+    const response = await fetchSpark(url, init)
     if (!response.ok) {
         throw await extractHttpError(response, endpoint)
     }
@@ -202,7 +210,7 @@ export async function fetchTextWithValidation<T>(
     endpoint: string,
     parser: (payload: unknown, endpoint: string) => T,
 ): Promise<T> {
-    const response = await fetch(url, init)
+    const response = await fetchSpark(url, init)
     if (!response.ok) {
         throw await extractHttpError(response, endpoint)
     }

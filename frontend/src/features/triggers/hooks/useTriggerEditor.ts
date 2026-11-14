@@ -16,6 +16,8 @@ import {
     validateTriggerForm,
 } from '../model/triggerForm'
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
+import { useFlowLaunchMetadata } from '@/features/launch'
+import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import { useDialogController } from '@/components/app/dialog-controller'
 type UseTriggerEditorArgs = {
     refreshTriggers: () => Promise<void>
@@ -33,6 +35,22 @@ const buildProtectedTriggerUpdatePayload = (form: TriggerFormState) => ({
     },
 })
 
+const NO_INPUTS: LaunchInputDefinition[] = []
+
+/**
+ * The launch inputs of the flow a form starts: none when it starts no flow (or its flow can't be
+ * read, which the server then judges), null while they load or after the request for them failed,
+ * which `retry` asks again.
+ */
+function useFlowInputs(form: Pick<TriggerFormState, 'actionMode' | 'flowName' | 'projectPath'> | null | undefined): { inputs: LaunchInputDefinition[] | null; retry?: () => void } {
+    const flowName = form?.actionMode === 'static' ? form.flowName.trim() : ''
+    const flow = useFlowLaunchMetadata(flowName || null, form?.projectPath || null)
+    if (!flowName) return { inputs: NO_INPUTS }
+    if (!flow || flow.name !== flowName) return { inputs: null }
+    // Without the inputs, a required one can't be checked, so saving waits for them.
+    return flow.retry ? { inputs: null, retry: flow.retry } : { inputs: flow.inputs ?? NO_INPUTS }
+}
+
 export function useTriggerEditor({
     refreshTriggers,
     selectedTrigger,
@@ -49,26 +67,34 @@ export function useTriggerEditor({
     const setTriggersSessionEditDraft = useStore((state) => state.setTriggersSessionEditDraft)
     const updateTriggersSession = useStore((state) => state.updateTriggersSession)
 
+    const savedFlowInputs = useFlowInputs(selectedTrigger ? {
+        actionMode: selectedTrigger.action.mode ?? 'static',
+        flowName: selectedTrigger.action.flow_name,
+        projectPath: selectedTrigger.project_path,
+    } : null).inputs
     const selectedTriggerForm = useMemo(
-        () => (selectedTrigger ? triggerToFormState(selectedTrigger) : null),
-        [selectedTrigger],
+        () => (selectedTrigger ? triggerToFormState(selectedTrigger, savedFlowInputs ?? []) : null),
+        [selectedTrigger, savedFlowInputs],
     )
     const newTriggerForm = newTriggerDraft.form
     const currentEditDraft = selectedTrigger ? editTriggerDraftsByTriggerId[triggerKey(selectedTrigger)] ?? null : null
     const resolvedEditTriggerForm = currentEditDraft?.form ?? selectedTriggerForm
     const dirty = Boolean(currentEditDraft?.form)
+    const { inputs: newFlowInputs, retry: retryNewFlowInputs } = useFlowInputs(newTriggerForm)
+    const { inputs: editFlowInputs, retry: retryEditFlowInputs } = useFlowInputs(resolvedEditTriggerForm)
     // Field errors show once a save is refused ('new' or the trigger's key), then follow the edits.
     const [errorsShownFor, setErrorsShownFor] = useState<string | null>(null)
-    const newTriggerErrors = errorsShownFor === 'new' ? validateTriggerForm(newTriggerForm) : {}
+    const newTriggerErrors = errorsShownFor === 'new' ? validateTriggerForm(newTriggerForm, false, newFlowInputs ?? []) : {}
     const editTriggerErrors = selectedTrigger && resolvedEditTriggerForm && errorsShownFor === triggerKey(selectedTrigger)
-        ? validateTriggerForm(resolvedEditTriggerForm, selectedTrigger.protected)
+        ? validateTriggerForm(resolvedEditTriggerForm, selectedTrigger.protected, editFlowInputs ?? [])
         : {}
     const externalChange = dirty && currentEditDraft?.expectedRevision !== selectedTrigger?.revision
     useSettingsNavigationProtection(dirty, pending)
 
     const onCreateTrigger = async () => {
-        if (pendingRef.current) return
-        if (Object.keys(validateTriggerForm(newTriggerForm)).length) {
+        // Until the flow's inputs are known, its required ones can't be checked.
+        if (pendingRef.current || newFlowInputs === null) return
+        if (Object.keys(validateTriggerForm(newTriggerForm, false, newFlowInputs)).length) {
             setErrorsShownFor('new')
             return
         }
@@ -80,7 +106,7 @@ export function useTriggerEditor({
                 name: newTriggerForm.name,
                 enabled: newTriggerForm.enabled,
                 source_type: newTriggerForm.sourceType,
-                action: buildTriggerActionPayload(newTriggerForm),
+                action: buildTriggerActionPayload(newTriggerForm, newFlowInputs ?? []),
                 source: buildTriggerSourcePayload(newTriggerForm),
             })
             if (created.webhook_secret) {
@@ -102,10 +128,10 @@ export function useTriggerEditor({
     }
 
     const onSaveSelectedTrigger = async () => {
-        if (pendingRef.current || !selectedTrigger || !resolvedEditTriggerForm) {
+        if (pendingRef.current || !selectedTrigger || !resolvedEditTriggerForm || editFlowInputs === null) {
             return
         }
-        if (Object.keys(validateTriggerForm(resolvedEditTriggerForm, selectedTrigger.protected)).length) {
+        if (Object.keys(validateTriggerForm(resolvedEditTriggerForm, selectedTrigger.protected, editFlowInputs ?? [])).length) {
             setErrorsShownFor(triggerKey(selectedTrigger))
             return
         }
@@ -117,7 +143,7 @@ export function useTriggerEditor({
                 : {
                     name: resolvedEditTriggerForm.name,
                     enabled: resolvedEditTriggerForm.enabled,
-                    action: { ...buildTriggerActionPayload(resolvedEditTriggerForm), mode: resolvedEditTriggerForm.actionMode },
+                    action: { ...buildTriggerActionPayload(resolvedEditTriggerForm, editFlowInputs ?? []), mode: resolvedEditTriggerForm.actionMode },
                     source: buildTriggerSourcePayload(resolvedEditTriggerForm),
                 }
             const updated = await updateTriggerValidated(selectedTrigger.project_path, selectedTrigger.id, { ...payload, expected_revision: currentEditDraft?.form ? currentEditDraft.expectedRevision ?? '' : selectedTrigger.revision })
@@ -177,8 +203,12 @@ export function useTriggerEditor({
         },
         editTriggerForm: resolvedEditTriggerForm,
         editTriggerErrors,
+        editFlowInputs,
+        retryEditFlowInputs,
         newTriggerForm,
         newTriggerErrors,
+        newFlowInputs,
+        retryNewFlowInputs,
         onCreateTrigger,
         onDeleteSelectedTrigger,
         onSaveSelectedTrigger,

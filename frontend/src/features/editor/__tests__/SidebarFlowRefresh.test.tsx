@@ -191,7 +191,7 @@ describe('Editor sidebar manual refresh', () => {
 
         fetchFlowListMock
             .mockResolvedValueOnce(['alpha'])
-            .mockResolvedValueOnce(['alpha', 'beta'])
+            .mockResolvedValueOnce(['alpha', 'beta-flow'])
 
         renderWithFlowProvider(<SidebarHarness />)
 
@@ -200,15 +200,24 @@ describe('Editor sidebar manual refresh', () => {
         })
 
         await user.click(screen.getByRole('button', { name: 'New flow' }))
-        await user.type(screen.getByTestId('shared-dialog-input'), 'beta')
+        const input = screen.getByTestId('shared-dialog-input')
+        // A taken name can't be created over.
+        await user.type(input, 'Alpha')
+        expect(screen.getByTestId('shared-dialog-check')).toHaveTextContent('A flow named alpha already exists')
+        expect(screen.getByTestId('shared-dialog-confirm')).toBeDisabled()
+        await user.clear(input)
+        // A name with spaces and capitals is saved under a portable path, titled as typed.
+        await user.type(input, 'Beta Flow')
+        expect(screen.getByTestId('shared-dialog-check')).toHaveTextContent('Saved as beta-flow')
         await user.click(screen.getByTestId('shared-dialog-confirm'))
 
         await waitFor(() => {
             expect(saveFlowContentMock).toHaveBeenCalledWith(
-                'beta',
+                'beta-flow',
                 { flow: expect.objectContaining({
                     schema_version: '2',
-                    id: 'beta',
+                    id: 'beta_flow',
+                    title: 'Beta Flow',
                     nodes: {
                         start: expect.objectContaining({
                             kind: 'start',
@@ -224,10 +233,10 @@ describe('Editor sidebar manual refresh', () => {
         })
         await waitFor(() => {
             expect(fetchFlowListMock).toHaveBeenCalledTimes(2)
-            expect(useStore.getState().activeFlow).toBe('beta')
+            expect(useStore.getState().activeFlow).toBe('beta-flow')
         })
 
-        expect(screen.getByRole('button', { name: 'beta' })).toBeVisible()
+        expect(screen.getByRole('button', { name: 'beta-flow' })).toBeVisible()
     })
 
     it('keeps delete-flow refresh behavior intact', async () => {
@@ -275,6 +284,26 @@ describe('Editor sidebar manual refresh', () => {
 
 describe('Flows panel layer badges', () => {
     afterEach(() => { vi.unstubAllGlobals() })
+
+    it('shows a saved flow\'s new title in the list without a manual refresh', async () => {
+        resetSidebarState('alpha')
+        fetchFlowListMock.mockResolvedValue(['alpha'])
+        let title = 'Old title'
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            const url = String(input)
+            const body = /\/workspace\/api\/flows\?/.test(url)
+                ? [{ name: 'alpha', title, description: '', graph_label: '', graph_goal: '' }]
+                : { items: [] }
+            return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+        }))
+        renderWithFlowProvider(<FlowsPanelHarness />)
+        expect(await screen.findByRole('button', { name: 'Old title (alpha)' })).toBeVisible()
+
+        title = 'New title'
+        useStore.getState().markSaveSuccess()
+
+        expect(await screen.findByRole('button', { name: 'New title (alpha)' })).toBeVisible()
+    })
 
     it('marks only customized bundled flows; the project heading already marks the project\'s own', async () => {
         resetSidebarState()

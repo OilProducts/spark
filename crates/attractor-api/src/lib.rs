@@ -320,7 +320,8 @@ impl RuntimeRouteResponse {
 }
 
 /// Saves either `flow` (the structured editor) or `files` (the file view:
-/// edited files of the flow, written exactly as sent); never both.
+/// edited and new files of the flow, written exactly as sent, and
+/// `deleted_files`); never both.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SaveFlowRequest {
     pub name: String,
@@ -328,6 +329,9 @@ pub struct SaveFlowRequest {
     pub flow: Option<FlowDefinition>,
     #[serde(default)]
     pub files: Option<Vec<FlowFileText>>,
+    /// Node files the file view removes; only with `files`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_files: Vec<String>,
     /// The project whose definitions the save writes into.
     #[serde(default)]
     pub project_path: Option<String>,
@@ -1534,15 +1538,16 @@ impl AttractorApiService {
     }
 
     /// A flow's files with their exact text, the flow they assemble into
-    /// (authored form: roles referenced, not merged), and its layer.
+    /// (authored form: roles referenced, not merged), and its layer. Files
+    /// that don't assemble answer 422 with their problems, as a refused save
+    /// does.
     pub fn get_flow(&self, name: &str, project_path: Option<&str>) -> RuntimeRouteResponse {
         let loaded = self
             .flow_roots(project_path)
             .resolve_flow(name)
             .and_then(|resolved| {
                 let texts = attractor_dsl::read_flow_dir_texts(&resolved.path)?;
-                let flow = assemble_flow_files(&texts)
-                    .map_err(|error| attractor_dsl::in_flow_dir(&resolved.path, error))?;
+                let flow = assemble_flow_files(&texts)?;
                 Ok((resolved, texts, flow))
             });
         match loaded {
@@ -1555,6 +1560,7 @@ impl AttractorApiService {
                     "flow": flow,
                 }),
             ),
+            Err(error) if error.status_code() == 422 => flow_definition_error_response(error),
             Err(error) => flow_source_error_response(error),
         }
     }
@@ -1574,32 +1580,33 @@ impl AttractorApiService {
             );
         };
         let roots = self.flow_roots(Some(&project_path));
+        let deleted = req.deleted_files;
         let (flow, files) = match (req.flow, req.files) {
-            (Some(flow), None) => match validated_flow(flow) {
+            (Some(flow), None) if deleted.is_empty() => match validated_flow(flow) {
                 Ok(flow) => (flow, None),
-                Err(error) => return flow_save_definition_error_response(error),
+                Err(error) => return flow_definition_error_response(error),
             },
-            (None, Some(files)) => match overlay_flow_files(&roots, &req.name, &files) {
+            (None, Some(files)) => match overlay_flow_files(&roots, &req.name, &files, &deleted) {
                 Ok(flow) => (flow, Some(files)),
                 Err(error) if error.status_code() == 422 => {
-                    return flow_save_definition_error_response(error)
+                    return flow_definition_error_response(error)
                 }
                 Err(error) => return flow_source_error_response(error),
             },
             _ => {
                 return RuntimeRouteResponse::json(
                     400,
-                    json!({"detail": "A flow save takes exactly one of flow or files."}),
+                    json!({"detail": "A flow save takes exactly one of flow or files, and deleted_files only with files."}),
                 )
             }
         };
         // Validate the resolved form, so role-provided profiles are checked too.
         let resolved = match resolve_flow_roles(&flow, &roots) {
             Ok(resolved) => resolved,
-            Err(error) => return flow_save_definition_error_response(error),
+            Err(error) => return flow_definition_error_response(error),
         };
         if let Err(error) = attractor_dsl::validate_flow_children(&roots, Some(&req.name), &flow) {
-            return flow_save_definition_error_response(error.into());
+            return flow_definition_error_response(error.into());
         }
         if let Err(error) = spark_storage::settings::validate_profile_references(
             &self.settings.config_dir,
@@ -1608,7 +1615,7 @@ impl AttractorApiService {
             return RuntimeRouteResponse::json(400, json!({"detail": error.to_string()}));
         }
         save_flow_request(&roots, req.name, |dir| match &files {
-            Some(files) => write_flow_files(dir, files),
+            Some(files) => write_flow_files(dir, files, &deleted),
             None => write_flow_dir(dir, &flow).map(|_| ()),
         })
     }
@@ -3243,14 +3250,21 @@ fn dispatch_attractor_route(
         },
         ("GET", "/api/llm-profiles") => service.list_llm_profiles(),
         ("GET", "/api/execution-placement-settings") => service.get_execution_placement_settings(),
-        ("GET", path) if path.starts_with("/api/flows/") => service.get_flow(
-            path.trim_start_matches("/api/flows/"),
-            query_string(&query, "project_path").as_deref(),
-        ),
-        ("DELETE", path) if path.starts_with("/api/flows/") => service.delete_flow(
-            path.trim_start_matches("/api/flows/"),
-            query_string(&query, "project_path").as_deref(),
-        ),
+        ("GET" | "DELETE", path) if path.starts_with("/api/flows/") => {
+            let encoded = path.trim_start_matches("/api/flows/");
+            let Ok(flow_name) = percent_decode_path(encoded) else {
+                return RuntimeRouteResponse::json(
+                    400,
+                    json!({"detail": format!("Invalid flow name in path: {encoded}")}),
+                );
+            };
+            let project_path = query_string(&query, "project_path");
+            if method == "GET" {
+                service.get_flow(&flow_name, project_path.as_deref())
+            } else {
+                service.delete_flow(&flow_name, project_path.as_deref())
+            }
+        }
         _ if path.starts_with("/pipelines/") => {
             dispatch_pipeline_route(service, &method, &path, &query, body)
         }
@@ -3447,24 +3461,53 @@ fn save_flow_request(
 }
 
 /// The flow `files` make when laid over the current files of the flow
-/// `name`. File view saves edit existing files only.
+/// `name`, less its `deleted` node files. A file the flow lacks is a new
+/// node file, named as a plain `<node>.md` in the flow's directory.
 fn overlay_flow_files(
     roots: &FlowRoots,
     name: &str,
     files: &[FlowFileText],
+    deleted: &[String],
 ) -> std::result::Result<FlowDefinition, FlowSourceError> {
     let mut texts = attractor_dsl::read_flow_dir_texts(&roots.resolve_flow(name)?.path)?;
+    for file in deleted {
+        if file == FLOW_FILE || texts.remove(file).is_none() {
+            return Err(FlowSourceError::new(
+                422,
+                format!("{file} is not a node file of flow {name}, so it can't be deleted."),
+            ));
+        }
+    }
     for file in files {
-        let Some(text) = texts.get_mut(&file.name) else {
+        if let Some(text) = texts.get_mut(&file.name) {
+            text.clone_from(&file.content);
+            continue;
+        }
+        let plain = file.name.len() > ".md".len()
+            && file.name.ends_with(".md")
+            && !file.name.starts_with('.')
+            && !file.name.contains(['/', '\\'])
+            && !attractor_dsl::RESERVED_FILES.contains(&file.name.as_str());
+        if !plain {
             return Err(FlowSourceError::new(
                 422,
                 format!(
-                    "{} is not a file of flow {name}; the file view edits existing files only.",
+                    "{} can't be a file of flow {name}: name a node file <node>.md, such as review.md.",
                     file.name
                 ),
             ));
-        };
-        text.clone_from(&file.content);
+        }
+        // Case-insensitive filesystems would write it over its namesake.
+        if texts
+            .keys()
+            .any(|existing| existing.eq_ignore_ascii_case(&file.name))
+        {
+            return Err(FlowSourceError::new(
+                422,
+                format!("Flow {name} already has a file named {}.", file.name),
+            ));
+        }
+        texts.insert(file.name.clone(), file.content.clone());
     }
     assemble_flow_files(&texts)
 }
@@ -3502,7 +3545,7 @@ fn copy_flow_files(source: &Path, target: &Path) -> std::result::Result<(), Stri
     })
 }
 
-fn flow_save_definition_error_response(error: FlowSourceError) -> RuntimeRouteResponse {
+fn flow_definition_error_response(error: FlowSourceError) -> RuntimeRouteResponse {
     RuntimeRouteResponse::json(
         422,
         json!({
@@ -3633,6 +3676,7 @@ fn flow_definition_validation_payload(error: &FlowSourceError) -> Value {
             "line": 0,
             "node": null,
             "node_id": null,
+            "file": error.file(),
         })]
     } else {
         flow_diagnostics_payload(error.diagnostics())
@@ -3973,8 +4017,11 @@ fn flow_diagnostics_payload(diagnostics: &[FlowDiagnostic]) -> Vec<Value> {
                 "line": 0,
                 "node": diagnostic.node_id,
                 "node_id": diagnostic.node_id,
+                "node_label": diagnostic.node_label,
                 "edge": diagnostic.edge,
                 "decision": diagnostic.decision,
+                // A node's problems are in its file.
+                "file": diagnostic.node_id.as_ref().map(|node_id| format!("{node_id}.md")),
             })
         })
         .collect()

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
-import { saveFlowContent } from '@/lib/flowPersistence'
+import { registerPendingFlowSave, saveFlowContent, sendPendingFlowSaves } from '@/lib/flowPersistence'
 import { useStore } from '@/store'
 import type { FlowSaveContent } from '@/lib/attractorClient'
 
@@ -97,12 +97,20 @@ export function useFlowSaveScheduler<T = void>({
     }, [clearPendingSave, createSaveRequest, executeSaveRequest])
 
     useEffect(() => {
-        const handleBeforeUnload = () => {
+        // Sends edits still waiting to save; while any save is in flight, the browser asks before
+        // leaving, since a reload would drop edits the server may yet refuse.
+        const handleBeforeUnload = (event: BeforeUnloadEvent) => {
             flushPendingSave()
+            if (sendPendingFlowSaves()) {
+                event.preventDefault()
+                event.returnValue = ''
+            }
         }
         window.addEventListener('beforeunload', handleBeforeUnload)
+        const unregister = registerPendingFlowSave(flushPendingSave)
         return () => {
             window.removeEventListener('beforeunload', handleBeforeUnload)
+            unregister()
             flushPendingSave()
         }
     }, [flushPendingSave])

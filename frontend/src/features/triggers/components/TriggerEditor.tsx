@@ -12,8 +12,9 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { groupFlows, useFlowSummaries, useOwnFlows } from '@/features/launch'
+import { LaunchInputsForm, groupFlows, useFlowSummaries, useOwnFlows } from '@/features/launch'
 import type { WorkspaceFlowResponse } from '@/lib/api/flowsApi'
+import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import {
     INTERVAL_UNITS,
     SHARED_WEBHOOK_ENDPOINT,
@@ -21,6 +22,7 @@ import {
     browserTimeZone,
     firstIntervalRunHint,
     intervalSeconds,
+    triggerLaunchInputErrors,
     type TriggerFieldErrors,
     type TriggerFormState,
     type TriggerSourceType,
@@ -163,13 +165,17 @@ export function TriggerEditor({
     mode,
     protectedTrigger,
     errors,
+    flowInputs = null,
 }: {
     form: TriggerFormState
     onChange: (value: TriggerFormState) => void
     mode: 'create' | 'edit'
     protectedTrigger: boolean
     errors: TriggerFieldErrors
+    /** The chosen flow's launch inputs; null while unknown. */
+    flowInputs?: LaunchInputDefinition[] | null
 }) {
+    const [launchInputsCollapsed, setLaunchInputsCollapsed] = useState(false)
     const projectRegistry = useStore((state) => state.projectRegistry)
     const [missions, setMissions] = useState<Mission[]>([])
     const [missionError, setMissionError] = useState('')
@@ -402,6 +408,21 @@ export function TriggerEditor({
                 <Well className="p-3 text-sm text-muted-foreground sm:col-span-2">
                     Another service starts this trigger by sending a POST request to <code>{SHARED_WEBHOOK_ENDPOINT}</code>, with a key and secret that Spark creates for it.
                 </Well>
+            ) : null}
+
+            {form.actionMode === 'static' && !protectedTrigger && flowInputs?.length ? (
+                <div className="sm:col-span-2">
+                    <LaunchInputsForm
+                        title="What each run needs"
+                        flowName={`${mode}-trigger-${form.flowName}`}
+                        parsedLaunchInputs={{ entries: flowInputs, error: null }}
+                        launchInputValues={form.launchInputValues}
+                        errors={errors.launchInputValues ? triggerLaunchInputErrors(form, flowInputs) : {}}
+                        launchInputsCollapsed={launchInputsCollapsed}
+                        onToggleCollapsed={() => setLaunchInputsCollapsed((collapsed) => !collapsed)}
+                        onInputChange={(entry, value) => onChange({ ...form, launchInputValues: { ...form.launchInputValues, [entry.key]: value } })}
+                    />
+                </div>
             ) : null}
 
             {form.actionMode === 'static' && <TriggerField {...field('staticContextText', 'Extra data for the run (optional)', contextHint)} className="text-sm sm:col-span-2">

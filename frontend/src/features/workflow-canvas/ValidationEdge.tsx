@@ -76,12 +76,14 @@ const segmentEntersBox = (from: EdgeRoutePoint, to: EdgeRoutePoint, box: LabelBo
  * Where a route's label sits: centred on one of its runs, wherever the label and the space round
  * it meet the fewest other routes, placed labels and nodes. Of the clear spots, the one nearest
  * the route's source wins, in the middle of its run, so a gate's answer reads beside the gate.
+ * A label drawn under one of `nodes` can't be read at all, so it crosses any number of routes first.
  */
 export function routeLabelAnchor(
     route: EdgeRoute,
     otherRoutes: EdgeRoute[] = [],
     placedLabels: LabelBox[] = [],
     size: LabelSize = { width: 48, height: 20 },
+    nodes: LabelBox[] = [],
 ): LabelAnchor {
     const best: { anchor: LabelAnchor | null; cost: number } = { anchor: null, cost: Infinity }
     const consider = (anchor: LabelAnchor, onSegment: number, preference: number) => {
@@ -90,8 +92,9 @@ export function routeLabelAnchor(
         const routeHits = otherRoutes.reduce((hits, other) => hits + (other.slice(1).some((to, at) => segmentEntersBox(other[at], to, clearance)) ? 1 : 0), 0)
         const ownHits = route.slice(1).filter((to, at) => at !== onSegment && segmentEntersBox(route[at], to, box)).length
         const labelHits = placedLabels.filter((other) => other.left < clearance.right && other.right > clearance.left && other.top < clearance.bottom && other.bottom > clearance.top).length
+        const nodeHits = nodes.filter((node) => node.left < box.right && node.right > box.left && node.top < box.bottom && node.bottom > box.top).length
         // A hit outweighs any preference, so a clear spot always wins.
-        const cost = (routeHits + ownHits + 2 * labelHits) * 1e6 + preference
+        const cost = nodeHits * 1e9 + (routeHits + ownHits + 2 * labelHits) * 1e6 + preference
         if (cost < best.cost) Object.assign(best, { anchor, cost })
     }
     let travelled = 0
@@ -104,10 +107,20 @@ export function routeLabelAnchor(
         const middle = (start + end) / 2
         const pointAt = (position: number): LabelAnchor => (horizontal ? { x: position, y: from.y } : { x: from.x, y: position })
         // ponytail: samples every 8px; labels are few, so this stays cheap on the largest flows.
+        // Beside a vertical run too, at a cost, for a short one (a node's self-loop) with no clear spot on the line.
+        const besides = horizontal ? [] : [-1, 1].map((side) => side * (size.width / 2 + 6))
         for (let position = Math.min(start, end) + half; position <= Math.max(start, end) - half + 0.5; position += 8) {
             consider(pointAt(position), at, travelled + Math.abs(position - middle))
+            for (const offset of besides) consider({ x: from.x + offset, y: position }, at, 1e5 + travelled + Math.abs(position - middle))
         }
         consider(pointAt(middle), at, travelled)
+        for (const offset of besides) consider({ x: from.x + offset, y: middle }, at, 1e5 + travelled)
+        // Past either end, off the route, only where every other spot covers a node: a self-loop
+        // hemmed in by its own node on one side and a close neighbour on the other.
+        if (!horizontal) for (let reach = half + 6; reach <= 120; reach += 8) {
+            consider({ x: from.x, y: Math.min(start, end) - reach }, at, 5e8 + travelled + reach)
+            consider({ x: from.x, y: Math.max(start, end) + reach }, at, 5e8 + travelled + reach)
+        }
         travelled += length
     })
     return best.anchor ?? getRouteMidpoint(route)
@@ -117,18 +130,19 @@ export function routeLabelAnchor(
 function placeRouteLabels(edges: Edge[], nodes: Node[], scale: number): Map<string, LabelAnchor> {
     const routes = edges.flatMap((edge) => {
         const route = edge.hidden ? null : readRenderRoute((edge.data as Record<string, unknown> | undefined)?.[EDGE_RENDER_ROUTE_KEY])
-        return route ? [{ id: edge.id, route, label: edgeRouteLabel(edge.data) }] : []
+        return route ? [{ id: edge.id, route, label: routeLabels(edges).get(edge.id) ?? '' }] : []
     })
     // The laid-out size: a run graph's nodes are never measured into its store.
-    const placed: LabelBox[] = nodes.flatMap((node) => {
+    const nodeBoxes: LabelBox[] = nodes.flatMap((node) => {
         const rect = readNodeRect(node)
         return node.hidden ? [] : [{ left: rect.x, right: rect.x + rect.width, top: rect.y, bottom: rect.y + rect.height }]
     })
+    const placed: LabelBox[] = [...nodeBoxes]
     const anchors = new Map<string, LabelAnchor>()
     for (const { id, route, label } of routes) {
         if (!label) continue
         const size = routeLabelSize(label, scale)
-        const anchor = routeLabelAnchor(route, routes.filter((other) => other.id !== id).map((other) => other.route), placed, size)
+        const anchor = routeLabelAnchor(route, routes.filter((other) => other.id !== id).map((other) => other.route), placed, size, nodeBoxes)
         anchors.set(id, anchor)
         placed.push(labelBox(anchor, size))
     }
@@ -150,10 +164,30 @@ function routeLabelAnchors(edges: Edge[], nodes: Node[], scale: number): Map<str
     return anchors
 }
 
-// A route's label names a choice (a human gate's answers); routes without one stay unlabelled.
-function edgeRouteLabel(data: unknown): string {
-    const label = (data as Record<string, unknown> | undefined)?.label
-    return typeof label === 'string' ? label.trim() : ''
+const edgeDataString = (edge: Edge, key: string): string => {
+    const value = (edge.data as Record<string, unknown> | undefined)?.[key]
+    return typeof value === 'string' ? value.trim() : ''
+}
+
+// What each route is called on the canvas: its own label, else its decision where its node
+// chooses between routes, so a fork in the work reads at a glance. A lone route stays unlabelled.
+const routeLabelsByEdges = new WeakMap<readonly Edge[], Map<string, string>>()
+export function routeLabels(edges: readonly Edge[]): Map<string, string> {
+    let labels = routeLabelsByEdges.get(edges)
+    if (labels) return labels
+    const decisionsBySource = new Map<string, Set<string>>()
+    for (const edge of edges) {
+        const decision = edgeDataString(edge, 'decision')
+        if (!decision || edge.hidden) continue
+        decisionsBySource.set(edge.source, (decisionsBySource.get(edge.source) ?? new Set()).add(decision))
+    }
+    labels = new Map(edges.map((edge) => {
+        const decision = edgeDataString(edge, 'decision')
+        const choosing = (decisionsBySource.get(edge.source)?.size ?? 0) > 1
+        return [edge.id, edgeDataString(edge, 'label') || (choosing ? decision.replace(/_/g, ' ') : '')]
+    }))
+    routeLabelsByEdges.set(edges, labels)
+    return labels
 }
 
 function buildFallbackRoute(sourceX: number, sourceY: number, targetX: number, targetY: number): EdgeRoute {
@@ -195,7 +229,7 @@ export function ValidationEdge({
         ?? buildFallbackRoute(sourceX, sourceY, targetX, targetY)
     const edgePath = buildRoundedPolylinePath(renderRoute)
     const labelPoint = getRouteMidpoint(renderRoute)
-    const routeLabel = edgeRouteLabel(data)
+    const routeLabel = useFlowStore((state) => routeLabels(state.edges).get(id) ?? '')
     // Only a labelled edge reads the other routes, to keep its label off them and their labels.
     const flowEdges = useFlowStore((state) => (routeLabel ? state.edges : null))
     const flowNodes = useFlowStore((state) => (routeLabel ? state.nodes : null))
@@ -288,7 +322,7 @@ export function ValidationEdge({
                             <span
                                 data-testid="edge-route-label"
                                 title={routeLabel}
-                                className="canvas-route-label line-clamp-2 max-w-[calc(13.5em+14px)] break-words rounded-md border border-border bg-background px-1.5 py-px text-center font-medium leading-snug text-muted-foreground"
+                                className={`canvas-route-label line-clamp-2 max-w-[calc(13.5em+14px)] break-words rounded-md border bg-background px-1.5 py-px text-center font-medium leading-snug ${data?.taken ? 'border-foreground/40 text-foreground' : 'border-border text-muted-foreground'}`}
                             >
                                 {routeLabel}
                             </span>
@@ -300,7 +334,7 @@ export function ValidationEdge({
                                 className={`rounded-full border border-border bg-background/95 px-2 py-0.5 text-xs font-medium ${badgeClass}`}
                                 title={diagnosticsForEdge.map((diag) => diag.message).join('\n')}
                             >
-                                {diagnosticsForEdge.length} {hasError ? 'Error' : hasWarning ? 'Warn' : hasInfo ? 'Info' : 'Issue'}
+                                {diagnosticsForEdge.length} {hasError ? 'error' : hasWarning ? 'warning' : hasInfo ? 'note' : 'issue'}{diagnosticsForEdge.length === 1 ? '' : 's'}
                             </div>
                         ) : null}
                     </div>

@@ -315,10 +315,25 @@ pub fn write_flow_dir(dir: &Path, flow: &FlowDefinition) -> Result<Vec<String>, 
 
 /// Writes `files` into the flow directory `dir` exactly as given, each
 /// atomically; other files are untouched. Callers validate the result first.
-pub fn write_flow_files(dir: &Path, files: &[FlowFileText]) -> Result<(), FlowSourceError> {
+pub fn write_flow_files(
+    dir: &Path,
+    files: &[FlowFileText],
+    deleted: &[String],
+) -> Result<(), FlowSourceError> {
     let _guard = FLOW_DIR_LOCK
         .write()
         .unwrap_or_else(|error| error.into_inner());
+    // Deletions first: on a case-insensitive filesystem a file re-added under
+    // another case is the same file.
+    for name in deleted {
+        let path = dir.join(name);
+        match fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(write_error(&path, error))
+            }
+            _ => {}
+        }
+    }
     files
         .iter()
         .try_for_each(|file| write_file_atomic(dir, &file.name, &file.content))
@@ -421,6 +436,7 @@ pub(crate) fn resolve_flow_roles_with(
                     node_id: Some(node_id.clone()),
                     edge: None,
                     decision: None,
+                    node_label: None,
                 });
                 continue;
             }
@@ -434,6 +450,7 @@ pub(crate) fn resolve_flow_roles_with(
                 node_id: Some(node_id.clone()),
                 edge: None,
                 decision: None,
+                node_label: None,
             });
             continue;
         }
@@ -764,7 +781,7 @@ fn render_command_block(command: &str) -> String {
 }
 
 fn file_error(file_name: &str, error: impl std::fmt::Display) -> FlowSourceError {
-    FlowSourceError::new(422, format!("{file_name}: {error}"))
+    FlowSourceError::new(422, format!("{file_name}: {error}")).in_file(file_name)
 }
 
 fn read_error(path: &Path, error: std::io::Error) -> FlowSourceError {

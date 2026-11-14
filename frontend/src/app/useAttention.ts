@@ -2,6 +2,7 @@ import { useEffect, useRef, useSyncExternalStore } from 'react'
 
 import { useStore } from '@/store'
 import { requestNavigation } from '@/state/workspaceSlice'
+import { revealSelection } from '@/components/app/view-layout'
 import { ATTENTION_CHANGED_EVENT, fetchPendingAttention, type AttentionItem } from '@/lib/api/attentionApi'
 import { triggerKey } from '@/lib/api/triggersApi'
 import { flowTitle, formatRunDate, formatRunTime, runTitle } from '@/features/runs/model/runOverviewModel'
@@ -123,6 +124,7 @@ export function useAttentionFailed() {
 /** Opens a chat; a `draft` replaces its composer text, unsent. */
 export function openChat(projectPath: string, conversationId: string, draft?: string) {
     const open = () => {
+        revealSelection()
         useStore.setState({ projectPagePath: null })
         useStore.getState().updateProjectSessionState(projectPath, { conversationId })
         if (draft !== undefined) useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: draft })
@@ -134,17 +136,20 @@ export function openChat(projectPath: string, conversationId: string, draft?: st
 }
 
 export function openRun(runId: string) {
+    revealSelection()
     useStore.getState().setRunsSelectedRunId(runId)
     useStore.getState().setViewMode('runs')
 }
 
 /** Opens a trigger in Triggers; a trigger's id only names it within its project. */
 export function openTrigger(projectPath: string, triggerId: string) {
+    revealSelection()
     useStore.getState().updateTriggersSession({ selectedTriggerId: triggerKey({ project_path: projectPath, id: triggerId }), createFormOpen: false })
     useStore.getState().setViewMode('triggers')
 }
 
 export function openMission(id: string, projectPath: string) {
+    revealSelection()
     useStore.getState().setSelectedMission({ id, projectPath })
     useStore.getState().setViewMode('missions')
 }

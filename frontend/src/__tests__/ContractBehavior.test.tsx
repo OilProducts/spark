@@ -137,6 +137,8 @@ const resetContractState = () => {
   {
 useStore.setState({...useStore.getState(),
 viewMode: 'editor',
+editorMode: 'structured',
+saveState: 'idle',
 activeProjectPath: '/tmp/project-contract-behavior',
 activeFlow: 'contract-behavior.yaml',
 runsListSession: {
@@ -736,7 +738,6 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('runs-transport-reconnect-banner')).toHaveTextContent(
       'Live updates for this run stopped; what you see may be out of date.',
     )
-    expect(screen.queryByTestId('global-save-state-indicator')).not.toBeInTheDocument()
   })
 
   it('[CID:12.2.02] keeps non-dependent run-inspector surfaces functional under partial API failure', async () => {
@@ -1320,7 +1321,7 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('graph-extension-attr-new-value')).toBeVisible()
     expect(screen.getByRole('button', { name: /^Model:/ })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Apply to nodes' }).className).toContain('focus-visible')
-    expect(screen.getByRole('button', { name: 'Reset from global' }).className).toContain('focus-visible')
+    expect(screen.getByRole('button', { name: 'Use workspace default' }).className).toContain('focus-visible')
 
     cleanup()
     render(<SettingsPanel />)
@@ -1765,7 +1766,7 @@ useStore.getState().setRunsSelectedRunId('run-viewport-regression-mobile');
 
     renderWithFlowProvider(<Editor />)
 
-    await screen.findByRole('button', { name: '+ Node' })
+    await screen.findByRole('button', { name: 'Add node' })
     expect(screen.queryByTestId('canvas-interaction-performance-budget')).not.toBeInTheDocument()
     expect(screen.queryByTestId('canvas-performance-profile')).not.toBeInTheDocument()
 
@@ -4649,7 +4650,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     await screen.findByText('Start')
     const nodeCount = () => document.querySelectorAll('.react-flow__node').length
     const loadedNodes = nodeCount()
-    await user.click(screen.getByRole('button', { name: '+ Node' }))
+    await user.click(screen.getByRole('button', { name: 'Add node' }))
     await waitFor(() => expect(nodeCount()).toBe(loadedNodes + 1))
 
     await user.click(screen.getByRole('button', { name: 'Files' }))
@@ -4739,7 +4740,7 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     await screen.findByTestId('editor-mode-toggle')
     await screen.findByText('Start')
-    await user.click(screen.getByRole('button', { name: '+ Node' }))
+    await user.click(screen.getByRole('button', { name: 'Add node' }))
 
     await waitFor(() => {
       expect(savedPayloads.length).toBeGreaterThanOrEqual(1)

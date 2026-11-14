@@ -3,7 +3,7 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { HistoryRoutingController } from '@/app/AppSessionControllers'
-import { buildRunsHash, missionKey, parsePlaceHash, placeHash, type Place } from '@/app/runsRouting'
+import { buildRunsHash, missionKey, parsePlaceHash, placeHash, roleKey, type Place } from '@/app/runsRouting'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- triggerKey names a trigger; it calls no API
 import { triggerKey, type TriggerResponse } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
@@ -43,13 +43,20 @@ describe('runsRouting helpers', () => {
             { view: 'editor', projectPath: '/tmp/a', flow: null },
             { view: 'triggers', triggerId: triggerKey({ project_path: '/tmp/a', id: 'nightly' }) },
             { view: 'missions', missionId: missionKey({ projectPath: '/tmp/a', id: 'mission-1' }) },
+            { view: 'roles', roleId: roleKey({ projectPath: '/tmp/a', name: 'reviewer' }) },
         ]
         for (const place of places) expect(parsePlaceHash(placeHash(place))).toEqual(place)
         expect(placeHash(places[2])).toBe('#/triggers/nightly?project=%2Ftmp%2Fa')
         expect(placeHash(places[3])).toBe('#/missions/mission-1?project=%2Ftmp%2Fa')
         expect(placeHash({ view: 'missions', missionId: null })).toBe('#/missions')
+        expect(placeHash(places[4])).toBe('#/roles/reviewer?project=%2Ftmp%2Fa')
         // Without a project, a flow link opens the flow in the project Flows shows.
         expect(parsePlaceHash('#/flows/fix-bug')).toEqual({ view: 'editor', flow: 'fix-bug' })
+        expect(parsePlaceHash('#/flows/fix-bug', '/tmp/a')).toEqual({ view: 'editor', flow: 'fix-bug' })
+        // A role, trigger or mission link without one names its item in the project in view.
+        expect(parsePlaceHash('#/roles/reviewer', '/tmp/a')).toEqual(places[4])
+        expect(parsePlaceHash('#/triggers/nightly', '/tmp/a')).toEqual(places[2])
+        expect(parsePlaceHash('#/roles/reviewer?project=%2Ftmp%2Fb', '/tmp/a')).toEqual({ view: 'roles', roleId: roleKey({ projectPath: '/tmp/b', name: 'reviewer' }) })
     })
 
     it('names no place for unknown or malformed hashes', () => {
@@ -297,6 +304,45 @@ describe('HistoryRoutingController', () => {
         expect(useStore.getState().activeProjectPath).toBe('/tmp/project-b')
         expect(useStore.getState().activeFlow).toBe('demos/fix-bug')
         expect(window.location.hash).toBe('#/flows/demos%2Ffix-bug?project=%2Ftmp%2Fproject-b')
+    })
+
+    it('reopens a linked role, and Back from a flow it opened returns to it', async () => {
+        useStore.setState({ selectedRole: null, viewMode: 'overview' })
+        window.history.replaceState(null, '', '#/roles/reviewer?project=%2Ftmp%2Fproject-a')
+        render(<HistoryRoutingController />)
+        expect(useStore.getState()).toMatchObject({ viewMode: 'roles', selectedRole: { projectPath: '/tmp/project-a', name: 'reviewer' } })
+
+        await act(async () => {
+            useStore.getState().setSelectedRole({ projectPath: '/tmp/project-a', name: 'author' })
+        })
+        await act(async () => {
+            useStore.getState().setViewMode('editor')
+        })
+        act(() => {
+            window.history.back()
+        })
+        await waitFor(() => {
+            expect(useStore.getState()).toMatchObject({ viewMode: 'roles', selectedRole: { projectPath: '/tmp/project-a', name: 'author' } })
+        })
+        act(() => {
+            window.history.back()
+        })
+        await waitFor(() => {
+            expect(useStore.getState().selectedRole).toEqual({ projectPath: '/tmp/project-a', name: 'reviewer' })
+        })
+    })
+
+    it('opens a role linked without a project in the project in view, once the projects have loaded', async () => {
+        useStore.setState({ selectedRole: null, viewMode: 'overview', projectRegistry: {} })
+        window.history.replaceState(null, '', '#/roles/reviewer')
+        render(<HistoryRoutingController />)
+        expect(useStore.getState()).toMatchObject({ viewMode: 'roles', selectedRole: null })
+
+        act(() => {
+            useStore.setState({ projectRegistry: { '/tmp/project-a': { directoryPath: '/tmp/project-a', isFavorite: false, lastAccessedAt: null } } })
+        })
+        expect(useStore.getState().selectedRole).toEqual({ projectPath: '/tmp/project-a', name: 'reviewer' })
+        await waitFor(() => expect(window.location.hash).toBe('#/roles/reviewer?project=%2Ftmp%2Fproject-a'))
     })
 
     it('reopens a linked mission, and Back returns to the list', async () => {

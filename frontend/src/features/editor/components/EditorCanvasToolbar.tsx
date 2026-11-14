@@ -1,4 +1,4 @@
-import { Box, Boxes, FileCode, LayoutDashboard, RotateCcw, Workflow, type LucideIcon } from 'lucide-react'
+import { Box, Boxes, FileCode, LayoutDashboard, Play, RotateCcw, SquarePlus, Workflow, type LucideIcon } from 'lucide-react'
 
 import { SegmentedControl } from '@/components/app/segmented-control'
 import { Button } from '@/components/ui/button'
@@ -12,7 +12,11 @@ type EditorCanvasToolbarProps = {
     mode: EditorMode
     /** Set until the flow is loaded: a view switch saves the canvas, which is empty until then. */
     modeDisabled: boolean
+    /** A view switch is saving the view it leaves. */
+    switchingMode?: boolean
     childFlowsExpanded: boolean
+    /** Whether the flow has child-flow steps; without them the Child flows views are the same. */
+    hasChildFlows?: boolean
     runDisabledReason: string | null | undefined
     onSelectStructured: () => void
     onSelectFiles: () => void
@@ -27,7 +31,7 @@ type EditorCanvasToolbarProps = {
     minimap?: { shown: boolean; onToggle: () => void }
 }
 
-// Below 42rem of toolbar the view toggles show only icons (named by aria-label), so the row stays one line beside the flow settings at 1280px.
+// Below 42rem of toolbar the toggles and actions show only icons (named by aria-label), so the row stays one line beside the flow settings at 1280px.
 const segmentLabel = (Icon: LucideIcon, text: string) => ({
     'aria-label': text,
     title: text,
@@ -42,7 +46,9 @@ const segmentLabel = (Icon: LucideIcon, text: string) => ({
 export function EditorCanvasToolbar({
     mode,
     modeDisabled,
+    switchingMode = false,
     childFlowsExpanded,
+    hasChildFlows = true,
     runDisabledReason,
     onSelectStructured,
     onSelectFiles,
@@ -58,11 +64,11 @@ export function EditorCanvasToolbar({
     const canEditLayout = isStructured && !childFlowsExpanded
 
     return (
-        // One row; on a phone-width canvas the actions wrap to a second row rather than scroll out of sight.
+        // One row, even on a phone (the zoom buttons drop there); should it still overflow, the actions wrap rather than scroll out of sight.
         <div
             data-testid="editor-canvas-toolbar"
             aria-label="Canvas toolbar"
-            className="@container flex min-h-11 shrink-0 flex-wrap items-center gap-x-1.5 gap-y-2 border-b bg-background px-3 py-1.5"
+            className="@container flex min-h-11 shrink-0 flex-wrap items-center gap-x-1 gap-y-2 border-b bg-background px-2 py-1.5 @2xl:gap-x-1.5 @2xl:px-3"
         >
             <SegmentedControl
                 data-testid="editor-mode-toggle"
@@ -73,8 +79,10 @@ export function EditorCanvasToolbar({
                     { key: 'files', ...segmentLabel(FileCode, 'Files'), pressed: !isStructured, onPress: onSelectFiles, disabled: modeDisabled },
                 ]}
             />
+            {switchingMode ? <span data-testid="editor-mode-switching" role="status" className="shrink-0 text-xs text-muted-foreground">Saving…</span> : null}
 
-            {isStructured ? (
+            {/* Expanded stays reachable to leave it, even once the flow has no child flows left. */}
+            {isStructured && (hasChildFlows || childFlowsExpanded) ? (
                 <>
                     <Separator orientation="vertical" className="data-[orientation=vertical]:h-5" />
                     <SegmentedControl
@@ -109,12 +117,22 @@ export function EditorCanvasToolbar({
 
             {isStructured ? (
                 <div role="group" aria-label="Actions" className="ml-auto flex shrink-0 items-center gap-2">
-                    {canEditLayout ? <Button type="button" size="sm" variant="outline" onClick={onAddNode}>+ Node</Button> : null}
-                    <ProjectPicker heading="Run in" testId="run-flow-project-picker" defaultProjectPath={runDefaultProjectPath} onPick={onRun}>
-                        <Button data-testid="editor-run-button" type="button" size="sm" variant="outline" disabled={Boolean(runDisabledReason)} title={runDisabledReason ?? undefined}>
-                            Run…
+                    {canEditLayout ? (
+                        <Button type="button" size="sm" variant="outline" aria-label="Add node" title="Add node" onClick={onAddNode}>
+                            <SquarePlus aria-hidden="true" className="@2xl:hidden" />
+                            <span className="hidden @2xl:inline">+ Node</span>
                         </Button>
-                    </ProjectPicker>
+                    ) : null}
+                    {/* A disabled button shows no tooltip, so its wrapper says why Run is off. */}
+                    <span title={runDisabledReason ?? undefined} className="inline-flex">
+                        <ProjectPicker heading="Run in" testId="run-flow-project-picker" defaultProjectPath={runDefaultProjectPath} onPick={onRun}>
+                            <Button data-testid="editor-run-button" type="button" size="sm" variant="outline" aria-label="Run…" disabled={Boolean(runDisabledReason)} aria-describedby={runDisabledReason ? 'editor-run-disabled-reason' : undefined}>
+                                <Play aria-hidden="true" className="@2xl:hidden" />
+                                <span className="hidden @2xl:inline">Run…</span>
+                            </Button>
+                        </ProjectPicker>
+                    </span>
+                    {runDisabledReason ? <span id="editor-run-disabled-reason" className="sr-only">{runDisabledReason}</span> : null}
                 </div>
             ) : null}
         </div>

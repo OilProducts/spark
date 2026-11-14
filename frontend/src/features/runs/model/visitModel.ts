@@ -94,6 +94,7 @@ export interface VisitModelInput {
 }
 
 const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'canceled', 'cancelled', 'aborted'])
+const CANCELED_RUN_STATUSES = new Set(['canceled', 'cancelled', 'aborted'])
 
 export const visitKey = (runId: string, nodeId: string, stageIndex: number, attempt: number): string => (
     JSON.stringify([runId, nodeId, stageIndex, attempt])
@@ -401,7 +402,11 @@ export function buildRunVisits({
         const statusValue = asString(status?.status)
         const terminal = statusValue === 'error' || statusValue === 'completed' ? statusValue : draft.terminal
         if (terminal === 'error') {
-            visit.outcome = isLastRootVisit && runStatus === 'failed' ? 'failed' : 'error'
+            // The node a cancel stopped errors as it is killed: the cancel ended it, not an error.
+            visit.outcome = !isLastRootVisit ? 'error'
+                : runStatus === 'failed' ? 'failed'
+                    : runStatus !== null && CANCELED_RUN_STATUSES.has(runStatus) ? 'interrupted' : 'error'
+            if (visit.outcome === 'interrupted') visit.endedAt ??= runEndedAt
         } else if (terminal) {
             visit.outcome = terminal
         } else if (runEnded) {

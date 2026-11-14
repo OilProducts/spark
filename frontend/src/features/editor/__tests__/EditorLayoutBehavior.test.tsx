@@ -164,6 +164,7 @@ const buildPreview = (
       label: id.toUpperCase(),
       shape: options?.nodeTypes?.[id] === 'stack.manager_loop' ? 'house' : 'box',
       ...(options?.nodeTypes?.[id] ? { type: options.nodeTypes[id] } : {}),
+      ...(options?.nodeTypes?.[id] === 'stack.manager_loop' ? { kind: 'subflow' } : {}),
     })),
     edges,
     graph_attrs: {},

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { folderTitle } from '@/components/app/flow-tree'
 import { ArrowLeft, Search } from 'lucide-react'
 
@@ -62,6 +62,21 @@ export function groupFlows(flows: WorkspaceFlowResponse[], query: string, ownFlo
     }
 }
 
+/**
+ * The match Enter picks from `listed`: a flow titled or named exactly as `query`, then one whose title
+ * starts with it, then one whose title contains it, then the first listed.
+ */
+export function bestFlow(listed: WorkspaceFlowResponse[], query: string) {
+    const wanted = query.trim().toLowerCase()
+    const rank = (flow: WorkspaceFlowResponse) => {
+        const title = (flow.title || flow.name).toLowerCase()
+        const name = flow.name.toLowerCase().replace(/\.(ya?ml|dot)$/, '')
+        if (title === wanted || name === wanted || name.endsWith(`/${wanted}`)) return 0
+        return title.startsWith(wanted) ? 1 : title.includes(wanted) ? 2 : 3
+    }
+    return listed.reduce<WorkspaceFlowResponse | null>((best, flow) => best && rank(best) <= rank(flow) ? best : flow, null)
+}
+
 /** The names of a project's own flows, its copies of bundled ones included; null while loading or when unknown. */
 export function useOwnFlows(projectPath: string | null) {
     const [own, setOwn] = useState<{ projectPath: string; names: ReadonlySet<string> | null } | null>(null)
@@ -80,21 +95,33 @@ export function useOwnFlows(projectPath: string | null) {
     return own?.projectPath === projectPath ? own.names : null
 }
 
-function FlowOption({ flow, onChoose }: { flow: WorkspaceFlowResponse; onChoose: (flowName: string) => void }) {
+function FlowOption({ flow, onChoose, tabbable, enterPicks }: { flow: WorkspaceFlowResponse; onChoose: (flowName: string) => void; tabbable: boolean; enterPicks: boolean }) {
     return (
         <li>
             <button
                 type="button"
                 data-testid="run-flow-option"
                 data-flow-name={flow.name}
+                data-enter-picks={enterPicks || undefined}
+                // The list is one Tab stop; arrow keys move within it.
+                tabIndex={tabbable ? 0 : -1}
                 onClick={() => onChoose(flow.name)}
-                className="flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                className={cn(
+                    'flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring',
+                    enterPicks && 'bg-muted/70',
+                )}
             >
                 <span className="flex w-full min-w-0 flex-wrap items-baseline justify-between gap-x-3">
-                    <span className="min-w-0 text-sm font-medium">{flow.title || flow.name}</span>
+                    <span className="min-w-0 text-sm font-medium">
+                        {flow.title || flow.name}
+                        {/* While searching, the row Enter would pick says so. */}
+                        {enterPicks ? <kbd aria-hidden="true" className="ml-2 rounded border border-border bg-background px-1 font-sans text-xs font-normal text-muted-foreground">Enter</kbd> : null}
+                    </span>
                     <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{flow.name}</span>
                 </span>
-                {flow.description ? <span className="line-clamp-2 text-xs text-muted-foreground">{flow.description}</span> : null}
+                {flow.error ? (
+                    <span data-testid="run-flow-option-error" className="text-xs text-destructive">Has errors · fix it before running</span>
+                ) : flow.description ? <span className="line-clamp-2 text-xs text-muted-foreground">{flow.description}</span> : null}
             </button>
         </li>
     )
@@ -111,6 +138,26 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
     const ownFlows = useOwnFlows(projectPath)
     const { own, folders } = useMemo(() => groupFlows(summaries?.flows ?? [], query, ownFlows), [summaries, query, ownFlows])
     const projectName = projectLabel(registry, projectPath)
+    const firstFlow = own[0] ?? folders[0]?.items[0] ?? null
+    const enterFlow = query.trim() ? bestFlow([...own, ...folders.flatMap((group) => group.items)], query) : firstFlow
+    const searchRef = useRef<HTMLInputElement>(null)
+    const listRef = useRef<HTMLDivElement>(null)
+    // The row Enter picks stays in view as the search narrows.
+    const enterFlowName = query.trim() ? enterFlow?.name : undefined
+    useEffect(() => {
+        if (enterFlowName) listRef.current?.querySelector(`[data-flow-name="${CSS.escape(enterFlowName)}"]`)?.scrollIntoView?.({ block: 'nearest' })
+    }, [enterFlowName])
+    // Down from the search enters the list, and Enter there picks the closest match; in the list,
+    // the arrows, Home and End move between flows, and up from the first returns to the search.
+    const moveFocus = (event: KeyboardEvent, from: HTMLElement | null) => {
+        const options = Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>('[data-testid="run-flow-option"]') ?? [])
+        const index = from ? options.indexOf(from as HTMLButtonElement) : -1
+        const next = { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: options.length - 1 }[event.key]
+        if (next === undefined || options.length === 0 || (!from && event.key !== 'ArrowDown')) return
+        event.preventDefault()
+        if (next < 0) searchRef.current?.focus()
+        else options[Math.min(next, options.length - 1)]?.focus()
+    }
     return (
         <div className="flex min-h-0 flex-1 flex-col gap-4">
             <div className="space-y-1">
@@ -140,11 +187,21 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
                     <div className="relative">
                         <Search aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                         <Input
+                            ref={searchRef}
                             id="run-flow-search"
                             data-testid="run-flow-search"
                             type="search"
                             value={query}
                             onChange={(event) => setQuery(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Enter' && enterFlow) {
+                                    event.preventDefault()
+                                    onChoose(enterFlow.name)
+                                    return
+                                }
+                                moveFocus(event, null)
+                            }}
+                            aria-describedby="run-flow-search-hint"
                             placeholder="Search by name or what it does"
                             className="h-8 pl-8 text-sm"
                             autoFocus
@@ -152,9 +209,23 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
                     </div>
                 </div>
             </div>
-            <div data-testid="run-flow-list" className="-mx-2 min-h-0 flex-1 overflow-y-auto px-2" aria-busy={summaries === null}>
+            <p id="run-flow-search-hint" className="sr-only">Enter picks the closest match, the row marked Enter; the down arrow moves into the list.</p>
+            <div
+                ref={listRef}
+                data-testid="run-flow-list"
+                className="-mx-2 min-h-0 flex-1 overflow-y-auto px-2"
+                aria-busy={summaries === null}
+                onKeyDown={(event) => {
+                    if (event.target instanceof HTMLElement && event.target.dataset.testid === 'run-flow-option') moveFocus(event, event.target)
+                }}
+            >
                 {summaries === null ? <p className="py-6 text-center text-sm text-muted-foreground">Loading flows…</p> : null}
-                {summaries?.error ? <InlineError>{summaries.error}</InlineError> : null}
+                {summaries?.error ? (
+                    <InlineError title="Couldn’t load the flows">
+                        <p>{summaries.error}</p>
+                        <Button type="button" variant="outline" size="sm" className="mt-2" onClick={summaries.retry}>Try again</Button>
+                    </InlineError>
+                ) : null}
                 {summaries && !summaries.error && own.length === 0 && folders.length === 0 ? (
                     <p className="py-6 text-center text-sm text-muted-foreground">
                         {query ? 'No flow matches that search.' : 'This project has no flows yet.'}
@@ -165,7 +236,7 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
                     <section data-testid="run-flow-group-own" aria-label={`${projectName}'s flows`} className="pb-3">
                         <h3 className="px-3 pb-1 pt-2 text-sm font-semibold text-foreground">{projectName}&rsquo;s flows</h3>
                         <ul className="space-y-0.5">
-                            {own.map((flow) => <FlowOption key={flow.name} flow={flow} onChoose={onChoose} />)}
+                            {own.map((flow) => <FlowOption key={flow.name} flow={flow} onChoose={onChoose} tabbable={flow === firstFlow} enterPicks={Boolean(enterFlowName) && flow === enterFlow} />)}
                         </ul>
                     </section>
                 ) : null}
@@ -176,7 +247,7 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
                     <section key={group.label} aria-label={ownFlows ? `Bundled with Spark: ${group.label}` : group.label} className="pb-3">
                         <ListGroupLabel>{ownFlows ? <h4>{group.label}</h4> : <h3>{group.label}</h3>}</ListGroupLabel>
                         <ul className="space-y-0.5">
-                            {group.items.map((flow) => <FlowOption key={flow.name} flow={flow} onChoose={onChoose} />)}
+                            {group.items.map((flow) => <FlowOption key={flow.name} flow={flow} onChoose={onChoose} tabbable={flow === firstFlow} enterPicks={Boolean(enterFlowName) && flow === enterFlow} />)}
                         </ul>
                     </section>
                 ))}
@@ -189,9 +260,12 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
 export function RunFlowDialog() {
     const registry = useStore((state) => state.projectRegistry)
     const [request, setRequest] = useState<{ projectPath: string | null; flowName: string | null } | null>(null)
+    // The dialog opens by event, with no trigger of its own: closing returns focus to what had it.
+    const openerRef = useRef<HTMLElement | null>(null)
 
     useEffect(() => {
         const onOpen = (event: Event) => {
+            if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) openerRef.current = document.activeElement
             const detail = (event as CustomEvent<{ projectPath?: string | null; flowName?: string | null }>).detail ?? {}
             const registry = useStore.getState().projectRegistry
             setRequest({ projectPath: defaultProjectChoice(registry, detail.projectPath ?? recentProjectPath(registry, useStore.getState().runsListSession.runs)), flowName: detail.flowName ?? null })
@@ -202,12 +276,29 @@ export function RunFlowDialog() {
 
     const close = () => setRequest(null)
     const projectPath = request?.projectPath && registry[request.projectPath] ? request.projectPath : defaultProjectChoice(registry)
+    // A flow with errors can't run; its problems link to the editor, where they get fixed.
+    const editFlow = (flowName: string) => {
+        close()
+        const state = useStore.getState()
+        state.setActiveProjectPath(projectPath)
+        state.setActiveFlow(flowName)
+        state.setViewMode('editor')
+    }
 
     return (
         <Dialog open={request !== null} onOpenChange={(open) => { if (!open) close() }}>
             {/* Both steps close the same way; the flow list keeps one height as it filters, the form fits its fields. */}
             <DialogContent
                 data-testid="run-flow-dialog"
+                onCloseAutoFocus={(event) => {
+                    const opener = openerRef.current
+                    openerRef.current = null
+                    // An opener gone with a view change (a run opened from here) leaves focus to the dialog.
+                    if (opener?.isConnected) {
+                        event.preventDefault()
+                        opener.focus()
+                    }
+                }}
                 className={cn('flex flex-col overflow-hidden sm:max-w-2xl', request?.flowName ? 'max-h-[min(85vh,44rem)]' : 'h-[min(85vh,44rem)]')}
             >
                 {request?.flowName ? (
@@ -229,6 +320,7 @@ export function RunFlowDialog() {
                             target={{ flowName: request.flowName, previewSource: { kind: 'flow', flowName: request.flowName } }}
                             projectPath={projectPath}
                             initialWorkingDirectory={projectPath ?? ''}
+                            onEditFlow={() => editFlow(request.flowName!)}
                             onLaunched={(runId) => {
                                 if (projectPath) void markProjectUsed(projectPath)
                                 close()

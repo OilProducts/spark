@@ -1,3 +1,4 @@
+import { fetchSpark } from '@/lib/fetchSpark'
 export type DefinitionLayer = 'bundled' | 'project' | 'project_copy'
 export type DefinitionKind = 'flow' | 'role'
 export type InboxEvent = { seq: number; id: string; at: string; kind: string; source: string; payload?: unknown }
@@ -20,12 +21,14 @@ export type DefinitionItem = {
     path: string
     title?: string
     description?: string
-    usage?: { flow: string; node: string }[]
+    /** The flow steps that use the role, with each step's label as the editor shows it. */
+    usage?: RoleUse[]
     /** A role file that declares `standing: true`. */
     standing?: boolean
     /** The started role, or null. */
     live?: LiveRole | null
 }
+export type RoleUse = { flow: string; node: string; label?: string }
 export type DefinitionList = { items: DefinitionItem[] }
 export type DefinitionFile = { name: string; content: string }
 export type RoleFileDetail = DefinitionItem & { files: DefinitionFile[]; bundled_diff: string | null }
@@ -35,7 +38,7 @@ const TERMINAL = new Set(['completed', 'failed', 'validation_error', 'canceled']
 
 async function workspaceRequest<T>(route: string, project: string, params: Record<string, string> = {}, init?: RequestInit): Promise<T> {
     const query = new URLSearchParams({ project_path: project, ...params })
-    const response = await fetch(`/workspace/api${route}?${query}`, init)
+    const response = await fetchSpark(`/workspace/api${route}?${query}`, init)
     const value = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(value.detail || `Request failed (${response.status})`)
     return value as T
@@ -93,15 +96,15 @@ export function definitionBadges(item: Pick<DefinitionItem, 'layer'>): string[] 
     return item.layer === 'project' ? ['project'] : item.layer === 'project_copy' ? ['customized'] : []
 }
 
-/** A role's flow nodes, grouped by flow in first-seen order. */
-export function usageByFlow(usage: { flow: string; node: string }[]): [string, string[]][] {
-    const flows = new Map<string, string[]>()
-    for (const use of usage) flows.set(use.flow, [...(flows.get(use.flow) ?? []), use.node])
+/** A role's flow steps, grouped by flow in first-seen order. */
+export function usageByFlow(usage: RoleUse[]): [string, RoleUse[]][] {
+    const flows = new Map<string, RoleUse[]>()
+    for (const use of usage) flows.set(use.flow, [...(flows.get(use.flow) ?? []), use])
     return [...flows]
 }
 
 /** "used in 3 steps across 2 flows". */
-export function usageSummary(usage: { flow: string; node: string }[]): string {
+export function usageSummary(usage: RoleUse[]): string {
     if (!usage.length) return 'not used in any flow'
     const flows = usageByFlow(usage).length
     return `used in ${usage.length} ${usage.length === 1 ? 'step' : 'steps'} across ${flows} ${flows === 1 ? 'flow' : 'flows'}`

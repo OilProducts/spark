@@ -12,7 +12,7 @@ import { conversationPage, summarySnapshot } from '@/test/conversationWire'
 const EMPTY_DEFINITION_LIST = { items: [] }
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
-const DEFAULT_EDITOR_SIDEBAR_WIDTH = 288
+const DEFAULT_EDITOR_SIDEBAR_WIDTH = 336
 const LINEAR_FLOW_NAME = 'test-linear.dot'
 const REVIEW_FLOW_NAME = 'test-review-loop.dot'
 const NESTED_LINEAR_FLOW_NAME = 'team/review/test-linear.dot'
@@ -2482,6 +2482,17 @@ describe('App shell behavior', () => {
     fireEvent.pointerUp(window)
 
     expect(useStore.getState().editorSidebarWidth).toBe(360)
+    expect(inspectorPanel.style.width).toBe('360px')
+
+    // A narrow window shows a narrower sidebar, so the canvas keeps its room, and keeps the chosen width.
+    const resizeWorkspace = (width: number) => {
+      vi.mocked(editorWorkspaceLayout.getBoundingClientRect).mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: width, bottom: 720, width, height: 720, toJSON: () => ({}) } as DOMRect)
+      act(() => (ResizeObserver as unknown as { notify: (target: Element) => void }).notify(editorWorkspaceLayout))
+    }
+    resizeWorkspace(700)
+    expect(inspectorPanel.style.width).toBe('256px')
+    expect(useStore.getState().editorSidebarWidth).toBe(360)
+    resizeWorkspace(1200)
     expect(inspectorPanel.style.width).toBe('360px')
 
     await user.click(screen.getByTestId('activity-runs'))

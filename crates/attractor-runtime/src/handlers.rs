@@ -2665,9 +2665,18 @@ fn tool_decision_outcome(runtime: &HandlerRuntime, output: &ShellOutput) -> Outc
     match resolve_tool_output_updates(runtime, &output.stdout) {
         Ok(output_updates) => {
             context_updates.extend(output_updates);
+            // A JSON decision's notes are its own `notes` field, not the
+            // object that carried the decision.
+            let notes = match decision_field {
+                Some(_) => serde_json::from_str::<Value>(output.stdout.trim())
+                    .ok()
+                    .and_then(|value| Some(value.get("notes")?.as_str()?.trim().to_string()))
+                    .unwrap_or_default(),
+                None => output.stdout.trim().to_string(),
+            };
             Outcome {
                 context_updates,
-                notes: output.stdout.trim().to_string(),
+                notes,
                 ..Outcome::completed(decision)
             }
         }

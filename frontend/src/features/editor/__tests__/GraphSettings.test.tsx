@@ -69,6 +69,7 @@ editorShowAdvancedFlowMetadataByFlow: {},
 editorShowAdvancedGraphAttrsByFlow: {},
 editorLaunchInputDraftsByFlow: {},
 editorLaunchInputDraftErrorByFlow: {},
+triggersSession: useStore.getInitialState().triggersSession,
 editorNodeInspectorSessionsByNodeId: {},
 saveState: 'idle',
 saveStateVersion: 0,
@@ -302,19 +303,15 @@ describe('Graph and settings behavior', () => {
   it('surfaces FlowDefinition title and description fields without leaking them into extension attrs', async () => {
     const user = userEvent.setup()
     act(() => {
-      useStore.getState().setFlowMetadata({
-        title: '  Implement from plan file  ',
-        description: '  Snapshot a plan file, implement it, and iterate until complete.  ',
-        custom_attr: 'keep me',
-      } as Record<string, string>)
+      useStore.getState().setFlowMetadata({ custom_attr: 'keep me' } as Record<string, string>)
     })
 
     wrapWithFlowProvider(<GraphSettings inline />)
 
-    expect(screen.getByLabelText('Title')).toHaveValue('Implement from plan file')
-    expect(screen.getByLabelText('Description')).toHaveValue(
-      'Snapshot a plan file, implement it, and iterate until complete.',
-    )
+    // Typed key by key: spaces must survive between keystrokes.
+    await user.type(screen.getByLabelText('Title'), ' Implement from plan file ')
+    await user.type(screen.getByLabelText('Description'), 'Snapshot a plan file, implement it, and iterate until complete. ')
+    expect(screen.getByLabelText('Title')).toHaveValue(' Implement from plan file ')
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
     expect(screen.getByTestId('graph-extension-attrs-editor')).toBeVisible()
@@ -326,6 +323,29 @@ describe('Graph and settings behavior', () => {
     const flow = buildFlow([], [], useStore.getState().flowMetadata)
     expect(flow.title).toBe('Implement from plan file')
     expect(flow.description).toBe('Snapshot a plan file, implement it, and iterate until complete.')
+
+    // Clearing the description clears it from the flow, not back to what it was.
+    await user.clear(screen.getByLabelText('Description'))
+    expect(buildFlow([], [], useStore.getState().flowMetadata, flow).description).toBe('')
+  })
+
+  it('names the triggers that start this flow without a required launch input, and opens one', async () => {
+    const user = userEvent.setup()
+    const trigger = (id: string, static_context: Record<string, unknown>) => ({
+      id, project_path: '/tmp/project-graph-settings', name: `Trigger ${id}`, enabled: true, protected: false, revision: 'r1', source_type: 'schedule' as const,
+      created_at: '', updated_at: '', action: { flow_name: TEST_GRAPH_FLOW, static_context }, source: {}, state: { recent_history: [] },
+    })
+    useStore.setState((state) => ({
+      triggersSession: { ...state.triggersSession, triggers: [trigger('nightly', {}), trigger('weekly', { 'context.request.version': '2.0.0' })] },
+      flowMetadata: { inputs: JSON.stringify([{ key: 'context.request.version', label: 'Release version', type: 'string', description: '', required: true }]) },
+    }))
+    wrapWithFlowProvider(<GraphSettings inline />)
+
+    const gaps = await screen.findByTestId('graph-launch-inputs-trigger-gaps')
+    expect(gaps).toHaveTextContent('A trigger doesn’t set a required input, so a run it starts fails:Trigger nightly needs Release version')
+    expect(gaps).not.toHaveTextContent('Trigger weekly')
+    await user.click(within(gaps).getByRole('button', { name: 'Trigger nightly' }))
+    expect(useStore.getState().viewMode).toBe('triggers')
   })
 
   it('persists launch input declarations as FlowDefinition inputs', async () => {

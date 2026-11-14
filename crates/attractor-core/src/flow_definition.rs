@@ -484,6 +484,9 @@ pub struct FlowDiagnostic {
     pub edge: Option<(String, String)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<String>,
+    /// The node's title, so a reader can tell which step the problem is in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -517,6 +520,7 @@ impl FlowDefinition {
                 node_id: None,
                 edge: None,
                 decision: None,
+                node_label: None,
             }])
         })
     }
@@ -735,6 +739,7 @@ impl FlowDefinition {
                     node_id: node_id.cloned(),
                     edge: None,
                     decision: None,
+                    node_label: None,
                 });
             }
         }
@@ -824,6 +829,14 @@ impl FlowDefinition {
             diagnostics.extend(self.switch_writer_diagnostics());
         }
 
+        for diagnostic in &mut diagnostics {
+            diagnostic.node_label = diagnostic
+                .node_id
+                .as_deref()
+                .and_then(|node_id| self.nodes.get(node_id))
+                .map(|node| node.label.trim().to_string())
+                .filter(|label| !label.is_empty());
+        }
         diagnostics
     }
 
@@ -1019,6 +1032,7 @@ impl FlowDefinition {
                     node_id: Some(node_id.to_string()),
                     edge: Some((node_id.to_string(), route.to.clone())),
                     decision: Some(decision.clone()),
+                    node_label: None,
                 });
             }
             for key in route
@@ -1120,7 +1134,7 @@ impl FlowDefinition {
             }
             (NodeKind::AgentTask | NodeKind::HumanGate, _) => {
                 if decisions.is_empty() {
-                    domain(format!("{} nodes declare at least one decision", node.kind.as_str()));
+                    domain(format!("{} nodes need at least one route", node.kind.as_str()));
                 }
             }
             (
@@ -1152,7 +1166,7 @@ impl FlowDefinition {
                         domain("decision_field must be nonempty".to_string());
                     }
                     if decisions.is_empty() {
-                        domain("tool nodes declare at least one decision".to_string());
+                        domain("tool nodes need at least one route".to_string());
                     }
                 }
                 _ => domain(
@@ -1289,7 +1303,9 @@ impl FlowDefinition {
             .map(|node_id| {
                 node_diagnostic(
                     "reachability",
-                    format!("node '{node_id}' is unreachable from start node"),
+                    format!(
+                        "node '{node_id}' is unreachable: no route leads to it from the start node"
+                    ),
                     node_id,
                 )
             })
@@ -1306,15 +1322,21 @@ impl FlowDefinition {
             .filter(|(_, node)| node.kind == NodeKind::Exit)
             .map(|(node_id, _)| node_id.as_str());
         let reaches_exit = reach(&incoming, exits);
-        for node_id in self.nodes.keys() {
+        for (node_id, node) in &self.nodes {
             if outgoing.get(node_id.as_str()).is_none_or(Vec::is_empty)
-                && self.nodes[node_id].kind != NodeKind::Exit
+                && node.kind != NodeKind::Exit
             {
-                diagnostics.push(node_diagnostic(
-                    "nonterminal_leaf",
-                    format!("node '{node_id}' is not an exit and declares no routes"),
-                    node_id,
-                ));
+                // Agent tasks and gates without routes already fail their
+                // decision domain; one cause is reported once.
+                if !matches!(node.kind, NodeKind::AgentTask | NodeKind::HumanGate) {
+                    diagnostics.push(node_diagnostic(
+                        "nonterminal_leaf",
+                        format!(
+                            "node '{node_id}' has no routes, but only exit nodes can end the flow"
+                        ),
+                        node_id,
+                    ));
+                }
             } else if !reaches_exit.contains(node_id.as_str()) {
                 diagnostics.push(node_diagnostic(
                     "exit_path",
@@ -1971,6 +1993,7 @@ fn diagnostic(rule_id: &str, message: impl Into<String>) -> FlowDiagnostic {
         node_id: None,
         edge: None,
         decision: None,
+        node_label: None,
     }
 }
 
@@ -1985,6 +2008,7 @@ fn node_diagnostic(
         node_id: Some(node_id.into()),
         edge: None,
         decision: None,
+        node_label: None,
     }
 }
 

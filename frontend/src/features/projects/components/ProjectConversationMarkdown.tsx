@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import rehypeHighlight from 'rehype-highlight'
-import type { Root, RootContent } from 'mdast'
+import type { PhrasingContent, Root, RootContent } from 'mdast'
 import type { Root as HastRoot, Element } from 'hast'
 import { isTauri } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -31,7 +31,11 @@ function footnoteLabels(prefix: string) {
     }
 }
 
-function safeBreaksAndCode(this: { parse: (source: string) => unknown }) {
+/** Options for text that may be plain output rather than Markdown: its HTML, `<br>` included, shows as text. */
+type PlainOutput = { literalHtml?: boolean }
+const PLAIN_OUTPUT: PlainOutput = { literalHtml: true }
+
+function safeBreaksAndCode(this: { parse: (source: string) => unknown }, { literalHtml = false }: PlainOutput = {}) {
     const parse = this.parse.bind(this)
     return (tree: Root, file: { value: unknown }) => {
         const source = String(file.value)
@@ -62,7 +66,7 @@ function safeBreaksAndCode(this: { parse: (source: string) => unknown }) {
             return changed
         }
         // ponytail: reparse per newly exposed HTML block; batch only if large messages need it.
-        while (recoverBreaks(tree)) tree.children = (parse(recoveredSource) as Root).children
+        while (!literalHtml && recoverBreaks(tree)) tree.children = (parse(recoveredSource) as Root).children
         const breakPattern = new RegExp(`(${marker}b{2,4}${marker})`, 'g')
         const definitions = new Map<string, string>()
         const collectDefinitions = (node: Root | RootContent) => {
@@ -105,6 +109,56 @@ function safeBreaksAndCode(this: { parse: (source: string) => unknown }) {
             }) as typeof parent.children
         }
         walk(tree, source)
+    }
+}
+
+/**
+ * Markup that isn't HTML, such as a test report's `<testsuite … />` line, shows as the text it is.
+ * Markdown would read it as an HTML block and, with HTML skipped, drop it and the lines after it.
+ * Real HTML tags and comments stay hidden, unless `literalHtml` shows them as text too.
+ */
+function literalNonHtml({ literalHtml = false }: PlainOutput = {}) {
+    const isHtml = (value: string) => {
+        if (literalHtml) return false
+        if (value.startsWith('<!--')) return true
+        const name = /^<\/?([a-z][a-z\d-]*)/i.exec(value)?.[1]
+        return Boolean(name) && !(document.createElement(name!) instanceof HTMLUnknownElement)
+    }
+    return (tree: Root) => {
+        const walk = (parent: Root | Extract<RootContent, { children: unknown }>) => {
+            parent.children = parent.children.flatMap((node): RootContent | RootContent[] => {
+                if (node.type === 'html' && !isHtml(node.value)) {
+                    if (!['root', 'blockquote', 'listItem', 'footnoteDefinition'].includes(parent.type)) return { type: 'text', value: node.value }
+                    // A block keeps its lines.
+                    return { type: 'paragraph', children: node.value.split(/\r?\n/).flatMap((value, index): PhrasingContent[] => [
+                        ...(index > 0 ? [{ type: 'break' } as const] : []),
+                        ...(value ? [{ type: 'text', value } as const] : []),
+                    ]) }
+                }
+                if ('children' in node) walk(node)
+                return node
+            }) as typeof parent.children
+        }
+        walk(tree)
+    }
+}
+
+/** Every line break is kept, as a tool's plain-text output needs: a single newline doesn't join lines. */
+function lineBreaks() {
+    return (tree: Root) => {
+        const walk = (parent: Root | Extract<RootContent, { children: unknown }>) => {
+            parent.children = parent.children.flatMap((node): RootContent | RootContent[] => {
+                if (node.type === 'text' && node.value.includes('\n')) {
+                    return node.value.split(/\r?\n/).flatMap((value, index): RootContent[] => [
+                        ...(index > 0 ? [{ type: 'break' } as const] : []),
+                        ...(value ? [{ type: 'text', value } as const] : []),
+                    ])
+                }
+                if ('children' in node) walk(node)
+                return node
+            }) as typeof parent.children
+        }
+        walk(tree)
     }
 }
 
@@ -168,15 +222,20 @@ const markdownComponents: Components = {
 interface ProjectConversationMarkdownProps {
     content: string
     enableCodeCopy?: boolean
+    /** Keep single line breaks and show HTML as text, for text that may be plain output rather than Markdown, such as a run's result. */
+    keepLineBreaks?: boolean
 }
 
-function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false }: ProjectConversationMarkdownProps) {
+function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false, keepLineBreaks = false }: ProjectConversationMarkdownProps) {
     const id = useId()
     const remarkRehypeOptions = useMemo(() => ({ clobberPrefix: `markdown-${id}-`, footnoteLabel: 'Footnotes' }), [id])
     return <MarkdownContext.Provider value={enableCodeCopy}>
         <div className="conversation-markdown min-w-0">
             <ReactMarkdown components={markdownComponents} skipHtml
-                remarkPlugins={[remarkGfm, remarkMath, safeBreaksAndCode]}
+                remarkPlugins={keepLineBreaks
+                    // Plain output shows every line as written, HTML included.
+                    ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], [safeBreaksAndCode, PLAIN_OUTPUT], [literalNonHtml, PLAIN_OUTPUT], lineBreaks]
+                    : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, literalNonHtml]}
                 rehypePlugins={[[footnoteLabels, `markdown-${id}-`], [rehypeKatex, { trust: false, strict: 'error' }], [rehypeHighlight, { detect: false, ignoreMissing: true }]]}
                 remarkRehypeOptions={remarkRehypeOptions}
                 urlTransform={(url) => destination(url) === 'unsafe' ? '' : url}

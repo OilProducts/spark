@@ -6,6 +6,7 @@ import { getHandlerType, getNodeFieldVisibility } from "@/lib/nodeVisibility"
 import { getToolHookCommandWarning } from "@/lib/graphAttrValidation"
 import { resolveEdgeFieldDiagnostics, resolveNodeFieldDiagnostics } from "@/lib/inspectorFieldDiagnostics"
 import { toExtensionAttrEntries } from "@/lib/extensionAttrs"
+import { EDGE_RENDER_ROUTE_KEY } from "@/lib/flowLayout"
 import {
     getReactFlowNodeTypeForShape,
     getShapeNodeStyle,
@@ -88,6 +89,8 @@ const CORE_EDGE_ATTR_KEYS = new Set<string>([
     'label',
 ])
 const EXCLUDED_NODE_EXTENSION_ATTR_KEYS = new Set<string>(['status', 'human.default_choice'])
+// The canvas's own drawing state, never part of the flow.
+const EXCLUDED_EDGE_EXTENSION_ATTR_KEYS = new Set<string>([EDGE_RENDER_ROUTE_KEY])
 
 const NODE_KIND_TO_SHAPE: Record<string, string> = {
     start: 'Mdiamond',
@@ -160,7 +163,8 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const activeFlow = useStore((state) => state.activeFlow)
     const selectedNodeId = useStore((state) => state.selectedNodeId)
     const selectedEdgeId = useStore((state) => state.selectedEdgeId)
-    // The file view owns edits in Files mode; a structured save here would leave its file text stale.
+    // The file view owns edits in Files mode, and takes this column's room: a structured save
+    // here would leave its file text stale.
     const isFilesMode = useStore((state) => state.editorMode === 'files')
     const setSelectedNodeId = useStore((state) => state.setSelectedNodeId)
     const setSelectedEdgeId = useStore((state) => state.setSelectedEdgeId)
@@ -251,6 +255,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         () => toExtensionAttrEntries(
             (selectedEdge?.data ?? {}) as Record<string, unknown>,
             CORE_EDGE_ATTR_KEYS,
+            EXCLUDED_EDGE_EXTENSION_ATTR_KEYS,
         ),
         [selectedEdge?.data],
     )
@@ -511,7 +516,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     }
 
     // The flow list lives in the Flows panel; this column only inspects the open flow.
-    if (!showSecondaryInspector) {
+    if (!showSecondaryInspector || isFilesMode) {
         return null
     }
 
@@ -525,12 +530,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
             }`}
             style={isNarrowViewport ? undefined : { width: `${desktopWidthPx}px` }}
         >
-            {isFilesMode ? (
-                <p data-testid="inspector-files-mode-notice" className="px-4 pt-4 text-xs text-muted-foreground">
-                    Read-only while editing files. Switch to Structured to edit here.
-                </p>
-            ) : null}
-            <fieldset disabled={isFilesMode} className="m-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-0 p-0">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
                 {showGraphInspector ? (
                     <GraphInspectorPanel />
                 ) : null}
@@ -577,7 +577,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                         renderFieldDiagnostics={renderFieldDiagnostics}
                     />
                 ) : null}
-            </fieldset>
+            </div>
         </nav>
     )
 }

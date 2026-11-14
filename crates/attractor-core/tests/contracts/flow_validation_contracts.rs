@@ -218,7 +218,7 @@ fn kinds_declare_their_decision_domains() {
         has(
             &found,
             "decision_domain",
-            "agent_task nodes declare at least one decision"
+            "agent_task nodes need at least one route"
         ),
         "{found:?}"
     );
@@ -316,7 +316,29 @@ fn graphs_need_reachable_nodes_exits_and_no_ordinary_leaves() {
     leaf["nodes"]["gate"] = json!({"kind": "human_gate", "routes": {}});
     leaf["nodes"]["work"]["routes"]["ask"] = route("gate");
     let found = rules(leaf);
-    assert!(has(&found, "nonterminal_leaf", "'gate'"), "{found:?}");
+    // A gate without routes is one problem, reported once.
+    assert!(
+        has(
+            &found,
+            "decision_domain",
+            "gate.md: human_gate nodes need at least one route"
+        ),
+        "{found:?}"
+    );
+    assert!(!has(&found, "nonterminal_leaf", "'gate'"), "{found:?}");
+
+    let mut leaf = review_loop();
+    leaf["nodes"]["switch"] = json!({"kind": "switch", "config": {"kind": "switch", "on": "context.x", "cases": {}, "otherwise": "done"}, "routes": {}});
+    leaf["nodes"]["work"]["routes"]["ask"] = route("switch");
+    let found = rules(leaf);
+    assert!(
+        has(
+            &found,
+            "nonterminal_leaf",
+            "'switch' has no routes, but only exit nodes"
+        ),
+        "{found:?}"
+    );
 
     let mut budget = review_loop();
     budget["nodes"]["work"]["runtime"] = json!({"max_visits": 0});

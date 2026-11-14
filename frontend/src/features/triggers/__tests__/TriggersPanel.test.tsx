@@ -381,6 +381,161 @@ describe('TriggersPanel', () => {
     })
   })
 
+  it('asks for the flow\'s launch inputs, refuses a missing required one, and saves them under their keys', async () => {
+    const releaseCheck = { name: 'release-check', title: 'Release Check', description: '' }
+    const posts: Array<Record<string, unknown>> = []
+    const saved = { ...makeTrigger({ id: 'nightly', name: 'Nightly', flow_name: 'release-check' }), action: { flow_name: 'release-check', static_context: { 'context.request.version': '1.2.0', branch: 'main' } } }
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = resolveRequestUrl(input as RequestInfo | URL)
+      if (url.startsWith('/workspace/api/flows/release-check')) {
+        return jsonResponse({ ...releaseCheck, inputs: [{ key: 'context.request.version', label: 'Version', type: 'string', description: 'The version to release.', required: true }] })
+      }
+      if (isFlowList(url)) return jsonResponse([...PROJECT_FLOWS, releaseCheck])
+      if (init?.method === 'POST') {
+        posts.push(JSON.parse(String(init.body)))
+        return jsonResponse(saved)
+      }
+      return jsonResponse(posts.length ? [saved] : [])
+    })
+    useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const form = await openCreateTriggerForm(user)
+    await user.type(form.getByLabelText('Name'), 'Nightly')
+    await user.selectOptions(form.getByLabelText('Flow to start'), await form.findByRole('option', { name: 'Release Check' }))
+    const version = await form.findByLabelText(/^Version/)
+    expect(form.getByText('What each run needs')).toBeVisible()
+    expect(version).toHaveAccessibleDescription('The version to release.')
+
+    await user.click(screen.getByTestId('trigger-create-button'))
+    expect(posts).toHaveLength(0)
+    expect(version).toHaveAttribute('aria-invalid', 'true')
+    expect(version).toHaveFocus()
+    expect(version).toHaveAccessibleDescription(/Version is required\./)
+
+    await user.type(version, '1.2.0')
+    await user.type(form.getByLabelText('Extra data for the run (optional)'), '{{"branch": "main"}')
+    await user.click(screen.getByTestId('trigger-create-button'))
+    await waitFor(() => expect(posts).toHaveLength(1))
+    expect(posts[0]).toMatchObject({ action: { flow_name: 'release-check', static_context: { 'context.request.version': '1.2.0', branch: 'main' } } })
+
+    // Opened again, the input is back in its field and only the rest is extra data.
+    await waitFor(() => expect(screen.getByLabelText(/^Version/)).toHaveValue('1.2.0'))
+    expect(JSON.parse((screen.getByLabelText('Extra data for the run (optional)') as HTMLTextAreaElement).value)).toEqual({ branch: 'main' })
+  })
+
+  it('saves a trigger disabled without a required launch input, and refuses it enabled', async () => {
+    const quietCheck = { name: 'quiet-check', title: 'Quiet Check', description: '' }
+    let trigger = makeTrigger({ id: 'quiet', name: 'Quiet check every 30s', flow_name: 'quiet-check' })
+    const patches: Array<Record<string, unknown>> = []
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = resolveRequestUrl(input as RequestInfo | URL)
+      if (url.startsWith('/workspace/api/flows/quiet-check')) {
+        return jsonResponse({ ...quietCheck, inputs: [{ key: 'context.request.branch', label: 'Branch', type: 'string', required: true }] })
+      }
+      if (isFlowList(url)) return jsonResponse([...PROJECT_FLOWS, quietCheck])
+      if (init?.method === 'PATCH') {
+        const patch = JSON.parse(String(init.body))
+        patches.push(patch)
+        trigger = { ...trigger, enabled: patch.enabled, revision: `revision-${patches.length + 1}` }
+        return jsonResponse(trigger)
+      }
+      return jsonResponse([trigger])
+    })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const name = await screen.findByDisplayValue('Quiet check every 30s')
+    const branch = await screen.findByLabelText(/^Branch/)
+
+    // Enabled, it would start runs without Branch.
+    await user.type(name, '!')
+    await user.click(screen.getByTestId('trigger-save-button'))
+    expect(patches).toHaveLength(0)
+    expect(branch).toHaveAccessibleDescription(/Branch is required\./)
+
+    await user.click(screen.getByRole('switch', { name: 'Enabled' }))
+    expect(branch).not.toHaveAttribute('aria-invalid', 'true')
+    await user.click(screen.getByTestId('trigger-save-button'))
+    await waitFor(() => expect(patches).toHaveLength(1))
+    expect(patches[0]).toMatchObject({ enabled: false, action: { flow_name: 'quiet-check', static_context: {} } })
+
+    // Turned back on, it is refused again.
+    await user.click(await screen.findByRole('switch', { name: 'Enabled' }))
+    await user.click(screen.getByTestId('trigger-save-button'))
+    expect(patches).toHaveLength(1)
+    expect(screen.getByLabelText(/^Branch/)).toHaveAccessibleDescription(/Branch is required\./)
+  })
+
+  it('waits for the flow\'s launch inputs before a trigger that starts it can be created', async () => {
+    const releaseCheck = { name: 'release-check', title: 'Release Check', description: '' }
+    let release: () => void = () => undefined
+    vi.mocked(global.fetch).mockImplementation(async (input) => {
+      const url = resolveRequestUrl(input as RequestInfo | URL)
+      if (url.startsWith('/workspace/api/flows/release-check')) {
+        return new Promise((resolve) => {
+          release = () => resolve(jsonResponse({ ...releaseCheck, inputs: [{ key: 'context.request.version', label: 'Version', type: 'string', required: true }] }))
+        })
+      }
+      if (isFlowList(url)) return jsonResponse([...PROJECT_FLOWS, releaseCheck])
+      return jsonResponse([])
+    })
+    useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const form = await openCreateTriggerForm(user)
+    await user.type(form.getByLabelText('Name'), 'Nightly')
+    await user.selectOptions(form.getByLabelText('Flow to start'), await form.findByRole('option', { name: 'Release Check' }))
+
+    // Its required inputs aren't known yet, so they can't be checked.
+    expect(screen.getByTestId('trigger-create-button')).toBeDisabled()
+    expect(form.getByRole('status')).toHaveTextContent('Reading the flow’s launch inputs…')
+    await act(async () => release())
+    expect(await form.findByLabelText(/^Version/)).toBeVisible()
+    expect(screen.getByTestId('trigger-create-button')).toBeEnabled()
+  })
+
+  it('keeps a trigger from being created while the flow\'s launch inputs failed to load, until they load on Try again', async () => {
+    const releaseCheck = { name: 'release-check', title: 'Release Check', description: '' }
+    let available = false
+    vi.mocked(global.fetch).mockImplementation(async (input) => {
+      const url = resolveRequestUrl(input as RequestInfo | URL)
+      if (url.startsWith('/workspace/api/flows/release-check')) {
+        return available
+          ? jsonResponse({ ...releaseCheck, inputs: [{ key: 'context.request.version', label: 'Version', type: 'string', required: true }] })
+          : new Response(JSON.stringify({ detail: 'Spark is busy.' }), { status: 503, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (isFlowList(url)) return jsonResponse([...PROJECT_FLOWS, releaseCheck])
+      return jsonResponse([])
+    })
+    useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const form = await openCreateTriggerForm(user)
+    await user.type(form.getByLabelText('Name'), 'Nightly')
+    await user.selectOptions(form.getByLabelText('Flow to start'), await form.findByRole('option', { name: 'Release Check' }))
+
+    // A failed request says nothing of the flow's required inputs, so saving waits for them.
+    expect(await form.findByTestId('trigger-flow-inputs-failed')).toHaveTextContent('Couldn’t read the flow’s launch inputs')
+    expect(screen.getByTestId('trigger-create-button')).toBeDisabled()
+    available = true
+    await user.click(form.getByRole('button', { name: 'Try again' }))
+    expect(await form.findByLabelText(/^Version/)).toBeVisible()
+    expect(screen.getByTestId('trigger-create-button')).toBeEnabled()
+  })
+
+  it('marks a trigger whose last firing failed in the list, with the reason on hover', async () => {
+    const failing = makeTrigger({ id: 'nightly', name: 'Nightly' })
+    failing.state = { ...failing.state, last_result: 'failed', last_error: 'Release version is required.' }
+    vi.mocked(global.fetch).mockImplementation(async (input) => (
+      isFlowList(resolveRequestUrl(input as RequestInfo | URL)) ? jsonResponse(PROJECT_FLOWS) : jsonResponse([failing, makeTrigger({ id: 'fine', name: 'Fine' })])
+    ))
+    renderTriggersPanel()
+    const problem = await within(await screen.findByTestId('trigger-row-nightly')).findByTestId('trigger-row-problem')
+    expect(problem).toHaveTextContent('Last firing failed')
+    expect(problem).toHaveAttribute('title', 'Release version is required.')
+    expect(within(screen.getByTestId('trigger-row-fine')).queryByTestId('trigger-row-problem')).not.toBeInTheDocument()
+  })
+
   it('saves weekly days from toggles and a time in the browser\'s zone, and refuses a week with no day', async () => {
     const posts: Array<Record<string, unknown>> = []
     vi.mocked(global.fetch).mockImplementation(async (input, init) => {
@@ -448,7 +603,8 @@ describe('TriggersPanel', () => {
       await waitFor(() => expect(useStore.getState().triggersSession.status).toBe('ready'))
       expect(useStore.getState().triggersSession.selectedTriggerId).toBeNull()
       expect(screen.queryByTestId('trigger-save-button')).not.toBeInTheDocument()
-      expect(screen.getByText('No trigger selected')).toBeVisible()
+      // The list alone shows: no empty detail pane under it.
+      expect(screen.queryByTestId('view-main')).not.toBeInTheDocument()
       // No protected triggers, so no System section.
       expect(screen.queryByRole('heading', { name: 'System' })).not.toBeInTheDocument()
 
@@ -456,7 +612,7 @@ describe('TriggersPanel', () => {
       expect(await screen.findByDisplayValue('Second')).toBeVisible()
       await user.click(screen.getByRole('button', { name: 'All triggers' }))
       expect(useStore.getState().triggersSession.selectedTriggerId).toBeNull()
-      expect(screen.queryByTestId('trigger-save-button')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('view-main')).not.toBeInTheDocument()
       expect(second).toHaveFocus()
     } finally {
       window.innerWidth = 1024

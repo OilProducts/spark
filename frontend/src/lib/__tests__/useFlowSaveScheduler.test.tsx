@@ -3,11 +3,13 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
-import { saveFlowContent } from '@/lib/flowPersistence'
+import { saveFlowContent, sendPendingFlowSaves } from '@/lib/flowPersistence'
 import { useStore } from '@/store'
 
 vi.mock('@/lib/flowPersistence', () => ({
   saveFlowContent: vi.fn(),
+  registerPendingFlowSave: () => () => undefined,
+  sendPendingFlowSaves: vi.fn(() => false),
 }))
 
 function SchedulerHarness() {
@@ -78,5 +80,21 @@ describe('useFlowSaveScheduler', () => {
     cleanup()
 
     expect(saveFlowContent).not.toHaveBeenCalled()
+  })
+
+  it('sends a pending edit on reload, and warns while a save is still in flight', () => {
+    useStore.setState({ activeProjectPath: '/tmp/project-a', editorMode: 'structured' })
+    render(<SchedulerHarness />)
+    fireEvent.click(screen.getByRole('button', { name: 'Count 0' }))
+
+    vi.mocked(sendPendingFlowSaves).mockReturnValueOnce(true)
+    const unload = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(unload)
+    expect(saveFlowContent).toHaveBeenCalledTimes(1)
+    expect(unload.defaultPrevented).toBe(true)
+
+    const idle = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(idle)
+    expect(idle.defaultPrevented).toBe(false)
   })
 })

@@ -7,7 +7,9 @@ import {
 } from '@/lib/flowPersistence'
 import { resolveSaveRemediation } from '@/lib/saveRemediation'
 import { useStore } from '@/store'
+import { act, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { EditorSaveStatus } from '../components/EditorSaveStatus'
 
 const DEMO_FLOW = { flow: { schema_version: '2', id: 'demo', nodes: {} } }
 
@@ -95,7 +97,7 @@ describe('Editor save state behavior', () => {
     expect(saveState.saveErrorKind).toBe('validation_error')
     expect(saveState.saveErrorMessage).toContain('Save blocked by validation errors')
     expect(resolveSaveRemediation(saveState.saveState, saveState.saveErrorKind)).toEqual({
-      message: 'Resolve highlighted validation errors, then save again.',
+      message: 'Fix the errors listed under Validation; the flow saves with your next change.',
       allowRetry: false,
     })
   })
@@ -111,6 +113,28 @@ describe('Editor save state behavior', () => {
     respond(new Response(JSON.stringify({ detail: 'disk full' }), { status: 500, headers: { 'Content-Type': 'application/json' } }))
     await waited
     expect(settled).toBe(true)
+    // The server's reason is the message, not only its status code.
+    expect(useStore.getState().saveErrorMessage).toBe('disk full')
+  })
+
+  it('sends a flow’s next save only after the one in flight settles, so the newer content lands last', async () => {
+    const responders: Array<(response: Response) => void> = []
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { responders.push(resolve) }))
+    vi.stubGlobal('fetch', fetchMock)
+    const saved = () => new Response(JSON.stringify({ status: 'saved' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    const older = saveFlowContent('demo', { flow: { ...DEMO_FLOW.flow, title: 'Older' } })
+    const newer = saveFlowContent('demo', { flow: { ...DEMO_FLOW.flow, title: 'Newer' } })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    responders[0](saved())
+    expect(await older).toBe(true)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String((call as unknown as [string, RequestInit])[1].body)).flow.title)
+    expect(bodies).toEqual(['Older', 'Newer'])
+    responders[1](saved())
+    expect(await newer).toBe(true)
+    expect(useStore.getState().saveState).toBe('saved')
   })
 
   it('supports retrying a transient network failure', async () => {
@@ -133,7 +157,7 @@ describe('Editor save state behavior', () => {
     expect(saveState.saveState).toBe('error')
     expect(saveState.saveErrorKind).toBe('network')
     expect(resolveSaveRemediation(saveState.saveState, saveState.saveErrorKind)).toEqual({
-      message: 'Retry save now, and verify backend connectivity if this repeats.',
+      message: 'Retry the save. If it fails again, check that Spark is still running.',
       allowRetry: true,
     })
 
@@ -181,5 +205,50 @@ describe('Editor save state behavior', () => {
     expect(saveState.saveState).toBe('idle')
     expect(saveState.saveErrorMessage).toBeNull()
     expect(saveState.saveErrorKind).toBeNull()
+  })
+
+  it('shows the save state in the toolbar: a brief Saved, and why edits are not saved', () => {
+    vi.useFakeTimers()
+    try {
+      const reload = vi.fn()
+      render(<EditorSaveStatus onReload={reload} />)
+      const status = screen.getByTestId('editor-save-status')
+      act(() => useStore.getState().markSaveSuccess())
+      expect(status).toHaveTextContent('Saved')
+      act(() => { vi.advanceTimersByTime(2000) })
+      expect(status).toHaveTextContent('')
+      expect(useStore.getState().saveState).toBe('idle')
+
+      act(() => useStore.setState({ hasValidationErrors: true }))
+      act(() => useStore.getState().markSaveFailure('Save blocked by validation errors: x', 'validation_error'))
+      expect(status).toHaveTextContent(/^Not saved: Fix the errors listed under Validation/)
+      expect(screen.queryByTestId('editor-save-retry')).not.toBeInTheDocument()
+
+      // A refusal the Validation panel doesn't list shows the server's reason instead.
+      act(() => useStore.setState({ hasValidationErrors: false }))
+      act(() => useStore.getState().markSaveFailure(
+        "Save blocked by validation errors: flow.md: decision 'held' targets 'held', which is not a node",
+        'validation_error',
+        [{ message: "Decision 'held' targets Held, which is not a step.", file: 'flow.md' }],
+      ))
+      expect(screen.getByText("Decision 'held' targets Held, which is not a step.")).toBeVisible()
+      expect(status).toHaveTextContent(/^Not saved: Decision 'held' targets Held, which is not a step\.$/)
+      expect(screen.queryByTestId('editor-save-retry')).not.toBeInTheDocument()
+
+      act(() => useStore.getState().markSaveFailure('Flow save failed: offline', 'network'))
+      expect(status).toHaveTextContent('Save failed: Flow save failed: offline')
+      expect(screen.getByText(/^Flow save failed: offline/)).toBeVisible()
+      expect(screen.getByTestId('editor-save-retry')).toBeVisible()
+      expect(screen.queryByTestId('editor-save-reload')).not.toBeInTheDocument()
+
+      // A conflict says how to get out of it, with a button to do it, not only in a tooltip.
+      act(() => useStore.getState().markSaveConflict('The flow was changed elsewhere since it was opened.'))
+      expect(screen.getByText(/Reload the flow to get the saved version/)).toBeVisible()
+      expect(screen.queryByTestId('editor-save-retry')).not.toBeInTheDocument()
+      act(() => screen.getByTestId('editor-save-reload').click())
+      expect(reload).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

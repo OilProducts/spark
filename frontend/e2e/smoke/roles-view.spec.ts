@@ -42,6 +42,26 @@ test('the Roles view lists roles, standing first, and starts a standing role int
     await expect(detail.getByRole('region', { name: 'Prompt' })).toContainText('Adversarial Reviewer')
     await expect(detail.getByRole('button', { name: /^(Start|Open conversation)$/ })).toHaveCount(0)
 
+    // A step link opens its flow with the step selected and in view, even over another open flow;
+    // the selection stays marked once the canvas settles. Back returns to the role.
+    const usage = detail.getByTestId('role-usage').getByRole('button', { name: / in / }).first()
+    const [stepLabel, linkedFlow] = (await usage.getAttribute('aria-label'))!.split(' in ')
+    await page.getByTestId('activity-flows').click()
+    await page.getByTestId('editor-flow-tree').locator(`button[title*="/"]:not([aria-expanded]):not([title="${linkedFlow}"])`).first().click()
+    await expect(page.locator('.react-flow__node').first()).toBeVisible()
+    await page.getByTestId('activity-roles').click()
+    await usage.click()
+    await expect(page.getByTestId('editor-workspace')).toHaveAttribute('data-session-active', 'true')
+    const selected = page.locator('.react-flow__node.selected')
+    await expect(selected).toBeInViewport()
+    await expect(selected).toContainText(stepLabel)
+    await page.waitForTimeout(1500)
+    await expect(selected).toHaveCount(1)
+    await expect(selected).toBeInViewport()
+    await page.goBack()
+    await expect(detail.getByRole('region', { name: 'Used in' })).toBeVisible()
+    await expect(reviewer).toHaveAttribute('aria-current', 'true')
+
     // No role exists until it is started: every standing role offers Start.
     const standing = page.getByRole('region', { name: 'Standing' })
     await expect(standing.getByRole('button', { name: /^Open conversation with / })).toHaveCount(0)

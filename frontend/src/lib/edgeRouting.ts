@@ -67,8 +67,42 @@ type GraphNode = {
 
 type SearchState = {
     cost: number
+    // Insertion order: equal-cost states leave the queue first in, first out.
+    order: number
     nodeId: string
     axis: Axis | null
+}
+
+const searchStateBefore = (a: SearchState, b: SearchState) => a.cost - b.cost || a.order - b.order
+
+// A binary min-heap of search states, cheapest first.
+function pushSearchState(heap: SearchState[], state: SearchState): void {
+    heap.push(state)
+    let index = heap.length - 1
+    while (index > 0) {
+        const parent = (index - 1) >> 1
+        if (searchStateBefore(heap[parent], state) <= 0) break
+        heap[index] = heap[parent]
+        index = parent
+    }
+    heap[index] = state
+}
+
+function popSearchState(heap: SearchState[]): SearchState | undefined {
+    const top = heap[0]
+    const last = heap.pop()
+    if (heap.length === 0 || !last) return top
+    let index = 0
+    for (;;) {
+        const left = 2 * index + 1
+        if (left >= heap.length) break
+        const child = left + 1 < heap.length && searchStateBefore(heap[left + 1], heap[left]) < 0 ? left + 1 : left
+        if (searchStateBefore(last, heap[child]) <= 0) break
+        heap[index] = heap[child]
+        index = child
+    }
+    heap[index] = last
+    return top
 }
 
 function isFinitePoint(point: EdgeRoutePoint | null | undefined): point is EdgeRoutePoint {
@@ -389,9 +423,10 @@ function buildGraphNodes(
     })
 
     xs.forEach((x) => {
+        const column = obstacles.filter((obstacle) => x > obstacle.x + EPSILON && x < obstacle.x + obstacle.width - EPSILON)
         ys.forEach((y) => {
             const point = { x, y }
-            if (obstacles.some((obstacle) => isStrictlyInsideRect(point, obstacle))) {
+            if (column.some((obstacle) => isStrictlyInsideRect(point, obstacle))) {
                 return
             }
             graphNodes.set(createPointId(point), {
@@ -482,8 +517,19 @@ function buildAdjacency(
 ): Map<string, GraphNode[]> {
     const adjacency = new Map<string, GraphNode[]>()
     const getPoint = (x: number, y: number) => graphNodes.get(createPointId({ x, y })) ?? null
+    const neighborsOf = (node: GraphNode) => {
+        const neighbors = adjacency.get(node.id) ?? []
+        adjacency.set(node.id, neighbors)
+        return neighbors
+    }
+    const link = (a: GraphNode, b: GraphNode) => {
+        neighborsOf(a).push(b)
+        neighborsOf(b).push(a)
+    }
 
     ys.forEach((y) => {
+        // Only obstacles spanning this row can block a step along it.
+        const row = obstacles.filter((obstacle) => y > obstacle.y + EPSILON && y < obstacle.y + obstacle.height - EPSILON)
         let previousNode: GraphNode | null = null
         xs.forEach((x) => {
             const node = getPoint(x, y)
@@ -491,25 +537,15 @@ function buildAdjacency(
                 previousNode = null
                 return
             }
-            if (previousNode && segmentIsClear(previousNode.point, node.point, obstacles)) {
-                const previousNeighbors = adjacency.get(previousNode.id) ?? []
-                previousNeighbors.push(node)
-                adjacency.set(previousNode.id, previousNeighbors)
-
-                const nodeNeighbors = adjacency.get(node.id) ?? []
-                nodeNeighbors.push(previousNode)
-                adjacency.set(node.id, nodeNeighbors)
-            } else if (previousNode && !segmentIsClear(previousNode.point, node.point, obstacles)) {
-                previousNode = null
+            if (previousNode && segmentIsClear(previousNode.point, node.point, row)) {
+                link(previousNode, node)
             }
-
-            if (!previousNode || segmentIsClear(previousNode.point, node.point, obstacles)) {
-                previousNode = node
-            }
+            previousNode = node
         })
     })
 
     xs.forEach((x) => {
+        const column = obstacles.filter((obstacle) => x > obstacle.x + EPSILON && x < obstacle.x + obstacle.width - EPSILON)
         let previousNode: GraphNode | null = null
         ys.forEach((y) => {
             const node = getPoint(x, y)
@@ -517,21 +553,10 @@ function buildAdjacency(
                 previousNode = null
                 return
             }
-            if (previousNode && segmentIsClear(previousNode.point, node.point, obstacles)) {
-                const previousNeighbors = adjacency.get(previousNode.id) ?? []
-                previousNeighbors.push(node)
-                adjacency.set(previousNode.id, previousNeighbors)
-
-                const nodeNeighbors = adjacency.get(node.id) ?? []
-                nodeNeighbors.push(previousNode)
-                adjacency.set(node.id, nodeNeighbors)
-            } else if (previousNode && !segmentIsClear(previousNode.point, node.point, obstacles)) {
-                previousNode = null
+            if (previousNode && segmentIsClear(previousNode.point, node.point, column)) {
+                link(previousNode, node)
             }
-
-            if (!previousNode || segmentIsClear(previousNode.point, node.point, obstacles)) {
-                previousNode = node
-            }
+            previousNode = node
         })
     })
 
@@ -582,19 +607,25 @@ function findShortestOrthogonalPath(
     routedSegments: PreviousRouteSegment[],
 ): EdgeRoute | null {
     const previousSegments = buildPreviousRouteSegments(previousRoute)
+    // A step can only cross routed segments that run the other way.
+    const routedByAxis = {
+        horizontal: routedSegments.filter((segment) => segment.axis === 'vertical'),
+        vertical: routedSegments.filter((segment) => segment.axis === 'horizontal'),
+    }
     const distances = new Map<string, number>([[buildSearchKey(startNodeId, null), 0]])
     const previousByState = new Map<string, { nodeId: string; axis: Axis | null } | null>([
         [buildSearchKey(startNodeId, null), null],
     ])
+    let order = 0
     const queue: SearchState[] = [{
         cost: 0,
+        order: order++,
         nodeId: startNodeId,
         axis: null,
     }]
 
     while (queue.length > 0) {
-        queue.sort((left, right) => left.cost - right.cost)
-        const current = queue.shift()
+        const current = popSearchState(queue)
         if (!current) {
             break
         }
@@ -632,7 +663,7 @@ function findShortestOrthogonalPath(
                 && !segmentMatchesPreviousRoute(currentNode.point, neighbor.point, previousSegments)
                 ? PREVIOUS_ROUTE_PENALTY
                 : 0
-            const crossingPenalty = CROSSING_PENALTY * countCrossings(currentNode.point, neighbor.point, routedSegments)
+            const crossingPenalty = CROSSING_PENALTY * countCrossings(currentNode.point, neighbor.point, routedByAxis[axis])
             const nextCost = current.cost + segmentLength + bendPenalty + previousRoutePenalty + crossingPenalty
             const nextKey = buildSearchKey(neighbor.id, axis)
             if (nextCost >= (distances.get(nextKey) ?? Number.POSITIVE_INFINITY)) {
@@ -644,8 +675,9 @@ function findShortestOrthogonalPath(
                 nodeId: current.nodeId,
                 axis: current.axis,
             })
-            queue.push({
+            pushSearchState(queue, {
                 cost: nextCost,
+                order: order++,
                 nodeId: neighbor.id,
                 axis,
             })

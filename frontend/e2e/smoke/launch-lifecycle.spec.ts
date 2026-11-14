@@ -182,7 +182,7 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
     await flowRow(page, errorFlowName).click()
     await errorPreviewRequest
     await expect(page.getByTestId("editor-run-button")).toBeDisabled()
-    await expect(page.getByTestId("editor-run-button")).toHaveAttribute("title", "Fix validation errors before running.")
+    await expect(page.getByTestId("editor-run-button")).toHaveAccessibleDescription("Fix validation errors before running.")
 
     const warningPreviewRequest = waitForPreviewToken(warningToken)
     await flowRow(page, warningFlowName).click()

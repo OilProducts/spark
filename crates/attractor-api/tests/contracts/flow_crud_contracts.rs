@@ -130,6 +130,37 @@ fn get_and_delete_missing_flow_match_error_contract() {
 }
 
 #[test]
+fn get_and_delete_decode_the_flow_name_in_the_path() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("project");
+    let service = AttractorApiService::new(settings(temp.path()));
+    assert_eq!(
+        service
+            .save_flow(save("ops/Nightly Audit", &valid_flow(), &project))
+            .status_code,
+        200
+    );
+    let query = format!(
+        "?project_path={}",
+        project.to_string_lossy().replace(' ', "%20")
+    );
+
+    let get = service.dispatch("GET", &format!("/api/flows/ops/Nightly%20Audit{query}"), "");
+    assert_eq!(get.status_code, 200, "{}", get.body);
+    assert_eq!(get.body["name"], "ops/Nightly Audit");
+
+    let delete = service.dispatch(
+        "DELETE",
+        &format!("/api/flows/ops/Nightly%20Audit{query}"),
+        "",
+    );
+    assert_eq!(delete.status_code, 200, "{}", delete.body);
+    assert!(!project
+        .join(".spark/definitions/flows/ops/Nightly Audit")
+        .exists());
+}
+
+#[test]
 fn flow_name_safety_errors_are_exposed_through_api_responses() {
     let temp = tempfile::tempdir().expect("tempdir");
     let service = AttractorApiService::new(settings(temp.path()));
@@ -225,12 +256,18 @@ fn save_takes_exactly_one_of_flow_or_files() {
         "flow": valid_flow(),
         "files": [{"name": "flow.md", "content": "---\ntype: Flow\n---\n"}],
     }));
+    let deletion_with_flow = post(json!({
+        "name": "work",
+        "project_path": project,
+        "flow": valid_flow(),
+        "deleted_files": ["task.md"],
+    }));
 
-    for response in [neither, both] {
+    for response in [neither, both, deletion_with_flow] {
         assert_eq!(response.status_code, 400, "{}", response.body);
         assert_eq!(
             response.body["detail"],
-            json!("A flow save takes exactly one of flow or files.")
+            json!("A flow save takes exactly one of flow or files, and deleted_files only with files.")
         );
     }
     assert!(!project.exists());
@@ -268,6 +305,51 @@ fn get_flow_returns_the_exact_files_flow_md_first_and_the_flow_json() {
         );
     }
     assert_eq!(flow(get.body["flow"].clone()), valid_flow());
+}
+
+#[test]
+fn get_flow_lists_a_broken_flows_problems_with_their_files_and_no_directory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let dir = settings.bundled_dir().join("flows/with space/work");
+    write_flow_dir(&dir, &valid_flow()).expect("write flow");
+    fs::write(
+        dir.join("stray.md"),
+        "---\ntype: agent_task\n---\n\nDo more.\n",
+    )
+    .expect("stray");
+    let service = AttractorApiService::new(settings);
+
+    let invalid = service.get_flow("with space/work", None);
+
+    assert_eq!(invalid.status_code, 422, "{}", invalid.body);
+    assert!(
+        !invalid.body.to_string().contains("with space"),
+        "{}",
+        invalid.body
+    );
+    let diagnostics = invalid.body["detail"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics");
+    assert!(diagnostics.len() > 1, "{}", invalid.body);
+    assert!(
+        diagnostics
+            .iter()
+            .all(|problem| problem["file"] == "stray.md"),
+        "{}",
+        invalid.body
+    );
+
+    fs::write(dir.join("stray.md"), "---\ntype: [\n---\n").expect("unparseable");
+    let unparseable = service.get_flow("with space/work", None);
+    assert_eq!(unparseable.status_code, 422, "{}", unparseable.body);
+    assert_eq!(
+        unparseable.body["detail"]["diagnostics"][0]["file"],
+        "stray.md"
+    );
+    assert!(unparseable.body["detail"]["error"]
+        .as_str()
+        .is_some_and(|error| error.starts_with("stray.md: ")));
 }
 
 #[test]
@@ -348,6 +430,44 @@ fn files_save_writes_the_submitted_bytes_exactly() {
 }
 
 #[test]
+fn files_save_adds_and_deletes_node_files() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("project");
+    let org = init_org(&project);
+    let service = AttractorApiService::new(settings(temp.path()));
+    assert_eq!(
+        service
+            .save_flow(save("work", &valid_flow(), &project))
+            .status_code,
+        200
+    );
+    let dir = org.join("flows/work");
+    let before = flow_dir_bytes(&dir);
+
+    // A new node, wired in by an edit to start.md, and the task it replaces deleted.
+    let review = before["task.md"].replace("title: Task", "title: Review");
+    let start = before["start.md"].replace("to: task", "to: review");
+    let mut request = save_files(
+        "work",
+        &[("review.md", &review), ("start.md", &start)],
+        &project,
+    );
+    request.deleted_files = vec!["task.md".to_string()];
+    let saved = service.save_flow(request);
+
+    assert_eq!(saved.status_code, 200, "{}", saved.body);
+    let after = flow_dir_bytes(&dir);
+    assert_eq!(after["review.md"], review);
+    assert_eq!(after["start.md"], start);
+    assert!(!after.contains_key("task.md"));
+    assert_eq!(
+        read_flow_dir(&dir).expect("flow").nodes["review"].label,
+        "Review"
+    );
+    assert_parent_untouched(&project);
+}
+
+#[test]
 fn files_save_that_fails_validation_or_names_an_unknown_file_writes_nothing() {
     let temp = tempfile::tempdir().expect("tempdir");
     let project = temp.path().join("project");
@@ -374,17 +494,67 @@ fn files_save_that_fails_validation_or_names_an_unknown_file_writes_nothing() {
     assert_eq!(invalid.status_code, 422, "{}", invalid.body);
     assert_eq!(invalid.body["detail"]["status"], json!("validation_error"));
 
-    let unknown = service.save_flow(save_files(
+    // A new file is a node of the flow, so an unreachable one fails validation.
+    let unreachable = service.save_flow(save_files(
         "work",
-        &[("task.md", &task), ("extra.md", "---\nkind: exit\n---\n")],
+        &[("task.md", &task), ("extra.md", &before["done.md"])],
         &project,
     ));
-    assert_eq!(unknown.status_code, 422, "{}", unknown.body);
-    assert_eq!(unknown.body["detail"]["status"], json!("validation_error"));
-    assert!(unknown.body["detail"]["error"]
+    assert_eq!(unreachable.status_code, 422, "{}", unreachable.body);
+    assert_eq!(
+        unreachable.body["detail"]["status"],
+        json!("validation_error")
+    );
+    assert!(unreachable.body["detail"]["error"]
         .as_str()
         .expect("error")
-        .contains("extra.md is not a file of flow work"));
+        .contains("'extra' is unreachable"));
+    // Each problem names its step's title, which the UI can't read from a flow that won't load.
+    let extra = unreachable.body["detail"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics")
+        .iter()
+        .find(|diagnostic| diagnostic["node_id"] == json!("extra"))
+        .expect("extra's diagnostic");
+    assert_eq!(extra["node_label"], json!("Done"));
+
+    // Only plain node files of this flow: no path out of it, no namesake by case, no flow.md deletion.
+    for (files, deleted, message) in [
+        (
+            vec![("../extra.md", "x")],
+            vec![],
+            "can't be a file of flow work",
+        ),
+        (
+            vec![("index.md", "x")],
+            vec![],
+            "can't be a file of flow work",
+        ),
+        (
+            vec![("Task.md", "x")],
+            vec![],
+            "already has a file named Task.md",
+        ),
+        (
+            vec![],
+            vec!["flow.md"],
+            "flow.md is not a node file of flow work",
+        ),
+        (vec![], vec!["missing.md"], "missing.md is not a node file"),
+    ] {
+        let mut request = save_files("work", &files, &project);
+        request.deleted_files = deleted.into_iter().map(str::to_string).collect();
+        let refused = service.save_flow(request);
+        assert_eq!(refused.status_code, 422, "{}", refused.body);
+        assert!(
+            refused.body["detail"]["error"]
+                .as_str()
+                .expect("error")
+                .contains(message),
+            "{}",
+            refused.body
+        );
+    }
 
     assert_eq!(flow_dir_bytes(&dir), before);
 }
@@ -559,6 +729,7 @@ fn save_requires_a_project() {
         name: "flow".to_string(),
         flow: Some(valid_flow()),
         files: None,
+        deleted_files: Vec::new(),
         project_path: None,
     });
 
@@ -883,6 +1054,7 @@ fn save(name: &str, flow: &FlowDefinition, project: &Path) -> SaveFlowRequest {
         name: name.to_string(),
         flow: Some(flow.clone()),
         files: None,
+        deleted_files: Vec::new(),
         project_path: Some(project.to_string_lossy().to_string()),
     }
 }
@@ -901,6 +1073,7 @@ fn save_files(name: &str, files: &[(&str, &str)], project: &Path) -> SaveFlowReq
                 })
                 .collect(),
         ),
+        deleted_files: Vec::new(),
         project_path: Some(project.to_string_lossy().to_string()),
     }
 }

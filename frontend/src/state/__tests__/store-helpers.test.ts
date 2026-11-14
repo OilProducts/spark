@@ -22,15 +22,15 @@ describe('normalizeGraphAttrs', () => {
         expect(normalizeGraphAttrs({ extra: undefined })).toEqual({})
     })
 
-    it('still normalizes recognized settings to trimmed strings and omits their nulls', () => {
+    it('still normalizes recognized settings to strings, keeping text as typed, and omits their nulls', () => {
         const normalized = normalizeGraphAttrs({
-            title: '  Title  ',
+            title: 'Nightly ',
             max_retries: 3,
             thinking_budget_tokens: 500 as unknown as string,
             goal: null as unknown as string,
             llm_model: undefined,
         })
-        expect(normalized).toEqual({ title: 'Title', max_retries: '3', thinking_budget_tokens: '500' })
+        expect(normalized).toEqual({ title: 'Nightly ', max_retries: '3', thinking_budget_tokens: '500' })
     })
 
     it('still validates recognized settings beside structured metadata', () => {

@@ -26,7 +26,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Field, FieldLabel } from '@/components/ui/field'
+import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 
@@ -58,6 +58,8 @@ type PromptDialogOptions = {
   confirmVariant?: ButtonVariant
   multiline?: boolean
   requireInput?: boolean
+  /** A live note under the input; `ok: false` blocks confirming. */
+  check?: (value: string) => { message: string; ok: boolean } | null
 }
 
 type DialogController = {
@@ -191,7 +193,8 @@ export function DialogProvider({ children }: PropsWithChildren) {
   }
 
   const promptRequiresInput = currentDialog?.kind === 'prompt' && currentDialog.requireInput === true
-  const promptConfirmDisabled = promptRequiresInput && promptValue.trim().length === 0
+  const promptCheck = currentDialog?.kind === 'prompt' && promptValue.trim() ? currentDialog.check?.(promptValue) ?? null : null
+  const promptConfirmDisabled = (promptRequiresInput && promptValue.trim().length === 0) || promptCheck?.ok === false
 
   return (
     <DialogControllerContext.Provider value={controller}>
@@ -289,8 +292,15 @@ export function DialogProvider({ children }: PropsWithChildren) {
                       onChange={(event) => setPromptValue(event.target.value)}
                       placeholder={currentDialog.placeholder}
                       autoFocus
+                      aria-invalid={promptCheck?.ok === false || undefined}
+                      aria-describedby={promptCheck ? 'shared-dialog-check' : undefined}
                     />
                   )}
+                  {promptCheck ? (
+                    promptCheck.ok
+                      ? <FieldDescription id="shared-dialog-check" data-testid="shared-dialog-check">{promptCheck.message}</FieldDescription>
+                      : <FieldError id="shared-dialog-check" data-testid="shared-dialog-check">{promptCheck.message}</FieldError>
+                  ) : null}
                 </Field>
                 <DialogFooter>
                   <Button

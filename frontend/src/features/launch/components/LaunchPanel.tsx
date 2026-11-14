@@ -24,6 +24,7 @@ import { useLaunchPreview } from '../hooks/useLaunchPreview'
 import { launchErrorMessage, useStartPipeline } from '../hooks/useStartPipeline'
 import type { LaunchFailureDiagnostics, LaunchTarget } from '../model/launchTypes'
 import { ExecutionProfileSection } from './ExecutionProfileSection'
+import { diagnosticSentence } from '@/lib/problemText'
 import { LaunchInputsForm } from './LaunchInputsForm'
 import { LaunchNoticeStack } from './LaunchNoticeStack'
 
@@ -38,6 +39,8 @@ export interface LaunchPanelProps {
     onLaunched: (runId: string | null, queued: boolean) => void
     /** Omitted where the panel's container closes it, as a dialog does with its own button and Escape. */
     onClose?: () => void
+    /** Opens the flow in the editor; offered beside its errors, where the panel isn't already in the editor. */
+    onEditFlow?: () => void
 }
 
 export function LaunchPanel({
@@ -50,6 +53,7 @@ export function LaunchPanel({
     infoNotice,
     onLaunched,
     onClose,
+    onEditFlow,
 }: LaunchPanelProps) {
     const { startFlow, logUnexpectedLaunchError } = useStartPipeline()
     const placement = useExecutionPlacement(true, projectPath)
@@ -106,8 +110,21 @@ export function LaunchPanel({
         })
     }, [initialInputValues, initialLaunchContext, parsedLaunchInputs.entries])
 
+    // Once the inputs load, a still-untouched panel hands focus to the first one the run needs.
+    const firstRequiredKey = parsedLaunchInputs.entries.find((entry) => entry.required)?.key
+    useEffect(() => {
+        if (!firstRequiredKey || document.activeElement !== panelRef.current) return
+        panelRef.current?.querySelector<HTMLElement>(`[data-testid="execution-launch-input-${CSS.escape(firstRequiredKey)}"]`)?.focus()
+    }, [firstRequiredKey])
+
     const showValidationWarningBanner = diagnostics.some((diag) => diag.severity === 'warning') && !hasValidationErrors
     const visibleDiagnostics = diagnostics.slice(0, 8)
+    const nodeLabel = (nodeId: string) => {
+        // A flow that won't load has no graph; its problems carry each step's title.
+        const label = hydratedGraph?.nodes.find((node) => node.id === nodeId)?.data?.label
+            ?? diagnostics.find((diagnostic) => diagnostic.node_id === nodeId && diagnostic.node_label)?.node_label
+        return typeof label === 'string' && label.trim() ? label.trim() : nodeId
+    }
     const projectRegistry = useStore((state) => state.projectRegistry)
     const executeLabel = projectPath ? `Run in ${projectLabel(projectRegistry, projectPath)}` : 'Run'
     const executeDisabledReason = !projectPath
@@ -218,6 +235,12 @@ export function LaunchPanel({
                     event.stopPropagation()
                     onClose()
                 }
+                // Enter in a one-line field runs, as it submits a form; multi-line fields keep Enter for new lines.
+                if (event.key === 'Enter' && !event.defaultPrevented && !event.nativeEvent.isComposing
+                    && event.target instanceof HTMLInputElement && !['checkbox', 'radio', 'button', 'submit', 'reset', 'file'].includes(event.target.type)) {
+                    event.preventDefault()
+                    void requestStart()
+                }
             }}
         >
             <div className="space-y-1">
@@ -310,7 +333,7 @@ export function LaunchPanel({
                         })
                     }}
                 />
-            </Well> : !isLoadingPreview && !previewLoadError ? (
+            </Well> : !isLoadingPreview && !previewLoadError && !hasValidationErrors ? (
                 <p data-testid="launch-panel-no-inputs" className="text-sm text-muted-foreground">This flow needs no inputs to start.</p>
             ) : null}
 
@@ -329,7 +352,7 @@ export function LaunchPanel({
                     aria-describedby="launch-panel-run-name-hint"
                     className="h-8 text-sm"
                 />
-                <p id="launch-panel-run-name-hint" className="text-xs text-muted-foreground">Tells this run apart in Runs, Needs you and the Inbox. Left empty, it is listed as {panelTitle}.</p>
+                <p id="launch-panel-run-name-hint" className="text-xs text-muted-foreground">Tells this run apart in Runs, Needs you and the Inbox. Left empty, it is named from {parsedLaunchInputs.entries.length > 0 ? <>its inputs, or listed as {panelTitle} without them</> : <>the flow, as {panelTitle}</>}.</p>
             </div>
 
             {/* Where and how it runs: rarely changed, so folded under one line that says what it will use. */}
@@ -392,9 +415,16 @@ export function LaunchPanel({
                     data-testid="launch-panel-diagnostics"
                     className="space-y-2 p-3"
                 >
-                    <p className="text-sm font-semibold text-foreground">
-                        Problems found in this flow
-                    </p>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-foreground">
+                            Problems found in this flow
+                        </p>
+                        {onEditFlow && hasValidationErrors ? (
+                            <Button type="button" size="sm" variant="outline" data-testid="launch-panel-edit-flow" onClick={onEditFlow}>
+                                Fix in the editor
+                            </Button>
+                        ) : null}
+                    </div>
                     <ul className="space-y-2 text-sm">
                         {visibleDiagnostics.map((diagnostic, index) => (
                             <li
@@ -403,10 +433,9 @@ export function LaunchPanel({
                             >
                                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                     <span className="capitalize">{diagnostic.severity}</span>
-                                    <span>{diagnostic.rule_id}</span>
-                                    {diagnostic.node_id ? <span>{diagnostic.node_id}</span> : null}
+                                    {diagnostic.node_id ? <span>· {nodeLabel(diagnostic.node_id)}</span> : null}
                                 </div>
-                                <p className="mt-1 text-sm text-foreground">{diagnostic.message}</p>
+                                <p className="mt-1 text-sm text-foreground">{diagnosticSentence(diagnostic, nodeLabel)}</p>
                             </li>
                         ))}
                     </ul>

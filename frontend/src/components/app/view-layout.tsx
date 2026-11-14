@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type ComponentProps, type ComponentType, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ComponentProps, type ComponentType, type MouseEvent, type ReactNode } from 'react'
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
+import { useStore } from '@/store'
 import { cn } from '@/lib/utils'
 
 /**
@@ -26,11 +27,17 @@ export function Sheet({ className, ...props }: ComponentProps<'div'>) {
     )
 }
 
+const REVEAL_SELECTION_EVENT = 'spark:reveal-selection'
+
+/** Marks the next view's selection as just picked, so a narrow layout scrolls to it even if it was already selected. */
+export const revealSelection = () => window.dispatchEvent(new Event(REVEAL_SELECTION_EVENT))
+
 /**
  * A view's side panel (on the ground) beside its sheet, narrower below 1280px so the sheet keeps
  * room; on a desktop it can be hidden, leaving the sheet (a canvas or run graph) the width. On a
  * narrow viewport they stack in the view's one scroll, the panel at full length, and picking
- * something (`selected` changes) scrolls the sheet into view.
+ * something (`selected` changes) scrolls the sheet into view. Without children there is no sheet:
+ * a phone with nothing picked shows just the list.
  */
 export function ViewLayout({
     view,
@@ -65,11 +72,29 @@ export function ViewLayout({
         }
     }, [panelHidden])
     const sheetRef = useRef<HTMLDivElement | null>(null)
+    // A pick made while this view is hidden (such as Continue on Overview opening a chat) scrolls
+    // once the view shows; each pick scrolls once, so the list stays reachable afterwards. A pick
+    // from another view counts even when it picks what is already selected.
+    const viewMode = useStore((state) => state.viewMode)
+    const scrolledTo = useRef<string | null>(null)
     useEffect(() => {
-        if (isNarrowViewport && selected) {
+        const sheet = sheetRef.current
+        if (!selected) scrolledTo.current = null
+        if (!isNarrowViewport || !selected || scrolledTo.current === selected || !sheet || sheet.getClientRects().length === 0) return
+        sheet.scrollIntoView({ block: 'start' })
+        scrolledTo.current = selected
+    }, [isNarrowViewport, selected, viewMode])
+    useEffect(() => {
+        const reveal = () => { scrolledTo.current = null }
+        window.addEventListener(REVEAL_SELECTION_EVENT, reveal)
+        return () => window.removeEventListener(REVEAL_SELECTION_EVENT, reveal)
+    }, [])
+    // Tapping the row already shown brings its sheet back into view too.
+    const revealPickedRow = (event: MouseEvent) => {
+        if (isNarrowViewport && event.target instanceof Element && event.target.closest('[aria-current="true"]')) {
             sheetRef.current?.scrollIntoView({ block: 'start' })
         }
-    }, [isNarrowViewport, selected])
+    }
     return (
         <div
             data-testid={`${view}-view`}
@@ -119,11 +144,13 @@ export function ViewLayout({
                     </div>
                 )}
                 {/* Hidden, not unmounted, so the list keeps its search, scroll and expanded folders. */}
-                <div hidden={hidden} className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">{panel}</div>
+                <div hidden={hidden} className="min-h-0 flex-1 overflow-y-auto px-2 pb-4" onClick={revealPickedRow}>{panel}</div>
             </aside>
-            <Sheet ref={sheetRef} data-testid="view-main" className={isNarrowViewport ? 'min-h-[calc(100dvh-3.25rem)]' : 'ml-0'}>
-                {children}
-            </Sheet>
+            {children == null ? null : (
+                <Sheet ref={sheetRef} data-testid="view-main" className={isNarrowViewport ? 'min-h-[calc(100dvh-3.25rem)]' : 'ml-0'}>
+                    {children}
+                </Sheet>
+            )}
         </div>
     )
 }
@@ -142,7 +169,7 @@ export function SheetEmpty({
 }: Omit<ComponentProps<'div'>, 'title'> & { icon?: ComponentType<{ className?: string }>; title: ReactNode; action?: ReactNode }) {
     return (
         <div data-slot="sheet-empty" className={cn('flex h-full min-h-64 items-center justify-center p-8', className)} {...props}>
-            <div className="flex max-w-sm flex-col items-center gap-3 text-center">
+            <div className="flex min-w-0 max-w-sm flex-col items-center gap-3 text-center">
                 {Icon ? (
                     <span aria-hidden="true" className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
                         <Icon className="size-5" />

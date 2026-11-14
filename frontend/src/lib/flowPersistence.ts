@@ -2,6 +2,7 @@ import { useStore, type SaveErrorKind } from '@/store'
 import { saveFlowValidated, type FlowSaveContent } from '@/lib/attractorClient'
 import { recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 import { duplicateDecisionsInFlow } from '@/lib/canonicalFlowModel'
+import { flowProblemsFromDetail } from '@/features/editor/model/flowLoadFailure'
 
 interface SaveFlowErrorDetail {
     status?: string
@@ -26,6 +27,10 @@ function parseErrorDetail(payload: unknown): SaveFlowErrorDetail {
     if ('detail' in payload && payload.detail && typeof payload.detail === 'object') {
         return payload.detail as SaveFlowErrorDetail
     }
+    // The server's plain errors are `{"detail": "why"}`.
+    if ('detail' in payload && typeof payload.detail === 'string' && payload.detail.trim()) {
+        return { error: payload.detail.trim() }
+    }
     return payload as SaveFlowErrorDetail
 }
 
@@ -37,7 +42,7 @@ function buildErrorMessage(status: string | undefined, error: string | undefined
         return `Save blocked by validation errors: ${error ?? FALLBACK_SAVE_FAILURE_MESSAGE}`
     }
     if (status === 'conflict' || statusCode === 409) {
-        return `Save conflict detected: ${error ?? 'The flow was modified elsewhere. Refresh and re-apply your changes.'}`
+        return error ?? 'The flow was changed elsewhere since it was opened.'
     }
     if (error) {
         return error
@@ -66,6 +71,21 @@ export async function waitForFlowSaves(): Promise<void> {
     await Promise.all([...inFlightSaves])
 }
 
+// Debounced saves not sent yet, one sender per scheduler.
+const pendingSaveSenders = new Set<() => void>()
+
+/** Registers a scheduler's sender for its debounced save; returns the unregister. */
+export function registerPendingFlowSave(send: () => void): () => void {
+    pendingSaveSenders.add(send)
+    return () => { pendingSaveSenders.delete(send) }
+}
+
+/** Sends every debounced save now; true while any save is still in flight. */
+export function sendPendingFlowSaves(): boolean {
+    pendingSaveSenders.forEach((send) => send())
+    return inFlightSaves.size > 0
+}
+
 // Editor fields whose text cannot be applied yet; saving waits for them.
 const invalidDrafts = new Map<string, string>()
 
@@ -78,10 +98,22 @@ export function setInvalidDraft(id: string, message: string | null) {
     }
 }
 
+// The last save sent for each flow. A flow's saves go one at a time, in order: two requests in
+// flight together could land out of order and leave older content on disk.
+const lastSaveByScope = new Map<string, Promise<boolean>>()
+
 export function saveFlowContent(name: string, content: FlowSaveContent, projectPath = activeProjectPath()): Promise<boolean> {
-    const save = persistFlowContent(name, content, projectPath)
+    const scopeKey = getSaveScopeKey(name, projectPath)
+    const previous = lastSaveByScope.get(scopeKey)
+    const save = previous
+        ? previous.catch(() => false).then(() => persistFlowContent(name, content, projectPath))
+        : persistFlowContent(name, content, projectPath)
+    lastSaveByScope.set(scopeKey, save)
     inFlightSaves.add(save)
-    void save.finally(() => inFlightSaves.delete(save))
+    void save.finally(() => {
+        inFlightSaves.delete(save)
+        if (lastSaveByScope.get(scopeKey) === save) lastSaveByScope.delete(scopeKey)
+    })
     return save
 }
 
@@ -93,6 +125,9 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
             contentLength: serialized.length,
             reason: 'baseline_match',
         })
+        // The edits a save refused are undone: nothing is left unsaved.
+        const { saveState, resetSaveState } = useStore.getState()
+        if (saveState === 'error' || saveState === 'conflict') resetSaveState()
         return true
     }
     const { markSaveInFlight, markSaveSuccess, markSaveFailure, markSaveConflict } = useStore.getState()
@@ -136,7 +171,7 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
             } else if (detail.status === 'validation_error') {
                 errorKind = 'validation_error'
             }
-            markSaveFailure(message, errorKind)
+            markSaveFailure(message, errorKind, flowProblemsFromDetail(detail))
             return false
         }
 

@@ -1,4 +1,5 @@
 import { encodeFlowPath } from '@/lib/flowPaths'
+import { parseLaunchInputDefinitions, type LaunchInputDefinition } from '@/lib/flowContracts'
 import {
     ApiSchemaError,
     asOptionalNullableString,
@@ -7,6 +8,7 @@ import {
     expectString,
 } from './shared'
 import { fetchWorkspaceJsonValidated } from './apiClient'
+import { expectFlowFiles, type FlowFile } from './attractorApi'
 
 export type FlowExecutionLockScope = 'project'
 export type FlowExecutionLockConflictPolicy = 'queue'
@@ -30,6 +32,10 @@ export interface WorkspaceFlowResponse {
         has_human_gate: boolean
         has_manager_loop: boolean
     }
+    /** Why the flow doesn't load, such as its validation errors; absent for a flow that loads. */
+    error?: string
+    /** What a run asks for at launch; only a single flow's description carries them. */
+    inputs?: LaunchInputDefinition[]
 }
 
 function parseFlowExecutionLockScope(
@@ -99,6 +105,8 @@ export function parseWorkspaceFlowResponse(value: unknown, endpoint: string): Wo
         node_count: nodeCount,
         edge_count: edgeCount,
         features,
+        ...(typeof record.error === 'string' && record.error ? { error: record.error } : {}),
+        ...(Array.isArray(record.inputs) ? { inputs: parseLaunchInputDefinitions(record.inputs).entries } : {}),
     }
 }
 
@@ -133,5 +141,19 @@ export async function fetchWorkspaceFlowValidated(
         undefined,
         '/workspace/api/flows/{flow_name}',
         parseWorkspaceFlowResponse,
+    )
+}
+
+/** A flow's files as they are on disk, whether or not they make a valid flow. */
+export async function fetchWorkspaceFlowFilesValidated(
+    flowName: string,
+    projectPath: string | null,
+    init?: RequestInit,
+): Promise<FlowFile[]> {
+    return fetchWorkspaceJsonValidated(
+        `/flows/${encodeFlowPath(flowName)}/files${projectQuery(projectPath)}`,
+        init,
+        '/workspace/api/flows/{flow_name}/files',
+        (payload, endpoint) => expectFlowFiles(expectObjectRecord(payload, endpoint).files, endpoint),
     )
 }

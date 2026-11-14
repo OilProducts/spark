@@ -1,3 +1,4 @@
+import type { FlowProblem } from '@/features/editor/model/flowLoadFailure'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import type {
     HomeSessionSlice,
@@ -54,9 +55,7 @@ export interface FlowDefinitionMetadata {
     description?: string
     execution_lock?: string
     inputs?: string
-    result_node?: string
-    result_summary_enabled?: string
-    result_summary_prompt?: string
+    'spark.result_node'?: string
     goal?: string
     max_retries?: number | string
     llm_model?: string
@@ -97,6 +96,8 @@ export interface DiagnosticEntry {
     message: string
     line?: number
     node_id?: string | null
+    /** The node's title, sent with problems in a flow that doesn't load, where no graph names it. */
+    node_label?: string | null
     edge?: [string, string] | null
     decision?: string | null
     fix?: string | null
@@ -115,6 +116,12 @@ export interface UiDefaults {
 
 export interface MissionSelection {
     id: string
+    projectPath: string
+}
+
+/** The role Roles shows, by its name within its project. */
+export interface RoleSelection {
+    name: string
     projectPath: string
 }
 
@@ -169,6 +176,8 @@ export interface WorkspaceSlice {
     openProjectPage: (projectPath: string | null) => void
     selectedMission: MissionSelection | null
     setSelectedMission: (selection: MissionSelection | null) => void
+    selectedRole: RoleSelection | null
+    setSelectedRole: (selection: RoleSelection | null) => void
     /** The Settings category the Settings view shows. */
     settingsCategory: string
     setSettingsCategory: (category: string) => void
@@ -193,9 +202,10 @@ export interface WorkspaceSlice {
     clearProjectRegistrationError: () => void
     activeFlow: string | null
     setActiveFlow: (flow: string | null) => void
-    /** The open flow that couldn't load, in its project, and whether that project has no such flow. */
-    flowLoadFailure: { flow: string; project: string | null; missing: boolean } | null
-    setFlowLoadFailure: (failure: { flow: string; project: string | null; missing: boolean } | null) => void
+    /** The open flow that couldn't load, in its project, whether that project has no such flow, and the
+     *  server's reason when it gave one (an invalid flow's validation errors). */
+    flowLoadFailure: { flow: string; project: string | null; missing: boolean; problems?: FlowProblem[] | null } | null
+    setFlowLoadFailure: (failure: WorkspaceSlice['flowLoadFailure']) => void
     updateProjectSessionState: (projectPath: string, patch: ProjectSessionStatePatch) => void
 }
 
@@ -256,6 +266,8 @@ export interface EditorSlice {
     saveStateVersion: number
     saveErrorMessage: string | null
     saveErrorKind: SaveErrorKind | null
+    /** A refused save's problems, each with its file, when the server listed them. */
+    saveErrorProblems: FlowProblem[] | null
     preferredAdvancedControls: boolean
     preferredExpandChildFlows: boolean
     preferredGraphSettingsOpen: boolean
@@ -280,7 +292,7 @@ export interface EditorSlice {
     markSaveInFlight: () => void
     markSaveSuccess: () => void
     markSaveConflict: (message: string) => void
-    markSaveFailure: (message: string, kind?: SaveErrorKind) => void
+    markSaveFailure: (message: string, kind?: SaveErrorKind, problems?: FlowProblem[] | null) => void
     resetSaveState: () => void
 }
 

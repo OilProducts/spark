@@ -18,8 +18,8 @@
 .markdown-code-block { position: relative; min-width: 0; max-width: 100%; }
 .markdown-code-copy { position: absolute; top: .25rem; right: .25rem; }
 .markdown-table { max-width: 100%; overflow-x: auto; border: 1px solid hsl(var(--border)); border-radius: 10px; }
-.markdown-table table { border-collapse: collapse; width: max-content; min-width: 100%; }
-.markdown-table :where(th, td):not(.markdown-diagram *) { border-bottom: 1px solid hsl(var(--border)); padding: .5rem .75rem; text-align: left; }
+.markdown-table table { border-collapse: collapse; width: 100%; }
+.markdown-table :where(th, td):not(.markdown-diagram *) { border-bottom: 1px solid hsl(var(--border)); padding: .5rem .75rem; text-align: left; vertical-align: top; overflow-wrap: break-word; }
 .markdown-table tr:last-child > td:not(.markdown-diagram *) { border-bottom: 0; }
 .markdown-table th { font-size: 12px; font-weight: 600; color: hsl(var(--muted-foreground)); }
 .conversation-markdown img:not(.markdown-diagram *) { max-width: 100%; height: auto; }

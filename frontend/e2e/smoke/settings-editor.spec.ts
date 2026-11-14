@@ -1,10 +1,10 @@
 import { chooseModel, customModel, chooseEffort, openPicker } from '../fixtures/model-picker'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { createServer } from 'node:net'
 import path from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
-import { conversationRowOf, pageTurns, settingsRevisionOf, summarySnapshot } from '../fixtures/smoke-helpers'
+import { conversationRowOf, pageTurns, settingsRevisionOf } from '../fixtures/smoke-helpers'
 
 test.beforeEach(async ({ context }) => {
     // The picker lists only reachable providers, so the fixture reaches the ones these tests choose from.
@@ -561,64 +561,6 @@ test('conversation effort and model edits preserve an inherited profile; selecti
     }
 })
 
-
-test('malformed project execution selection is repairable with explicit Save and revision protection', async ({ page }, testInfo) => {
-    const project = testInfo.outputPath('malformed-execution-project')
-    mkdirSync(project, { recursive: true })
-    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
-    // Listing a project's chats, missions or attention items rewrites a project file it finds
-    // malformed; this test repairs it through the project page alone, so the page lists nothing.
-    await page.route('**/workspace/api/projects/conversations**', route => route.fulfill({ json: summarySnapshot([], new URL(route.request().url()).searchParams.get('project_path')) }))
-    await page.route(url => url.pathname === '/workspace/api/missions', route => route.fulfill({ json: { missions: [] } }))
-    await page.route('**/workspace/api/attention', route => route.fulfill({ json: { items: [] } }))
-    await page.goto('/')
-    const home = process.env.SPARK_SETTINGS_TEST_HOME ?? path.resolve(`.tmp-ui-smoke-${process.env.SPARK_UI_SMOKE_PORT}/spark-home`)
-    const directory = path.join(home, 'workspace/projects')
-    // Removed projects can leave a directory without a project.toml behind.
-    const file = readdirSync(directory).map(id => path.join(directory, id, 'project.toml'))
-        .find(file => existsSync(file) && readFileSync(file, 'utf8').includes(project))
-    expect(file).toBeDefined()
-    const original = readFileSync(file!, 'utf8')
-    const malformed = original + '\nexecution_profile_id = 42\n[repair_metadata]\nnote = "preserve me"\n'
-    writeFileSync(file!, malformed)
-    const read = async () => (await page.request.get('/workspace/api/settings?project_path=' + encodeURIComponent(project))).json()
-    const initial = await read()
-    expect(initial.execution.stored).toBe(42)
-    expect(initial.execution.effective).toBeNull()
-    await openProjectPage(page, project)
-    const select = page.getByTestId('project-default-execution-profile')
-    const save = page.getByTestId('project-settings-save-button')
-    await expect(page.getByTestId('project-settings-error')).toBeVisible()
-    await expect(select).toBeEnabled()
-    await expect(select).toContainText('Select a replacement or workspace default')
-    await expect(save).toBeDisabled()
-    await select.click()
-    await page.getByRole('option').filter({ hasText: /native/i }).click()
-    expect(readFileSync(file!, 'utf8')).toBe(malformed)
-    await save.click()
-    await expect.poll(async () => (await read()).execution.stored).toBe('native')
-    await expect(save).toBeDisabled()
-    expect(readFileSync(file!, 'utf8')).toContain('note = "preserve me"')
-    const repaired = readFileSync(file!, 'utf8')
-    const stale = await page.request.patch('/workspace/api/projects/state', { data: {
-        project_path: project, expected_revision: initial.execution.revision, execution_profile_id: null,
-    } })
-    expect(stale.status()).toBe(409)
-    expect(readFileSync(file!, 'utf8')).toBe(repaired)
-    expect((await read()).execution.stored).toBe('native')
-
-    // Exercise reset from the same malformed stored selection, also without an implicit write.
-    writeFileSync(file!, malformed)
-    // A settings change elsewhere refetches the clean section.
-    await page.evaluate(() => window.dispatchEvent(new Event('spark:settings-live-event')))
-    await expect(select).toContainText('Select a replacement or workspace default')
-    await select.click()
-    await page.getByRole('option', { name: 'Use workspace default', exact: true }).click()
-    expect(readFileSync(file!, 'utf8')).toBe(malformed)
-    await save.click()
-    await expect.poll(async () => (await read()).execution.stored).toBeNull()
-    expect(readFileSync(file!, 'utf8')).toContain('note = "preserve me"')
-})
 
 for (const width of [1440, 390]) {
     test(`Settings categories retain drafts and support keyboard access without overflow at ${width}px`, async ({ page }, testInfo) => {

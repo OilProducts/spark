@@ -9,6 +9,8 @@ import { NativeSelect } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 
 interface LaunchInputsFormProps {
+    /** The section's heading. */
+    title?: string
     flowName: string | null
     parsedLaunchInputs: ParsedLaunchInputDefinitions
     launchInputValues: LaunchInputFormValues
@@ -21,6 +23,7 @@ interface LaunchInputsFormProps {
 
 /** One field per row, label and description above the control, so the panel's width never squeezes them. */
 export function LaunchInputsForm({
+    title = 'What this run needs',
     flowName,
     parsedLaunchInputs,
     launchInputValues,
@@ -44,7 +47,7 @@ export function LaunchInputsForm({
                     data-testid="execution-launch-inputs-title"
                     className="text-sm font-semibold text-foreground"
                 >
-                    What this run needs
+                    {title}
                     {hasRequired ? <span className="ml-2 text-xs font-normal text-muted-foreground"><span aria-hidden="true" className="text-destructive">*</span> required</span> : null}
                 </p>
                 {canCollapseLaunchInputs ? (

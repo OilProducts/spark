@@ -148,7 +148,8 @@ export function ProjectConversationSurface({
     return (
         <div
             data-testid="project-ai-conversation-surface"
-            className={cn('flex flex-col', !isNarrowViewport && 'h-full min-h-0')}
+            // A narrow viewport stacks the chat list above; the chat still fills one screen so it opens at its latest message with the composer in reach.
+            className={cn('flex min-h-0 flex-col', isNarrowViewport ? 'h-[calc(100dvh-3.25rem)]' : 'h-full')}
         >
             <header className="flex items-center justify-between gap-x-6 border-b border-border px-6 py-4">
                 <div className="min-w-0 flex-1">
@@ -202,7 +203,7 @@ export function ProjectConversationSurface({
                 </div>
                 {hasThinking ? <ShowThinkingToggle pressed={showThinking} onPressedChange={onShowThinkingChange} className="shrink-0" /> : null}
             </header>
-            <div className={cn('flex flex-col', !isNarrowViewport && 'min-h-0 flex-1')}>
+            <div className="flex min-h-0 flex-1 flex-col">
                 {panelError ? (
                     <InlineError data-testid="project-panel-error" dense className="mx-6 mt-4">
                         {panelError}
@@ -223,7 +224,7 @@ export function ProjectConversationSurface({
                 ) : (
                     <ChatPane
                         follow={follow}
-                        scrolls={!isNarrowViewport}
+                        scrolls
                         hasContent={hasRenderableConversationHistory}
                         notice={chatModelAvailabilityMessage ? (
                             <InlineError data-testid="project-chat-model-availability" dense>{chatModelAvailabilityMessage}</InlineError>

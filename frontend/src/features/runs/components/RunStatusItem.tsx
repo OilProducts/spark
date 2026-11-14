@@ -46,6 +46,8 @@ interface RunStatusItemProps {
     result: PipelineResultResponse | null
     resultError: string | null
     artifactEntries: ArtifactListEntry[]
+    /** The output file list failed to load, so an empty list says nothing. */
+    artifactsUnavailable?: boolean
     /** The pending question, answered in place. */
     question: ReactNode
     onSelectVisit: (visit: RunVisit) => void
@@ -104,6 +106,7 @@ export function RunStatusItem({
     result,
     resultError,
     artifactEntries,
+    artifactsUnavailable = false,
     question,
     onSelectVisit,
     onViewArtifact,
@@ -182,6 +185,9 @@ export function RunStatusItem({
         // A completed run can reach a failure exit; its result name and evidence say why, above
         // the result. A success exit's evidence is a run fact.
         const outcomeReason = run.outcome === 'failure' ? formatOutcomeReason(run) : null
+        // A result that only restates the reason, such as a gate's choice and note, isn't shown twice.
+        const resultLines = result?.state === 'ready' ? result.body_markdown.split('\n').map((line) => line.trim()).filter(Boolean) : []
+        const resultRestatesReason = Boolean(outcomeReason && resultLines.length > 0 && resultLines.every((line) => outcomeReason!.includes(line)))
         body = (
             <>
                 {outcomeReason ? (
@@ -193,7 +199,7 @@ export function RunStatusItem({
                         {outcomeReason}
                     </p>
                 ) : null}
-                <RunResult result={result} resultError={resultError} />
+                {resultRestatesReason ? null : <RunResult result={result} resultError={resultError} />}
             </>
         )
     } else {
@@ -239,7 +245,7 @@ export function RunStatusItem({
                 </Well>
             ) : null}
             {kind === 'completed' || kind === 'failed' ? (
-                <RunOutputs run={run} withCommit={kind === 'completed'} artifactEntries={artifactEntries} onViewArtifact={onViewArtifact} />
+                <RunOutputs run={run} withCommit={kind === 'completed'} artifactEntries={artifactEntries} unavailable={artifactsUnavailable} onViewArtifact={onViewArtifact} />
             ) : null}
             <RunFacts run={run} now={now} />
         </article>
@@ -261,7 +267,7 @@ function RunResult({ result, resultError }: { result: PipelineResultResponse | n
     }
     return (
         <div data-testid="run-result-body" className="max-w-[72ch] text-sm">
-            <ProjectConversationMarkdown content={resultMarkdown(result.body_markdown || '')} />
+            <ProjectConversationMarkdown content={resultMarkdown(result.body_markdown || '')} keepLineBreaks />
             {result.summary_error ? (
                 <p data-testid="run-result-summary-error" className="mt-2 text-xs text-warning">
                     Summary unavailable: {result.summary_error}
@@ -288,11 +294,13 @@ function RunOutputs({
     run,
     withCommit,
     artifactEntries,
+    unavailable,
     onViewArtifact,
 }: {
     run: RunRecord
     withCommit: boolean
     artifactEntries: ArtifactListEntry[]
+    unavailable: boolean
     onViewArtifact: ViewArtifact
 }) {
     const resultFiles = artifactEntries.filter((entry) => (
@@ -341,6 +349,10 @@ function RunOutputs({
                         </div>
                     ))}
                 </dl>
+            ) : unavailable ? (
+                <p data-testid="run-status-outputs-unavailable" className="text-sm text-muted-foreground">
+                    The output files couldn’t load.
+                </p>
             ) : (
                 <p data-testid="run-status-no-outputs" className="text-sm text-muted-foreground">
                     None: the run ended before it produced a result.

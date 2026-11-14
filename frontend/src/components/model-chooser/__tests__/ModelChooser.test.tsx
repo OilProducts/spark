@@ -297,3 +297,11 @@ it('gates native controls by capability, locks inheritance, and saves budgets an
     expect(screen.queryByRole('group', { name: 'Thinking' })).not.toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Summary' })).not.toBeInTheDocument()
 })
+
+it('notes a chosen model its provider no longer lists', async () => {
+    const view = render(<Editor value={{ ...initial, model: 'retired' }} />)
+    const button = await screen.findByRole('button', { name: 'Model: retired · Default effort' })
+    await waitFor(() => expect(button).toHaveAccessibleDescription('Codex doesn’t list retired right now. Choose a listed model unless it’s a custom one you know works.'))
+    view.rerender(<Editor key="listed" value={{ ...initial, model: 'other' }} />)
+    expect(await screen.findByRole('button', { name: /Model: Other/ })).not.toHaveAccessibleDescription()
+})

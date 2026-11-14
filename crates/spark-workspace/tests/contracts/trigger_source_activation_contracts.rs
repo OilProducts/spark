@@ -337,6 +337,86 @@ fn flow_event_trigger_keeps_static_context_nested() {
     assert!(!context.contains_key("context.spark_owner"));
 }
 
+#[tokio::test]
+async fn trigger_data_supplies_the_flows_launch_inputs_and_a_missing_required_one_stops_the_launch()
+{
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    crate::install_named_flow(
+        &settings,
+        "ops/release",
+        json!({
+            "schema_version": "2",
+            "id": "release",
+            "title": "Release Check",
+            "inputs": [{"key": "context.request.version", "label": "Version", "type": "string", "required": true}],
+            "nodes": {
+                "start": {"kind": "start", "config": {"kind": "start"}, "routes": {"next": {"to": "done", "description": "Enter the first workflow step."}}},
+                "done": {"kind": "exit", "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}}}
+            }
+        }),
+    );
+    let project = project(&settings, "project");
+    let create = |name: &str, static_context: Value| {
+        TriggerService::new(settings.clone())
+            .create_trigger(TriggerCreateRequest {
+                project_path: project.clone(),
+                message: None,
+                name: name.to_string(),
+                enabled: true,
+                source_type: "schedule".to_string(),
+                action: Map::from_iter([
+                    ("flow_name".to_string(), json!("ops/release")),
+                    ("static_context".to_string(), static_context),
+                ]),
+                source: Map::from_iter([
+                    ("kind".to_string(), json!("once")),
+                    ("run_at".to_string(), json!("2026-06-24T09:00:00Z")),
+                ]),
+            })
+            .expect("create trigger")
+    };
+    let unset = create("Unset", json!({"branch": "main"}));
+    let set = create(
+        "Set",
+        json!({"branch": "main", "context.request.version": "1.2.0"}),
+    );
+
+    let outcomes = crate::triggers(settings.clone())
+        .process_due_trigger_sources_at(at("2026-06-24T10:00:00Z"))
+        .await
+        .expect("process sources");
+
+    let outcome = |id: &str| {
+        outcomes
+            .iter()
+            .find(|outcome| outcome.trigger_id == id)
+            .expect("outcome")
+    };
+    let refused = outcome(&unset.id);
+    assert_eq!(refused.status, "failed");
+    assert_eq!(
+        refused.message,
+        "Release Check needs Version to start. Set it on the trigger, under What each run needs."
+    );
+    assert!(refused.run_id.is_none());
+
+    let launched = outcome(&set.id);
+    assert_eq!(launched.status, "success");
+    let run = RunStore::for_settings(&settings)
+        .read_run_bundle(launched.run_id.as_deref().expect("run id"))
+        .expect("read run")
+        .expect("run");
+    let context = run.checkpoint.expect("checkpoint").context;
+    assert_eq!(context["context.request.version"], json!("1.2.0"));
+    assert!(!context.contains_key("context.branch"));
+    assert_eq!(
+        context["context.trigger_static"],
+        json!({"branch": "main", "context.request.version": "1.2.0"})
+    );
+}
+
 #[test]
 fn flow_event_triggers_ignore_other_projects_runs_and_role_triggers_skip_the_roles_own_runs() {
     let temp = tempfile::tempdir().expect("tempdir");

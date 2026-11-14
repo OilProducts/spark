@@ -91,7 +91,7 @@ for (const theme of ['light', 'dark']) test(`missions conversation view ${theme}
   await page.getByRole('button', { name: 'Review the ranking change' }).click()
   const detail = page.getByRole('region', { name: 'Mission details' })
   await expect(detail.getByRole('status')).toHaveText(/^Needs you Ship the ranking change\?/)
-  await expect(detail.getByRole('button', { name: 'Close mission' })).toBeVisible()
+  await expect(detail.getByRole('button', { name: 'Mark mission done' })).toBeVisible()
   await expect(detail.getByRole('button', { name: 'Cancel mission' })).toBeVisible()
   const events = detail.getByTestId('mission-event')
   await expect(events).toHaveCount(3)
@@ -208,7 +208,7 @@ test('missions event lines stay one line for long titles, errors and questions',
   await expect(ask.getByRole('button', { name: /^Ship it now/ })).toBeVisible()
 })
 
-test('missions rail stacks below the conversation at a narrow width', async ({ page }) => {
+test('missions rail stacks above the conversation at a narrow width', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 })
   await stubMissions(page)
   await gotoWithRegisteredProject(page, project)
@@ -221,7 +221,8 @@ test('missions rail stacks below the conversation at a narrow width', async ({ p
   expect((await row.boundingBox())!.y).toBeLessThan((await detail.boundingBox())!.y)
   const conversation = await detail.getByTestId('mission-conversation').boundingBox()
   const rail = await detail.getByRole('complementary', { name: 'Mission overview' }).boundingBox()
-  expect(rail!.y).toBeGreaterThanOrEqual(conversation!.y + conversation!.height - 1)
+  // The overview leads, so the conversation and its reply box end the scroll.
+  expect(conversation!.y).toBeGreaterThanOrEqual(rail!.y + rail!.height - 1)
   expect(rail!.width).toBeGreaterThan(300)
   await expect(detail.getByRole('region', { name: 'Waiting on you' })).toBeVisible()
   await page.screenshot({ animations: 'disabled', fullPage: true, path: test.info().outputPath('narrow.png') })

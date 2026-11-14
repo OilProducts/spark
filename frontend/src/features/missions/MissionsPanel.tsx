@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from '@/store'
+import { fetchSpark } from '@/lib/fetchSpark'
 import { Button } from '@/components/ui/button'
 import { InlineError } from '@/components/app/inline-error'
 import { ListGroupLabel, SidePanelRow } from '@/components/app/side-panel-row'
@@ -39,7 +40,7 @@ export class MissionConflict extends Error {}
 export async function request<T>(project: string, id = '', body?: unknown, action = ''): Promise<T> {
     const method = body === undefined ? undefined : action || !id ? 'POST' : 'PATCH'
     const query = project ? `${action.includes('?') ? '&' : '?'}project_path=${encodeURIComponent(project)}` : ''
-    const response = await fetch(`/workspace/api/missions${id ? `/${encodeURIComponent(id)}` : ''}${action}${query}`, method ? { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined)
+    const response = await fetchSpark(`/workspace/api/missions${id ? `/${encodeURIComponent(id)}` : ''}${action}${query}`, method ? { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined)
     const value = await response.json()
     if (response.status === 409) throw new MissionConflict((action && value.detail) || 'This mission changed on the server. Your edits are preserved. Refresh and reconcile the latest revision before saving.')
     if (!response.ok) throw new Error(value.detail || 'Mission request failed')
@@ -212,6 +213,8 @@ export function MissionsPanel({ active }: { active: boolean }) {
     const unsaved = JSON.stringify(draft) !== JSON.stringify(editing?.fields ?? empty)
     const visible = board.missions.filter(mission => (archived || !mission.fields.archived) && mission.fields.title.toLowerCase().includes(search.toLowerCase()))
     const project = editing?.project_path ?? newProject ?? ''
+    // A link to a mission that is gone says so, instead of reading as nothing picked.
+    const missing = Boolean(selectedMission && loaded && !missions.some(m => m.id === selectedMission.id && m.project_path === selectedMission.projectPath))
     const missionsPanel = <div ref={boardScroll} className="flex flex-col gap-3">
         <div className="flex items-center gap-1">
             <div className="relative min-w-0 flex-1">
@@ -245,16 +248,16 @@ export function MissionsPanel({ active }: { active: boolean }) {
             <Button type="button" variant="outline" size="sm" aria-label="New mission" disabled={busy}><Plus aria-hidden="true" />New</Button>
         </ProjectPicker>
     </>}>
-        <section aria-label="Project missions" className="flex h-full min-h-0 flex-col">
+        {/* On a phone the list alone shows until a mission is picked. */}
+        {editing === undefined && !missing && narrow && missions.length > 0 ? null : <section aria-label="Project missions" className="flex h-full min-h-0 flex-col">
             {editing !== undefined
                 ? (mode === 'read' && editing
                     ? <MissionDetail key={(latest ?? editing).id} mission={latest ?? editing} project={project} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} archive={value => archive(latest ?? editing, value)} onChange={upsert} />
                     : <MissionEditor key={editing?.id ?? newKey} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} focusRequest={focusRequest} project={project} projectName={!editing && newProject ? projectLabel(registry, newProject) : undefined}
                         setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)
-                : selectedMission && loaded && !missions.some(m => m.id === selectedMission.id && m.project_path === selectedMission.projectPath)
-                    // A link to a mission that is gone says so, instead of reading as nothing picked.
+                : missing
                     ? <SheetEmpty icon={Target} title="Mission not found">The linked mission isn’t here. It may have been deleted, or its project removed.</SheetEmpty>
                     : <SheetEmpty icon={Target} title={active && missions.length ? 'No mission selected' : 'No missions yet'}>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with New.'}</SheetEmpty>}
-        </section>
+        </section>}
     </ViewLayout>
 }
