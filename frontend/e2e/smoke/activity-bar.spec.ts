@@ -307,6 +307,8 @@ test('a new mission and a flow run ask which project, suggesting the last used a
         // An explicit editor working directory survives choosing a project.
         await page.getByTestId('launch-panel-close-button').click()
         const explicitWorkingDirectory = testInfo.outputPath('explicit-working-directory')
+        // The editor's run defaults live in Flow settings, which a flow opens with closed.
+        await page.getByRole('button', { name: 'Flow settings', exact: true }).click()
         await page.locator('#graph-run-working-directory').fill(explicitWorkingDirectory)
         await page.getByTestId('editor-run-button').click()
         await runPicker.locator(`[data-project-path="${alpha}"]`).click()

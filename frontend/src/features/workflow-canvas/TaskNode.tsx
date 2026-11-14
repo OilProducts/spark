@@ -413,19 +413,22 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             >
                 <div className="flex w-full min-w-0 flex-col items-center justify-center gap-1">
                     {/* One caption line: the kind (a start node labelled Start needs no second Start),
-                        then the run status, so status costs the frame no extra height. */}
+                        or in a run its status, which the shape and icon already place, so the caption fits
+                        narrow shapes and status costs the frame no extra height. Near a diamond's top
+                        there is room for the status word alone. */}
                     {showKind || kindCaption || displayStatus !== 'idle' ? (
                         <span className="canvas-node-caption inline-flex max-w-full items-center gap-1 whitespace-nowrap text-muted-foreground">
-                            {showKind ? <nodeKind.Icon className="size-[1.15em] shrink-0" aria-hidden /> : null}
-                            {kindCaption}
-                            {displayStatus !== 'idle' ? (
+                            {showKind && (displayStatus === 'idle' || (renderedShape !== 'diamond' && renderedShape !== 'Mdiamond'))
+                                ? <nodeKind.Icon className="size-[1.15em] shrink-0" aria-hidden />
+                                : null}
+                            {displayStatus === 'idle' ? kindCaption : (
                                 <>
-                                    {kindCaption ? <span aria-hidden>·</span> : null}
+                                    {kindCaption ? <span className="sr-only">{kindCaption}</span> : null}
                                     <span className={cn('font-medium', statusToneClassName(displayStatus))}>
                                         {NODE_STATUS_LABELS[displayStatus] ?? displayStatus}
                                     </span>
                                 </>
-                            ) : null}
+                            )}
                         </span>
                     ) : null}
                     {isEditingLabel ? (

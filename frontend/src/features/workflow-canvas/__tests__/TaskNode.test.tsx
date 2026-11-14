@@ -344,6 +344,8 @@ nodeDiagnostics: {
 
         expect(screen.getByTestId('workflow-node-frame-hexagon')).toBeInTheDocument()
         expect(screen.getByText('Needs input')).toBeInTheDocument()
+        // In a run the status takes the kind word's place on the caption line, for screen readers too.
+        expect(screen.getByText('Human gate')).toHaveClass('sr-only')
         expect(screen.queryByText('Human Input Required')).not.toBeInTheDocument()
         expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
         expect(screen.getByTestId('node-diagnostic-badge')).toHaveTextContent('1 warning')

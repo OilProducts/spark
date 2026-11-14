@@ -231,7 +231,8 @@ const timelineSummaryFromEvent = (
             : `${sourcePrefix}${node} completed`
     }
     if (type === 'StageTransition') {
-        const decision = asTrimmedString(payload.decision) ?? 'unknown'
+        // A decision ID reads as the canvas labels its route: `ready_for_review` as "ready for review".
+        const decision = asTrimmedString(payload.decision)?.replace(/_/g, ' ') ?? 'unknown'
         const target = step(asTrimmedString(payload.target), 'unknown')
         const visit = asFiniteNumber(payload.visit)
         return `${sourcePrefix}${node} → ${target} on ${decision}${visit !== null && visit > 1 ? ` (visit ${visit})` : ''}`

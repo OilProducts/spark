@@ -128,6 +128,7 @@ export function RunQuestionsPanel({
                                 const showOptions = Boolean(questionId) && (!isFreeform || gate.origin === 'agent_clarification') && gate.options.length > 0
                                 const showMultipleChoiceMetadata = gate.questionType === 'MULTIPLE_CHOICE' || gate.origin === 'agent_clarification'
                                 const noteId = questionId ? `run-gate-note-${questionId}` : undefined
+                                const promptId = questionId ? `run-gate-prompt-${questionId}` : undefined
                                 return (
                                     <li
                                         key={gate.eventId}
@@ -135,7 +136,7 @@ export function RunQuestionsPanel({
                                         tabIndex={-1}
                                         className="flex max-w-[72ch] flex-col gap-3 rounded-xl border border-border bg-background p-4 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                     >
-                                        <p className="text-base font-medium leading-snug">{gate.prompt}</p>
+                                        <p id={promptId} className="text-base font-medium leading-snug">{gate.prompt}</p>
                                         {gate.details && (
                                             <div
                                                 data-testid="run-pending-human-gate-details"
@@ -152,7 +153,7 @@ export function RunQuestionsPanel({
                                                     value={freeformAnswer}
                                                     onChange={(event) => onFreeformAnswerChange(questionId, event.target.value)}
                                                     disabled={disabled}
-                                                    aria-label="Answer"
+                                                    aria-labelledby={promptId}
                                                     placeholder="Type your answer…"
                                                     className="h-9 min-w-0 flex-[1_1_14rem] bg-background"
                                                 />

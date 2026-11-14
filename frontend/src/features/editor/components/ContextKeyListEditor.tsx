@@ -35,7 +35,10 @@ export function ContextKeyListEditor({
                     value={value}
                     onChange={(event) => onChange(event.target.value)}
                     rows={4}
-                    className="min-h-24 px-2 py-2 font-mono text-sm"
+                    // A key is one line: a long one scrolls rather than breaking mid-word.
+                    wrap="off"
+                    spellCheck={false}
+                    className="min-h-24 overflow-x-auto px-2 py-2 font-mono text-sm"
                     placeholder="One context.* key per line"
                 />
             </Field>

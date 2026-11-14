@@ -28,7 +28,7 @@ export function conversationPayload(fixture: Fixture): Fixture {
         updated_at: fixture.updated_at ?? fixture.created_at ?? '',
         preview: fixture.last_message_preview ?? lastMessage?.content ?? null,
         running: fixture.running ?? turns.some((turn) => turn.role === 'assistant' && (turn.status === 'pending' || turn.status === 'streaming')),
-        needs_attention: false,
+        needs_attention: fixture.needs_attention ?? false,
         launched_run_ids: fixture.launched_run_ids ?? launches.flatMap((launch) => launch.run_id ? [launch.run_id] : []),
         metadata: {
             conversation_id: fixture.conversation_id,

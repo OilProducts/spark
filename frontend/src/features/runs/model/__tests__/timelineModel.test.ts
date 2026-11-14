@@ -78,6 +78,8 @@ describe('timelineModel', () => {
     expect(line('StageStarted', {}, { node_id: 'run_tests' })).toBe('Run Test Suite started')
     expect(line('StageTransition', { decision: 'done', target: 'draft_notes' }, { node_id: 'run_tests' }))
       .toBe('Run Test Suite → Draft Notes on done')
+    expect(line('StageTransition', { decision: 'ready_for_review', target: 'draft_notes' }, { node_id: 'run_tests' }))
+      .toBe('Run Test Suite → Draft Notes on ready for review')
     expect(line('CheckpointSaved', { current_node: 'draft_notes' }, { node_id: 'draft_notes' })).toBe('Checkpoint saved at Draft Notes')
     expect(line('InterviewCompleted', { answer: 'ship' }, { node_id: 'draft_notes' })).toBe('Answer for Draft Notes: ship')
     // A child flow's nodes are its own; its parent node is this flow's.

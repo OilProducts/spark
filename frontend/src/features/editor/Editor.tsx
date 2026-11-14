@@ -1792,7 +1792,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                                     type: MarkerType.ArrowClosed,
                                 },
                             }}
-                            elevateEdgesOnSelect
+                            // Not raised when selected: a raised route would draw over the route labels, which
+                            // mask the routes beneath them; a selected route reads by its colour.
                             colorMode="light"
                             onlyRenderVisibleElements={onlyRenderVisibleElements}
                             minZoom={0.1}

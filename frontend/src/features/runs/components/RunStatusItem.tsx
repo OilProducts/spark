@@ -29,7 +29,6 @@ import {
     classifyRunFailure,
     describeFailure,
     errorVisits,
-    formatRunDate,
     runFailureMessage,
     type RunStatusKind,
 } from '../model/runOverviewModel'
@@ -74,9 +73,15 @@ export function FailureDetail({ className, ...props }: ComponentProps<'span'>) {
 }
 
 /** A clock time or date, with the full timestamp on hover. */
+const FACT_TIME_FORMAT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+const FACT_TIME_YEAR_FORMAT = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+
+/** A run fact's time, with its day, so a start and an end on different days read apart: "Nov 13, 11:02 PM". */
 function RunTime({ timestamp, now }: { timestamp: string | null | undefined; now: number }) {
-    const short = formatRunDate(timestamp, now)
-    return short ? <span title={formatTimestamp(timestamp)}>{short}</span> : <>—</>
+    const time = timestamp ? Date.parse(timestamp) : Number.NaN
+    if (!Number.isFinite(time)) return <>—</>
+    const format = new Date(time).getFullYear() === new Date(now).getFullYear() ? FACT_TIME_FORMAT : FACT_TIME_YEAR_FORMAT
+    return <time dateTime={timestamp ?? undefined} title={formatTimestamp(timestamp)}>{format.format(time)}</time>
 }
 
 // The keys a visit wrote, named without the "context." prefix.
@@ -384,7 +389,7 @@ function RunFacts({ run, now }: { run: RunRecord; now: number }) {
         ...(outcome ? [['outcome', 'Outcome', outcome] as [string, string, ReactNode]] : []),
         ['model', 'Model', [run.model || 'default', provider, run.reasoning_effort].filter(Boolean).join(' · ')],
         ...(run.execution_profile_id || run.execution_mode
-            ? [['execution', 'Execution', [run.execution_profile_id, run.execution_mode, run.execution_container_image].filter(Boolean).join(' · ')] as [string, string, ReactNode]]
+            ? [['execution', 'Execution', [...new Set([run.execution_profile_id, run.execution_mode, run.execution_container_image].filter(Boolean))].join(' · ')] as [string, string, ReactNode]]
             : []),
         ['tokens', 'Tokens', usage ? tokenBreakdown(usage) : formatTokenCount(run.token_usage)],
         ...Object.entries(usage?.by_model ?? {}).map(([modelId, bucket]) => {

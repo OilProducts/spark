@@ -24,7 +24,7 @@ it('offers suggested choices and a custom answer for the owning child run', () =
   expect(screen.queryByTestId('run-pending-human-gate-keys-hint')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Developers' }))
   expect(submit).toHaveBeenLastCalledWith(gate, 'Developers', '')
-  expect(screen.getByRole('textbox', { name: 'Answer' })).toHaveValue('Designers')
+  expect(screen.getByRole('textbox', { name: 'Which audience?' })).toHaveValue('Designers')
   fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
   expect(submit).toHaveBeenLastCalledWith(gate, 'Designers')
 })

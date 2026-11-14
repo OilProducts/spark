@@ -234,7 +234,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                         {question && <Well role="region" aria-label="Waiting on you" className="flex flex-col gap-2">
                             <p className={`text-xs font-medium ${statusTextClassName('warning')}`}>Waiting on you{question.runId && <> · from <RunLink runId={question.runId} className="text-foreground">{runsById.get(question.runId)?.title || flowTitle(question.flowName)}</RunLink></>}</p>
                             <p className="font-medium whitespace-pre-wrap break-words">{question.prompt}</p>
-                            {question.options.length > 0 && <div className="mt-1 flex flex-wrap gap-2">{question.options.map(option => <Button key={option} type="button" size="sm" variant="outline" disabled={disabled} onClick={() => void send(option)}>{option}</Button>)}</div>}
+                            {question.options.length > 0 && <div className="mt-1 flex flex-wrap gap-2">{question.options.map(option => <Button key={option} type="button" size="sm" variant="outline" className="h-auto min-h-8 max-w-full whitespace-normal py-1.5 text-left" disabled={disabled} onClick={() => void send(option)}>{option}</Button>)}</div>}
                         </Well>}
                     </div>
                 </ChatPane>
