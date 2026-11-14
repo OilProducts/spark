@@ -2347,7 +2347,7 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
     assert_eq!(initial.0, StatusCode::OK);
     assert_eq!(
         initial.1["preferences"]["effective"]["editor_sidebar_width"],
-        288
+        336
     );
     assert_eq!(initial.1["preferences"]["effective"]["show_thinking"], true);
     let payload = json!({"section":"client_preferences", "expected_revision": initial.1["preferences"]["revision"],

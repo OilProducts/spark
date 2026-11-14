@@ -137,6 +137,8 @@ const resetContractState = () => {
   {
 useStore.setState({...useStore.getState(),
 viewMode: 'editor',
+editorMode: 'structured',
+saveState: 'idle',
 activeProjectPath: '/tmp/project-contract-behavior',
 activeFlow: 'contract-behavior.yaml',
 runsListSession: {

@@ -33,7 +33,6 @@ import { buildRunContextOverview, runStatusKind, type RunStatusKind } from './mo
 import type { StatusTone } from '@/components/app/status'
 import { SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Play, Plus, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
@@ -143,6 +142,7 @@ export function RunsPanel() {
     const {
         artifactDownloadHref,
         artifactEntries,
+        artifactError,
         artifactViewerError,
         artifactViewerPayload,
         checkpointCurrentNode,
@@ -197,9 +197,12 @@ export function RunsPanel() {
     const selectedRunSessionState = useStore((state) => (
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
     ))
-    const degradedRunPanels = timelineError
-        ? [...degradedDetailPanels, 'run journal']
-        : degradedDetailPanels
+    const degradedRunPanels = [
+        ...(resultError ? ['result'] : []),
+        ...(timelineError ? ['steps'] : []),
+        ...(transcriptError ? ['agent transcripts'] : []),
+        ...degradedDetailPanels,
+    ]
     const showRunSelectionEmptyState = !selectedRunId && hasRuns && !selectedRun
     const showRunDetailsRestoringState =
         Boolean(selectedRunId)
@@ -501,25 +504,22 @@ export function RunsPanel() {
                 </div>
             )}
             <div className={isNarrowViewport ? 'space-y-6 p-4' : 'flex min-h-0 flex-1 flex-col gap-4 px-6 py-5'}>
-                {selectedRunStatusSync === 'degraded' ? (
-                    <Alert
-                        data-testid="runs-transport-reconnect-banner"
-                        className="border-0 border-l border-warning px-3 py-2 text-warning"
+                {/* One notice for whatever of this run couldn't load or stopped updating; the
+                    parts it names say so in place instead of looking empty. */}
+                {selectedRunStatusSync === 'degraded' || (selectedRun && degradedRunPanels.length > 0) ? (
+                    <div
+                        data-testid={selectedRunStatusSync === 'degraded' ? 'runs-transport-reconnect-banner' : 'run-partial-api-failure-banner'}
+                        role="status"
+                        className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border-0 border-l border-warning px-3 py-2 text-sm text-warning"
                     >
-                        <AlertDescription className="text-inherit">
-                            {selectedRunStatusError}
-                            <button
-                                type="button"
-                                data-testid="runs-transport-reconnect-button"
-                                onClick={() => {
-                                    requestRunsTransportReconnect()
-                                }}
-                                className="ml-2 inline-flex text-xs font-semibold underline underline-offset-4"
-                            >
-                                Reconnect
-                            </button>
-                        </AlertDescription>
-                    </Alert>
+                        <span>
+                            {selectedRunStatusSync === 'degraded' ? selectedRunStatusError : 'Some run details couldn\'t load.'}
+                            {degradedRunPanels.length > 0 ? (
+                                <span className="ml-1 text-xs">Not loaded: {degradedRunPanels.join(', ')}.</span>
+                            ) : null}
+                        </span>
+                        <Button data-testid="runs-transport-reconnect-button" type="button" variant="outline" size="xs" onClick={requestRunsTransportReconnect}>Try again</Button>
+                    </div>
                 ) : null}
                 {!selectedRunId && missingRunId ? (
                     <InlineError data-testid="run-missing" title="This run isn’t here">
@@ -553,21 +553,6 @@ export function RunsPanel() {
                         onCancel={() => setContinuationDraft(null)}
                         onContinued={() => setContinuationDraft(null)}
                     />
-                )}
-                {selectedRun && degradedRunPanels.length > 0 && (
-                    <div
-                        data-testid="run-partial-api-failure-banner"
-                        role="status"
-                        className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border-0 border-l border-warning px-3 py-2 text-sm text-warning"
-                    >
-                        <span>
-                            Some run details couldn't load.
-                            <span className="ml-1 text-xs">
-                                Affected surfaces: {degradedRunPanels.join(', ')}.
-                            </span>
-                        </span>
-                        <Button type="button" variant="outline" size="xs" onClick={requestRunsTransportReconnect}>Try again</Button>
-                    </div>
                 )}
                 {/* Until the history loads, no runs says nothing; a failed load says so once, here. */}
                 {!selectedRun && !hasRuns && status === 'error' && (
@@ -622,7 +607,6 @@ export function RunsPanel() {
                                 now={now}
                                 isNarrowViewport={isNarrowViewport}
                                 isLive={isTimelineLive && isSelectedRunActive}
-                                transcriptError={transcriptError}
                                 timelineError={timelineError}
                                 selectedNodeId={selectedNodeId}
                                 onSelectNode={selectNode}
@@ -646,6 +630,7 @@ export function RunsPanel() {
                                         result={resultData}
                                         resultError={resultError}
                                         artifactEntries={artifactEntries}
+                                        artifactsUnavailable={Boolean(artifactError)}
                                         onSelectVisit={selectVisit}
                                         onViewArtifact={openArtifact}
                                         question={

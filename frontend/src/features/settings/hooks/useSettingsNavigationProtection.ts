@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 import { useDialogController } from '@/components/app/dialog-controller'
 
-export function useSettingsNavigationProtection(dirty: boolean, pending = false) {
+/** Asks before a navigation or page unload drops unsaved edits; `subject` names what is lost. */
+export function useSettingsNavigationProtection(dirty: boolean, pending = false, subject = 'settings') {
     const { confirm } = useDialogController()
     useEffect(() => {
         if (!dirty && !pending) return
@@ -15,7 +16,7 @@ export function useSettingsNavigationProtection(dirty: boolean, pending = false)
             transitions.push((event as CustomEvent<{ proceed: () => void }>).detail.proceed)
             if (confirming) return
             confirming = true
-            void confirm({ title: 'Discard unsaved settings?', description: 'Your unsaved settings will be lost.', confirmLabel: 'Discard and leave', cancelLabel: 'Keep editing' })
+            void confirm({ title: `Discard unsaved ${subject}?`, description: `Your unsaved ${subject} will be lost.`, confirmLabel: 'Discard and leave', cancelLabel: 'Keep editing' })
                 .then((accepted) => { if (accepted) transitions.forEach((proceed) => proceed()) })
                 .finally(() => { confirming = false; transitions = [] })
         }
@@ -26,5 +27,5 @@ export function useSettingsNavigationProtection(dirty: boolean, pending = false)
             window.removeEventListener('beforeunload', unload)
             window.removeEventListener('spark:before-navigation', navigate, { capture: pending })
         }
-    }, [dirty, pending, confirm])
+    }, [dirty, pending, subject, confirm])
 }

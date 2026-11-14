@@ -13,7 +13,7 @@ import {
 import type { AppState, EditorSlice } from './store-types'
 import { initialWorkspaceEditorState } from './workspaceSlice'
 
-const DEFAULT_EDITOR_SIDEBAR_WIDTH = 288
+const DEFAULT_EDITOR_SIDEBAR_WIDTH = 336
 const MIN_EDITOR_SIDEBAR_WIDTH = 256
 const MAX_EDITOR_SIDEBAR_WIDTH = 560
 const DEFAULT_EDITOR_NODE_INSPECTOR_SESSION = {

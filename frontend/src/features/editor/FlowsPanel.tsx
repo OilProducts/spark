@@ -168,7 +168,8 @@ function useFlowCatalogPanel() {
         }
 
         if (activeFlow === fileName) {
-            setActiveFlow(null);
+            // Deleting it already discarded its edits: close it without asking again.
+            useStore.setState({ activeFlow: null });
         }
         await refreshFlows();
     };

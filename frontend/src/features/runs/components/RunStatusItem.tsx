@@ -46,6 +46,8 @@ interface RunStatusItemProps {
     result: PipelineResultResponse | null
     resultError: string | null
     artifactEntries: ArtifactListEntry[]
+    /** The output file list failed to load, so an empty list says nothing. */
+    artifactsUnavailable?: boolean
     /** The pending question, answered in place. */
     question: ReactNode
     onSelectVisit: (visit: RunVisit) => void
@@ -104,6 +106,7 @@ export function RunStatusItem({
     result,
     resultError,
     artifactEntries,
+    artifactsUnavailable = false,
     question,
     onSelectVisit,
     onViewArtifact,
@@ -239,7 +242,7 @@ export function RunStatusItem({
                 </Well>
             ) : null}
             {kind === 'completed' || kind === 'failed' ? (
-                <RunOutputs run={run} withCommit={kind === 'completed'} artifactEntries={artifactEntries} onViewArtifact={onViewArtifact} />
+                <RunOutputs run={run} withCommit={kind === 'completed'} artifactEntries={artifactEntries} unavailable={artifactsUnavailable} onViewArtifact={onViewArtifact} />
             ) : null}
             <RunFacts run={run} now={now} />
         </article>
@@ -288,11 +291,13 @@ function RunOutputs({
     run,
     withCommit,
     artifactEntries,
+    unavailable,
     onViewArtifact,
 }: {
     run: RunRecord
     withCommit: boolean
     artifactEntries: ArtifactListEntry[]
+    unavailable: boolean
     onViewArtifact: ViewArtifact
 }) {
     const resultFiles = artifactEntries.filter((entry) => (
@@ -341,6 +346,10 @@ function RunOutputs({
                         </div>
                     ))}
                 </dl>
+            ) : unavailable ? (
+                <p data-testid="run-status-outputs-unavailable" className="text-sm text-muted-foreground">
+                    The output files couldn’t load.
+                </p>
             ) : (
                 <p data-testid="run-status-no-outputs" className="text-sm text-muted-foreground">
                     None: the run ended before it produced a result.

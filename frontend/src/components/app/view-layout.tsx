@@ -3,6 +3,7 @@ import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
+import { useStore } from '@/store'
 import { cn } from '@/lib/utils'
 
 /**
@@ -65,11 +66,17 @@ export function ViewLayout({
         }
     }, [panelHidden])
     const sheetRef = useRef<HTMLDivElement | null>(null)
+    // A pick made while this view is hidden (such as Continue on Overview opening a chat) scrolls
+    // once the view shows; each pick scrolls once, so the list stays reachable afterwards.
+    const viewMode = useStore((state) => state.viewMode)
+    const scrolledTo = useRef<string | null>(null)
     useEffect(() => {
-        if (isNarrowViewport && selected) {
-            sheetRef.current?.scrollIntoView({ block: 'start' })
-        }
-    }, [isNarrowViewport, selected])
+        const sheet = sheetRef.current
+        if (!selected) scrolledTo.current = null
+        if (!isNarrowViewport || !selected || scrolledTo.current === selected || !sheet || sheet.getClientRects().length === 0) return
+        sheet.scrollIntoView({ block: 'start' })
+        scrolledTo.current = selected
+    }, [isNarrowViewport, selected, viewMode])
     return (
         <div
             data-testid={`${view}-view`}

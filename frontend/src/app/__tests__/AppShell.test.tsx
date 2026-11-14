@@ -12,7 +12,7 @@ import { conversationPage, summarySnapshot } from '@/test/conversationWire'
 const EMPTY_DEFINITION_LIST = { items: [] }
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
-const DEFAULT_EDITOR_SIDEBAR_WIDTH = 288
+const DEFAULT_EDITOR_SIDEBAR_WIDTH = 336
 const LINEAR_FLOW_NAME = 'test-linear.dot'
 const REVIEW_FLOW_NAME = 'test-review-loop.dot'
 const NESTED_LINEAR_FLOW_NAME = 'team/review/test-linear.dot'

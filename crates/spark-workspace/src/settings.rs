@@ -596,7 +596,7 @@ fn client_preferences_view(
     Ok(json!({"preferences": {
         "scope": "client", "client_id": client_id, "revision": document.revision,
         "effective": {"editor_mode": stored.editor_mode.clone().unwrap_or_default(),
-            "editor_sidebar_width": stored.editor_sidebar_width.unwrap_or(288),
+            "editor_sidebar_width": stored.editor_sidebar_width.unwrap_or(336),
             "home_sidebar_primary_split_ratio": stored.home_sidebar_primary_split_ratio,
             "show_advanced_controls": stored.show_advanced_controls.unwrap_or(false),
             "expand_child_flows": stored.expand_child_flows.unwrap_or(false),

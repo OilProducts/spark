@@ -82,7 +82,7 @@ interface RunVisitsCardProps {
     now: number
     isNarrowViewport: boolean
     isLive: boolean
-    transcriptError: string | null
+    /** Why the journal couldn't load; the steps it lists are then unknown, not none. */
     timelineError: string | null
     /** The node selected on the graph; its visits are highlighted. */
     selectedNodeId: string | null
@@ -111,7 +111,6 @@ export function RunVisitsCard({
     now,
     isNarrowViewport,
     isLive,
-    transcriptError,
     timelineError,
     selectedNodeId,
     onSelectNode,
@@ -130,6 +129,7 @@ export function RunVisitsCard({
         () => allVisits.filter((visit) => visit.kind !== 'exit' || visit.outcome !== 'completed'),
         [allVisits],
     )
+    const stepsUnavailable = Boolean(timelineError) && visits.length === 0
     // The status item leads and is selected when a run opens.
     const [selectedKey, setSelectedKey] = useState<string>('status')
     const [contextFocusKey, setContextFocusKey] = useState<string | null>(null)
@@ -245,7 +245,6 @@ export function RunVisitsCard({
                         Journal update budget: {TIMELINE_UPDATE_BUDGET_MS}ms max per live update batch.
                     </p>
                 ) : null}
-                {transcriptError ? <InlineError data-testid="run-transcript-error">{transcriptError}</InlineError> : null}
                 <div
                     ref={listRef}
                     role="listbox"
@@ -280,11 +279,15 @@ export function RunVisitsCard({
                     <div className="flex items-center justify-between gap-2 px-2.5 pb-1 pt-3 text-xs font-semibold text-muted-foreground">
                         <span>Steps</span>
                         <span className="font-normal">
-                            {visits.length} {visits.length === 1 ? 'visit' : 'visits'}
+                            {stepsUnavailable ? null : <>{visits.length} {visits.length === 1 ? 'visit' : 'visits'}</>}
                             {isLive ? <span className="ml-1.5 text-info">Live</span> : null}
                         </span>
                     </div>
-                    {visits.length === 0 ? (
+                    {stepsUnavailable ? (
+                        <p data-testid="run-visits-unavailable" className="px-2.5 py-2 text-sm text-muted-foreground">
+                            The steps couldn’t load.
+                        </p>
+                    ) : visits.length === 0 ? (
                         <p data-testid="run-visits-empty" className="px-2.5 py-2 text-sm text-muted-foreground">
                             No visits have been recorded for this run yet.
                         </p>

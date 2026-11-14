@@ -222,7 +222,7 @@ export function useRunDetailResources({
                 resultStatus: 'error',
                 resultError: err instanceof ApiHttpError
                     ? String(err.detail || 'Unable to load result.')
-                    : 'Unable to load result. Check your network/backend connection and retry.',
+                    : 'The result couldn’t load.',
             })
         }
     }, [fetchArtifacts, selectedRunId, updateRunDetailSession])

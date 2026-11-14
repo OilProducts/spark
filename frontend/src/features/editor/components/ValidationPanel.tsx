@@ -210,7 +210,13 @@ export function ValidationPanel() {
                         key={`${diag.rule_id}-${index}`}
                         data-testid="validation-diagnostic-item"
                         onClick={() => {
-                            if (diag.node_id && getNode(diag.node_id)) {
+                            // A problem with one of a node's decisions is the route's to fix.
+                            const route = diag.node_id && diag.decision
+                                ? getEdges().find((edge) => edge.source === diag.node_id && edge.data?.decision === diag.decision)
+                                : undefined;
+                            if (route) {
+                                selectEdge(route.source, route.target, diag.decision);
+                            } else if (diag.node_id && getNode(diag.node_id)) {
                                 selectNode(diag.node_id);
                             } else if (
                                 diag.edge &&

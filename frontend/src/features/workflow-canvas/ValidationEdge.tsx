@@ -76,12 +76,14 @@ const segmentEntersBox = (from: EdgeRoutePoint, to: EdgeRoutePoint, box: LabelBo
  * Where a route's label sits: centred on one of its runs, wherever the label and the space round
  * it meet the fewest other routes, placed labels and nodes. Of the clear spots, the one nearest
  * the route's source wins, in the middle of its run, so a gate's answer reads beside the gate.
+ * A label drawn under one of `nodes` can't be read at all, so it crosses any number of routes first.
  */
 export function routeLabelAnchor(
     route: EdgeRoute,
     otherRoutes: EdgeRoute[] = [],
     placedLabels: LabelBox[] = [],
     size: LabelSize = { width: 48, height: 20 },
+    nodes: LabelBox[] = [],
 ): LabelAnchor {
     const best: { anchor: LabelAnchor | null; cost: number } = { anchor: null, cost: Infinity }
     const consider = (anchor: LabelAnchor, onSegment: number, preference: number) => {
@@ -90,8 +92,9 @@ export function routeLabelAnchor(
         const routeHits = otherRoutes.reduce((hits, other) => hits + (other.slice(1).some((to, at) => segmentEntersBox(other[at], to, clearance)) ? 1 : 0), 0)
         const ownHits = route.slice(1).filter((to, at) => at !== onSegment && segmentEntersBox(route[at], to, box)).length
         const labelHits = placedLabels.filter((other) => other.left < clearance.right && other.right > clearance.left && other.top < clearance.bottom && other.bottom > clearance.top).length
+        const nodeHits = nodes.filter((node) => node.left < box.right && node.right > box.left && node.top < box.bottom && node.bottom > box.top).length
         // A hit outweighs any preference, so a clear spot always wins.
-        const cost = (routeHits + ownHits + 2 * labelHits) * 1e6 + preference
+        const cost = nodeHits * 1e9 + (routeHits + ownHits + 2 * labelHits) * 1e6 + preference
         if (cost < best.cost) Object.assign(best, { anchor, cost })
     }
     let travelled = 0
@@ -112,6 +115,12 @@ export function routeLabelAnchor(
         }
         consider(pointAt(middle), at, travelled)
         for (const offset of besides) consider({ x: from.x + offset, y: middle }, at, 1e5 + travelled)
+        // Past either end, off the route, only where every other spot covers a node: a self-loop
+        // hemmed in by its own node on one side and a close neighbour on the other.
+        if (!horizontal) for (let reach = half + 6; reach <= 120; reach += 8) {
+            consider({ x: from.x, y: Math.min(start, end) - reach }, at, 5e8 + travelled + reach)
+            consider({ x: from.x, y: Math.max(start, end) + reach }, at, 5e8 + travelled + reach)
+        }
         travelled += length
     })
     return best.anchor ?? getRouteMidpoint(route)
@@ -124,15 +133,16 @@ function placeRouteLabels(edges: Edge[], nodes: Node[], scale: number): Map<stri
         return route ? [{ id: edge.id, route, label: routeLabels(edges).get(edge.id) ?? '' }] : []
     })
     // The laid-out size: a run graph's nodes are never measured into its store.
-    const placed: LabelBox[] = nodes.flatMap((node) => {
+    const nodeBoxes: LabelBox[] = nodes.flatMap((node) => {
         const rect = readNodeRect(node)
         return node.hidden ? [] : [{ left: rect.x, right: rect.x + rect.width, top: rect.y, bottom: rect.y + rect.height }]
     })
+    const placed: LabelBox[] = [...nodeBoxes]
     const anchors = new Map<string, LabelAnchor>()
     for (const { id, route, label } of routes) {
         if (!label) continue
         const size = routeLabelSize(label, scale)
-        const anchor = routeLabelAnchor(route, routes.filter((other) => other.id !== id).map((other) => other.route), placed, size)
+        const anchor = routeLabelAnchor(route, routes.filter((other) => other.id !== id).map((other) => other.route), placed, size, nodeBoxes)
         anchors.set(id, anchor)
         placed.push(labelBox(anchor, size))
     }

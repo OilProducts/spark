@@ -842,7 +842,9 @@ describe('flowCanvasShared', () => {
         ).toBe(true)
         expect(firstLayout.edges.every((edge) => (getRenderRoute(edge)?.length ?? 0) >= 2)).toBe(true)
         expect(summarizeLaidOutGraph(secondLayout)).toEqual(summarizeLaidOutGraph(firstLayout))
-    })
+    // Two full layouts of the largest bundled flows; on a machine busy with the rest of the suite
+    // that is several seconds.
+    }, 30_000)
 
     it('filters derived child preview nodes and edges out of the saved flow', () => {
         const preview: PreviewResponsePayload = {

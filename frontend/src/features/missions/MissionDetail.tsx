@@ -195,7 +195,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             </div>
         </header>
         {(error || actionError) && <div className="shrink-0 px-6 pt-4"><InlineError>{error || actionError}</InlineError></div>}
-        <div data-testid="mission-body" {...(narrow ? { ref: follow.ref, onScroll: follow.onScroll } : {})} className={narrow ? 'min-h-0 flex-1 overflow-y-auto' : 'flex min-h-0 flex-1'}>
+        <div data-testid="mission-body" {...(narrow ? { ref: follow.ref, onScroll: follow.onScroll } : {})} className={narrow ? 'flex min-h-0 flex-1 flex-col overflow-y-auto' : 'flex min-h-0 flex-1'}>
             <div data-testid="mission-conversation" className={`flex min-w-0 flex-col ${narrow ? '' : 'min-h-0 flex-1'}`}>
                 <ChatPane follow={follow} scrolls={!narrow} hasContent={status !== 'draft'} composer={closed ? undefined : {
                     label: 'Reply',
@@ -230,7 +230,8 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                     </div>
                 </ChatPane>
             </div>
-            <aside aria-label="Mission overview" className={narrow ? 'px-6 pb-6' : 'w-64 shrink-0 overflow-y-auto py-5 pr-6 xl:w-80'}>
+            {/* Stacked, the overview leads, so the conversation, its question and the reply box end the scroll. */}
+            <aside aria-label="Mission overview" className={narrow ? 'order-first px-6 pt-5' : 'w-64 shrink-0 overflow-y-auto py-5 pr-6 xl:w-80'}>
                 <Well className="flex flex-col gap-5 text-sm">
                     <RailSection label="Objective">
                         <p ref={objectiveText} tabIndex={0} className={`leading-relaxed whitespace-pre-wrap break-words focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${objectiveOpen ? '' : 'line-clamp-4'}`}>{objective}</p>

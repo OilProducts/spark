@@ -62,7 +62,7 @@ export function ClientPreferencesEditor() {
                             onChange={(event) => { const width = event.target.value === '' ? null : Number(event.target.value); editor.setDraft((draft) => draft && ({ ...draft, editor_sidebar_width: width })) }} />
                         <span id="preference-sidebar-unit" className="text-sm text-muted-foreground">pixels</span>
                     </div>
-                    <p id="preference-sidebar-help" className="text-xs text-muted-foreground">The properties panel beside the flow graph. 256 to 560; default 288.</p>
+                    <p id="preference-sidebar-help" className="text-xs text-muted-foreground">The properties panel beside the flow graph. 256 to 560; default 336.</p>
                     {editor.invalidWidth && <FieldError id="preference-sidebar-error" role="alert">Choose a whole number from 256 to 560.</FieldError>}
                 </Field>
                 <Field><FieldLabel htmlFor="run-preference-graph-height">Run graph height</FieldLabel>

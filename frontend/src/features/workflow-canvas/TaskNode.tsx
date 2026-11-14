@@ -193,7 +193,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const displayStatus = isWaiting ? 'waiting' : status
     const containerStyle = getWorkflowNodeContainerStyle(renderedShape)
     const handleClassName = cn(
-        'h-2.5 w-2.5 transition-opacity',
+        // Above the content layer, so a drag from anywhere on a handle wires a route instead of moving the node.
+        'z-20 h-2.5 w-2.5 transition-opacity',
         isEditorCanvas && !isReadOnlyEditorCanvas
             ? 'border-border/70 bg-background opacity-0 group-hover:opacity-100'
             : 'pointer-events-none border-transparent bg-transparent opacity-0',

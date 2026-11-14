@@ -648,12 +648,13 @@ test("files mode keeps structured controls read-only so file saves cannot erase 
       }
     })
 
-    // Canvas selection still picks the node's file, but neither the inspector nor the node edits it.
+    // Canvas selection still picks the node's file, but the inspector gives the files its room
+    // and the node does not edit.
     await node.click()
     const fileEditor = page.getByTestId("flow-file-editor")
     await expect(fileEditor).toHaveAccessibleName("ingest_spec.md")
-    await expect(page.getByTestId("inspector-files-mode-notice")).toBeVisible()
-    await expect(page.getByLabel("Prompt instruction")).toBeDisabled()
+    await expect(page.getByTestId("inspector-panel")).toHaveCount(0)
+    expect((await fileEditor.boundingBox())!.width).toBeGreaterThan(400)
     await expect(node.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0)
     await node.dblclick()
     await expect(node.locator("input")).toHaveCount(0)

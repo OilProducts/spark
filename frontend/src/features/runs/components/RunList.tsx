@@ -26,9 +26,11 @@ const ACTIVE_LIST_STATUSES = new Set([
     'cancel_requested',
 ])
 
-// A status word only when the run needs attention, and never one the group label
-// already says ("Running" under Running).
+// A status word when the run needs attention, or when its dot alone wouldn't say how it ended
+// (a canceled run's grey), and never one the group label already says ("Running" under Running).
 const ATTENTION: Record<string, { label: string; className: string }> = {
+    canceled: { label: 'Canceled', className: 'text-muted-foreground' },
+    aborted: { label: 'Canceled', className: 'text-muted-foreground' },
     failed: { label: 'Failed', className: 'text-destructive' },
     validation_error: { label: 'Failed', className: 'text-destructive' },
     unreadable: { label: 'Unreadable', className: 'text-destructive' },

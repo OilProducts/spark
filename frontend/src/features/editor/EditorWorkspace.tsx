@@ -39,6 +39,8 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     const activeFlow = useStore((state) => state.activeFlow)
     // A flow that failed to load has no inspector to resize.
     const hasActiveFlow = useStore((state) => Boolean(state.activeFlow) && !flowLoadFailed(state.flowLoadFailure, state.activeFlow, state.activeProjectPath))
+    // Files mode has no inspector either.
+    const isFilesMode = useStore((state) => state.editorMode === 'files')
     const catalog = useFlowCatalogPanel()
     const [isEditorSidebarResizing, setIsEditorSidebarResizing] = useState(false)
     const workspaceRef = useRef<HTMLDivElement | null>(null)
@@ -185,7 +187,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                     <CanvasSessionModeProvider mode="editor">
                         <EditorGraphBridgeProvider>
                             {isNarrowViewport ? null : <Sidebar desktopWidthPx={editorSidebarWidth} />}
-                            {!isNarrowViewport && hasActiveFlow ? (
+                            {!isNarrowViewport && hasActiveFlow && !isFilesMode ? (
                                 <div
                                     data-testid="editor-sidebar-resize-handle"
                                     role="separator"

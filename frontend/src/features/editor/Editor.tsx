@@ -82,6 +82,7 @@ import { Button } from '@/components/ui/button';
 import { useRegisterEditorGraphBridge } from './EditorGraphBridgeContext';
 import { EditorCanvasToolbar } from './components/EditorCanvasToolbar';
 import { editedFlowFiles, FlowFilesView, type FlowFilesError } from './components/FlowFilesView';
+import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection';
 
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
 const MEDIUM_GRAPH_PREVIEW_DEBOUNCE_MS = 600;
@@ -330,6 +331,11 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 : saveState === 'error' || saveState === 'conflict'
                     ? 'Resolve the flow save error before running.'
                     : undefined;
+
+    // Edits that would be lost on opening another flow: file drafts, and canvas edits a save refused.
+    const hasUnsavedEdits = editedFlowFiles(flowFiles, fileDrafts).length > 0
+        || saveState === 'error' || saveState === 'conflict';
+    useSettingsNavigationProtection(hasUnsavedEdits, false, 'flow edits');
 
     useEffect(() => {
         expandChildFlowsRef.current = expandChildFlows;
@@ -716,6 +722,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             setFlowFiles([]);
             setFileDrafts({});
             setFileSaveError(null);
+            useStore.getState().resetSaveState();
             setEditorMode('structured');
             hydratedFlowNameRef.current = null;
             setLastLayoutMs(0);
@@ -772,6 +779,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             setFlowFiles([]);
             setFileDrafts({});
             setFileSaveError(null);
+            // The last flow's save outcome is not this one's.
+            useStore.getState().resetSaveState();
             setEditorMode('structured');
             setLastLayoutMs(0);
             setLastPreviewMs(0);
@@ -1047,8 +1056,14 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 return
             }
             setEdges((currentEdges) => {
+                // A route is named by its decision: show the one it saves under, as the flow does.
+                const isFork = nodes.find((node) => node.id === params.source)?.data?.kind === 'parallel'
+                const taken = new Set(currentEdges.filter((edge) => edge.source === params.source).map((edge) => edge.data?.decision))
+                let decision = 'next'
+                for (let suffix = 2; taken.has(decision); suffix += 1) decision = `next_${suffix}`
                 const nextEdge: Edge = {
                     ...params,
+                    ...(isFork || ('data' in params && params.data?.decision) ? {} : { data: { ...('data' in params ? params.data : {}), decision } }),
                     id: buildEdgeIdForConnection(params, currentEdges),
                     type: EDGE_TYPE,
                     className: EDGE_CLASS,

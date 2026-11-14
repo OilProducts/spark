@@ -55,8 +55,8 @@ export function FlowFilesView({ files, drafts, error, selectedNodeId, onDraftCha
 
     return (
         // Below md the canvas is hidden and the list stacks above a full-width editor.
-        <section data-testid="flow-files-view" aria-label="Flow files" className="flex min-h-0 w-full flex-1 flex-col md:w-[min(44rem,60%)] md:flex-none md:flex-row md:border-l">
-            <ul data-testid="flow-file-list" aria-label="Files" className="flex max-h-24 shrink-0 flex-col gap-0.5 overflow-y-auto border-b p-2 md:max-h-none md:w-44 md:border-b-0 md:border-r">
+        <section data-testid="flow-files-view" aria-label="Flow files" className="flex min-h-0 w-full flex-1 flex-col md:w-[min(56rem,66%)] md:flex-none md:flex-row md:border-l">
+            <ul data-testid="flow-file-list" aria-label="Files" className="flex max-h-24 shrink-0 flex-col gap-0.5 overflow-y-auto border-b p-2 md:max-h-none md:w-40 md:border-b-0 md:border-r">
                 {files.map((file) => (
                     <li key={file.name}>
                         <SidePanelRow
