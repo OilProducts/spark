@@ -432,21 +432,21 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const isCanvasReadOnly = isExpandedReadOnlyPreview || editorMode === 'files';
     const connectRef = useRef<(params: Connection | Edge) => void>(() => {});
     const recordFieldEditRef = useRef<(key: string | null, previous: { nodes?: Node[]; edges?: Edge[] }) => void>(() => {});
-    // The inspector's and canvas nodes' edits set the graph at once, from the latest set: React may
-    // run a state updater only at its next render, after the caller has saved what it returned, and
-    // a second edit in the same event builds on the first.
+    // The inspector's and canvas nodes' edits apply to the graph at once, so the caller saves what
+    // it set: React may run a state updater only at its next render. A second edit in the same event
+    // builds on the first; React applies each to its own latest state, keeping a pending resize.
     const editorGraphBridge = useMemo(() => ({
         getNodes: () => canvasGraphRef.current.nodes,
         setNodes: (update: SetStateAction<Node[]>) => {
             const next = typeof update === 'function' ? update(canvasGraphRef.current.nodes) : update;
             canvasGraphRef.current = { ...canvasGraphRef.current, nodes: next };
-            setNodes(next);
+            setNodes(update);
         },
         getEdges: () => canvasGraphRef.current.edges,
         setEdges: (update: SetStateAction<Edge[]>) => {
             const next = typeof update === 'function' ? update(canvasGraphRef.current.edges) : update;
             canvasGraphRef.current = { ...canvasGraphRef.current, edges: next };
-            setEdges(next);
+            setEdges(update);
         },
         getFlow: () => canonicalFlowRef.current,
         connect: (params: Connection | Edge) => connectRef.current(params),
