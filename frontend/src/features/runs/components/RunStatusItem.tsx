@@ -267,7 +267,7 @@ function RunResult({ result, resultError }: { result: PipelineResultResponse | n
     }
     return (
         <div data-testid="run-result-body" className="max-w-[72ch] text-sm">
-            <ProjectConversationMarkdown content={resultMarkdown(result.body_markdown || '')} />
+            <ProjectConversationMarkdown content={resultMarkdown(result.body_markdown || '')} keepLineBreaks />
             {result.summary_error ? (
                 <p data-testid="run-result-summary-error" className="mt-2 text-xs text-warning">
                     Summary unavailable: {result.summary_error}

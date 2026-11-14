@@ -579,7 +579,7 @@ describe('Editor file view', () => {
     await user.click(screen.getByTestId('flow-files-save'))
 
     const error = await screen.findByTestId('flow-files-error')
-    expect(error).toHaveTextContent('node_1.md: agent task nodes need at least one route.')
+    expect(error).toHaveTextContent('node_1.md: Agent task nodes need at least one route.')
     await user.click(screen.getByRole('button', { name: 'flow.md' }))
     await user.click(screen.getByRole('button', { name: 'Open node_1.md' }))
     expect(screen.getByTestId('flow-file-editor')).toHaveAccessibleName('node_1.md')
@@ -628,7 +628,7 @@ describe('Editor file view', () => {
 
     const error = await screen.findByTestId('flow-files-error')
     expect(error).toHaveTextContent('flow.md')
-    expect(error).toHaveTextContent('missing id')
+    expect(error).toHaveTextContent('Missing id')
     expect(loadEditorFlowPayload).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('flow-file-editor')).toHaveValue('---\n---\n')
   })

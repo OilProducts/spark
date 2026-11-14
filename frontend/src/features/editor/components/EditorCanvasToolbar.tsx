@@ -64,7 +64,7 @@ export function EditorCanvasToolbar({
     const canEditLayout = isStructured && !childFlowsExpanded
 
     return (
-        // One row; on a phone-width canvas the actions wrap to a second row rather than scroll out of sight.
+        // One row, even on a phone (the zoom buttons drop there); should it still overflow, the actions wrap rather than scroll out of sight.
         <div
             data-testid="editor-canvas-toolbar"
             aria-label="Canvas toolbar"

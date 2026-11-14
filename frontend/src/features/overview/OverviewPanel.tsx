@@ -8,7 +8,9 @@ import { StatusDot, statusTextClassName, type StatusTone } from '@/components/ap
 import { Well } from '@/components/app/well'
 import { Button } from '@/components/ui/button'
 import { useStore } from '@/store'
-import { ATTENTION_KIND_LABELS, attentionFlow, attentionTimes, attentionTitle, openAttentionItem, openChat, openMission, openRun, refreshAttention, useAttentionFailed, useAttentionItems } from '@/app/useAttention'
+import { ATTENTION_KIND_LABELS, attentionFlow, attentionTimes, attentionTitle, openAttentionItem, openChat, openMission, openRun, openTrigger, refreshAttention, useAttentionFailed, useAttentionItems } from '@/app/useAttention'
+import { triggerProblem } from '@/features/triggers/model/triggerForm'
+import { triggerKey } from '@/lib/api/triggersApi'
 import { missionTime } from '@/features/missions/model/missionModel'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
@@ -173,6 +175,12 @@ export function OverviewPanel() {
     useEffect(() => { if (listsLoaded) markFinishedSeen(runs, missions) }, [listsLoaded, runs, missions])
     const now = useNow(runs.some((run) => run.status === 'running'))
     const attentionTime = attentionTimes(attention, runs, now)
+    // A trigger that can't run, or whose firings fail, quietly starts nothing: it needs you too.
+    const triggers = useStore((state) => state.triggersSession.triggers)
+    const failingTriggers = triggers.flatMap((trigger) => {
+        const problem = triggerProblem(trigger)
+        return problem ? [{ trigger, problem }] : []
+    })
 
     const last = lastChat(chats, runs, missions)
     const counts = last ? tally(last.started) : {}
@@ -216,7 +224,7 @@ export function OverviewPanel() {
                     </div>
                 </header>
 
-                <Section testId="overview-needs-you" heading="Needs you" count={loadedAttention ? attention.length : undefined}>
+                <Section testId="overview-needs-you" heading="Needs you" count={loadedAttention ? attention.length + failingTriggers.length : undefined}>
                     {/* A failed check is not an all-clear: say so, and keep what was last known. */}
                     {attentionFailed ? (
                         <Well data-testid="overview-needs-you-error" role="alert" className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm text-destructive">
@@ -226,7 +234,7 @@ export function OverviewPanel() {
                     ) : null}
                     {!loadedAttention ? (
                         attentionFailed ? null : <Well className="py-3.5 text-sm text-muted-foreground">Checking what is waiting on you…</Well>
-                    ) : attention.length === 0 ? (
+                    ) : attention.length === 0 && failingTriggers.length === 0 ? (
                         attentionFailed ? null : <EmptyWell data-testid="overview-needs-you-empty">Nothing is waiting on you.</EmptyWell>
                     ) : (
                         <ul className={listPanelClass}>
@@ -253,6 +261,31 @@ export function OverviewPanel() {
                                             </span>
                                         </span>
                                         <span data-testid="overview-needs-you-time" className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{attentionTime(item)}</span>
+                                    </button>
+                                </li>
+                            ))}
+                            {failingTriggers.map(({ trigger, problem }) => (
+                                <li key={`trigger:${triggerKey(trigger)}`}>
+                                    <button
+                                        type="button"
+                                        data-testid="overview-needs-you-trigger"
+                                        onClick={() => openTrigger(trigger.project_path, trigger.id)}
+                                        className="flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                                    >
+                                        <StatusDot tone="destructive" />
+                                        <span className="flex min-w-0 flex-1 flex-col gap-px">
+                                            <span className="truncate text-sm font-medium">{trigger.name}</span>
+                                            <span className="flex min-w-0 text-xs text-muted-foreground max-sm:flex-col">
+                                                <span className="min-w-0 truncate max-sm:line-clamp-2 max-sm:whitespace-normal" title={problem.detail}>
+                                                    <span className="text-destructive">Trigger · {problem.label}</span>: {problem.detail}
+                                                </span>
+                                                <span className="flex min-w-0 shrink-0 max-sm:shrink">
+                                                    <span className="whitespace-pre max-sm:hidden"> · </span>
+                                                    <MetaLine lead="" project={projectLabel(registry, trigger.project_path)} />
+                                                </span>
+                                            </span>
+                                        </span>
+                                        <span className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{trigger.state.last_fired_at ? formatRunDate(trigger.state.last_fired_at, now) : ''}</span>
                                     </button>
                                 </li>
                             ))}

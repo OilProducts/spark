@@ -18,3 +18,10 @@ it('shows a Markdown file formatted, with its source a click away, and other fil
     expect(screen.getByTestId('run-artifact-viewer-payload').tagName).toBe('PRE')
     expect(screen.queryByRole('button', { name: 'Show source' })).not.toBeInTheDocument()
 })
+
+it('keeps the lines of plain-text output in a Markdown file', () => {
+    view('result.md', 'collected 2 items\ntests/test_a.py ..\n2 passed in 0.01s')
+    const payload = screen.getByTestId('run-artifact-viewer-payload')
+    expect(payload.querySelectorAll('br')).toHaveLength(2)
+    expect(payload.querySelector('p')?.innerHTML).toMatch(/^collected 2 items<br>\ntests\/test_a\.py \.\.<br>\n2 passed in 0\.01s$/)
+})

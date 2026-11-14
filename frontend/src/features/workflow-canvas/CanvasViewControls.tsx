@@ -26,11 +26,12 @@ export function CanvasViewControls({ minimap, lockable = false, className }: Can
     const isInteractive = useStore(isInteractiveSelector)
 
     return (
+        // On a phone, pinching zooms and a minimap would cover the graph: Fit and Lock stay, so the toolbar keeps to one row.
         <div role="group" aria-label="Zoom" data-testid="canvas-view-controls" className={cn('flex shrink-0 items-center gap-0.5', className)}>
-            <Button type="button" size="icon-sm" variant="ghost" aria-label="Zoom out" title="Zoom out" onClick={() => void zoomOut({ duration: 150 })}>
+            <Button type="button" size="icon-sm" variant="ghost" aria-label="Zoom out" title="Zoom out" className="max-sm:hidden" onClick={() => void zoomOut({ duration: 150 })}>
                 <Minus aria-hidden="true" />
             </Button>
-            <Button type="button" size="icon-sm" variant="ghost" aria-label="Zoom in" title="Zoom in" onClick={() => void zoomIn({ duration: 150 })}>
+            <Button type="button" size="icon-sm" variant="ghost" aria-label="Zoom in" title="Zoom in" className="max-sm:hidden" onClick={() => void zoomIn({ duration: 150 })}>
                 <Plus aria-hidden="true" />
             </Button>
             <Button type="button" size="icon-sm" variant="ghost" aria-label="Fit whole graph" title="Fit whole graph" onClick={() => void fitView({ padding: 0.1, duration: 200 })}>
@@ -63,7 +64,7 @@ export function CanvasViewControls({ minimap, lockable = false, className }: Can
                     title={minimap.shown ? 'Hide minimap' : 'Show minimap'}
                     aria-pressed={minimap.shown}
                     data-testid="canvas-minimap-toggle"
-                    className="aria-pressed:bg-accent aria-pressed:text-foreground"
+                    className="aria-pressed:bg-accent aria-pressed:text-foreground max-sm:hidden"
                     onClick={minimap.onToggle}
                 >
                     <MapIcon aria-hidden="true" />

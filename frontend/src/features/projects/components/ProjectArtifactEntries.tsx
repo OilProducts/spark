@@ -70,7 +70,7 @@ function ProjectFlowResultPreview({ runId }: { runId: string }) {
             ) : null}
             {result?.state === "ready" ? (
                 <div data-testid="project-flow-launch-result-body" className="rounded-lg bg-muted px-3 py-2">
-                    <ProjectConversationMarkdown content={result.body_markdown} />
+                    <ProjectConversationMarkdown content={result.body_markdown} keepLineBreaks />
                 </div>
             ) : null}
         </div>

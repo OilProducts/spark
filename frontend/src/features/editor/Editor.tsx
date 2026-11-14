@@ -184,6 +184,13 @@ function buildDirtyRect(previousRect: NodeRect | null, nextRect: NodeRect | null
     }
 }
 
+/** A fresh graph's nodes or edges, marked with the selection the store holds, as the canvas shows it. */
+function withStoreSelection<T extends Node | Edge>(items: T[], kind: 'node' | 'edge'): T[] {
+    const { selectedNodeId, selectedEdgeId } = useStore.getState();
+    const selectedId = kind === 'edge' ? selectedEdgeId : selectedEdgeId ? null : selectedNodeId;
+    return items.map((item) => (item.id === selectedId) === Boolean(item.selected) ? item : { ...item, selected: item.id === selectedId });
+}
+
 function buildAuthoredFlow(
     flowName: string,
     nodes: Node[],
@@ -887,8 +894,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 setLastLayoutMs(hydrated.layoutDurationMs);
                 layoutStateRef.current = hydrated.layout;
                 edgeIdToLayoutKeyRef.current = hydrated.edgeIdToLayoutKey;
-                setNodes(hydrated.nodes);
-                setEdges(hydrated.edges);
+                setNodes(withStoreSelection(hydrated.nodes, 'node'));
+                setEdges(withStoreSelection(hydrated.edges, 'edge'));
                 frameNewGraph(hydrated.nodes);
                 if (!expandChildFlowsRef.current) {
                     persistLayoutState(hydrated.layout, false);
@@ -1400,6 +1407,10 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             }
             return;
         }
+        // Until this flow hydrates, the canvas still holds the last flow's nodes.
+        if (hydratedFlowNameRef.current !== flowName) {
+            return;
+        }
         const { nodeId } = pendingEditorNodeSelection;
         if (nodeId && nodes.some((node) => node.id === nodeId)) {
             setSelectedEdgeId(null);
@@ -1474,8 +1485,9 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 setLastLayoutMs(hydrated.layoutDurationMs)
                 layoutStateRef.current = hydrated.layout
                 edgeIdToLayoutKeyRef.current = hydrated.edgeIdToLayoutKey
-                setNodes(hydrated.nodes)
-                setEdges(hydrated.edges)
+                // The fresh graph replaces the canvas's nodes; what is selected stays marked on it.
+                setNodes(withStoreSelection(hydrated.nodes, 'node'))
+                setEdges(withStoreSelection(hydrated.edges, 'edge'))
                 frameNewGraph(hydrated.nodes)
                 if (!expandChildFlowsRef.current) {
                     persistLayoutState(hydrated.layout, false)

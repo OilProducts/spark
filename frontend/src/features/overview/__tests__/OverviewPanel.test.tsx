@@ -76,6 +76,29 @@ describe('Overview needs you', () => {
     })
 })
 
+describe('Overview needs you, for triggers', () => {
+    it('lists a failing trigger with why, and opens it in Triggers', async () => {
+        pending = []
+        const initial = useStore.getInitialState()
+        onTestFinished(() => useStore.setState({ triggersSession: initial.triggersSession, viewMode: initial.viewMode }))
+        const state = { last_fired_at: '2026-10-02T09:00:00Z', last_result: 'failed', last_error: 'Release version is required.', next_run_at: null, recent_history: [] }
+        const trigger = {
+            id: 'nightly', project_path: '/work/app', name: 'Nightly release', enabled: true, protected: false, revision: 'r1', source_type: 'schedule' as const,
+            created_at: '2026-10-01T09:00:00Z', updated_at: '2026-10-01T09:00:00Z', action: { flow_name: 'release-check', static_context: {} }, source: {}, state,
+        }
+        useStore.setState({ triggersSession: { ...initial.triggersSession, triggers: [trigger, { ...trigger, id: 'fine', state: { ...state, last_result: 'success', last_error: null } }] } })
+        render(<OverviewPanel />)
+        const row = await screen.findByTestId('overview-needs-you-trigger')
+        expect(screen.getAllByTestId('overview-needs-you-trigger')).toHaveLength(1)
+        expect(row).toHaveTextContent('Nightly release')
+        expect(row).toHaveTextContent('Trigger · Last firing failed: Release version is required.')
+        expect(screen.queryByTestId('overview-needs-you-empty')).toBeNull()
+        fireEvent.click(row)
+        expect(useStore.getState().viewMode).toBe('triggers')
+        expect(useStore.getState().triggersSession.selectedTriggerId).toContain('nightly')
+    })
+})
+
 describe('Overview needs you, when the check fails', () => {
     it('says it could not check instead of saying nothing is waiting, and recovers on Try again', async () => {
         pending = [gate('run-a', 'gate-1')]

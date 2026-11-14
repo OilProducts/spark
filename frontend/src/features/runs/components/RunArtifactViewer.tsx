@@ -71,7 +71,7 @@ export function RunArtifactViewer({
                     <p data-testid="run-artifact-viewer-empty" className="text-xs text-muted-foreground">This file is empty.</p>
                 ) : formatted ? (
                     <div data-testid="run-artifact-viewer-payload" className="min-h-0 flex-1 overflow-auto text-sm">
-                        <ProjectConversationMarkdown content={payload} />
+                        <ProjectConversationMarkdown content={payload} keepLineBreaks />
                     </div>
                 ) : (
                     <pre

@@ -9,6 +9,7 @@ import { ATTENTION_KIND_LABELS, attentionFlow, attentionTimes, attentionTitle, o
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import { useChatRunning } from '@/features/projects/hooks/useChatRunning'
 import { cn } from '@/lib/utils'
+import { triggerProblem } from '@/features/triggers/model/triggerForm'
 
 type ActivityItem = { mode: ViewMode; label: string; icon: LucideIcon; testId: string }
 
@@ -25,8 +26,8 @@ const ACTIVITY_ORDER: ViewMode[] = [...ACTIVITY_ITEMS.map((item) => item.mode), 
 
 const RUNNING_RUN_STATUSES = new Set(['running', 'queued', 'pause_requested', 'abort_requested', 'cancel_requested'])
 
-type ActivityDot = 'waiting' | 'running' | 'unread' | null
-const DOT_LABELS = { waiting: 'waiting on you', running: 'running', unread: 'new since you last looked' }
+type ActivityDot = 'waiting' | 'running' | 'unread' | 'problem' | null
+const DOT_LABELS = { waiting: 'waiting on you', running: 'running', unread: 'new since you last looked', problem: 'something is failing' }
 
 // An icon with its name under it; on a phone-width top row there is only room for the icon,
 // and the icons share the row's width so all of them stay on screen, down to 320px wide.
@@ -189,6 +190,8 @@ export function ActivityBar() {
     const attentionFailed = useAttentionFailed()
     const attention = loadedAttention ?? []
     const overviewUnread = useOverviewUnread(attention)
+    // A trigger that can't run, or whose firings fail, starts nothing until someone looks.
+    const triggersFailing = useStore((state) => state.triggersSession.triggers.some((trigger) => triggerProblem(trigger)))
     const dots = {
         ...activityDots(
             attention,
@@ -197,6 +200,7 @@ export function ActivityBar() {
             chatRunning,
         ),
         overview: overviewUnread ? 'unread' as const : null,
+        triggers: triggersFailing ? 'problem' as const : null,
     }
 
     // Arrow keys only move focus along the bar; Enter, Space or a click opens the view.
@@ -232,7 +236,7 @@ export function ActivityBar() {
                         <span
                             data-testid={`${testId}-dot`}
                             data-dot={dot}
-                            className={cn('absolute -right-1 -top-0.5 size-1.5 rounded-full', dot === 'waiting' ? 'bg-warning' : 'bg-primary')}
+                            className={cn('absolute -right-1 -top-0.5 size-1.5 rounded-full', dot === 'waiting' ? 'bg-warning' : dot === 'problem' ? 'bg-destructive' : 'bg-primary')}
                         />
                     ) : null}
                 </span>

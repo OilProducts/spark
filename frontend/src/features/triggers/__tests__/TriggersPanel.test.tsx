@@ -424,6 +424,47 @@ describe('TriggersPanel', () => {
     expect(JSON.parse((screen.getByLabelText('Extra data for the run (optional)') as HTMLTextAreaElement).value)).toEqual({ branch: 'main' })
   })
 
+  it('waits for the flow\'s launch inputs before a trigger that starts it can be created', async () => {
+    const releaseCheck = { name: 'release-check', title: 'Release Check', description: '' }
+    let release: () => void = () => undefined
+    vi.mocked(global.fetch).mockImplementation(async (input) => {
+      const url = resolveRequestUrl(input as RequestInfo | URL)
+      if (url.startsWith('/workspace/api/flows/release-check')) {
+        return new Promise((resolve) => {
+          release = () => resolve(jsonResponse({ ...releaseCheck, inputs: [{ key: 'context.request.version', label: 'Version', type: 'string', required: true }] }))
+        })
+      }
+      if (isFlowList(url)) return jsonResponse([...PROJECT_FLOWS, releaseCheck])
+      return jsonResponse([])
+    })
+    useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const form = await openCreateTriggerForm(user)
+    await user.type(form.getByLabelText('Name'), 'Nightly')
+    await user.selectOptions(form.getByLabelText('Flow to start'), await form.findByRole('option', { name: 'Release Check' }))
+
+    // Its required inputs aren't known yet, so they can't be checked.
+    expect(screen.getByTestId('trigger-create-button')).toBeDisabled()
+    expect(form.getByRole('status')).toHaveTextContent('Reading the flow’s launch inputs…')
+    await act(async () => release())
+    expect(await form.findByLabelText(/^Version/)).toBeVisible()
+    expect(screen.getByTestId('trigger-create-button')).toBeEnabled()
+  })
+
+  it('marks a trigger whose last firing failed in the list, with the reason on hover', async () => {
+    const failing = makeTrigger({ id: 'nightly', name: 'Nightly' })
+    failing.state = { ...failing.state, last_result: 'failed', last_error: 'Release version is required.' }
+    vi.mocked(global.fetch).mockImplementation(async (input) => (
+      isFlowList(resolveRequestUrl(input as RequestInfo | URL)) ? jsonResponse(PROJECT_FLOWS) : jsonResponse([failing, makeTrigger({ id: 'fine', name: 'Fine' })])
+    ))
+    renderTriggersPanel()
+    const problem = await within(await screen.findByTestId('trigger-row-nightly')).findByTestId('trigger-row-problem')
+    expect(problem).toHaveTextContent('Last firing failed')
+    expect(problem).toHaveAttribute('title', 'Release version is required.')
+    expect(within(screen.getByTestId('trigger-row-fine')).queryByTestId('trigger-row-problem')).not.toBeInTheDocument()
+  })
+
   it('saves weekly days from toggles and a time in the browser\'s zone, and refuses a week with no day', async () => {
     const posts: Array<Record<string, unknown>> = []
     vi.mocked(global.fetch).mockImplementation(async (input, init) => {

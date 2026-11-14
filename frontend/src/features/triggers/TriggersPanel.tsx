@@ -7,6 +7,7 @@ import {
   formatTriggerResult,
   formatTriggerTimestamp,
   SHARED_WEBHOOK_ENDPOINT,
+  triggerProblem,
   triggerProjectSummary,
   triggerSourceSummary,
 } from "./model/triggerForm"
@@ -46,6 +47,11 @@ function FiringResult({ entry, run }: { entry: HistoryEntry; run: RunRecord | un
       <RunLink runId={entry.run_id}>{run ? flowTitle(run.flow_name) : 'Started a run'}</RunLink>
     </span>
   )
+}
+
+/** Why saving waits: a flow's required inputs are checked before a trigger that starts it is saved. */
+function InputsLoading() {
+  return <p role="status" className="self-center text-xs text-muted-foreground">Reading the flow’s launch inputs…</p>
 }
 
 export function TriggersPanel() {
@@ -177,7 +183,7 @@ export function TriggersPanel() {
           ) : null}
           {group.triggers.map((trigger) => {
             const unregistered = isUnregisteredTarget(projectRegistry, trigger.project_path)
-            const activationError = trigger.state.activation_error
+            const problem = triggerProblem(trigger)
             return (
               <SidePanelRow
                 key={triggerKey(trigger)}
@@ -186,15 +192,15 @@ export function TriggersPanel() {
                 data-unregistered-target={unregistered ? 'true' : undefined}
                 selected={selectedTriggerId === triggerKey(trigger) && !createFormOpen}
                 // A disabled trigger is the exception: hollow dot plus the word.
-                // One the server could not turn on is a problem: red dot plus why.
-                tone={activationError ? 'danger' : 'neutral'}
-                hollow={!trigger.enabled && !activationError}
+                // One the server could not turn on, or whose last firing failed, is a problem: red dot plus why.
+                tone={problem ? 'danger' : 'neutral'}
+                hollow={!trigger.enabled && !problem}
                 title={trigger.name}
                 meta={(
                   <>
                     {/* First, so a narrow row never truncates it away. */}
-                    {activationError ? <span className="text-destructive" title={activationError}>Not running · </span> : null}
-                    {trigger.enabled || activationError ? null : 'Disabled · '}
+                    {problem ? <span data-testid="trigger-row-problem" className="text-destructive" title={problem.detail}>{problem.label} · </span> : null}
+                    {trigger.enabled || problem ? null : 'Disabled · '}
                     <span
                       data-testid="trigger-row-project"
                       title={trigger.project_path}
@@ -277,7 +283,7 @@ export function TriggersPanel() {
                     type="button"
                     data-testid="trigger-create-button"
                     size="sm"
-                    disabled={pending || isRegenerating || !newTriggerForm.projectPath}
+                    disabled={pending || isRegenerating || !newTriggerForm.projectPath || newFlowInputs === null}
                     onClick={() => void onCreateTrigger()}
                   >
                     Create trigger
@@ -294,6 +300,7 @@ export function TriggersPanel() {
                   >
                     Close
                   </Button>
+                  {newFlowInputs === null ? <InputsLoading /> : null}
                 </div>
               </CardContent>
             </Card>
@@ -407,12 +414,13 @@ export function TriggersPanel() {
                     type="button"
                     data-testid="trigger-save-button"
                     size="sm"
-                    disabled={pending || isRegenerating}
+                    disabled={pending || isRegenerating || editFlowInputs === null}
                     onClick={() => void onSaveSelectedTrigger()}
                   >
                     Save
                   </Button>
                   <Button aria-label="Discard selected trigger changes" type="button" variant="ghost" size="sm" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
+                  {editFlowInputs === null ? <InputsLoading /> : null}
                 </div>
               </CardContent>
             </Card>

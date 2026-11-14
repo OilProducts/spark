@@ -68,8 +68,10 @@ export function useTriggersList({ manageSync = true }: { manageSync?: boolean } 
         void refreshTriggers()
     }, [hasTriggersSession, manageSync, triggersSession.status])
 
+    // The live snapshot keeps the list current from the start, so a failing trigger shows in the
+    // activity bar, the Overview and its flow before the Triggers view is ever opened.
     useEffect(() => {
-        if (!manageSync || !hasTriggersSession) {
+        if (!manageSync) {
             return
         }
         const handleTriggerLiveEvent = (event: Event) => {
@@ -116,7 +118,7 @@ export function useTriggersList({ manageSync = true }: { manageSync?: boolean } 
             window.removeEventListener('spark:trigger-live-event', handleTriggerLiveEvent)
             window.removeEventListener('spark:triggers-resync-required', refreshTriggers)
         }
-    }, [hasTriggersSession, manageSync, updateTriggersSession])
+    }, [manageSync, updateTriggersSession])
 
     return {
         customTriggers,

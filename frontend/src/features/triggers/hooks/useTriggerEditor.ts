@@ -35,11 +35,17 @@ const buildProtectedTriggerUpdatePayload = (form: TriggerFormState) => ({
     },
 })
 
-/** The launch inputs of the flow a form starts; null while unknown or when it starts no flow. */
+const NO_INPUTS: LaunchInputDefinition[] = []
+
+/**
+ * The launch inputs of the flow a form starts: none when it starts no flow (or its flow can't be
+ * read, which the server then judges), null while they load.
+ */
 function useFlowInputs(form: Pick<TriggerFormState, 'actionMode' | 'flowName' | 'projectPath'> | null | undefined): LaunchInputDefinition[] | null {
     const flowName = form?.actionMode === 'static' ? form.flowName.trim() : ''
     const flow = useFlowLaunchMetadata(flowName || null, form?.projectPath || null)
-    return flow && flow.name === flowName ? flow.inputs ?? [] : null
+    if (!flowName) return NO_INPUTS
+    return flow && flow.name === flowName ? flow.inputs ?? NO_INPUTS : null
 }
 
 export function useTriggerEditor({
@@ -83,8 +89,9 @@ export function useTriggerEditor({
     useSettingsNavigationProtection(dirty, pending)
 
     const onCreateTrigger = async () => {
-        if (pendingRef.current) return
-        if (Object.keys(validateTriggerForm(newTriggerForm, false, newFlowInputs ?? [])).length) {
+        // Until the flow's inputs are known, its required ones can't be checked.
+        if (pendingRef.current || newFlowInputs === null) return
+        if (Object.keys(validateTriggerForm(newTriggerForm, false, newFlowInputs)).length) {
             setErrorsShownFor('new')
             return
         }
@@ -118,7 +125,7 @@ export function useTriggerEditor({
     }
 
     const onSaveSelectedTrigger = async () => {
-        if (pendingRef.current || !selectedTrigger || !resolvedEditTriggerForm) {
+        if (pendingRef.current || !selectedTrigger || !resolvedEditTriggerForm || editFlowInputs === null) {
             return
         }
         if (Object.keys(validateTriggerForm(resolvedEditTriggerForm, selectedTrigger.protected, editFlowInputs ?? [])).length) {

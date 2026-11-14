@@ -251,7 +251,7 @@ export function ValidationPanel() {
                                 {diag.severity}
                             </span>
                             <div className="min-w-0 flex-1 break-words">
-                                <div className="text-foreground">{diagnosticSentence(diag)}</div>
+                                <div className="text-foreground">{diagnosticSentence(diag, nodeLabel)}</div>
                                 {diag.node_id || diag.decision || diag.line ? (
                                     <div className="text-xs text-muted-foreground">
                                         {[

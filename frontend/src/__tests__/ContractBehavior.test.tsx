@@ -1321,7 +1321,7 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('graph-extension-attr-new-value')).toBeVisible()
     expect(screen.getByRole('button', { name: /^Model:/ })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Apply to nodes' }).className).toContain('focus-visible')
-    expect(screen.getByRole('button', { name: 'Reset from global' }).className).toContain('focus-visible')
+    expect(screen.getByRole('button', { name: 'Use workspace default' }).className).toContain('focus-visible')
 
     cleanup()
     render(<SettingsPanel />)

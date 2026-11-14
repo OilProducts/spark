@@ -69,6 +69,7 @@ editorShowAdvancedFlowMetadataByFlow: {},
 editorShowAdvancedGraphAttrsByFlow: {},
 editorLaunchInputDraftsByFlow: {},
 editorLaunchInputDraftErrorByFlow: {},
+triggersSession: useStore.getInitialState().triggersSession,
 editorNodeInspectorSessionsByNodeId: {},
 saveState: 'idle',
 saveStateVersion: 0,
@@ -326,6 +327,25 @@ describe('Graph and settings behavior', () => {
     // Clearing the description clears it from the flow, not back to what it was.
     await user.clear(screen.getByLabelText('Description'))
     expect(buildFlow([], [], useStore.getState().flowMetadata, flow).description).toBe('')
+  })
+
+  it('names the triggers that start this flow without a required launch input, and opens one', async () => {
+    const user = userEvent.setup()
+    const trigger = (id: string, static_context: Record<string, unknown>) => ({
+      id, project_path: '/tmp/project-graph-settings', name: `Trigger ${id}`, enabled: true, protected: false, revision: 'r1', source_type: 'schedule' as const,
+      created_at: '', updated_at: '', action: { flow_name: TEST_GRAPH_FLOW, static_context }, source: {}, state: { recent_history: [] },
+    })
+    useStore.setState((state) => ({
+      triggersSession: { ...state.triggersSession, triggers: [trigger('nightly', {}), trigger('weekly', { 'context.request.version': '2.0.0' })] },
+      flowMetadata: { inputs: JSON.stringify([{ key: 'context.request.version', label: 'Release version', type: 'string', description: '', required: true }]) },
+    }))
+    wrapWithFlowProvider(<GraphSettings inline />)
+
+    const gaps = await screen.findByTestId('graph-launch-inputs-trigger-gaps')
+    expect(gaps).toHaveTextContent('A trigger starts this flow without a required input, so its runs fail:Trigger nightly needs Release version')
+    expect(gaps).not.toHaveTextContent('Trigger weekly')
+    await user.click(within(gaps).getByRole('button', { name: 'Trigger nightly' }))
+    expect(useStore.getState().viewMode).toBe('triggers')
   })
 
   it('persists launch input declarations as FlowDefinition inputs', async () => {

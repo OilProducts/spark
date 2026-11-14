@@ -7,6 +7,8 @@ import { toExtensionAttrEntries } from '@/lib/extensionAttrs'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { Button } from '@/components/ui/button'
 import { InspectorScaffold } from './components/InspectorScaffold'
+import { normalizeProjectPath } from '@/lib/projectPaths'
+import type { TriggerResponse } from '@/lib/api/triggersApi'
 import {
     parseLaunchInputDefinitions,
     serializeLaunchInputDefinitions,
@@ -29,8 +31,28 @@ interface GraphSettingsProps {
     inline?: boolean
 }
 
+/**
+ * The triggers that start this flow in this project but leave a required launch input unset,
+ * with the inputs' names: each of their firings fails until the trigger sets them.
+ */
+function triggersMissingInputs(triggers: TriggerResponse[], flow: string | null, projectPath: string | null, inputs: LaunchInputDefinition[]) {
+    const required = inputs.filter((input) => input.required && input.key.trim())
+    if (!flow || !projectPath || required.length === 0) return []
+    return triggers.flatMap((trigger) => {
+        if (trigger.action.flow_name !== flow || (trigger.action.mode ?? 'static') !== 'static'
+            || normalizeProjectPath(trigger.project_path) !== normalizeProjectPath(projectPath)) return []
+        const missing = required.filter((input) => {
+            const value = trigger.action.static_context?.[input.key]
+            return value === undefined || value === null || (typeof value === 'string' && !value.trim())
+        })
+        return missing.length ? [{ trigger, missing: missing.map((input) => input.label.trim() || input.key) }] : []
+    })
+}
+
 export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const activeFlow = useStore((state) => state.activeFlow)
+    const activeProjectPath = useStore((state) => state.activeProjectPath)
+    const triggers = useStore((state) => state.triggersSession.triggers)
     const diagnostics = useStore((state) => state.diagnostics)
     const flowMetadata = useStore((state) => state.flowMetadata)
     const flowMetadataErrors = useStore((state) => state.flowMetadataErrors)
@@ -241,6 +263,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                 <GraphLaunchInputsSection
                     launchInputDrafts={launchInputDrafts}
                     launchInputDraftError={launchInputDraftError}
+                    triggersMissingInputs={triggersMissingInputs(triggers, activeFlow, activeProjectPath, launchInputDrafts)}
                     onLaunchInputDefinitionsChange={handleLaunchInputDefinitionsChange}
                 />
                 <GraphResultSection

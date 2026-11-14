@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, it, vi } from 'vitest'
 
@@ -112,4 +112,34 @@ it('opens in the project of the latest run when that is more recent than the las
     const dialog = await screen.findByTestId('run-flow-dialog')
     expect(within(dialog).getByTestId<HTMLSelectElement>('run-flow-project-select').value).toBe('/tmp/beta')
     expect(await within(dialog).findByText('Beta only')).toBeVisible()
+})
+
+it('is one Tab stop that the arrow keys move through, picks the first match on Enter, and gives focus back on close', async () => {
+    const user = userEvent.setup()
+    render(<><button type="button" onClick={() => openRunFlowDialog({ projectPath: '/tmp/alpha' })}>Open</button><RunFlowDialog /></>)
+    const opener = screen.getByRole('button', { name: 'Open' })
+    await user.click(opener)
+    const dialog = await screen.findByTestId('run-flow-dialog')
+    await within(dialog).findByRole('heading', { name: 'alpha’s flows' })
+    const search = within(dialog).getByTestId('run-flow-search')
+    expect(search).toHaveFocus()
+    const options = within(dialog).getAllByTestId('run-flow-option')
+    expect(options.map((option) => option.tabIndex)).toEqual([0, -1, -1])
+
+    await user.keyboard('{ArrowDown}')
+    expect(options[0]).toHaveFocus()
+    await user.keyboard('{ArrowDown}')
+    expect(options[1]).toHaveFocus()
+    await user.keyboard('{End}')
+    expect(options[2]).toHaveFocus()
+    await user.keyboard('{Home}{ArrowUp}')
+    expect(search).toHaveFocus()
+
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByTestId('run-flow-dialog')).not.toBeInTheDocument())
+    expect(opener).toHaveFocus()
+
+    await user.click(opener)
+    await user.type(await screen.findByTestId('run-flow-search'), 'review{Enter}')
+    expect(await screen.findByTestId('run-flow-back')).toBeVisible()
 })

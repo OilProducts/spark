@@ -308,6 +308,11 @@ export function RunGraphCard({
     const expandChildFlows = runDetailSession?.expandChildFlows ?? false
     const paneHeight = clampGraphPaneHeight(runDetailSession?.graphPaneHeight ?? 512)
     const hasRenderableGraph = (runDetailSession?.graphNodes.length ?? 0) > 0 || (runDetailSession?.graphEdges.length ?? 0) > 0
+    // A step by its label, as the graph shows it.
+    const nodeLabel = (nodeId: string) => {
+        const label = runDetailSession?.graphNodes.find((node) => node.id === nodeId)?.data?.label
+        return typeof label === 'string' && label.trim() ? label.trim() : nodeId
+    }
     const resizeStateRef = useRef<{ startY: number; startHeight: number } | null>(null)
 
     const setPaneHeight = (height: number) => {
@@ -379,9 +384,9 @@ export function RunGraphCard({
                                 <li key={`${diagnostic.rule_id}-${diagnostic.node_id || 'graph'}-${index}`}>
                                     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                         <span className="capitalize">{diagnostic.severity}</span>
-                                        {diagnostic.node_id ? <span>· {diagnostic.node_id}</span> : null}
+                                        {diagnostic.node_id ? <span>· {nodeLabel(diagnostic.node_id)}</span> : null}
                                     </div>
-                                    <p className="mt-1 text-sm text-foreground">{diagnosticSentence(diagnostic)}</p>
+                                    <p className="mt-1 text-sm text-foreground">{diagnosticSentence(diagnostic, nodeLabel)}</p>
                                 </li>
                             ))}
                         </ul>

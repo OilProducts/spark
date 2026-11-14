@@ -18,6 +18,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { AdvancedKeyValueEditor } from '../AdvancedKeyValueEditor'
 import { LaunchInputsEditor } from '../LaunchInputsEditor'
+import { openTrigger } from '@/app/useAttention'
+import type { TriggerResponse } from '@/lib/api/triggersApi'
 
 export const FLOW_METADATA_HELP: Record<string, string> = {
     inputs: 'Structured launch-time context fields Spark should collect before starting a run.',
@@ -217,12 +219,15 @@ interface GraphLaunchInputsSectionProps {
     launchInputDrafts: LaunchInputDefinition[]
     launchInputDraftError: string | null
     onLaunchInputDefinitionsChange: (entries: LaunchInputDefinition[]) => void
+    /** Triggers that start this flow without a required input, which each of their firings then fails on. */
+    triggersMissingInputs?: { trigger: TriggerResponse; missing: string[] }[]
 }
 
 export function GraphLaunchInputsSection({
     launchInputDrafts,
     launchInputDraftError,
     onLaunchInputDefinitionsChange,
+    triggersMissingInputs = [],
 }: GraphLaunchInputsSectionProps) {
     return (
         <section className="space-y-3">
@@ -230,6 +235,21 @@ export function GraphLaunchInputsSection({
                 title="Launch inputs"
                 description="Fields Spark collects as context values before a run starts."
             />
+            {triggersMissingInputs.length > 0 ? (
+                <Alert data-testid="graph-launch-inputs-trigger-gaps" className="border-warning/40 py-2">
+                    <AlertDescription className="text-xs text-foreground">
+                        <p>{triggersMissingInputs.length === 1 ? 'A trigger starts this flow without a required input, so its runs fail:' : 'Triggers start this flow without a required input, so their runs fail:'}</p>
+                        <ul className="mt-1 space-y-0.5">
+                            {triggersMissingInputs.map(({ trigger, missing }) => (
+                                <li key={`${trigger.project_path}\u0000${trigger.id}`}>
+                                    <Button type="button" variant="link" className="h-auto p-0 text-xs" onClick={() => openTrigger(trigger.project_path, trigger.id)}>{trigger.name}</Button>
+                                    <span className="text-muted-foreground"> needs {missing.join(', ')}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    </AlertDescription>
+                </Alert>
+            ) : null}
             <LaunchInputsEditor
                 entries={launchInputDrafts}
                 error={launchInputDraftError}
@@ -413,6 +433,8 @@ export function GraphAdvancedAttrsSection({
     )
 }
 
+const MODEL_DEFAULT_KEYS = ['llm_provider', 'llm_profile', 'llm_model', 'reasoning_effort', 'thinking', 'thinking_budget_tokens', 'reasoning_mode', 'reasoning_summary'] as const satisfies readonly (keyof FlowDefinitionMetadata)[]
+
 interface GraphLlmDefaultsSectionProps {
     canApplyDefaults: boolean
     flowMetadata: FlowDefinitionMetadata
@@ -463,24 +485,17 @@ export function GraphLlmDefaultsSection({
                     >
                         Apply to nodes
                     </Button>
+                    {/* Clears the flow's own choice, so it follows the workspace default as that changes. */}
                     <Button
                         type="button"
                         variant="outline"
                         size="sm"
                         className="h-8 px-2 text-xs"
-                        onClick={() => {
-                            updateFlowMetadata('llm_provider', uiDefaults.llm_provider)
-                            updateFlowMetadata('llm_profile', uiDefaults.llm_profile)
-                            updateFlowMetadata('llm_model', uiDefaults.llm_model)
-                            updateFlowMetadata('reasoning_effort', uiDefaults.reasoning_effort)
-                            updateFlowMetadata('thinking', uiDefaults.thinking || '')
-                            updateFlowMetadata('thinking_budget_tokens', uiDefaults.thinking_budget_tokens || '')
-                            updateFlowMetadata('reasoning_mode', uiDefaults.reasoning_mode || '')
-                            updateFlowMetadata('reasoning_summary', uiDefaults.reasoning_summary || '')
-
-                        }}
+                        disabled={MODEL_DEFAULT_KEYS.every((key) => !flowMetadata[key])}
+                        title="Stop setting a model for this flow and follow the workspace default."
+                        onClick={() => MODEL_DEFAULT_KEYS.forEach((key) => updateFlowMetadata(key, ''))}
                     >
-                        Reset from global
+                        Use workspace default
                     </Button>
                 </div>
             </div>

@@ -108,6 +108,25 @@ function safeBreaksAndCode(this: { parse: (source: string) => unknown }) {
     }
 }
 
+/** Every line break is kept, as a tool's plain-text output needs: a single newline doesn't join lines. */
+function lineBreaks() {
+    return (tree: Root) => {
+        const walk = (parent: Root | Extract<RootContent, { children: unknown }>) => {
+            parent.children = parent.children.flatMap((node): RootContent | RootContent[] => {
+                if (node.type === 'text' && node.value.includes('\n')) {
+                    return node.value.split(/\r?\n/).flatMap((value, index): RootContent[] => [
+                        ...(index > 0 ? [{ type: 'break' } as const] : []),
+                        ...(value ? [{ type: 'text', value } as const] : []),
+                    ])
+                }
+                if ('children' in node) walk(node)
+                return node
+            }) as typeof parent.children
+        }
+        walk(tree)
+    }
+}
+
 function destination(value: string): 'web' | 'anchor' | 'path' | 'unsafe' {
     // Control characters must never reach a navigation or image URL.
     // eslint-disable-next-line no-control-regex
@@ -168,15 +187,19 @@ const markdownComponents: Components = {
 interface ProjectConversationMarkdownProps {
     content: string
     enableCodeCopy?: boolean
+    /** Keep single line breaks, for text that may be plain output rather than Markdown, such as a run's result. */
+    keepLineBreaks?: boolean
 }
 
-function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false }: ProjectConversationMarkdownProps) {
+function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false, keepLineBreaks = false }: ProjectConversationMarkdownProps) {
     const id = useId()
     const remarkRehypeOptions = useMemo(() => ({ clobberPrefix: `markdown-${id}-`, footnoteLabel: 'Footnotes' }), [id])
     return <MarkdownContext.Provider value={enableCodeCopy}>
         <div className="conversation-markdown min-w-0">
             <ReactMarkdown components={markdownComponents} skipHtml
-                remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode]}
+                remarkPlugins={keepLineBreaks
+                    ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, lineBreaks]
+                    : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode]}
                 rehypePlugins={[[footnoteLabels, `markdown-${id}-`], [rehypeKatex, { trust: false, strict: 'error' }], [rehypeHighlight, { detect: false, ignoreMissing: true }]]}
                 remarkRehypeOptions={remarkRehypeOptions}
                 urlTransform={(url) => destination(url) === 'unsafe' ? '' : url}

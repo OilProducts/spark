@@ -420,7 +420,7 @@ export function LaunchPanel({
                                     <span className="capitalize">{diagnostic.severity}</span>
                                     {diagnostic.node_id ? <span>· {nodeLabel(diagnostic.node_id)}</span> : null}
                                 </div>
-                                <p className="mt-1 text-sm text-foreground">{diagnosticSentence(diagnostic)}</p>
+                                <p className="mt-1 text-sm text-foreground">{diagnosticSentence(diagnostic, nodeLabel)}</p>
                             </li>
                         ))}
                     </ul>

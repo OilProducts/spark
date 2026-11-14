@@ -100,6 +100,18 @@ export function formatTriggerTimestamp(value?: string | null, now = Date.now()):
 }
 
 /** A trigger result in a word: "Succeeded", "Failed", else the status capitalized. */
+/**
+ * What is wrong with a trigger, for its row and the views that flag it; null when nothing is.
+ * A disabled trigger fires no more, so only a failed activation still counts for it.
+ */
+export function triggerProblem(trigger: Pick<TriggerResponse, 'enabled' | 'state'>): { label: string; detail: string } | null {
+    if (trigger.state.activation_error) return { label: 'Not running', detail: trigger.state.activation_error }
+    if (trigger.enabled && (trigger.state.last_result === 'failed' || trigger.state.last_result === 'failure')) {
+        return { label: 'Last firing failed', detail: trigger.state.last_error || 'Its last firing failed.' }
+    }
+    return null
+}
+
 export function formatTriggerResult(status?: string | null): string {
     if (!status) return 'Never'
     if (status === 'success') return 'Succeeded'
