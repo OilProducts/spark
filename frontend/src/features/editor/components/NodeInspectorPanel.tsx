@@ -202,7 +202,7 @@ export function NodeInspectorPanel({
                                 <ContextKeyListEditor
                                     testId="node-reads-context-editor"
                                     title="Reads context"
-                                    description={<>Declare the <code>context.*</code> keys this step expects to consume from launch state or earlier steps.</>}
+                                    description={<>Declare the <code>context.*</code> keys this step expects to consume from launch state or earlier steps, and what Spark supplies that it needs, such as <code>parallel.results</code>.</>}
                                     value={readsContextDraft}
                                     error={readsContextError}
                                     onChange={onReadsContextChange}

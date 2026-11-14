@@ -12,7 +12,6 @@ import { RunsPanel } from '@/features/runs/RunsPanel'
 import { useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
 import { Sidebar } from '@/features/editor/Sidebar'
-import { TaskNode } from '@/features/workflow-canvas/TaskNode'
 import { ValidationPanel } from '@/features/editor/components/ValidationPanel'
 import {
   ApiHttpError,
@@ -264,14 +263,6 @@ const GraphSettingsHarness = ({ nodes, edges }: { nodes: Node[]; edges: Edge[] }
 
 const renderGraphSettings = (nodes: Node[], edges: Edge[]) =>
   renderWithFlowProvider(<GraphSettingsHarness nodes={nodes} edges={edges} />)
-
-const TaskNodeHarness = ({ nodes, edges = [] }: { nodes: Node[]; edges?: Edge[] }) => (
-  <div style={{ width: 800, height: 600 }}>
-    <ReactFlow nodes={nodes} edges={edges} nodeTypes={{ task: TaskNode }} fitView />
-  </div>
-)
-
-const renderTaskNode = (node: Node) => renderWithFlowProvider(<TaskNodeHarness nodes={[node]} />)
 
 const SidebarValidationHarness = ({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) => (
   <>
@@ -2463,7 +2454,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(screen.queryByTestId('graph-attr-input-tool.hooks.post')).not.toBeInTheDocument()
   })
 
-  it('[CID:6.6.02] renders node-level tool hook override controls in sidebar and node toolbar', async () => {
+  it('[CID:6.6.02] renders node-level tool hook override controls in the step inspector', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().setSelectedNodeId('tool_node')
@@ -2496,30 +2487,9 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(screen.getByTestId('node-attr-input-tool.artifacts.paths')).toBeVisible()
     expect(screen.getByTestId('node-attr-input-tool.artifacts.stdout')).toBeVisible()
     expect(screen.getByTestId('node-attr-input-tool.artifacts.stderr')).toBeVisible()
-
-    cleanup()
-    act(() => {
-      resetContractState()
-    })
-    renderTaskNode({
-      id: 'tool_node',
-      type: 'task',
-      position: { x: 0, y: 0 },
-      selected: true,
-      data: toolNodeData,
-    })
-
-    fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
-    fireEvent.click(screen.getByText('Show advanced', { selector: 'button' }))
-
-    expect(screen.getByTestId('node-toolbar-attr-input-tool.hooks.pre')).toBeVisible()
-    expect(screen.getByTestId('node-toolbar-attr-input-tool.hooks.post')).toBeVisible()
-    expect(screen.getByTestId('node-toolbar-attr-input-tool.artifacts.paths')).toBeVisible()
-    expect(screen.getByTestId('node-toolbar-attr-input-tool.artifacts.stdout')).toBeVisible()
-    expect(screen.getByTestId('node-toolbar-attr-input-tool.artifacts.stderr')).toBeVisible()
   })
 
-  it('[CID:6.6.03] renders tool hook warning surfaces in node editors only', async () => {
+  it('[CID:6.6.03] renders tool hook warning surfaces in the step inspector only', async () => {
     const user = userEvent.setup()
     renderWithFlowProvider(<GraphSettings />)
 
@@ -2553,61 +2523,42 @@ useStore.getState().setRunsSelectedRunId(runId);
     await user.click(await screen.findByRole('button', { name: 'Show advanced' }))
     expect(screen.getByTestId('node-attr-warning-tool.hooks.pre')).toHaveTextContent('single line')
     expect(screen.getByTestId('node-attr-warning-tool.hooks.post')).toHaveTextContent('single quote')
-
-    cleanup()
-    act(() => {
-      resetContractState()
-    })
-    renderTaskNode({
-      id: 'tool_node',
-      type: 'task',
-      position: { x: 0, y: 0 },
-      selected: true,
-      data: toolNodeData,
-    })
-
-    fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
-    fireEvent.click(screen.getByText('Show advanced', { selector: 'button' }))
-
-    expect(screen.getByTestId('node-toolbar-attr-input-tool.hooks.pre')).toBeVisible()
-    expect(screen.getByTestId('node-toolbar-attr-input-tool.hooks.post')).toBeVisible()
-    expect(screen.getByTestId('node-toolbar-attr-warning-tool.hooks.pre')).toHaveTextContent('single line')
-    expect(screen.getByTestId('node-toolbar-attr-warning-tool.hooks.post')).toHaveTextContent('single quote')
   })
 
-  it('[CID:6.7.01] renders manager-loop shape controls in task node toolbar without handler overrides', () => {
+  it('[CID:6.7.01] renders manager-loop controls in the step inspector without handler overrides', () => {
     resetContractState()
-    renderTaskNode({
-      id: 'manager',
-      type: 'task',
-      position: { x: 0, y: 0 },
-      selected: true,
-      data: {
-        label: 'Manager',
-        kind: 'subflow',
-        config: { kind: 'subflow', flow_ref: 'child/flow.yaml' },
-        shape: 'house',
-        flow_ref: 'child/flow.yaml',
-        'manager.poll_interval': '25ms',
-        'manager.max_cycles': 3,
-        'manager.stop_condition': 'child.outcome == "success"',
-        'manager.actions': 'observe,steer',
-        'manager.steer_cooldown': '2s',
-        'stack.child_autostart': false,
-      },
+    act(() => {
+      useStore.getState().setSelectedNodeId('manager')
+      useStore.getState().setSelectedEdgeId(null)
     })
+    renderSidebar([
+      {
+        id: 'manager',
+        position: { x: 0, y: 0 },
+        data: {
+          label: 'Manager',
+          kind: 'subflow',
+          config: { kind: 'subflow', flow_ref: 'child/flow.yaml' },
+          shape: 'house',
+          flow_ref: 'child/flow.yaml',
+          'manager.poll_interval': '25ms',
+          'manager.max_cycles': 3,
+          'manager.stop_condition': 'child.outcome == "success"',
+          'manager.actions': 'observe,steer',
+          'manager.steer_cooldown': '2s',
+          'stack.child_autostart': false,
+        },
+      },
+    ], [])
 
-    fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
-    expect(screen.getByRole('option', { name: 'Manager Loop' })).toBeInTheDocument()
-    expect(document.querySelector('#node-handler-type-options-manager option[value="stack.manager_loop"]')).toBeNull()
+    expect(document.querySelector('option[value="stack.manager_loop"]')).toBeNull()
     expect(screen.getByText('Manager poll interval')).toBeVisible()
     expect(screen.getByText('Manager max cycles')).toBeVisible()
     expect(screen.getByText('Manager stop condition')).toBeVisible()
     expect(screen.getByText('Manager actions')).toBeVisible()
     expect(screen.getByText('Manager steer cooldown')).toBeVisible()
-    expect(screen.getByText('Start child automatically')).toBeVisible()
-    expect(screen.getByTestId('node-toolbar-attr-input-manager.steer_cooldown')).toHaveValue('2s')
-    expect(screen.getByTestId('node-toolbar-attr-checkbox-stack.child_autostart')).not.toBeChecked()
+    expect(screen.getByTestId('node-attr-input-manager.steer_cooldown')).toHaveValue('2s')
+    expect(screen.getByTestId('node-attr-checkbox-stack.child_autostart')).not.toBeChecked()
   })
 
   it('[CID:10.1.01] keeps pending human gates answerable only from runs controls', async () => {

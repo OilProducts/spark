@@ -53,6 +53,20 @@ function validateContextKey(key: string): string | null {
     return null
 }
 
+// A step may also read and write what Spark supplies, such as parallel.results and
+// internal.project_work_dir, and bare keys: the namespaces the server allows.
+const CONTRACT_KEY_PREFIXES = ['context.', 'graph.', 'internal.', 'parallel.', 'stack.', 'human.gate.', 'work.', '_attractor.']
+
+function validateContractKey(key: string): string | null {
+    if (!key) {
+        return 'Context keys are required.'
+    }
+    if (key.includes('.') && !CONTRACT_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+        return `Context keys must use the context.* namespace or one Spark supplies, such as parallel.* or internal.*: ${key}`
+    }
+    return null
+}
+
 export function validateLaunchInputDefinitions(entries: LaunchInputDefinition[]): string | null {
     const seenKeys = new Set<string>()
     for (const entry of entries) {
@@ -145,7 +159,7 @@ export function parseContextKeyList(raw: unknown): ParsedContextKeyList {
         }
         const keys = parsed.map((value) => normalizeContextKey(value)).filter((value) => value.length > 0)
         for (const key of keys) {
-            const keyError = validateContextKey(key)
+            const keyError = validateContractKey(key)
             if (keyError) {
                 return { keys: [], error: keyError }
             }
@@ -176,7 +190,7 @@ export function parseContextKeyDraft(value: string): ParsedContextKeyList {
         .map((entry) => entry.trim())
         .filter((entry) => entry.length > 0)
     for (const key of keys) {
-        const keyError = validateContextKey(key)
+        const keyError = validateContractKey(key)
         if (keyError) {
             return { keys, error: keyError }
         }

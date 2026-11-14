@@ -27,18 +27,6 @@ export type WorkflowNodeDimensions = {
     height: number
 }
 
-export const WORKFLOW_NODE_SHAPE_OPTIONS: Array<{ value: WorkflowNodeShape; label: string }> = [
-    { value: 'box', label: 'Codergen (Task)' },
-    { value: 'hexagon', label: 'Wait for Human' },
-    { value: 'diamond', label: 'Switch' },
-    { value: 'component', label: 'Parallel (Fan Out)' },
-    { value: 'tripleoctagon', label: 'Parallel (Fan In)' },
-    { value: 'parallelogram', label: 'Tool' },
-    { value: 'house', label: 'Manager Loop' },
-    { value: 'Mdiamond', label: 'Start Node' },
-    { value: 'Msquare', label: 'End Node' },
-]
-
 // Frames fit a caption line and a two-line label with little spare air, so a fitted graph
 // keeps its labels as large as possible.
 const BOX_DIMENSIONS: WorkflowNodeDimensions = { width: 200, height: 84 }

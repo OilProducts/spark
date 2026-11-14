@@ -280,6 +280,24 @@ describe('Editor step deletion', () => {
     await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1).toMatchObject({ label: 'Review', config: { exit_codes: { '0': 'approved' } } }))
   })
 
+  it('saves an inspector edit made in one event, such as a paste, and a route edit after it', async () => {
+    vi.mocked(loadEditorPreview).mockImplementation(previewOf(REVIEW_FLOW))
+    const user = userEvent.setup()
+    render(<ReactFlowProvider><EditorGraphBridgeProvider><Editor /><Sidebar /></EditorGraphBridgeProvider></ReactFlowProvider>)
+    await waitFor(() => expect(canvasNode('step_1')).not.toBeNull())
+    fireEvent.click(canvasNode('step_1') as HTMLElement)
+
+    const label = await screen.findByRole('textbox', { name: 'Label' })
+    await user.clear(label)
+    await user.paste('Code review')
+    await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1).toMatchObject({ label: 'Code review' }))
+
+    await user.click(within(screen.getByRole('region', { name: 'Routes' })).getByRole('button', { name: 'approved to Done' }))
+    fireEvent.change(await screen.findByRole('textbox', { name: /Description/ }), { target: { value: 'Ship it.' } })
+    await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1.routes?.approved).toEqual({ to: 'done', description: 'Ship it.' }))
+    expect(saves.at(-1)?.flow.nodes.step_1).toMatchObject({ label: 'Code review' })
+  })
+
   it('does not undo a deletion into the same flow name in another project', async () => {
     graphs['/project-b'] = {
       nodes: [node('start', 'Start', 'start'), node('review', 'Review'), node('done', 'Done', 'exit')],

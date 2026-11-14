@@ -1,14 +1,10 @@
 const EMPTY_GRAPH_ATTRS: Record<string, string> = {}
 const EMPTY_DIAGNOSTICS: Record<string, import('@/store').DiagnosticEntry[]> = {}
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { Handle, NodeToolbar, Position, type Node, type NodeProps, useReactFlow } from '@xyflow/react'
+import { Handle, Position, type Node, type NodeProps, useReactFlow } from '@xyflow/react'
 
 import { saveFlowContent } from '@/lib/flowPersistence'
-import { getToolHookCommandWarning } from '@/lib/graphAttrValidation'
-import { ModelChooser } from '@/components/model-chooser/ModelChooser'
-import { getHandlerType, getNodeFieldVisibility } from '@/lib/nodeVisibility'
 import {
-    WORKFLOW_NODE_SHAPE_OPTIONS,
     getReactFlowNodeTypeForShape,
     getShapeNodeStyle,
     normalizeWorkflowNodeShape,
@@ -76,21 +72,6 @@ type BaseWorkflowNodeProps = NodeProps & {
     defaultShape: WorkflowNodeShape
 }
 
-function isDefaultEnabledBoolean(value: unknown): boolean {
-    return value !== false && value !== 'false'
-}
-
-function hasExplicitBooleanAttr(value: unknown): boolean {
-    return value === true || value === false || value === 'true' || value === 'false'
-}
-
-function nextDefaultEnabledBooleanValue(currentValue: unknown, draftValue: boolean): boolean | undefined {
-    if (!draftValue) {
-        return false
-    }
-    return hasExplicitBooleanAttr(currentValue) ? true : undefined
-}
-
 function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNodeProps) {
     const canvasMode = useCanvasSessionMode()
     const runId = useCanvasRunId()
@@ -118,68 +99,16 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const inputRef = useRef<HTMLInputElement>(null)
     const humanGate = isRunCanvas ? executionHumanGate : null
 
-    const currentShape = normalizeWorkflowNodeShape((data.shape as string) || defaultShape)
     const displayLabel = (typeof data.label === 'string' && data.label.trim()) || id
     const [isEditingLabel, setIsEditingLabel] = useState(false)
     const [draftLabel, setDraftLabel] = useState(displayLabel)
-    const [isEditingDetails, setIsEditingDetails] = useState(false)
-    const [draftShape, setDraftShape] = useState<string>(currentShape)
-    const [draftPrompt, setDraftPrompt] = useState<string>((data.prompt as string) || '')
-    const [draftToolCommand, setDraftToolCommand] = useState<string>((data['tool.command'] as string) || '')
-    const [draftToolHooksPre, setDraftToolHooksPre] = useState<string>((data['tool.hooks.pre'] as string) || '')
-    const [draftToolHooksPost, setDraftToolHooksPost] = useState<string>((data['tool.hooks.post'] as string) || '')
-    const [draftToolArtifactsPaths, setDraftToolArtifactsPaths] = useState<string>(
-        (data['tool.artifacts.paths'] as string) || '',
-    )
-    const [draftToolArtifactsStdout, setDraftToolArtifactsStdout] = useState<string>(
-        (data['tool.artifacts.stdout'] as string) || '',
-    )
-    const [draftToolArtifactsStderr, setDraftToolArtifactsStderr] = useState<string>(
-        (data['tool.artifacts.stderr'] as string) || '',
-    )
-    const [draftMaxParallel, setDraftMaxParallel] = useState<string>(
-        data.max_parallel !== undefined ? String(data.max_parallel) : '4',
-    )
-    const [showAdvanced, setShowAdvanced] = useState(false)
-    const [draftMaxRetries, setDraftMaxRetries] = useState<string>(
-        data.max_retries !== undefined ? String(data.max_retries) : '',
-    )
-    const [draftClassName, setDraftClassName] = useState<string>((data.class as string) || '')
-    const [draftTimeout, setDraftTimeout] = useState<string>((data.timeout as string) || '')
-    const [draftLlmModel, setDraftLlmModel] = useState<string>((data.llm_model as string) || '')
-    const [draftLlmProvider, setDraftLlmProvider] = useState<string>((data.llm_provider as string) || '')
-    const [draftLlmProfile, setDraftLlmProfile] = useState<string>((data.llm_profile as string) || '')
-    const [draftReasoningControls, setDraftReasoningControls] = useState({thinking: (data.thinking as string) || null, thinking_budget_tokens: Number(data.thinking_budget_tokens) || null, reasoning_mode: (data.reasoning_mode as string) || null, reasoning_summary: (data.reasoning_summary as string) || null})
-    const [draftReasoningEffort, setDraftReasoningEffort] = useState<string>((data.reasoning_effort as string) || '')
-    const [draftManagerPollInterval, setDraftManagerPollInterval] = useState<string>(
-        (data['manager.poll_interval'] as string) || '',
-    )
-    const [draftManagerMaxCycles, setDraftManagerMaxCycles] = useState<string>(
-        data['manager.max_cycles'] !== undefined ? String(data['manager.max_cycles']) : '',
-    )
-    const [draftManagerStopCondition, setDraftManagerStopCondition] = useState<string>(
-        (data['manager.stop_condition'] as string) || '',
-    )
-    const [draftManagerActions, setDraftManagerActions] = useState<string>(
-        (data['manager.actions'] as string) || '',
-    )
-    const [draftManagerSteerCooldown, setDraftManagerSteerCooldown] = useState<string>(
-        (data['manager.steer_cooldown'] as string) || '',
-    )
-    const [draftStackChildAutostart, setDraftStackChildAutostart] = useState<boolean>(
-        isDefaultEnabledBoolean(data['stack.child_autostart']),
-    )
 
     const status = (data.status as string) || 'idle'
     const derivedPreviewMeta = getDerivedPreviewMeta(data)
     const isReadOnlyPreviewNode = derivedPreviewMeta?.kind === 'child-cluster' || derivedPreviewMeta?.kind === 'child-node'
     // In Files mode the file view owns edits; the canvas only selects nodes.
     const isReadOnlyEditorCanvas = isEditorCanvas && (isExpandedChildPreview || isFilesMode)
-    const renderedShape = isEditingDetails ? normalizeWorkflowNodeShape(draftShape) : currentShape
-    const handlerType = getHandlerType((data.kind as string) || '')
-    const visibility = getNodeFieldVisibility(handlerType)
-    const draftToolHooksPreWarning = getToolHookCommandWarning(draftToolHooksPre)
-    const draftToolHooksPostWarning = getToolHookCommandWarning(draftToolHooksPost)
+    const renderedShape = normalizeWorkflowNodeShape((data.shape as string) || defaultShape)
     const diagnosticsForNode = nodeDiagnostics[id] || []
     const diagnosticsCount = diagnosticsForNode.length
     const hasDiagnosticError = diagnosticsForNode.some((diag) => diag.severity === 'error')
@@ -284,71 +213,10 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         }
     }
 
-    const openDetailsEditor = (event: React.MouseEvent<HTMLButtonElement>) => {
-        if (isReadOnlyEditorCanvas) {
-            return
-        }
+    // A step's settings are in the inspector, which a selected step opens: Edit moves there.
+    const focusInspector = (event: React.MouseEvent<HTMLButtonElement>) => {
         event.stopPropagation()
-        setDraftShape((data.shape as string) || defaultShape)
-        setDraftPrompt((data.prompt as string) || '')
-        setDraftToolCommand((data['tool.command'] as string) || '')
-        setDraftToolHooksPre((data['tool.hooks.pre'] as string) || '')
-        setDraftToolHooksPost((data['tool.hooks.post'] as string) || '')
-        setDraftToolArtifactsPaths((data['tool.artifacts.paths'] as string) || '')
-        setDraftToolArtifactsStdout((data['tool.artifacts.stdout'] as string) || '')
-        setDraftToolArtifactsStderr((data['tool.artifacts.stderr'] as string) || '')
-        setDraftMaxParallel(data.max_parallel !== undefined ? String(data.max_parallel) : '4')
-        setDraftMaxRetries(data.max_retries !== undefined ? String(data.max_retries) : '')
-        setDraftClassName((data.class as string) || '')
-        setDraftTimeout((data.timeout as string) || '')
-        setDraftLlmModel((data.llm_model as string) || '')
-        setDraftLlmProvider((data.llm_provider as string) || '')
-        setDraftLlmProfile((data.llm_profile as string) || '')
-        setDraftReasoningEffort((data.reasoning_effort as string) || '')
-        setDraftReasoningControls({thinking: (data.thinking as string) || null, thinking_budget_tokens: Number(data.thinking_budget_tokens) || null, reasoning_mode: (data.reasoning_mode as string) || null, reasoning_summary: (data.reasoning_summary as string) || null})
-        setDraftManagerPollInterval((data['manager.poll_interval'] as string) || '')
-        setDraftManagerMaxCycles(data['manager.max_cycles'] !== undefined ? String(data['manager.max_cycles']) : '')
-        setDraftManagerStopCondition((data['manager.stop_condition'] as string) || '')
-        setDraftManagerActions((data['manager.actions'] as string) || '')
-        setDraftManagerSteerCooldown((data['manager.steer_cooldown'] as string) || '')
-        setDraftStackChildAutostart(isDefaultEnabledBoolean(data['stack.child_autostart']))
-        setIsEditingDetails(true)
-    }
-
-    const closeDetailsEditor = () => {
-        setIsEditingDetails(false)
-    }
-
-    const saveDetails = () => {
-        persistNodeData({
-            shape: draftShape,
-            prompt: draftPrompt,
-            'tool.command': draftToolCommand,
-            'tool.hooks.pre': draftToolHooksPre,
-            'tool.hooks.post': draftToolHooksPost,
-            'tool.artifacts.paths': draftToolArtifactsPaths,
-            'tool.artifacts.stdout': draftToolArtifactsStdout,
-            'tool.artifacts.stderr': draftToolArtifactsStderr,
-            max_parallel: draftMaxParallel,
-            max_retries: draftMaxRetries,
-            class: draftClassName,
-            timeout: draftTimeout,
-            llm_model: draftLlmModel,
-            llm_provider: draftLlmProvider,
-            llm_profile: draftLlmProfile,
-            reasoning_effort: draftReasoningEffort,
-            ...draftReasoningControls,
-            'manager.poll_interval': draftManagerPollInterval,
-            'manager.max_cycles': draftManagerMaxCycles,
-            'manager.stop_condition': draftManagerStopCondition,
-            'manager.actions': draftManagerActions,
-            'manager.steer_cooldown': draftManagerSteerCooldown,
-            'stack.child_autostart': nextDefaultEnabledBooleanValue(
-                data['stack.child_autostart'],
-                draftStackChildAutostart,
-            ),
-        })
-        setIsEditingDetails(false)
+        document.querySelector<HTMLElement>('[data-testid="inspector-panel"] h2')?.focus()
     }
 
     return (
@@ -382,7 +250,9 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             <div className="absolute bottom-full right-0 z-20 mb-1 flex items-center gap-1">
                 {selected && isEditorCanvas && !isReadOnlyEditorCanvas && (
                     <button
-                        onClick={openDetailsEditor}
+                        type="button"
+                        onClick={focusInspector}
+                        aria-label={`Edit ${displayLabel} in step settings`}
                         className="rounded border border-border bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground hover:text-foreground"
                     >
                         Edit
@@ -467,260 +337,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                 />
             ))}
 
-            <NodeToolbar isVisible={isEditingDetails} position={Position.Bottom} className="nodrag nopan">
-                <div className="mt-2 w-64 rounded-md border border-border bg-card p-3 shadow-lg">
-                    <div className="text-sm font-semibold text-foreground">
-                        Node properties
-                    </div>
-                    <div className="mt-2 space-y-2">
-                        <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Visual shape</label>
-                            <select
-                                value={draftShape}
-                                onChange={(event) => setDraftShape(event.target.value)}
-                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            >
-                                {WORKFLOW_NODE_SHAPE_OPTIONS.map((option) => (
-                                    <option key={option.value} value={option.value}>
-                                        {option.label}
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-                        {visibility.showPrompt && (
-                            <div className="space-y-1">
-                                <label className="text-xs font-medium text-foreground">Prompt</label>
-                                <textarea
-                                    value={draftPrompt}
-                                    onChange={(event) => setDraftPrompt(event.target.value)}
-                                    className="nodrag h-20 w-full resize-none rounded-md border border-input bg-background px-2 py-1 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                />
-                            </div>
-                        )}
-                        {visibility.showToolCommand && (
-                            <div className="space-y-1">
-                                <label className="text-xs font-medium text-foreground">Tool command</label>
-                                <textarea
-                                    value={draftToolCommand}
-                                    onChange={(event) => setDraftToolCommand(event.target.value)}
-                                    spellCheck={false}
-                                    className="nodrag nowheel h-20 w-full resize-none rounded-md border border-input bg-background px-2 py-1 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                    placeholder="e.g. cargo test -p spark-cli"
-                                />
-                            </div>
-                        )}
-                        {visibility.showParallelOptions && (
-                            <>
-                                <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Max parallel</label>
-                                    <input
-                                        value={draftMaxParallel}
-                                        onChange={(event) => setDraftMaxParallel(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                        placeholder="4"
-                                    />
-                                </div>
-                            </>
-                        )}
-                        {visibility.showManagerOptions && (
-                            <>
-                                <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Manager poll interval</label>
-                                    <input
-                                        value={draftManagerPollInterval}
-                                        onChange={(event) => setDraftManagerPollInterval(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                        placeholder="25ms"
-                                    />
-                                </div>
-                                <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Manager max cycles</label>
-                                    <input
-                                        value={draftManagerMaxCycles}
-                                        onChange={(event) => setDraftManagerMaxCycles(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                        placeholder="3"
-                                    />
-                                </div>
-                                <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Manager stop condition</label>
-                                    <input
-                                        value={draftManagerStopCondition}
-                                        onChange={(event) => setDraftManagerStopCondition(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                        placeholder='child.status == "success"'
-                                    />
-                                </div>
-                                <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Manager actions</label>
-                                    <input
-                                        value={draftManagerActions}
-                                        onChange={(event) => setDraftManagerActions(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                        placeholder="observe,steer"
-                                    />
-                                </div>
-                                <div className="space-y-1">
-                                    <label className="text-xs font-medium text-foreground">Manager steer cooldown</label>
-                                    <input
-                                        data-testid="node-toolbar-attr-input-manager.steer_cooldown"
-                                        value={draftManagerSteerCooldown}
-                                        onChange={(event) => setDraftManagerSteerCooldown(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                        placeholder="2s"
-                                    />
-                                </div>
-                                <label className="flex items-center gap-2 text-xs font-medium">
-                                    <input
-                                        data-testid="node-toolbar-attr-checkbox-stack.child_autostart"
-                                        type="checkbox"
-                                        checked={draftStackChildAutostart}
-                                        onChange={(event) => setDraftStackChildAutostart(event.target.checked)}
-                                        className="h-4 w-4 rounded border border-input"
-                                    />
-                                    Start child automatically
-                                </label>
-                            </>
-                        )}
-                        {visibility.showAdvanced && (
-                            <button
-                                onClick={() => setShowAdvanced((prev) => !prev)}
-                                className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-                            >
-                                {showAdvanced ? 'Hide advanced' : 'Show advanced'}
-                            </button>
-                        )}
-                        {visibility.showAdvanced && showAdvanced && (
-                            <div className="space-y-2 pt-1">
-                                {visibility.showGeneralAdvanced && (
-                                    <>
-                                        <div className="grid grid-cols-2 gap-2">
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-medium text-foreground">Max retries</label>
-                                                <input
-                                                    value={draftMaxRetries}
-                                                    onChange={(event) => setDraftMaxRetries(event.target.value)}
-                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                />
-                                            </div>
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-medium text-foreground">Timeout</label>
-                                                <input
-                                                    value={draftTimeout}
-                                                    onChange={(event) => setDraftTimeout(event.target.value)}
-                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                    placeholder="900s"
-                                                />
-                                            </div>
-                                        </div>
-                                        {visibility.showToolCommand && (
-                                            <>
-                                                <div className="space-y-1">
-                                                    <label className="text-xs font-medium text-foreground">Pre-hook override</label>
-                                                    <input
-                                                        data-testid="node-toolbar-attr-input-tool.hooks.pre"
-                                                        value={draftToolHooksPre}
-                                                        onChange={(event) => setDraftToolHooksPre(event.target.value)}
-                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                        placeholder="e.g. ./hooks/pre.sh"
-                                                    />
-                                                    {draftToolHooksPreWarning && (
-                                                        <p data-testid="node-toolbar-attr-warning-tool.hooks.pre" className="text-xs text-warning">
-                                                            {draftToolHooksPreWarning}
-                                                        </p>
-                                                    )}
-                                                </div>
-                                                <div className="space-y-1">
-                                                    <label className="text-xs font-medium text-foreground">Post-hook override</label>
-                                                    <input
-                                                        data-testid="node-toolbar-attr-input-tool.hooks.post"
-                                                        value={draftToolHooksPost}
-                                                        onChange={(event) => setDraftToolHooksPost(event.target.value)}
-                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                        placeholder="e.g. ./hooks/post.sh"
-                                                    />
-                                                    {draftToolHooksPostWarning && (
-                                                        <p data-testid="node-toolbar-attr-warning-tool.hooks.post" className="text-xs text-warning">
-                                                            {draftToolHooksPostWarning}
-                                                        </p>
-                                                    )}
-                                                </div>
-                                                <div className="space-y-1">
-                                                    <label className="text-xs font-medium text-foreground">Artifact paths</label>
-                                                    <input
-                                                        data-testid="node-toolbar-attr-input-tool.artifacts.paths"
-                                                        value={draftToolArtifactsPaths}
-                                                        onChange={(event) => setDraftToolArtifactsPaths(event.target.value)}
-                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                        placeholder="e.g. dist/**,reports/*.json"
-                                                    />
-                                                </div>
-                                                <div className="space-y-1">
-                                                    <label className="text-xs font-medium text-foreground">Stdout artifact</label>
-                                                    <input
-                                                        data-testid="node-toolbar-attr-input-tool.artifacts.stdout"
-                                                        value={draftToolArtifactsStdout}
-                                                        onChange={(event) => setDraftToolArtifactsStdout(event.target.value)}
-                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                        placeholder="e.g. stdout.txt"
-                                                    />
-                                                </div>
-                                                <div className="space-y-1">
-                                                    <label className="text-xs font-medium text-foreground">Stderr artifact</label>
-                                                    <input
-                                                        data-testid="node-toolbar-attr-input-tool.artifacts.stderr"
-                                                        value={draftToolArtifactsStderr}
-                                                        onChange={(event) => setDraftToolArtifactsStderr(event.target.value)}
-                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                        placeholder="e.g. stderr.txt"
-                                                    />
-                                                </div>
-                                            </>
-                                        )}
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-medium text-foreground">Class</label>
-                                            <input
-                                                value={draftClassName}
-                                                onChange={(event) => setDraftClassName(event.target.value)}
-                                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                            />
-                                        </div>
-                                    </>
-                                )}
-                                {visibility.showLlmSettings && (
-                                    <div className="nodrag nowheel">
-                                        <ModelChooser projectPath={null} inheritLabel="Graph default"
-                                            inherited={{ provider: flowMetadata.llm_provider || null, llm_profile: flowMetadata.llm_profile || null, model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null, thinking: flowMetadata.thinking || null, thinking_budget_tokens: Number(flowMetadata.thinking_budget_tokens) || null, reasoning_mode: flowMetadata.reasoning_mode || null, reasoning_summary: flowMetadata.reasoning_summary || null }}
-                                            value={{ provider: draftLlmProvider || null, llm_profile: draftLlmProfile || null,
-                                                model: draftLlmModel || null, reasoning_effort: draftReasoningEffort || null, ...draftReasoningControls }}
-                                            onChange={(value) => {
-                                                setDraftLlmProvider(value.provider || '')
-                                                setDraftLlmProfile(value.llm_profile || '')
-                                                setDraftLlmModel(value.model || '')
-                                                setDraftReasoningEffort(value.reasoning_effort || '')
-                                                setDraftReasoningControls({thinking: value.thinking ?? null, thinking_budget_tokens: value.thinking_budget_tokens ?? null, reasoning_mode: value.reasoning_mode ?? null, reasoning_summary: value.reasoning_summary ?? null})
-                                            }} />
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                    <div className="mt-3 flex items-center justify-end gap-2">
-                        <button
-                            onClick={closeDetailsEditor}
-                            className="h-7 rounded-md border border-border px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            onClick={saveDetails}
-                            className="h-7 rounded-md border border-primary px-2 text-xs font-medium text-primary hover:bg-accent"
-                        >
-                            Save
-                        </button>
-                    </div>
-                </div>
-            </NodeToolbar>
         </div>
     )
 }

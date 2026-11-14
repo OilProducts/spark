@@ -1,5 +1,5 @@
 import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type SetStateAction } from 'react';
 import {
     ReactFlow,
     MiniMap,
@@ -432,11 +432,22 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const isCanvasReadOnly = isExpandedReadOnlyPreview || editorMode === 'files';
     const connectRef = useRef<(params: Connection | Edge) => void>(() => {});
     const recordFieldEditRef = useRef<(key: string | null, previous: { nodes?: Node[]; edges?: Edge[] }) => void>(() => {});
+    // The inspector's and canvas nodes' edits set the graph at once, from the latest set: React may
+    // run a state updater only at its next render, after the caller has saved what it returned, and
+    // a second edit in the same event builds on the first.
     const editorGraphBridge = useMemo(() => ({
         getNodes: () => canvasGraphRef.current.nodes,
-        setNodes,
+        setNodes: (update: SetStateAction<Node[]>) => {
+            const next = typeof update === 'function' ? update(canvasGraphRef.current.nodes) : update;
+            canvasGraphRef.current = { ...canvasGraphRef.current, nodes: next };
+            setNodes(next);
+        },
         getEdges: () => canvasGraphRef.current.edges,
-        setEdges,
+        setEdges: (update: SetStateAction<Edge[]>) => {
+            const next = typeof update === 'function' ? update(canvasGraphRef.current.edges) : update;
+            canvasGraphRef.current = { ...canvasGraphRef.current, edges: next };
+            setEdges(next);
+        },
         getFlow: () => canonicalFlowRef.current,
         connect: (params: Connection | Edge) => connectRef.current(params),
         recordFieldEdit: (key: string | null, previous: { nodes?: Node[]; edges?: Edge[] }) => recordFieldEditRef.current(key, previous),
