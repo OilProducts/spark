@@ -42,7 +42,6 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
     </section>
 }
 
-/** The flow nodes that use a role, each flow's nodes together. */
 /** Each flow and step that uses the role, as links that open it in the flow editor. */
 export function RoleUsage({ project, item }: { project: string; item: DefinitionItem }) {
     const flows = usageByFlow(item.usage ?? [])
@@ -58,9 +57,9 @@ export function RoleUsage({ project, item }: { project: string; item: Definition
         ? <ul data-testid="role-usage" className="flex flex-col gap-0.5 text-sm">{flows.map(([flow, nodes]) => <li key={flow}>
             <Button type="button" variant="link" className={link} onClick={() => open(flow, null)}>{flow}</Button>
             <span className="text-muted-foreground"> · </span>
-            {nodes.map((node, index) => <span key={node}>
+            {nodes.map(({ node, label }, index) => <span key={node}>
                 {index > 0 ? <span className="text-muted-foreground">, </span> : null}
-                <Button type="button" variant="link" className={link} aria-label={`${node} in ${flow}`} onClick={() => open(flow, node)}>{node}</Button>
+                <Button type="button" variant="link" className={link} aria-label={`${label || node} in ${flow}`} onClick={() => open(flow, node)}>{label || node}</Button>
             </span>)}
         </li>)}</ul>
         : <p className="text-sm text-muted-foreground">No flow node uses this role.</p>
@@ -165,9 +164,12 @@ function RoleDetail({ project, item, pending, onStart, startError }: RoleControl
 export function RolesPanel() {
     const registry = useStore((state) => state.projectRegistry)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
-    const [project, setProject] = useState(() => activeProjectPath ?? defaultProjectChoice(registry))
+    // The open role is the app's, so Back and a link reopen it.
+    const selectedRole = useStore((state) => state.selectedRole)
+    const setSelectedRole = useStore((state) => state.setSelectedRole)
+    const [project, setProject] = useState(() => selectedRole?.projectPath ?? activeProjectPath ?? defaultProjectChoice(registry))
     const [list, setList] = useState<DefinitionList | null>(null)
-    const [selected, setSelected] = useState<string | null>(null)
+    const selected = selectedRole?.projectPath === project ? selectedRole.name : null
     const [error, setError] = useState('')
     const narrow = useNarrowViewport()
     const [refreshes, setRefreshes] = useState(0)
@@ -175,6 +177,13 @@ export function RolesPanel() {
     const [starting, setStarting] = useState<ReadonlySet<string>>(new Set())
     const [startErrors, setStartErrors] = useState<Record<string, string>>({})
     const projectRef = useRef(project)
+    // Back or a link can open a role of another project: show that project's roles.
+    useEffect(() => {
+        if (selectedRole && selectedRole.projectPath !== project) {
+            setProject(selectedRole.projectPath)
+            setList(null)
+        }
+    }, [selectedRole, project])
     useEffect(() => {
         projectRef.current = project
         if (!project) return
@@ -219,7 +228,7 @@ export function RolesPanel() {
                             {/* Badges sit below the text so the title and meta keep the row's width. */}
                             {definitionBadges(entry).length > 0 && <span className="flex flex-wrap gap-1 pt-1"><DefinitionBadges item={entry} /></span>}
                         </>}
-                        onClick={() => setSelected(entry.name)} />
+                        onClick={() => setSelectedRole({ projectPath: project!, name: entry.name })} />
                     <RoleButton {...control(entry)} compact />
                 </div>
                 {startError(entry) && <InlineError dense>{startError(entry)}</InlineError>}
@@ -230,7 +239,7 @@ export function RolesPanel() {
     </div>
     return <ViewLayout view="roles" title="Roles" panel={panel} selected={item?.name ?? null} actions={<>
         <Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh roles" title="Refresh roles" onClick={() => setRefreshes((value) => value + 1)}><RefreshCw aria-hidden="true" /></Button>
-        <ProjectPicker heading="Show the roles of" testId="roles-project-picker" defaultProjectPath={project} onPick={(path) => { setProject(path); setSelected(null); setList(null) }}>
+        <ProjectPicker heading="Show the roles of" testId="roles-project-picker" defaultProjectPath={project} onPick={(path) => { setProject(path); setSelectedRole(null); setList(null) }}>
             <Button type="button" variant="outline" size="sm" className="max-w-36" title={project ?? undefined}><span className="truncate">{project ? projectLabel(registry, project) : 'Project'}</span><ChevronDown aria-hidden="true" className="text-muted-foreground" /></Button>
         </ProjectPicker>
     </>}>

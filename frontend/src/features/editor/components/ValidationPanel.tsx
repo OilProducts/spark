@@ -6,6 +6,7 @@ import { useNarrowViewport } from '@/lib/useNarrowViewport';
 import { Button } from '@/components/ui/button';
 import { NativeSelect } from '@/components/ui/native-select';
 import { SegmentedControl } from '@/components/app/segmented-control';
+import { diagnosticSentence } from '@/lib/problemText';
 
 const severityStyles: Record<string, string> = {
     error: 'text-destructive',
@@ -73,6 +74,12 @@ export function ValidationPanel() {
         }
         return left.message.localeCompare(right.message);
     });
+
+    // The node by its label, as the canvas shows it.
+    const nodeLabel = (nodeId: string) => {
+        const label = getNode(nodeId)?.data?.label;
+        return typeof label === 'string' && label.trim() ? label.trim() : nodeId;
+    };
 
     const centerOnNode = (nodeId: string) => {
         const node = getNode(nodeId);
@@ -187,7 +194,7 @@ export function ValidationPanel() {
                 >
                     <option value="severity">Sort: severity</option>
                     <option value="line">Sort: line</option>
-                    <option value="rule">Sort: rule</option>
+                    <option value="rule">Sort: problem type</option>
                 </NativeSelect>
                 <div data-testid="validation-visible-count" className="text-xs text-muted-foreground">
                     {sortedDiagnostics.length} visible
@@ -244,12 +251,16 @@ export function ValidationPanel() {
                                 {diag.severity}
                             </span>
                             <div className="min-w-0 flex-1 break-words">
-                                <div className="text-foreground">{diag.message}</div>
-                                <div className="text-xs text-muted-foreground">
-                                    {diag.rule_id}
-                                    {diag.decision ? ` • decision ${diag.decision}` : ''}
-                                    {diag.line ? ` • line ${diag.line}` : ''}
-                                </div>
+                                <div className="text-foreground">{diagnosticSentence(diag)}</div>
+                                {diag.node_id || diag.decision || diag.line ? (
+                                    <div className="text-xs text-muted-foreground">
+                                        {[
+                                            diag.node_id ? nodeLabel(diag.node_id) : null,
+                                            diag.decision ? `route ${diag.decision}` : null,
+                                            diag.line ? `line ${diag.line}` : null,
+                                        ].filter(Boolean).join(' · ')}
+                                    </div>
+                                ) : null}
                                 {!hasDirectMapping(diag) ? (
                                     <div data-testid="validation-diagnostic-fallback-hint" className="mt-1 text-xs text-muted-foreground">
                                         Applies to the whole flow.

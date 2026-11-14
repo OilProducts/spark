@@ -42,6 +42,14 @@ test('the Roles view lists roles, standing first, and starts a standing role int
     await expect(detail.getByRole('region', { name: 'Prompt' })).toContainText('Adversarial Reviewer')
     await expect(detail.getByRole('button', { name: /^(Start|Open conversation)$/ })).toHaveCount(0)
 
+    // A step link opens its flow with the step selected and in view; Back returns to the role.
+    await detail.getByTestId('role-usage').getByRole('button', { name: / in / }).first().click()
+    await expect(page.getByTestId('editor-workspace')).toHaveAttribute('data-session-active', 'true')
+    await expect(page.locator('.react-flow__node.selected')).toBeInViewport()
+    await page.goBack()
+    await expect(detail.getByRole('region', { name: 'Used in' })).toBeVisible()
+    await expect(reviewer).toHaveAttribute('aria-current', 'true')
+
     // No role exists until it is started: every standing role offers Start.
     const standing = page.getByRole('region', { name: 'Standing' })
     await expect(standing.getByRole('button', { name: /^Open conversation with / })).toHaveCount(0)

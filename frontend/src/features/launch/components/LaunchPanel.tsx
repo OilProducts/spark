@@ -24,6 +24,7 @@ import { useLaunchPreview } from '../hooks/useLaunchPreview'
 import { launchErrorMessage, useStartPipeline } from '../hooks/useStartPipeline'
 import type { LaunchFailureDiagnostics, LaunchTarget } from '../model/launchTypes'
 import { ExecutionProfileSection } from './ExecutionProfileSection'
+import { diagnosticSentence } from '@/lib/problemText'
 import { LaunchInputsForm } from './LaunchInputsForm'
 import { LaunchNoticeStack } from './LaunchNoticeStack'
 
@@ -111,6 +112,10 @@ export function LaunchPanel({
 
     const showValidationWarningBanner = diagnostics.some((diag) => diag.severity === 'warning') && !hasValidationErrors
     const visibleDiagnostics = diagnostics.slice(0, 8)
+    const nodeLabel = (nodeId: string) => {
+        const label = hydratedGraph?.nodes.find((node) => node.id === nodeId)?.data?.label
+        return typeof label === 'string' && label.trim() ? label.trim() : nodeId
+    }
     const projectRegistry = useStore((state) => state.projectRegistry)
     const executeLabel = projectPath ? `Run in ${projectLabel(projectRegistry, projectPath)}` : 'Run'
     const executeDisabledReason = !projectPath
@@ -413,9 +418,9 @@ export function LaunchPanel({
                             >
                                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                     <span className="capitalize">{diagnostic.severity}</span>
-                                    {diagnostic.node_id ? <span>· node {diagnostic.node_id}</span> : null}
+                                    {diagnostic.node_id ? <span>· {nodeLabel(diagnostic.node_id)}</span> : null}
                                 </div>
-                                <p className="mt-1 text-sm text-foreground">{diagnostic.message}</p>
+                                <p className="mt-1 text-sm text-foreground">{diagnosticSentence(diagnostic)}</p>
                             </li>
                         ))}
                     </ul>

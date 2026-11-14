@@ -69,6 +69,7 @@ const buildManagerPreview = (options?: {
         label: options?.managerLabel ?? 'Manager',
         shape: 'house',
         type: 'stack.manager_loop',
+        kind: 'subflow',
       },
     ],
     edges: [
@@ -278,7 +279,7 @@ describe('Editor flow loading behavior', () => {
       ).toBe(true)
     })
 
-    expect(screen.getByRole('button', { name: '+ Node' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add node' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Expanded' }))
 
@@ -289,7 +290,7 @@ describe('Editor flow loading behavior', () => {
       ).toBe(true)
     })
     await screen.findByText('Read-only preview. Switch to Parent to edit.')
-    expect(screen.queryByRole('button', { name: '+ Node' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add node' })).not.toBeInTheDocument()
     expect(useStore.getState().editorExpandChildFlowsByFlow['flow-a.dot']).toBe(true)
 
     act(() => {
@@ -309,7 +310,7 @@ describe('Editor flow loading behavior', () => {
         screen.queryByText('Read-only preview. Switch to Parent to edit.'),
       ).not.toBeInTheDocument()
     })
-    expect(screen.getByRole('button', { name: '+ Node' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add node' })).toBeInTheDocument()
     expect(useStore.getState().editorExpandChildFlowsByFlow['flow-a.dot']).toBe(true)
     expect(useStore.getState().editorExpandChildFlowsByFlow['flow-b.dot']).toBe(false)
 
@@ -324,7 +325,7 @@ describe('Editor flow loading behavior', () => {
       ).toBe(true)
     })
     await screen.findByText('Read-only preview. Switch to Parent to edit.')
-    expect(screen.queryByRole('button', { name: '+ Node' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add node' })).not.toBeInTheDocument()
   })
 })
 
@@ -493,6 +494,9 @@ describe('Editor file view', () => {
 
     await user.click(screen.getByRole('button', { name: 'Structured' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    // The switch says it is saving, and can't be started again meanwhile.
+    expect(screen.getByTestId('editor-mode-switching')).toHaveTextContent('Saving…')
+    expect(screen.getByRole('button', { name: 'Structured' })).toBeDisabled()
     fireEvent.change(screen.getByTestId('flow-file-editor'), { target: { value: later } })
     vi.mocked(loadEditorFlowPayload).mockResolvedValue({
       name: 'demo', layer: 'org', files: [{ name: 'flow.md', content: first }, files[1]], flow: { id: 'demo' },
@@ -503,6 +507,7 @@ describe('Editor file view', () => {
     expect(useStore.getState().editorMode).toBe('files')
     expect(screen.getByTestId('flow-file-editor')).toHaveValue(later)
     expect(screen.getByTestId('flow-files-save')).toBeEnabled()
+    expect(screen.queryByTestId('editor-mode-switching')).not.toBeInTheDocument()
   })
 
   it('adds and deletes node files, sending both in one save', async () => {
@@ -574,7 +579,7 @@ describe('Editor file view', () => {
     await user.click(screen.getByTestId('flow-files-save'))
 
     const error = await screen.findByTestId('flow-files-error')
-    expect(error).toHaveTextContent('node_1.md: agent_task nodes need at least one route.')
+    expect(error).toHaveTextContent('node_1.md: agent task nodes need at least one route.')
     await user.click(screen.getByRole('button', { name: 'flow.md' }))
     await user.click(screen.getByRole('button', { name: 'Open node_1.md' }))
     expect(screen.getByTestId('flow-file-editor')).toHaveAccessibleName('node_1.md')

@@ -78,6 +78,10 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     // The API inherits a whole model group, so an inherited choice has no effort of its own:
     // setting one would silently pin today's inherited model. Choose a model first.
     const effortLocked = !value.provider && !value.llm_profile && !highlighted
+    // A saved model the provider no longer lists, or a custom one: allowed, but worth a note.
+    const unlisted = layout === 'fields' && !invalidModel && !!value.provider && !value.llm_profile && !!value.model && !unavailable(value.provider)
+        && !!discovery?.payload?.models.some(entry => entry.provider === value.provider && !entry.llm_profile) && !metadata(value.provider, value.model)
+    const note = invalidModel ? `${id}-error` : unlisted ? `${id}-unlisted` : undefined
     const effortSelection = highlighted ? resolve({ ...highlighted, reasoning_effort: null }) : resolved
     const supported = effortSelection.efforts
     const allEfforts = [...new Set([...supported, ...(supported.length && value.reasoning_effort ? [value.reasoning_effort] : [])])]
@@ -100,7 +104,7 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
         <Popover.Root open={open && !disabled} onOpenChange={next => { setOpen(next); setSearch(''); setActive(-1) }}>
             <Popover.Trigger asChild>
                 <Button id={id} type="button" variant="outline" disabled={disabled} title={title} aria-label={`Model: ${value.model ? describe(resolved) : `${defaultPrefix}: ${describe(resolved)}`}`}
-                    aria-invalid={invalidModel} aria-describedby={invalidModel ? `${id}-error` : undefined}
+                    aria-invalid={invalidModel} aria-describedby={note}
                     className={`min-w-0 max-w-full justify-between border border-input text-foreground hover:bg-transparent focus-visible:border-ring ${layout === 'fields' ? 'w-full' : ''} ${!value.model ? 'text-muted-foreground' : ''}`}>
                     <span className="truncate">{value.model ? describe(resolved) : `${defaultPrefix}: ${describe(resolved)}`}</span><ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground opacity-50" />
                 </Button>
@@ -171,5 +175,8 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
             </Popover.Content></Popover.Portal>
         </Popover.Root>
         {invalidModel && <p id={`${id}-error`} role="alert">Choose a compatible model for this provider or profile.</p>}
+        {unlisted && <p id={`${id}-unlisted`} className="text-xs text-warning">
+            {providerLabel(value.provider!)} doesn’t list {value.model} right now. Choose a listed model unless it’s a custom one you know works.
+        </p>}
     </Field>
 }

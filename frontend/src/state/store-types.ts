@@ -117,6 +117,12 @@ export interface MissionSelection {
     projectPath: string
 }
 
+/** The role Roles shows, by its name within its project. */
+export interface RoleSelection {
+    name: string
+    projectPath: string
+}
+
 /** Where the app reopens: the view and the last selection in each view. */
 export interface RouteState {
     activeProjectPath: string | null
@@ -168,6 +174,8 @@ export interface WorkspaceSlice {
     openProjectPage: (projectPath: string | null) => void
     selectedMission: MissionSelection | null
     setSelectedMission: (selection: MissionSelection | null) => void
+    selectedRole: RoleSelection | null
+    setSelectedRole: (selection: RoleSelection | null) => void
     /** The Settings category the Settings view shows. */
     settingsCategory: string
     setSettingsCategory: (category: string) => void

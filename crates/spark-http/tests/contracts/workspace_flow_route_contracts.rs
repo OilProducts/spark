@@ -412,7 +412,7 @@ async fn workspace_definition_routes_show_layers_copies_and_memory_read_only() {
     assert_eq!(reviewer["layer"], "bundled");
     assert_eq!(
         reviewer["usage"],
-        json!([{"flow": "local", "node": "review"}])
+        json!([{"flow": "local", "node": "review", "label": "review"}])
     );
     // No role is started implicitly, whatever its name.
     let coordinator = find("role", "coordinator");

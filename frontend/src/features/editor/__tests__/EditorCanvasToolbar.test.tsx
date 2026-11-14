@@ -53,10 +53,16 @@ describe('EditorCanvasToolbar', () => {
         expect(screen.getByLabelText('Canvas toolbar')).not.toHaveClass('overflow-x-auto')
         expect(screen.getByRole('group', { name: 'Child flows' })).toBeInTheDocument()
         expect(screen.queryByRole('group', { name: 'Layout' })).not.toBeInTheDocument()
-        expect(screen.queryByRole('button', { name: '+ Node' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Add node' })).not.toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'Run…' })).toBeDisabled()
         expect(screen.getByRole('button', { name: 'Run…' })).toHaveAccessibleDescription('Save pending')
         expect(screen.getByTitle('Save pending')).toContainElement(screen.getByRole('button', { name: 'Run…' }))
+    })
+
+    it('offers the Child flows views only for a flow with child flows, or to leave Expanded', () => {
+        renderToolbar({ hasChildFlows: false })
+        expect(screen.queryByRole('group', { name: 'Child flows' })).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Add node' })).toBeInTheDocument()
     })
 
     it('shows only the mode choices in the file view', async () => {

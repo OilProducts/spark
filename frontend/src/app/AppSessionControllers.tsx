@@ -24,7 +24,7 @@ import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
-import { addsEntry, missionKey, parsePlaceHash, placeHash, placeOf, type Place } from './runsRouting'
+import { addsEntry, missionKey, parsePlaceHash, placeHash, placeOf, roleKey, type Place } from './runsRouting'
 import { refreshAttention } from './useAttention'
 
 type ConversationStreamArgs = Parameters<typeof useConversationStream>[0]
@@ -593,6 +593,10 @@ function applyPlace(place: Place): boolean {
         const [projectPath, id] = place.missionId ? JSON.parse(place.missionId) as [string, string] : [null, null]
         state.setSelectedMission(projectPath && id ? { projectPath, id } : null)
     }
+    if (place.roleId !== undefined && roleKey(state.selectedRole) !== place.roleId) {
+        const [projectPath, name] = place.roleId ? JSON.parse(place.roleId) as [string, string] : [null, null]
+        state.setSelectedRole(projectPath && name ? { projectPath, name } : null)
+    }
     if (placeOf(useStore.getState()).view !== place.view) {
         state.setViewMode(place.view)
     }
@@ -604,7 +608,7 @@ function applyPlace(place: Place): boolean {
 
 /**
  * Keeps the browser's Back and Forward in step with the app: opening a view, a run, a project
- * page, a flow, a trigger or a mission adds a history entry, and the URL hash names it so a link reopens it.
+ * page, a flow, a trigger, a mission or a role adds a history entry, and the URL hash names it so a link reopens it.
  */
 export function HistoryRoutingController() {
     useEffect(() => {

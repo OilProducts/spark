@@ -1,4 +1,5 @@
 import { ApiHttpError } from '@/lib/attractorClient'
+import { problemSentence as sentence } from '@/lib/problemText'
 
 /** Whether a flow failed to load because its project has no flow by that name. */
 export const isMissingFlowError = (error: unknown) => error instanceof ApiHttpError && error.status === 404
@@ -19,12 +20,6 @@ export interface FlowProblem {
     file: string | null
 }
 
-// A sentence that starts with a file or node name ("notify.md: …") keeps its case.
-const sentence = (text: string) => {
-    const trimmed = text.trim()
-    const capitalized = /^[a-z]+\s/.test(trimmed) ? `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}` : trimmed
-    return /[.!?]$/.test(capitalized) ? capitalized : `${capitalized}.`
-}
 
 /**
  * The problems in a server's flow error, one sentence each, without the save verdict or the

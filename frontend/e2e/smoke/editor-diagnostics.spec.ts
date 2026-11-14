@@ -131,8 +131,8 @@ test("prompt edits trigger live preview diagnostics before blur for item 5.1-03"
     await flowButton.click()
 
     await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
-    await expect(page.getByRole("button", { name: "+ Node", exact: true })).toBeVisible()
-    await page.getByRole("button", { name: "+ Node", exact: true }).click()
+    await expect(page.getByRole("button", { name: "Add node", exact: true })).toBeVisible()
+    await page.getByRole("button", { name: "Add node", exact: true }).click()
 
     const newNode = page.locator(".react-flow__node").filter({ hasText: "New step" }).last()
     await expect(newNode).toBeVisible()
@@ -334,8 +334,8 @@ test("inline node and edge diagnostic badges render for item 7.1-02", async ({ p
     await flowButton.click()
 
     await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
-    await expect(page.getByRole("button", { name: "+ Node", exact: true })).toBeVisible()
-    await page.getByRole("button", { name: "+ Node", exact: true }).click()
+    await expect(page.getByRole("button", { name: "Add node", exact: true })).toBeVisible()
+    await page.getByRole("button", { name: "Add node", exact: true }).click()
 
     const newNode = page.locator(".react-flow__node").filter({ hasText: "New step" }).last()
     await expect(newNode).toBeVisible()

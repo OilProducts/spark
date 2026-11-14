@@ -1308,15 +1308,21 @@ impl FlowDefinition {
             .filter(|(_, node)| node.kind == NodeKind::Exit)
             .map(|(node_id, _)| node_id.as_str());
         let reaches_exit = reach(&incoming, exits);
-        for node_id in self.nodes.keys() {
+        for (node_id, node) in &self.nodes {
             if outgoing.get(node_id.as_str()).is_none_or(Vec::is_empty)
-                && self.nodes[node_id].kind != NodeKind::Exit
+                && node.kind != NodeKind::Exit
             {
-                diagnostics.push(node_diagnostic(
-                    "nonterminal_leaf",
-                    format!("node '{node_id}' has no routes; only exit nodes can end the flow"),
-                    node_id,
-                ));
+                // Agent tasks and gates without routes already fail their
+                // decision domain; one cause is reported once.
+                if !matches!(node.kind, NodeKind::AgentTask | NodeKind::HumanGate) {
+                    diagnostics.push(node_diagnostic(
+                        "nonterminal_leaf",
+                        format!(
+                            "node '{node_id}' has no routes, but only exit nodes can end the flow"
+                        ),
+                        node_id,
+                    ));
+                }
             } else if !reaches_exit.contains(node_id.as_str()) {
                 diagnostics.push(node_diagnostic(
                     "exit_path",

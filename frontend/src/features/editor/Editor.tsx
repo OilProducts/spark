@@ -308,6 +308,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const canvasPaneRef = useRef<HTMLDivElement>(null);
     const frame = useReadableFraming(canvasPaneRef);
     const [showMinimap, setShowMinimap] = useState(false);
+    // A view switch saves the view it leaves first; the toolbar says so while it does.
+    const [switchingEditorMode, setSwitchingEditorMode] = useState(false);
     // A newly opened flow, or a switch between its parent and expanded views, opens framed;
     // edits and reloads of the same graph keep the viewport where the user left it.
     const framedGraphRef = useRef<string | null>(null);
@@ -1298,25 +1300,30 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             return;
         }
         // Each view leaves only once its edits are saved; a refused save keeps them, and its error, in view.
-        if (editorMode === 'files') {
-            const savedDrafts = fileDrafts;
-            if (!(await saveFileDrafts())) return;
-            // Edits typed while the save ran aren't in it: stay in the files with them unsaved.
-            if (fileDraftsRef.current !== savedDrafts) return;
-            setFileDrafts({});
-            setFileSaveError(null);
-        } else {
-            // The files show the structured state as saved: save it (a no-op when unchanged, and it
-            // covers edits still debounced elsewhere, such as graph settings), then read the files.
-            // A refused save is reported by the save indicator.
-            flushPendingSave();
-            await waitForFlowSaves();
-            if (!(await saveNow({ nodes, edges }))) return;
-            reloadFlow();
+        setSwitchingEditorMode(true);
+        try {
+            if (editorMode === 'files') {
+                const savedDrafts = fileDrafts;
+                if (!(await saveFileDrafts())) return;
+                // Edits typed while the save ran aren't in it: stay in the files with them unsaved.
+                if (fileDraftsRef.current !== savedDrafts) return;
+                setFileDrafts({});
+                setFileSaveError(null);
+            } else {
+                // The files show the structured state as saved: save it (a no-op when unchanged, and it
+                // covers edits still debounced elsewhere, such as graph settings), then read the files.
+                // A refused save is reported by the save indicator.
+                flushPendingSave();
+                await waitForFlowSaves();
+                if (!(await saveNow({ nodes, edges }))) return;
+                reloadFlow();
+            }
+            setEditorMode(mode);
+            useStore.setState({ preferredEditorMode: mode });
+            completePreferenceInteraction({ editor_mode: mode });
+        } finally {
+            setSwitchingEditorMode(false);
         }
-        setEditorMode(mode);
-        useStore.setState({ preferredEditorMode: mode });
-        completePreferenceInteraction({ editor_mode: mode });
     }, [editorMode, edges, fileDrafts, flowName, flushPendingSave, isHydrated, nodes, reloadFlow, saveFileDrafts, saveNow, setEditorMode]);
 
     useEffect(() => {
@@ -1397,9 +1404,12 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         if (nodeId && nodes.some((node) => node.id === nodeId)) {
             setSelectedEdgeId(null);
             setSelectedNodeId(nodeId);
+            // The linked step is in view, even in a flow too big to show whole.
+            frame(nodes, { padding: FRAME_PADDING, focusNodeId: nodeId });
         }
         setPendingEditorNodeSelection(null);
     }, [
+        frame,
         flowName,
         isHydrated,
         nodes,
@@ -1514,8 +1524,10 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             {flowOpen && flowName && (
                 <EditorCanvasToolbar
                     mode={editorMode}
-                    modeDisabled={!isHydrated}
+                    modeDisabled={!isHydrated || switchingEditorMode}
+                    switchingMode={switchingEditorMode}
                     childFlowsExpanded={expandChildFlows}
+                    hasChildFlows={nodes.some((node) => node.data?.kind === 'subflow')}
                     runDisabledReason={runDisabledReason}
                     onSelectStructured={() => void selectEditorMode('structured')}
                     onSelectFiles={() => void selectEditorMode('files')}
@@ -1535,6 +1547,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     }}
                 />
             )}
+            {flowOpen && editorMode === 'structured' && <EditorSaveStatus onReload={() => void reloadSavedFlow()} />}
             <div className="flex min-h-0 flex-1 flex-col md:flex-row">
             {/* ponytail: phones get the file view alone in Files mode; its list selects files. A flow
                 that won't open has no canvas, so its files take the whole width and say what to fix. */}
@@ -1656,7 +1669,6 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     </div>
                 )}
 
-                {flowOpen && editorMode === 'structured' && <EditorSaveStatus className="absolute right-3 top-3 z-10" onReload={() => void reloadSavedFlow()} />}
                 {flowOpen && editorMode === 'structured' && <ValidationPanel />}
 
                 {flowOpen && flowName && editorMode === 'structured' && isRunPanelOpen ? (

@@ -1766,7 +1766,7 @@ useStore.getState().setRunsSelectedRunId('run-viewport-regression-mobile');
 
     renderWithFlowProvider(<Editor />)
 
-    await screen.findByRole('button', { name: '+ Node' })
+    await screen.findByRole('button', { name: 'Add node' })
     expect(screen.queryByTestId('canvas-interaction-performance-budget')).not.toBeInTheDocument()
     expect(screen.queryByTestId('canvas-performance-profile')).not.toBeInTheDocument()
 
@@ -4650,7 +4650,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     await screen.findByText('Start')
     const nodeCount = () => document.querySelectorAll('.react-flow__node').length
     const loadedNodes = nodeCount()
-    await user.click(screen.getByRole('button', { name: '+ Node' }))
+    await user.click(screen.getByRole('button', { name: 'Add node' }))
     await waitFor(() => expect(nodeCount()).toBe(loadedNodes + 1))
 
     await user.click(screen.getByRole('button', { name: 'Files' }))
@@ -4740,7 +4740,7 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     await screen.findByTestId('editor-mode-toggle')
     await screen.findByText('Start')
-    await user.click(screen.getByRole('button', { name: '+ Node' }))
+    await user.click(screen.getByRole('button', { name: 'Add node' }))
 
     await waitFor(() => {
       expect(savedPayloads.length).toBeGreaterThanOrEqual(1)

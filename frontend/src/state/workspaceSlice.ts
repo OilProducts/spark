@@ -78,6 +78,8 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
     openProjectPage: (projectPath) => set({ projectPagePath: projectPath }),
     selectedMission: restoredRouteState.selectedMission,
     setSelectedMission: (selection) => set({ selectedMission: selection }),
+    selectedRole: null,
+    setSelectedRole: (selection) => set({ selectedRole: selection }),
     settingsCategory: restoredRouteState.settingsCategory,
     setSettingsCategory: (category) => set({ settingsCategory: category }),
     missionBoard: [],

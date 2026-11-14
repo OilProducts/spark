@@ -9,10 +9,10 @@ import { useStore } from '@/store'
 const SAVED_SHOWN_MS = 2000
 
 /**
- * The flow's save state, in a corner of the canvas below the toolbar, so it never covers or moves
- * the actions it gates: "Saving…", a brief "Saved", or why the edits aren't saved yet. A failed save
- * shows its reason and the way out as text and buttons, not only on hover: Retry when trying again
- * can help, and Reload flow after a conflict.
+ * The flow's save state, below the toolbar so it never covers or moves the actions it gates:
+ * "Saving…", a brief "Saved", or why the edits aren't saved yet, in a corner of the canvas. A failed
+ * save is a strip above the canvas, so it covers no step: its reason and the way out as text and
+ * buttons, not only on hover: Retry when trying again can help, and Reload flow after a conflict.
  */
 export function EditorSaveStatus({ className, onReload }: { className?: string; onReload?: () => void }) {
     const saveState = useStore((state) => state.saveState)
@@ -47,21 +47,21 @@ export function EditorSaveStatus({ className, onReload }: { className?: string; 
     const reload = saveState === 'conflict' && onReload
 
     return (
-        <div role="status" data-testid="editor-save-status" className={cn('pointer-events-none', className)}>
+        <div role="status" data-testid="editor-save-status" className={cn('relative z-10', className)}>
             {failed ? (
                 <div
                     title={detail || undefined}
                     className={cn(
-                        'pointer-events-auto flex w-72 max-w-[calc(100vw-2rem)] flex-col gap-1.5 rounded-md border bg-background p-2.5 text-xs shadow-sm',
-                        saveState === 'conflict' ? 'border-warning/50' : 'border-destructive/50',
+                        'flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-2 text-xs',
+                        saveState === 'conflict' ? 'bg-warning/10' : 'bg-destructive/5',
                     )}
                 >
                     <span className={cn('font-semibold', saveState === 'conflict' ? 'text-warning' : 'text-destructive')}>
                         {label}<span className="sr-only">: </span>
                     </span>
-                    {detail ? <span className="line-clamp-4 break-words text-muted-foreground">{detail}</span> : null}
+                    <span className="line-clamp-2 min-w-0 flex-1 break-words text-muted-foreground">{detail}</span>
                     {remediation?.allowRetry || reload ? (
-                        <span className="flex gap-2">
+                        <span className="flex shrink-0 gap-2">
                             {remediation?.allowRetry ? (
                                 <Button type="button" data-testid="editor-save-retry" size="xs" variant="outline" onClick={() => void retryLastSaveContent()}>
                                     Retry save
@@ -79,7 +79,7 @@ export function EditorSaveStatus({ className, onReload }: { className?: string; 
                 <div
                     title={detail || undefined}
                     className={cn(
-                        'pointer-events-auto flex max-w-xs items-center gap-2 rounded-md border bg-background px-2 py-1 text-xs font-medium shadow-sm',
+                        'absolute right-3 top-3 flex max-w-xs items-center gap-2 rounded-md border bg-background px-2 py-1 text-xs font-medium shadow-sm',
                         blockedByValidation ? 'text-warning'
                             : saveState === 'saved' ? 'text-success' : 'text-muted-foreground',
                     )}

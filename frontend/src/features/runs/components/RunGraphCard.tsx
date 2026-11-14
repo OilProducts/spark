@@ -34,6 +34,7 @@ import {
     EmptyDescription,
     EmptyHeader,
 } from '@/components/ui/empty'
+import { diagnosticSentence } from '@/lib/problemText'
 import type { RunRecord } from '../model/shared'
 import { loadRunGraphPreview } from '../services/runGraphTransport'
 
@@ -371,17 +372,16 @@ export function RunGraphCard({
                 {diagnostics.length > 0 ? (
                     <Well data-testid="run-graph-diagnostics" className="p-3">
                         <p className="text-sm font-semibold text-foreground">
-                            Graph diagnostics
+                            Problems found in this flow
                         </p>
                         <ul className="mt-2 space-y-2 text-sm">
                             {diagnostics.slice(0, 6).map((diagnostic, index) => (
                                 <li key={`${diagnostic.rule_id}-${diagnostic.node_id || 'graph'}-${index}`}>
                                     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                        <span>{diagnostic.severity}</span>
-                                        <span>{diagnostic.rule_id}</span>
-                                        {diagnostic.node_id ? <span>{diagnostic.node_id}</span> : null}
+                                        <span className="capitalize">{diagnostic.severity}</span>
+                                        {diagnostic.node_id ? <span>· {diagnostic.node_id}</span> : null}
                                     </div>
-                                    <p className="mt-1 text-sm text-foreground">{diagnostic.message}</p>
+                                    <p className="mt-1 text-sm text-foreground">{diagnosticSentence(diagnostic)}</p>
                                 </li>
                             ))}
                         </ul>
