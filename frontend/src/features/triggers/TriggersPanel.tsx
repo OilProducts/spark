@@ -84,8 +84,10 @@ export function TriggersPanel() {
     discard,
     editTriggerForm,
     editTriggerErrors,
+    editFlowInputs,
     newTriggerForm,
     newTriggerErrors,
+    newFlowInputs,
     onCreateTrigger,
     onDeleteSelectedTrigger,
     onSaveSelectedTrigger,
@@ -268,6 +270,7 @@ export function TriggersPanel() {
                   mode="create"
                   protectedTrigger={false}
                   errors={newTriggerErrors}
+                  flowInputs={newFlowInputs}
                 />
                 <div className="mt-6 flex flex-wrap gap-2">
                   <Button
@@ -336,6 +339,7 @@ export function TriggersPanel() {
                   mode="edit"
                   protectedTrigger={selectedTrigger.protected}
                   errors={editTriggerErrors}
+                  flowInputs={editFlowInputs}
                 />
 
                 {selectedTrigger.source_type === 'webhook' ? (

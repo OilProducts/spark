@@ -283,6 +283,35 @@ export function NodeInspectorPanel({
                                         <option value="failure">Failure</option>
                                     </NativeSelect>
                                 </div>
+                                <div className="flex items-start gap-2">
+                                    <Checkbox
+                                        id={`${id}-exit-result-summary`}
+                                        aria-describedby={`${id}-exit-result-summary-help`}
+                                        checked={config.result_summary === true}
+                                        onCheckedChange={(checked) => onPropertyChange('config.result_summary', checked === true)}
+                                    />
+                                    <div className="space-y-0.5">
+                                        <Label htmlFor={`${id}-exit-result-summary`} className="text-sm font-medium">
+                                            Summarize the run here
+                                        </Label>
+                                        <p id={`${id}-exit-result-summary-help`} className="text-xs text-muted-foreground">
+                                            When a run ends at this exit, an agent reads the run&apos;s records and writes its result.
+                                        </p>
+                                    </div>
+                                </div>
+                                {config.result_summary === true ? (
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor={`${id}-exit-result-summary-prompt`}>Summary instructions</Label>
+                                        <Textarea
+                                            id={`${id}-exit-result-summary-prompt`}
+                                            value={typeof config.result_summary_prompt === 'string' ? config.result_summary_prompt : ''}
+                                            onChange={(event) => onPropertyChange('config.result_summary_prompt', event.target.value)}
+                                            rows={4}
+                                            className="min-h-24 text-sm"
+                                            placeholder="Leave empty to use Spark's default summary instructions."
+                                        />
+                                    </div>
+                                ) : null}
                             </>
                         ) : null}
 

@@ -3024,29 +3024,37 @@ impl WorkspaceConversationService {
         let flow_name = request.action.flow_name.clone();
         // The run's project and working directory are the trigger's project.
         let working_directory = request.project_path.clone();
-        ensure_flow_exists(&self.settings, Some(&working_directory), &flow_name)?;
+        let flow = read_flow(&self.settings, Some(&working_directory), &flow_name)?;
         let summary = format!(
             "The trigger “{}” started {flow_name}.",
             request.trigger_name
         );
-        let launch_context = Value::Object(Map::from_iter([
-            (
-                "context.trigger_static".to_string(),
-                Value::Object(request.action.static_context.clone()),
-            ),
-            (
-                "context.trigger_payload".to_string(),
-                request.source_payload,
-            ),
-            (
-                "context.spark_trigger".to_string(),
-                json!({
-                    "trigger_id": request.trigger_id,
-                    "trigger_name": request.trigger_name,
-                    "source_type": request.source_type,
-                }),
-            ),
-        ]));
+        // The trigger's data supplies the flow's launch inputs by their keys,
+        // as the launch form does; a required one it lacks stops the launch.
+        let inputs = trigger_launch_inputs(&flow, &request.action.static_context)?;
+        let launch_context = Value::Object(
+            inputs
+                .into_iter()
+                .chain([
+                    (
+                        "context.trigger_static".to_string(),
+                        Value::Object(request.action.static_context.clone()),
+                    ),
+                    (
+                        "context.trigger_payload".to_string(),
+                        request.source_payload,
+                    ),
+                    (
+                        "context.spark_trigger".to_string(),
+                        json!({
+                            "trigger_id": request.trigger_id,
+                            "trigger_name": request.trigger_name,
+                            "source_type": request.source_type,
+                        }),
+                    ),
+                ])
+                .collect(),
+        );
         // A trigger's runs are named after it, so they read as its runs in run lists.
         let artifact = json!({
             "flow_name": flow_name.clone(),
@@ -5060,10 +5068,18 @@ fn ensure_flow_exists(
     project_path: Option<&str>,
     flow_name: &str,
 ) -> WorkspaceResult<()> {
+    read_flow(settings, project_path, flow_name).map(|_| ())
+}
+
+fn read_flow(
+    settings: &SparkSettings,
+    project_path: Option<&str>,
+    flow_name: &str,
+) -> WorkspaceResult<attractor_core::FlowDefinition> {
     let flow_name = non_empty_string(flow_name)
         .ok_or_else(|| WorkspaceError::Validation("Flow name is required.".to_string()))?;
     match attractor_api::flow_roots(settings, project_path).read_named_flow_source(&flow_name) {
-        Ok(_) => Ok(()),
+        Ok(source) => Ok(source.flow),
         Err(error) if error.status_code() == 404 => Err(WorkspaceError::NotFound(format!(
             "Unknown flow: {flow_name}"
         ))),
@@ -5072,6 +5088,37 @@ fn ensure_flow_exists(
         }
         Err(error) => Err(WorkspaceError::Internal(error.detail().to_string())),
     }
+}
+
+/// The flow's launch inputs a trigger's data sets, by input key. Fails naming
+/// each required input the data leaves unset, so no run starts without it.
+fn trigger_launch_inputs(
+    flow: &attractor_core::FlowDefinition,
+    static_context: &Map<String, Value>,
+) -> WorkspaceResult<Map<String, Value>> {
+    let mut inputs = Map::new();
+    let mut missing = Vec::new();
+    for input in &flow.inputs {
+        let value = static_context
+            .get(&input.key)
+            .or(input.default.as_ref())
+            .filter(|value| {
+                !value.is_null() && value.as_str().is_none_or(|text| !text.trim().is_empty())
+            });
+        if let Some(value) = value {
+            inputs.insert(input.key.clone(), value.clone());
+        } else if input.required {
+            missing.push(non_empty_string(&input.label).unwrap_or_else(|| input.key.clone()));
+        }
+    }
+    if missing.is_empty() {
+        return Ok(inputs);
+    }
+    let title = non_empty_string(&flow.title).unwrap_or_else(|| flow.id.clone());
+    Err(WorkspaceError::Validation(format!(
+        "{title} needs {} to start. Set it on the trigger, under What each run needs.",
+        missing.join(", ")
+    )))
 }
 
 fn normalize_launch_context_value(

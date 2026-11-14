@@ -6,7 +6,6 @@ import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import type { FlowDefinitionMetadata, FlowMetadataErrors, UiDefaults } from '@/store'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
     Field,
     FieldDescription,
@@ -14,7 +13,6 @@ import {
     FieldLabel,
 } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
@@ -23,12 +21,13 @@ import { LaunchInputsEditor } from '../LaunchInputsEditor'
 
 export const FLOW_METADATA_HELP: Record<string, string> = {
     inputs: 'Structured launch-time context fields Spark should collect before starting a run.',
-    result_node: 'Optional node whose response becomes the run result.',
-    result_summary_enabled: 'When true, summarize the selected run result before display.',
-    result_summary_prompt: 'Optional prompt used when result summarization is enabled.',
+    result_node: 'The step whose response Spark shows as the run result.',
     goal: 'Primary stated goal for the flow. Handlers can read it as shared run context.',
     max_retries: 'Used only when a node omits retry.max_retries. Node retry settings take precedence.',
 }
+
+// The flow metadata key the runtime reads to pick the run result's source step.
+export const RESULT_NODE_KEY = 'spark.result_node'
 
 export const CORE_FLOW_METADATA_KEYS = new Set<string>([
     'schema_version',
@@ -37,9 +36,7 @@ export const CORE_FLOW_METADATA_KEYS = new Set<string>([
     'description',
     'execution_lock',
     'inputs',
-    'result_node',
-    'result_summary_enabled',
-    'result_summary_prompt',
+    RESULT_NODE_KEY,
     'goal',
     'max_retries',
     'llm_model',
@@ -244,25 +241,33 @@ export function GraphLaunchInputsSection({
 
 interface GraphResultSectionProps {
     flowMetadata: FlowDefinitionMetadata
-    nodes: Array<{ id: string; data?: { label?: unknown; kind?: unknown } }>
+    nodes: Array<{ id: string; data?: { label?: unknown; kind?: unknown; config?: unknown } }>
     updateFlowMetadata: (key: keyof FlowDefinitionMetadata, value: string) => void
 }
+
+const nodeDisplayLabel = (node: GraphResultSectionProps['nodes'][number]) => (
+    typeof node.data?.label === 'string' && node.data.label.trim() ? node.data.label.trim() : node.id
+)
 
 export function GraphResultSection({
     flowMetadata,
     nodes,
     updateFlowMetadata,
 }: GraphResultSectionProps) {
-    const summaryEnabled = String(flowMetadata.result_summary_enabled || '').toLowerCase() === 'true'
+    const resultNode = typeof flowMetadata[RESULT_NODE_KEY] === 'string' ? flowMetadata[RESULT_NODE_KEY] : ''
     const selectableNodes = nodes.filter((node) => {
         const kind = typeof node.data?.kind === 'string' ? node.data.kind : ''
         return kind !== 'start' && kind !== 'exit'
     })
+    const summarizingExits = nodes.filter((node) => (
+        node.data?.kind === 'exit'
+        && (node.data.config as { result_summary?: unknown } | undefined)?.result_summary === true
+    ))
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
                 title="Run result"
-                description="Choose the node response Spark should surface after a run completes."
+                description="What Spark shows as a run's result when it ends."
             />
             <div className="space-y-3">
                 <GraphSettingsField
@@ -272,51 +277,23 @@ export function GraphResultSection({
                 >
                     <NativeSelect
                         id="graph-attr-spark-result-node"
-                        value={flowMetadata.result_node || ''}
-                        onChange={(event) => updateFlowMetadata('result_node', event.target.value)}
+                        value={resultNode}
+                        onChange={(event) => updateFlowMetadata(RESULT_NODE_KEY, event.target.value)}
                         className="h-8 text-sm"
                     >
-                        <option value="">Infer from final node</option>
-                        {selectableNodes.map((node) => {
-                            const label = typeof node.data?.label === 'string' && node.data.label.trim()
-                                ? node.data.label.trim()
-                                : node.id
-                            return (
-                                <option key={node.id} value={node.id}>
-                                    {label}
-                                </option>
-                            )
-                        })}
+                        <option value="">The last step before the exit</option>
+                        {selectableNodes.map((node) => (
+                            <option key={node.id} value={node.id}>
+                                {nodeDisplayLabel(node)}
+                            </option>
+                        ))}
                     </NativeSelect>
                 </GraphSettingsField>
-                <div className="flex items-center gap-2">
-                    <Checkbox
-                        id="graph-attr-spark-result-summary-enabled"
-                        checked={summaryEnabled}
-                        onCheckedChange={(checked) => {
-                            updateFlowMetadata('result_summary_enabled', checked ? 'true' : '')
-                        }}
-                    />
-                    <Label htmlFor="graph-attr-spark-result-summary-enabled" className="text-sm">
-                        Summarize result
-                    </Label>
-                </div>
-                {summaryEnabled ? (
-                    <GraphSettingsField
-                        label="Summary prompt"
-                        htmlFor="graph-attr-spark-result-summary-prompt"
-                        helper={FLOW_METADATA_HELP.result_summary_prompt}
-                    >
-                        <Textarea
-                            id="graph-attr-spark-result-summary-prompt"
-                            value={flowMetadata.result_summary_prompt || ''}
-                            onChange={(event) => updateFlowMetadata('result_summary_prompt', event.target.value)}
-                            rows={4}
-                            className="min-h-24 px-2 py-1 text-sm"
-                            placeholder="Use Spark's default prompt"
-                        />
-                    </GraphSettingsField>
-                ) : null}
+                <p data-testid="graph-result-summary-exits" className="text-xs leading-5 text-muted-foreground">
+                    {summarizingExits.length > 0
+                        ? `Runs that end at ${summarizingExits.map(nodeDisplayLabel).join(', ')} get an agent-written summary instead. Turn this on or off on each exit step.`
+                        : 'To have an agent summarize the run instead, select an exit step and turn on Summarize the run here.'}
+                </p>
             </div>
         </section>
     )

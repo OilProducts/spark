@@ -1,4 +1,5 @@
 import { encodeFlowPath } from '@/lib/flowPaths'
+import { parseLaunchInputDefinitions, type LaunchInputDefinition } from '@/lib/flowContracts'
 import {
     ApiSchemaError,
     asOptionalNullableString,
@@ -33,6 +34,8 @@ export interface WorkspaceFlowResponse {
     }
     /** Why the flow doesn't load, such as its validation errors; absent for a flow that loads. */
     error?: string
+    /** What a run asks for at launch; only a single flow's description carries them. */
+    inputs?: LaunchInputDefinition[]
 }
 
 function parseFlowExecutionLockScope(
@@ -103,6 +106,7 @@ export function parseWorkspaceFlowResponse(value: unknown, endpoint: string): Wo
         edge_count: edgeCount,
         features,
         ...(typeof record.error === 'string' && record.error ? { error: record.error } : {}),
+        ...(Array.isArray(record.inputs) ? { inputs: parseLaunchInputDefinitions(record.inputs).entries } : {}),
     }
 }
 

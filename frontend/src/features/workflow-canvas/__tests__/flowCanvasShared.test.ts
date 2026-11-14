@@ -724,6 +724,62 @@ describe('flowCanvasShared', () => {
         expect(reloaded.nodes.work.runtime?.session).toBeUndefined()
     })
 
+    it('saves cleared flow inputs, defaults, metadata and node fields as cleared, and the result settings where the runtime reads them', () => {
+        const flow = {
+            schema_version: '2',
+            id: 'cleared',
+            title: 'Cleared',
+            inputs: [{ key: 'context.request.version', label: 'Version', type: 'string', required: true }],
+            defaults: { llm_model: 'model-a', llm_provider: 'provider-a', reasoning_effort: 'high', max_retries: 2 },
+            metadata: { team: 'ops', 'spark.result_node': 'work' },
+            nodes: {
+                start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'work', description: 'Enter the first workflow step.' } } },
+                work: { kind: 'agent_task', label: 'Work', description: 'Does the work.', execution: { llm_model: 'model-b', reasoning_effort: 'low' }, retry: { max_retries: 3 }, runtime: { class: 'heavy' }, config: { kind: 'agent_task', prompt: 'Work.' }, contracts: { response: 'decision_envelope', reads_context: ['context.request.version'] }, routes: { done: { to: 'done', description: 'Worked.' } } },
+                done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
+            },
+        }
+        const hydrated = buildHydratedFlowGraph('cleared', { status: 'ok', flow, graph: flowDefinitionToPreviewGraph(flow) }, {
+            llm_model: '',
+            llm_provider: '',
+            reasoning_effort: '',
+        })
+        const unchanged = buildFlow('cleared', hydrated?.nodes ?? [], hydrated?.edges ?? [], hydrated?.flowMetadata ?? {}, hydrated?.flow)
+        expect(unchanged.inputs).toEqual(flow.inputs)
+        expect(unchanged.defaults).toEqual(flow.defaults)
+        expect(unchanged.metadata).toEqual(flow.metadata)
+        expect(unchanged.nodes.work).toEqual(flow.nodes.work)
+
+        const metadata = { ...hydrated?.flowMetadata, inputs: '', llm_model: '', llm_provider: '', reasoning_effort: '', max_retries: '' } as Record<string, unknown>
+        delete metadata.team
+        const nodes = (hydrated?.nodes ?? []).map((node) => {
+            if (node.id === 'work') {
+                return { ...node, data: { ...node.data, description: '', llm_model: '', reasoning_effort: '', max_retries: '', class: '', 'spark.reads_context': '[]' } }
+            }
+            if (node.id === 'done') {
+                return { ...node, data: { ...node.data, config: { ...(node.data.config as object), result_summary: true, result_summary_prompt: 'Say what shipped.' } } }
+            }
+            return node
+        })
+        const saved = buildFlow('cleared', nodes, hydrated?.edges ?? [], metadata, hydrated?.flow)
+
+        expect(saved.inputs).toEqual([])
+        expect(saved.defaults ?? {}).toEqual({})
+        expect(saved.metadata).toEqual({ 'spark.result_node': 'work' })
+        expect(saved.nodes.work).toEqual({
+            kind: 'agent_task',
+            label: 'Work',
+            config: { kind: 'agent_task', prompt: 'Work.' },
+            contracts: { response: 'decision_envelope' },
+            routes: { done: { to: 'done', description: 'Worked.' } },
+        })
+        expect(saved.nodes.done.config).toEqual({
+            kind: 'exit',
+            result: { name: 'completed', outcome: 'success' },
+            result_summary: true,
+            result_summary_prompt: 'Say what shipped.',
+        })
+    })
+
     it('does not materialize implicit node or graph defaults when saving after apply-to-nodes style edits', () => {
         const preview: PreviewResponsePayload = {
             status: 'ok',

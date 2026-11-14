@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use attractor_core::{FlowDefinition, FlowExecutionLock, NodeKind};
+use attractor_core::{FlowDefinition, FlowExecutionLock, FlowInput, NodeKind};
 use attractor_dsl::{FlowRoots, FlowSourceError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -27,13 +27,15 @@ pub struct WorkspaceFlowSummary {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceFlowDescription {
     #[serde(flatten)]
     pub summary: WorkspaceFlowSummary,
     pub node_count: usize,
     pub edge_count: usize,
     pub features: WorkspaceFlowFeatures,
+    /// What a run of the flow asks for at launch.
+    pub inputs: Vec<FlowInput>,
 }
 
 /// A flow's files with their exact text, and where they live.
@@ -99,6 +101,7 @@ impl WorkspaceFlowService {
                     .values()
                     .any(|node| node.kind == NodeKind::Subflow),
             },
+            inputs: source.flow.inputs.clone(),
             summary,
         })
     }

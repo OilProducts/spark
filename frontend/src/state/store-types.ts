@@ -55,9 +55,7 @@ export interface FlowDefinitionMetadata {
     description?: string
     execution_lock?: string
     inputs?: string
-    result_node?: string
-    result_summary_enabled?: string
-    result_summary_prompt?: string
+    'spark.result_node'?: string
     goal?: string
     max_retries?: number | string
     llm_model?: string

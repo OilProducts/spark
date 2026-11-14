@@ -381,6 +381,49 @@ describe('TriggersPanel', () => {
     })
   })
 
+  it('asks for the flow\'s launch inputs, refuses a missing required one, and saves them under their keys', async () => {
+    const releaseCheck = { name: 'release-check', title: 'Release Check', description: '' }
+    const posts: Array<Record<string, unknown>> = []
+    const saved = { ...makeTrigger({ id: 'nightly', name: 'Nightly', flow_name: 'release-check' }), action: { flow_name: 'release-check', static_context: { 'context.request.version': '1.2.0', branch: 'main' } } }
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const url = resolveRequestUrl(input as RequestInfo | URL)
+      if (url.startsWith('/workspace/api/flows/release-check')) {
+        return jsonResponse({ ...releaseCheck, inputs: [{ key: 'context.request.version', label: 'Version', type: 'string', description: 'The version to release.', required: true }] })
+      }
+      if (isFlowList(url)) return jsonResponse([...PROJECT_FLOWS, releaseCheck])
+      if (init?.method === 'POST') {
+        posts.push(JSON.parse(String(init.body)))
+        return jsonResponse(saved)
+      }
+      return jsonResponse(posts.length ? [saved] : [])
+    })
+    useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const form = await openCreateTriggerForm(user)
+    await user.type(form.getByLabelText('Name'), 'Nightly')
+    await user.selectOptions(form.getByLabelText('Flow to start'), await form.findByRole('option', { name: 'Release Check' }))
+    const version = await form.findByLabelText(/^Version/)
+    expect(form.getByText('What each run needs')).toBeVisible()
+    expect(version).toHaveAccessibleDescription('The version to release.')
+
+    await user.click(screen.getByTestId('trigger-create-button'))
+    expect(posts).toHaveLength(0)
+    expect(version).toHaveAttribute('aria-invalid', 'true')
+    expect(version).toHaveFocus()
+    expect(version).toHaveAccessibleDescription(/Version is required\./)
+
+    await user.type(version, '1.2.0')
+    await user.type(form.getByLabelText('Extra data for the run (optional)'), '{{"branch": "main"}')
+    await user.click(screen.getByTestId('trigger-create-button'))
+    await waitFor(() => expect(posts).toHaveLength(1))
+    expect(posts[0]).toMatchObject({ action: { flow_name: 'release-check', static_context: { 'context.request.version': '1.2.0', branch: 'main' } } })
+
+    // Opened again, the input is back in its field and only the rest is extra data.
+    await waitFor(() => expect(screen.getByLabelText(/^Version/)).toHaveValue('1.2.0'))
+    expect(JSON.parse((screen.getByLabelText('Extra data for the run (optional)') as HTMLTextAreaElement).value)).toEqual({ branch: 'main' })
+  })
+
   it('saves weekly days from toggles and a time in the browser\'s zone, and refuses a week with no day', async () => {
     const posts: Array<Record<string, unknown>> = []
     vi.mocked(global.fetch).mockImplementation(async (input, init) => {
