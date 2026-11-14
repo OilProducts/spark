@@ -1,3 +1,4 @@
+import { isTauri } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -11,7 +12,8 @@ export function ConnectionSettingsEditor() {
         <CardHeader><h2 className="text-base font-semibold">Server and client connections</h2></CardHeader>
         <CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
-            <p className="text-sm text-muted-foreground">Desktop uses its native remote-access control and an automatically assigned port.</p>
+            {/* Only the desktop app manages its own server; in a browser this would describe another app. */}
+            {isTauri() ? <p className="text-sm text-muted-foreground">The desktop app uses its own remote-access control and an automatically assigned port; these settings apply to a server started from the command line.</p> : null}
             {editor.saved?.running_server && <p className="text-xs text-muted-foreground">Running server: {editor.saved.running_server.server_host}:{editor.saved.running_server.server_port}</p>}
             {editor.draft && editor.saved && <>
                 <Field><FieldLabel htmlFor="connection-host">Server host</FieldLabel>

@@ -98,6 +98,16 @@ export function setInvalidDraft(id: string, message: string | null) {
     }
 }
 
+/** The steps, by title, with no way out: neither an exit, nor a fork (it has branches), nor with a route. */
+function stepsWithoutRoutes(flow: unknown): string[] {
+    const nodes = (flow as { nodes?: Record<string, { kind?: unknown; label?: unknown; routes?: object } | null> } | null)?.nodes ?? {}
+    return Object.entries(nodes).flatMap(([id, node]) => (
+        node?.kind === 'exit' || node?.kind === 'parallel' || Object.keys(node?.routes ?? {}).length > 0
+            ? []
+            : [typeof node?.label === 'string' && node.label.trim() ? node.label.trim() : id]
+    ))
+}
+
 // The last save sent for each flow. A flow's saves go one at a time, in order: two requests in
 // flight together could land out of order and leave older content on disk.
 const lastSaveByScope = new Map<string, Promise<boolean>>()
@@ -142,6 +152,14 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
             `Each decision may be declared once per node; duplicated: ${[...new Set(duplicates)].join(', ')}.`,
             'validation_error',
         )
+        return false
+    }
+    // The server refuses a flow with a step that leads nowhere, as a just-added step does: say so without asking it.
+    // ponytail: mirrors only this server rule; its other refusals still come back as a 422.
+    const deadEnds = stepsWithoutRoutes('flow' in content ? content.flow : null)
+    if (deadEnds.length > 0) {
+        const problems = deadEnds.map((step) => ({ message: `“${step}” needs a route to another step.`, file: null }))
+        markSaveFailure(buildErrorMessage('validation_error', problems.map((problem) => problem.message).join(' '), 422), 'validation_error', problems)
         return false
     }
     lastSaveRequest = { name, content, projectPath }

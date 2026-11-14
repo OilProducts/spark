@@ -4,6 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 
 import { useStore } from '@/store'
 import { RunFlowDialog, bestFlow, groupFlows, openRunFlowDialog } from '../components/RunFlowDialog'
+import { LaunchPanel } from '../components/LaunchPanel'
 
 const flowsByProject: Record<string, Array<{ name: string; title: string; description: string; error?: string }>> = {
     '/tmp/alpha': [
@@ -21,6 +22,8 @@ vi.mock('@/lib/api/flowsApi', async (original) => ({
     fetchWorkspaceFlowListValidated: vi.fn(async (projectPath: string | null) => (flowsByProject[projectPath ?? ''] ?? [])
         .map((flow) => ({ ...flow, execution_lock: null, graph_label: flow.title, graph_goal: '' }))),
 }))
+
+vi.mock('../components/LaunchPanel', { spy: true })
 
 // alpha has a flow of its own; the rest are bundled.
 vi.mock('@/features/roles/rolesModel', async (original) => ({
@@ -157,4 +160,23 @@ it('is one Tab stop that the arrow keys move through, picks the first match on E
     await user.click(opener)
     await user.type(await screen.findByTestId('run-flow-search'), 'review{Enter}')
     expect(await screen.findByTestId('run-flow-back')).toBeVisible()
+})
+
+it('closes a launch onto the new run\'s heading rather than the opener', async () => {
+    const user = userEvent.setup()
+    vi.mocked(LaunchPanel).mockImplementation(({ onLaunched }) => <button type="button" onClick={() => onLaunched('run-new', false)}>Launch</button>)
+    try {
+        render(<>
+            <button type="button" onClick={() => openRunFlowDialog({ projectPath: '/tmp/alpha' })}>Open</button>
+            <h1 id="run-heading-run-new" tabIndex={-1}>New run</h1>
+            <RunFlowDialog />
+        </>)
+        await user.click(screen.getByRole('button', { name: 'Open' }))
+        await user.click(await screen.findByText('Nightly audit'))
+        await user.click(await screen.findByRole('button', { name: 'Launch' }))
+        await waitFor(() => expect(screen.queryByTestId('run-flow-dialog')).not.toBeInTheDocument())
+        expect(screen.getByRole('heading', { name: 'New run' })).toHaveFocus()
+    } finally {
+        vi.mocked(LaunchPanel).mockRestore()
+    }
 })

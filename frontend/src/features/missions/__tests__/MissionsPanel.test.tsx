@@ -255,7 +255,7 @@ it('sets a draft mission\'s model on its conversation before Start', async () =>
     expect(calls.at(-1)).toEqual({ url: '/workspace/api/conversations/task-1/settings', body: { project_path: '/project', expected_revision: '0', model_settings: { provider: 'claude-code', llm_profile: null, model: 'opus', reasoning_effort: 'high' } } })
 })
 
-it('starts a clean pane with its own transcript when another mission is selected', async () => {
+it('starts a clean pane with its own transcript when another mission is selected, keeping each one\'s drafts', async () => {
     const a = mission({ id: 'a', status: 'running', conversation_id: 'conv-a', started_at: 't', fields: { ...fields, title: 'Mission A', budget: { concurrent_runs: 2, total_runs: 9 } } })
     const b = mission({ id: 'b', status: 'running', conversation_id: 'conv-b', started_at: 't', fields: { ...fields, title: 'Mission B' } })
     const snapshots: Record<string, unknown> = { 'conv-a': conversation([turn('a1', 'assistant', 'Working on A.')]), 'conv-b': conversation([turn('b1', 'assistant', 'Working on B.')]) }
@@ -278,6 +278,11 @@ it('starts a clean pane with its own transcript when another mission is selected
     expect(detail().queryByText('Working on A.')).not.toBeInTheDocument()
     await act(async () => { releaseB() })
     expect(await detail().findByText('Working on B.')).toBeInTheDocument()
+    // Coming back to A finds its unsent reply and open budget edit as left.
+    fireEvent.click(screen.getByRole('button', { name: 'Mission A' }))
+    await waitFor(() => expect(detail().getByRole('heading', { name: 'Mission A' })).toBeInTheDocument())
+    expect(detail().getByLabelText('Reply')).toHaveValue('For A only')
+    expect(within(detail().getByRole('form', { name: 'Budget' })).getByLabelText('Total runs')).toHaveValue(9)
 })
 
 it('shows the server reason when a control action is refused', async () => {

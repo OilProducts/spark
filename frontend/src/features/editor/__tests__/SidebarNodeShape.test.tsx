@@ -158,7 +158,7 @@ describe('Sidebar node shape authoring', () => {
         )
 
         expect(screen.queryByTestId('node-shape-type-warning')).not.toBeInTheDocument()
-        expect(screen.getByText('Node kind')).toBeInTheDocument()
+        expect(screen.getByText('Step type')).toBeInTheDocument()
         expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
     })
 

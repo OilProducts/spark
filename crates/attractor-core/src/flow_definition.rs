@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use indexmap::IndexMap;
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -179,13 +180,15 @@ pub struct FlowNode {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<String, Value>,
     /// The node's complete decision vocabulary: each decision ID and the
-    /// one route it selects. Edges are derived from this map.
+    /// one route it selects, in the order the author wrote them (a gate
+    /// offers its answers in this order). Edges are derived from this map.
     #[serde(
         default,
-        skip_serializing_if = "BTreeMap::is_empty",
+        skip_serializing_if = "IndexMap::is_empty",
         deserialize_with = "unique_keys"
     )]
-    pub routes: BTreeMap<String, FlowRoute>,
+    #[schemars(with = "BTreeMap<String, FlowRoute>")]
+    pub routes: IndexMap<String, FlowRoute>,
 }
 
 /// One declared decision: its target and what choosing it means. `label` is
@@ -581,12 +584,13 @@ impl FlowDefinition {
         serde_json::to_value(self.normalize()).unwrap_or_else(|_| json!({}))
     }
 
+    /// Serialized directly, not through a `Value`, whose objects would sort
+    /// route keys out of their authored order.
     pub fn to_canonical_json_string(&self) -> String {
-        serde_json::to_string_pretty(&self.to_canonical_json_value())
-            .unwrap_or_else(|_| "{}".to_string())
+        serde_json::to_string_pretty(&self.normalize()).unwrap_or_else(|_| "{}".to_string())
     }
 
-    /// Every derived edge: each node's routes in decision order, then each
+    /// Every derived edge: each node's routes in authored order, then each
     /// fork's branch and join connections in declaration order.
     pub fn edges(&self) -> Vec<FlowEdge> {
         let mut edges = Vec::new();
@@ -1134,7 +1138,7 @@ impl FlowDefinition {
             }
             (NodeKind::AgentTask | NodeKind::HumanGate, _) => {
                 if decisions.is_empty() {
-                    domain(format!("{} nodes need at least one route", node.kind.as_str()));
+                    domain(format!("{} steps need at least one route", node.kind.as_str()));
                 }
             }
             (
@@ -1166,7 +1170,7 @@ impl FlowDefinition {
                         domain("decision_field must be nonempty".to_string());
                     }
                     if decisions.is_empty() {
-                        domain("tool nodes need at least one route".to_string());
+                        domain("tool steps need at least one route".to_string());
                     }
                 }
                 _ => domain(
@@ -2089,14 +2093,15 @@ fn valid_flow_ref(value: &str) -> bool {
 
 /// A map whose keys must be unique: a duplicate key is a parse error,
 /// reported before insertion could drop either entry.
-fn unique_keys<'de, D, V>(deserializer: D) -> Result<BTreeMap<String, V>, D::Error>
+fn unique_keys<'de, D, V, M>(deserializer: D) -> Result<M, D::Error>
 where
     D: serde::Deserializer<'de>,
     V: Deserialize<'de>,
+    M: FromIterator<(String, V)>,
 {
     struct UniqueKeys<V>(std::marker::PhantomData<V>);
     impl<'de, V: Deserialize<'de>> serde::de::Visitor<'de> for UniqueKeys<V> {
-        type Value = BTreeMap<String, V>;
+        type Value = IndexMap<String, V>;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             formatter.write_str("a map with unique keys")
@@ -2106,7 +2111,7 @@ where
             self,
             mut map: A,
         ) -> Result<Self::Value, A::Error> {
-            let mut values = BTreeMap::new();
+            let mut values = IndexMap::new();
             while let Some(key) = map.next_key::<String>()? {
                 if values.contains_key(&key) {
                     return Err(serde::de::Error::custom(format!("duplicate key {key:?}")));
@@ -2117,7 +2122,9 @@ where
             Ok(values)
         }
     }
-    deserializer.deserialize_map(UniqueKeys(std::marker::PhantomData))
+    deserializer
+        .deserialize_map(UniqueKeys(std::marker::PhantomData))
+        .map(|values| values.into_iter().collect())
 }
 
 fn default_input_type() -> String {

@@ -37,6 +37,11 @@ const inheritedModel: ModelSettings = { provider: null, llm_profile: null, model
 const menuItem = 'relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50'
 const closedActors: Record<string, string> = { assistant: 'the mission agent', human: 'you' }
 
+// Unsent replies and open budget edits by mission, so opening another mission and coming back keeps them.
+// ponytail: kept for the page's life, not across reloads; move into the store if that's needed.
+const missionDrafts = new Map<string, { reply: string; budget: Budget | null }>()
+const draftOf = (missionId: string) => missionDrafts.get(missionId) ?? { reply: '', budget: null }
+
 function RailSection({ label, children, action }: { label: string; children: ReactNode; action?: ReactNode }) {
     return <section aria-label={label} className="flex flex-col gap-2">
         <SectionHeading action={action}>{label}</SectionHeading>
@@ -60,8 +65,10 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     useEffect(() => { heading.current?.focus({ preventScroll: true }) }, [mission.id, focusRequest])
     const [pending, setPending] = useState(false)
     const [actionError, setActionError] = useState('')
-    const [reply, setReply] = useState('')
-    const [budget, setBudget] = useState<Budget | null>(null)
+    const [reply, setReplyState] = useState(() => draftOf(mission.id).reply)
+    const [budget, setBudgetState] = useState(() => draftOf(mission.id).budget)
+    const setReply = (value: string) => { setReplyState(value); missionDrafts.set(mission.id, { ...draftOf(mission.id), reply: value }) }
+    const setBudget = (value: Budget | null) => { setBudgetState(value); missionDrafts.set(mission.id, { ...draftOf(mission.id), budget: value }) }
     const [model, setModel] = useState<{ revision: string; draft: ModelSettings | null } | null>(null)
     const [objectiveOpen, setObjectiveOpen] = useState(false)
     const [objectiveClipped, setObjectiveClipped] = useState(false)

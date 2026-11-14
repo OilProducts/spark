@@ -1,4 +1,5 @@
-const KIND_WORDS: Record<string, string> = { agent_task: 'agent task', human_gate: 'human gate', fan_in: 'fan-in' }
+// As the step inspector names each step type.
+const KIND_WORDS: Record<string, string> = { agent_task: 'agent', human_gate: 'human gate', fan_in: 'fan-in' }
 
 /**
  * A validator message as a sentence: node kinds in words, a capital first

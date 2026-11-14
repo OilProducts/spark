@@ -2,7 +2,7 @@ import { Editor } from '@/features/editor/Editor'
 import { resetFlowSaveBaselines } from '@/lib/flowPersistence'
 import { useStore } from '@/store'
 import { ReactFlowProvider } from '@xyflow/react'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -21,11 +21,8 @@ vi.mock('@/features/editor/components/ValidationPanel', () => ({
 }))
 
 vi.mock('@/features/editor/components/EditorCanvasToolbar', () => ({
-  EditorCanvasToolbar: ({ onAddNode, onRun }: { onAddNode: () => void; onRun: (path: string) => void }) => (
-    <div>
-      <button type="button" onClick={onAddNode}>add node</button>
-      <button type="button" onClick={() => onRun('/tmp/project')}>run</button>
-    </div>
+  EditorCanvasToolbar: ({ onRun }: { onRun: (path: string) => void }) => (
+    <button type="button" onClick={() => onRun('/tmp/project')}>run</button>
   ),
 }))
 
@@ -73,7 +70,11 @@ describe('Editor launch preparation', () => {
     vi.mocked(loadEditorFlowPayload).mockImplementation(async (flowName: string) => ({ name: flowName, files: [], flow: { id: flowName } }))
     vi.mocked(loadEditorPreview).mockResolvedValue({
       status: 'ok',
-      graph: { nodes: [{ id: 'start', label: 'Start', shape: 'Mdiamond' }], edges: [], graph_attrs: {} },
+      graph: {
+        nodes: [{ id: 'start', label: 'Start', kind: 'start' }, { id: 'work', label: 'Work', kind: 'agent_task' }, { id: 'done', label: 'Done', kind: 'exit' }],
+        edges: [{ from: 'start', to: 'work' }, { from: 'start', to: 'done', label: 'skip' }, { from: 'work', to: 'done' }],
+        graph_attrs: {},
+      },
       diagnostics: [],
       errors: [],
     })
@@ -98,10 +99,11 @@ describe('Editor launch preparation', () => {
     const user = userEvent.setup()
     render(<ReactFlowProvider><Editor /></ReactFlowProvider>)
     await waitFor(() => expect(useStore.getState().editorMode).toBe('structured'))
-    await waitFor(() => expect(document.querySelector('[data-nodeid="start"]')).not.toBeNull())
+    await waitFor(() => expect(document.querySelector('.react-flow__node[data-id="work"]')).not.toBeNull())
 
     // The edit's autosave fails, and nothing is left pending.
-    await user.click(screen.getByRole('button', { name: 'add node' }))
+    fireEvent.click(document.querySelector('.react-flow__node[data-id="work"]') as HTMLElement)
+    await user.keyboard('{Backspace}')
     await waitFor(() => expect(useStore.getState().saveState).toBe('error'))
     expect(savedContents).toHaveLength(1)
     // Structured saves send the flow as a JSON FlowDefinition.

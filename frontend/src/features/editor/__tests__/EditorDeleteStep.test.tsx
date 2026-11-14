@@ -1,8 +1,10 @@
 import { Editor } from '@/features/editor/Editor'
+import { EditorGraphBridgeProvider } from '@/features/editor/EditorGraphBridgeContext'
+import { Sidebar } from '@/features/editor/Sidebar'
 import { resetFlowSaveBaselines } from '@/lib/flowPersistence'
 import { useStore } from '@/store'
 import { ReactFlowProvider } from '@xyflow/react'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -15,14 +17,39 @@ vi.mock('@/features/editor/services/editorPreview', () => ({
 
 type SavedFlow = { nodes: Record<string, { label?: string; routes?: Record<string, { to: string }> }> }
 type Save = { project_path: string; flow: SavedFlow }
-type Graph = { nodes: Array<{ id: string; label: string; shape: string }>; edges: Array<{ from: string; to: string; label?: string }> }
+type Graph = { nodes: Array<{ id: string; label: string; kind: string }>; edges: Array<{ from: string; to: string; label?: string }> }
 
-const node = (id: string, label: string, shape = 'box') => ({ id, label, shape })
+const node = (id: string, label: string, kind = 'agent_task') => ({ id, label, kind })
 // Held's incoming route is the second edge, so its canvas ID is e-work-held-1.
 const PROJECT_A: Graph = {
-  nodes: [node('start', 'Start', 'Mdiamond'), node('work', 'Work'), node('held', 'Held', 'Msquare'), node('done', 'Done', 'Msquare')],
+  nodes: [node('start', 'Start', 'start'), node('work', 'Work'), node('held', 'Held', 'exit'), node('done', 'Done', 'exit')],
   edges: [{ from: 'start', to: 'work' }, { from: 'work', to: 'held', label: 'hold' }, { from: 'work', to: 'done', label: 'finish' }],
 }
+
+// A typed flow, whose routes carry their decision IDs and descriptions.
+const REVIEW_FLOW = {
+  schema_version: '2',
+  id: 'flow_a',
+  title: 'Flow A',
+  inputs: [],
+  nodes: {
+    start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'step_1', description: 'Begin the review.' } } },
+    step_1: {
+      kind: 'agent_task',
+      label: 'Review',
+      config: { kind: 'agent_task', prompt: 'Review the change.' },
+      routes: { approved: { to: 'done', description: 'The change is approved.' } },
+    },
+    done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
+  },
+}
+const previewOf = (flow: typeof REVIEW_FLOW) => async () => ({
+  status: 'ok',
+  graph: { nodes: Object.entries(flow.nodes).map(([id, entry]) => ({ id, label: entry.label, kind: entry.kind })), edges: [], graph_attrs: {} },
+  flow,
+  diagnostics: [],
+  errors: [],
+})
 
 const canvasNode = (id: string) => document.querySelector(`.react-flow__node[data-id="${id}"]`)
 const routesTo = (flow: SavedFlow, target: string) => Object.values(flow.nodes)
@@ -100,7 +127,7 @@ describe('Editor step deletion', () => {
   it('keeps a step whose ID is spelled like a deleted route\'s', async () => {
     graphs['/project-a'] = {
       nodes: [...PROJECT_A.nodes, node('e-work-held-1', 'Notify')],
-      edges: [...PROJECT_A.edges, { from: 'start', to: 'e-work-held-1', label: 'notify' }],
+      edges: [...PROJECT_A.edges, { from: 'start', to: 'e-work-held-1', label: 'notify' }, { from: 'e-work-held-1', to: 'done' }],
     }
     const user = userEvent.setup()
     render(<ReactFlowProvider><Editor /></ReactFlowProvider>)
@@ -113,39 +140,22 @@ describe('Editor step deletion', () => {
     expect(canvasNode('e-work-held-1')).not.toBeNull()
   })
 
-  it('keeps a deleted step recoverable with its routes after Add node, and gives the new step its own ID', async () => {
-    const flow = {
-      schema_version: '2',
-      id: 'flow_a',
-      title: 'Flow A',
-      inputs: [],
-      nodes: {
-        start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'step_1', description: 'Begin the review.' } } },
-        step_1: {
-          kind: 'agent_task',
-          label: 'Review',
-          config: { kind: 'agent_task', prompt: 'Review the change.' },
-          routes: { approved: { to: 'done', description: 'The change is approved.' } },
-        },
-        done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
-      },
-    }
-    vi.mocked(loadEditorPreview).mockImplementation(async () => ({
-      status: 'ok',
-      graph: { nodes: Object.entries(flow.nodes).map(([id, entry]) => ({ id, label: entry.label, kind: entry.kind })), edges: [], graph_attrs: {} },
-      flow,
-      diagnostics: [],
-      errors: [],
-    }))
+  it('keeps a deleted step recoverable with its routes after Add step, and gives the new step its own ID', async () => {
+    vi.mocked(loadEditorPreview).mockImplementation(previewOf(REVIEW_FLOW))
     const user = userEvent.setup()
     render(<ReactFlowProvider><Editor /></ReactFlowProvider>)
     await waitFor(() => expect(canvasNode('step_1')).not.toBeNull())
     await deleteStep(user, 'step_1')
     await waitFor(() => expect(canvasNode('step_1')).toBeNull())
 
-    await user.click(screen.getByRole('button', { name: 'Add node' }))
+    await user.click(screen.getByRole('button', { name: 'Add step' }))
     await user.keyboard('{Meta>}z{/Meta}')
-    await waitFor(() => expect(Object.keys(saves.at(-1)?.flow.nodes ?? {}).sort()).toEqual(['done', 'start', 'step_1', 'step_2']))
+    await waitFor(() => expect(canvasNode('step_1')).toHaveTextContent('Review'))
+    expect(canvasNode('step_2')).toHaveTextContent('New step 2')
+    // The new step leads nowhere yet, so no save carries it; without it, the restored flow saves.
+    expect(saves.some((save) => 'step_2' in save.flow.nodes)).toBe(false)
+    await deleteStep(user, 'step_2')
+    await waitFor(() => expect(Object.keys(saves.at(-1)?.flow.nodes ?? {}).sort()).toEqual(['done', 'start', 'step_1']))
     const saved = saves.at(-1)!.flow
     expect(saved.nodes.step_1).toMatchObject({
       label: 'Review',
@@ -153,16 +163,37 @@ describe('Editor step deletion', () => {
       routes: { approved: { to: 'done', description: 'The change is approved.' } },
     })
     expect(saved.nodes.start.routes).toEqual({ next: { to: 'step_1', description: 'Begin the review.' } })
-    expect(saved.nodes.step_2).toMatchObject({ label: 'New step 2' })
-    expect(saved.nodes.step_2.routes ?? {}).toEqual({})
-    expect(routesTo(saved, 'step_2')).toEqual([])
-    expect(canvasNode('step_1')).toHaveTextContent('Review')
-    expect(canvasNode('step_2')).toHaveTextContent('New step 2')
+  })
+
+  it('adds a route from the step inspector as a drag on the canvas does, and opens it', async () => {
+    vi.mocked(loadEditorPreview).mockImplementation(previewOf(REVIEW_FLOW))
+    const user = userEvent.setup()
+    render(<ReactFlowProvider><EditorGraphBridgeProvider><Editor /><Sidebar /></EditorGraphBridgeProvider></ReactFlowProvider>)
+    await waitFor(() => expect(canvasNode('step_1')).not.toBeNull())
+    fireEvent.click(canvasNode('step_1') as HTMLElement)
+
+    const routes = await screen.findByRole('region', { name: 'Routes' })
+    expect(within(routes).getByRole('button', { name: 'approved to Done' })).toBeVisible()
+    await user.selectOptions(within(routes).getByRole('combobox', { name: 'New route to' }), 'Review (this step)')
+    await user.type(within(routes).getByRole('textbox', { name: 'Decision ID (optional)' }), 'revise')
+    await user.click(within(routes).getByRole('button', { name: 'Add route' }))
+    await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1.routes).toEqual({
+      approved: { to: 'done', description: 'The change is approved.' },
+      revise: { to: 'step_1', description: 'Continue to Review.' },
+    }))
+
+    await user.click(within(routes).getByRole('button', { name: 'revise to Review' }))
+    expect(screen.getByRole('heading', { name: 'Route settings' })).toHaveFocus()
+    expect(screen.getByRole('textbox', { name: 'Decision ID' })).toHaveValue('revise')
+    // From and to the same step.
+    await user.click(within(screen.getByTestId('edge-structured-form')).getAllByRole('button', { name: 'Review' })[0])
+    expect(screen.getByRole('heading', { name: 'Step settings' })).toHaveFocus()
+    expect(useStore.getState().selectedNodeId).toBe('step_1')
   })
 
   it('does not undo a deletion into the same flow name in another project', async () => {
     graphs['/project-b'] = {
-      nodes: [node('start', 'Start', 'Mdiamond'), node('review', 'Review'), node('done', 'Done', 'Msquare')],
+      nodes: [node('start', 'Start', 'start'), node('review', 'Review'), node('done', 'Done', 'exit')],
       edges: [{ from: 'start', to: 'review' }, { from: 'review', to: 'done', label: 'finish' }],
     }
     const user = userEvent.setup()

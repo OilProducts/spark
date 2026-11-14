@@ -1,5 +1,5 @@
 import { useStore } from '@/store'
-import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { Node } from '@xyflow/react'
 
 import { ModelChooser } from '@/components/model-chooser/ModelChooser'
@@ -11,9 +11,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
-import { DEFAULT_EXIT_RESULT } from '@/lib/canonicalFlowModel'
+import { DEFAULT_EXIT_RESULT, NODE_CORE_ATTR_KEYS } from '@/lib/canonicalFlowModel'
 import { formatDecisionMap, parseDecisionMap } from '@/lib/flowContracts'
 import { setInvalidDraft } from '@/lib/flowPersistence'
+import { fetchDefinitions, type DefinitionItem } from '@/features/roles/rolesModel'
 import type { NodePropertyValue } from '../Sidebar'
 import { AdvancedKeyValueEditor } from './AdvancedKeyValueEditor'
 import { ContextKeyListEditor } from './ContextKeyListEditor'
@@ -34,6 +35,9 @@ type ExtensionEntry = {
     value: string
 }
 
+/** A route out of the step: its decision (a fork's `branch` or `join`), label and target step's title. */
+type StepRoute = { id: string; name: string; label: string; target: string }
+
 interface NodeInspectorPanelProps {
     selectedNodeId: string | null
     selectedNode?: Node
@@ -47,7 +51,11 @@ interface NodeInspectorPanelProps {
     selectedNodeExtensionEntries: ExtensionEntry[]
     selectedNodeToolHookPreWarning: string | null
     selectedNodeToolHookPostWarning: string | null
-    selectedNodeFork: { branches: string[]; join: string | null }
+    selectedNodeRoutes: StepRoute[]
+    /** The steps a new route can go to, by ID and title. */
+    routeTargets: { id: string; title: string }[]
+    onOpenRoute: (edgeId: string) => void
+    onAddRoute: (target: string, decision: string) => void
     onPropertyChange: (key: string, value: NodePropertyValue) => void
     onOpenGraphChildSettings: () => void
     onReadsContextChange: (value: string) => void
@@ -68,7 +76,7 @@ const isDefaultEnabledBoolean = (value: unknown) => value !== false && value !==
 const NODE_KIND_OPTIONS = [
     { value: 'start', label: 'Start' },
     { value: 'exit', label: 'Exit' },
-    { value: 'agent_task', label: 'Agent task' },
+    { value: 'agent_task', label: 'Agent' },
     { value: 'human_gate', label: 'Human gate' },
     { value: 'switch', label: 'Switch' },
     { value: 'parallel', label: 'Parallel' },
@@ -90,7 +98,10 @@ export function NodeInspectorPanel({
     selectedNodeExtensionEntries,
     selectedNodeToolHookPreWarning,
     selectedNodeToolHookPostWarning,
-    selectedNodeFork,
+    selectedNodeRoutes,
+    routeTargets,
+    onOpenRoute,
+    onAddRoute,
     onPropertyChange,
     onOpenGraphChildSettings,
     onReadsContextChange,
@@ -115,12 +126,12 @@ export function NodeInspectorPanel({
         <div className="flex-1 overflow-y-auto p-4">
             <InspectorScaffold
                 scopeLabel="Node"
-                title="Node settings"
-                entityLabel="Node ID"
+                title="Step settings"
+                entityLabel="Step ID"
                 entityValue={selectedNodeId || undefined}
             >
                 {!selectedNodeId ? (
-                    <InspectorEmptyState message="Select a component on the canvas to inspect and edit its properties." />
+                    <InspectorEmptyState message="Select a step on the canvas to inspect and edit it." />
                 ) : (
                     <div data-testid="node-structured-form" className="space-y-4">
                         <div className="space-y-1.5">
@@ -133,7 +144,19 @@ export function NodeInspectorPanel({
                         </div>
 
                         <div className="space-y-1.5">
-                            <Label htmlFor={`${id}-node-kind`}>Node kind</Label>
+                            <Label htmlFor={`${id}-description`}>Description</Label>
+                            <Textarea
+                                id={`${id}-description`}
+                                value={(selectedNode?.data?.description as string) || ''}
+                                onChange={(event) => onPropertyChange('description', event.target.value)}
+                                rows={2}
+                                className="text-sm"
+                                placeholder="What this step is for."
+                            />
+                        </div>
+
+                        <div className="space-y-1.5">
+                            <Label htmlFor={`${id}-node-kind`}>Step type</Label>
                             <NativeSelect
                                 id={`${id}-node-kind`}
                                 value={(selectedNode?.data?.kind as string) || 'agent_task'}
@@ -146,6 +169,13 @@ export function NodeInspectorPanel({
                                 ))}
                             </NativeSelect>
                         </div>
+
+                        {kind === 'agent_task' ? (
+                            <RoleField
+                                value={(selectedNode?.data?.role as string) || ''}
+                                onChange={(role) => onPropertyChange('role', role)}
+                            />
+                        ) : null}
 
                         {visibility.showPrompt ? (
                             <div className="flex h-48 flex-col space-y-1.5">
@@ -172,7 +202,7 @@ export function NodeInspectorPanel({
                                 <ContextKeyListEditor
                                     testId="node-reads-context-editor"
                                     title="Reads context"
-                                    description={<>Declare the <code>context.*</code> keys this node expects to consume from launch state or earlier stages.</>}
+                                    description={<>Declare the <code>context.*</code> keys this step expects to consume from launch state or earlier steps.</>}
                                     value={readsContextDraft}
                                     error={readsContextError}
                                     onChange={onReadsContextChange}
@@ -180,7 +210,7 @@ export function NodeInspectorPanel({
                                 <ContextKeyListEditor
                                     testId="node-writes-context-editor"
                                     title="Writes context"
-                                    description={<>Declare the <code>context.*</code> keys this node is expected to produce for later stages.</>}
+                                    description={<>Declare the <code>context.*</code> keys this step is expected to produce for later steps.</>}
                                     value={writesContextDraft}
                                     error={writesContextError}
                                     onChange={onWritesContextChange}
@@ -205,12 +235,6 @@ export function NodeInspectorPanel({
 
                         {visibility.showParallelOptions ? (
                             <>
-                                <Well data-testid="parallel-fork-structure" className="space-y-1 px-3 py-3 text-sm">
-                                    <p className="font-semibold text-foreground">Fork structure</p>
-                                    <p className="break-all"><span className="font-mono">branches</span>: {selectedNodeFork.branches.join(', ') || '(none)'}</p>
-                                    <p className="break-all"><span className="font-mono">join</span>: {selectedNodeFork.join || '(unset)'}</p>
-                                    <p className="text-xs text-muted-foreground">Edit by connecting edges from this node; mark the join edge in its inspector.</p>
-                                </Well>
                                 <div className="flex items-center gap-2">
                                     <Checkbox
                                         id={`${id}-tolerate-branch-errors`}
@@ -438,7 +462,7 @@ export function NodeInspectorPanel({
                                             Child flow linkage
                                         </p>
                                         <p id={`${id}-child-flow-help`} className="mt-1 text-xs text-muted-foreground">
-                                            Subflow nodes use this node's <code>flow_ref</code> config and optional input map.
+                                            Subflow steps use this step's <code>flow_ref</code> config and optional input map.
                                         </p>
                                     </div>
                                     <div className="space-y-1 text-sm text-foreground">
@@ -466,6 +490,18 @@ export function NodeInspectorPanel({
                                 onChange={(map) => onPropertyChange('config.results', map)}
                             />
                         ) : null}
+
+                        {kind === 'exit' ? null : (
+                            <StepRoutes
+                                key={selectedNodeId}
+                                kind={kind}
+                                stepId={selectedNodeId}
+                                routes={selectedNodeRoutes}
+                                targets={routeTargets}
+                                onOpenRoute={onOpenRoute}
+                                onAddRoute={onAddRoute}
+                            />
+                        )}
 
                         {visibility.showAdvanced ? (
                             <Button
@@ -624,49 +660,7 @@ export function NodeInspectorPanel({
                             onValueChange={onNodeExtensionValueChange}
                             onRemove={onNodeExtensionRemove}
                             onAdd={onNodeExtensionAdd}
-                            reservedKeys={new Set([
-                                'label',
-                                'kind',
-                                'config',
-                                'context',
-                                'contracts',
-                                'runtime',
-                                'manager',
-                                'retry',
-                                'execution',
-                                'ui',
-                                'extensions',
-                                'shape',
-                                'flow_ref',
-                                'input_map',
-                                'output_map',
-                                'routes',
-                                'prompt',
-                                'tool.command',
-                                'tool.hooks.pre',
-                                'tool.hooks.post',
-                                'tool.artifacts.paths',
-                                'tool.artifacts.stdout',
-                                'tool.artifacts.stderr',
-                                'max_parallel',
-                                'type',
-                                'max_retries',
-                                'session',
-                                'class',
-                                'timeout',
-                                'llm_model',
-                                'llm_provider',
-                                'reasoning_effort',
-                                'manager.poll_interval',
-                                'manager.max_cycles',
-                                'manager.stop_condition',
-                                'manager.actions',
-                                'manager.steer_cooldown',
-                                'stack.child_autostart',
-                                'human.default_choice',
-                                'spark.reads_context',
-                                'spark.writes_context',
-                            ])}
+                            reservedKeys={NODE_CORE_ATTR_KEYS}
                         />
                     </div>
                 )}
@@ -720,5 +714,141 @@ function DecisionMapEditor({
                 </p>
             ) : null}
         </div>
+    )
+}
+
+// An agent step's role, from the project's roles as runs resolve them: its own over bundled.
+// A role the list lacks stays chosen, so opening a step never changes it.
+function RoleField({ value, onChange }: { value: string; onChange: (role: string) => void }) {
+    const id = useId()
+    const projectPath = useStore((state) => state.activeProjectPath)
+    const [roles, setRoles] = useState<{ projectPath: string; items: DefinitionItem[] | null } | null>(null)
+    useEffect(() => {
+        if (!projectPath) return
+        let current = true
+        fetchDefinitions(projectPath).then(
+            (list) => { if (current) setRoles({ projectPath, items: list.items.filter((item) => item.kind === 'role') }) },
+            () => { if (current) setRoles({ projectPath, items: null }) },
+        )
+        return () => { current = false }
+    }, [projectPath])
+    // Null while loading or when the list failed.
+    const items = roles?.projectPath === projectPath ? roles.items : null
+    const listed = items?.some((item) => item.name === value) ?? false
+    const openRole = () => {
+        const state = useStore.getState()
+        state.setSelectedRole({ projectPath: projectPath!, name: value })
+        state.setViewMode('roles')
+    }
+    return (
+        <div className="space-y-1.5">
+            <Label htmlFor={`${id}-role`}>Role</Label>
+            <NativeSelect id={`${id}-role`} value={value} onChange={(event) => onChange(event.target.value)}>
+                <option value="">None</option>
+                {items?.map((item) => <option key={item.name} value={item.name}>{item.title || item.name}</option>)}
+                {value && !listed ? <option value={value}>{items ? `${value} (not found)` : value}</option> : null}
+            </NativeSelect>
+            {value && projectPath && (listed || !items) ? (
+                <Button type="button" variant="link" className="h-auto p-0 text-xs" onClick={openRole}>
+                    Open in Roles
+                </Button>
+            ) : null}
+        </div>
+    )
+}
+
+// The step's routes, each opening its settings, and a keyboard way to add one: the same route
+// a drag on the canvas adds. A fork's connections are its branches and its join instead.
+function StepRoutes({
+    kind,
+    stepId,
+    routes,
+    targets,
+    onOpenRoute,
+    onAddRoute,
+}: {
+    kind: string
+    stepId: string
+    routes: StepRoute[]
+    targets: { id: string; title: string }[]
+    onOpenRoute: (edgeId: string) => void
+    onAddRoute: (target: string, decision: string) => void
+}) {
+    const id = useId()
+    const [target, setTarget] = useState('')
+    const [decision, setDecision] = useState('')
+    const targetRef = useRef<HTMLSelectElement>(null)
+    const isFork = kind === 'parallel'
+    // Start and fan-in steps have exactly one route, `next`.
+    const single = kind === 'start' || kind === 'fan_in'
+    const key = isFork || single ? '' : decision.trim()
+    const duplicate = key !== '' && routes.some((route) => route.name === key)
+    const add = () => {
+        onAddRoute(target, key)
+        setTarget('')
+        setDecision('')
+        targetRef.current?.focus()
+    }
+    return (
+        <section aria-labelledby={`${id}-title`} data-testid="node-routes" className="space-y-2 rounded-xl bg-muted p-3">
+            <h3 id={`${id}-title`} className="text-sm font-semibold text-foreground">{isFork ? 'Branches' : 'Routes'}</h3>
+            {isFork ? <p className="text-xs text-muted-foreground">Open a branch to make it the join.</p> : null}
+            {routes.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{isFork ? 'No branches yet.' : 'No routes yet.'}</p>
+            ) : (
+                <ul className="space-y-1">
+                    {routes.map((route) => (
+                        <li key={route.id}>
+                            <Button
+                                type="button"
+                                variant="link"
+                                className="block h-auto whitespace-normal p-0 text-left font-normal"
+                                onClick={() => onOpenRoute(route.id)}
+                            >
+                                <span className="font-mono">{route.name}</span>
+                                {route.label && route.label !== route.name ? ` (${route.label})` : null}
+                                {' '}<span aria-hidden="true">→</span><span className="sr-only">to</span>{' '}
+                                {route.target}
+                            </Button>
+                        </li>
+                    ))}
+                </ul>
+            )}
+            {single && routes.length > 0 ? null : (
+                <>
+                    <div className="space-y-1.5">
+                        <Label htmlFor={`${id}-target`}>{isFork ? 'New branch to' : 'New route to'}</Label>
+                        <NativeSelect ref={targetRef} id={`${id}-target`} value={target} onChange={(event) => setTarget(event.target.value)}>
+                            <option value="">Choose a step…</option>
+                            {targets.map((step) => (
+                                <option key={step.id} value={step.id}>
+                                    {step.id === stepId ? `${step.title} (this step)` : step.title}
+                                </option>
+                            ))}
+                        </NativeSelect>
+                    </div>
+                    {isFork || single ? null : (
+                        <div className="space-y-1.5">
+                            <Label htmlFor={`${id}-decision`}>Decision ID (optional)</Label>
+                            <Input
+                                id={`${id}-decision`}
+                                aria-describedby={duplicate ? `${id}-duplicate` : undefined}
+                                aria-invalid={duplicate || undefined}
+                                value={decision}
+                                onChange={(event) => setDecision(event.target.value)}
+                                className="font-mono text-sm"
+                                placeholder="next"
+                            />
+                            {duplicate ? (
+                                <p id={`${id}-duplicate`} className="text-xs text-warning">This step already has a {key} route.</p>
+                            ) : null}
+                        </div>
+                    )}
+                    <Button type="button" variant="outline" size="sm" disabled={!target || duplicate} onClick={add}>
+                        {isFork ? 'Add branch' : 'Add route'}
+                    </Button>
+                </>
+            )}
+        </section>
     )
 }

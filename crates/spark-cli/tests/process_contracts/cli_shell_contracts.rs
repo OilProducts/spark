@@ -936,7 +936,7 @@ Diagnostics: 3\n\
 Errors: 3\n\
 - ERROR start_node: flow must have exactly one start node, found 0\n\
 - ERROR exit_node: flow must have at least one exit node\n\
-- ERROR decision_domain: task.md: agent_task nodes need at least one route\n",
+- ERROR decision_domain: task.md: agent_task steps need at least one route\n",
             fs::canonicalize(&flow_path)
                 .expect("canonical path")
                 .display()

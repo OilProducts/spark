@@ -1,7 +1,9 @@
 import { RunList } from '@/features/runs/components/RunList'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
+import { UNREACHABLE_MESSAGE } from '@/lib/fetchSpark'
 import type { RunStatusKind } from '@/features/runs/model/runOverviewModel'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -338,9 +340,57 @@ describe('RunList', () => {
         expect(screen.queryAllByTestId('run-history-row').map((row) => row.dataset.runId)).toContain('child')
     })
 
+    it('is one Tab stop that arrows, j/k, Home and End move through, rows and toggles alike, and Enter opens a run', async () => {
+        const user = userEvent.setup()
+        const onSelectRun = vi.fn()
+        const runs = [
+            makeRun({ run_id: 'a', title: 'Alpha', status: 'completed', started_at: '2026-03-22T09:00:00Z' }),
+            makeRun({ run_id: 'b', title: 'Beta', status: 'completed', started_at: '2026-03-22T08:00:00Z' }),
+            makeRun({ run_id: 'c', title: 'Child', flow_name: 'child.yaml', parent_run_id: 'b', status: 'completed', started_at: '2026-03-22T08:30:00Z' }),
+            makeRun({ run_id: 'd', title: 'Delta', status: 'completed', started_at: '2026-03-22T07:00:00Z' }),
+        ]
+        render(<RunList error={null} onSelectRun={onSelectRun} runs={runs} selectedRunId="d" status="ready" summaryLabel="4 runs" />)
+        const region = screen.getByTestId('run-list-scroll-region')
+        const row = (id: string) => region.querySelector<HTMLElement>(`[data-run-id="${id}"]`)
+        const toggle = screen.getByTestId('run-history-children-toggle')
+        const stops = () => [...region.querySelectorAll('button')].filter((button) => button.tabIndex === 0)
+
+        // Tab enters at the open run, and Tab again leaves the list.
+        expect(screen.getByRole('navigation', { name: 'Runs' })).toBe(screen.getByTestId('run-list-panel'))
+        expect(stops()).toEqual([row('d')])
+        await user.click(screen.getByTestId('run-list-search-input'))
+        await user.tab()
+        expect(row('d')).toHaveFocus()
+        await user.tab({ shift: true })
+        expect(screen.getByTestId('run-list-search-input')).toHaveFocus()
+        await user.tab()
+
+        await user.keyboard('{ArrowUp}')
+        expect(toggle).toHaveFocus()
+        await user.keyboard('k')
+        expect(row('b')).toHaveFocus()
+        await user.keyboard('{Home}')
+        expect(row('a')).toHaveFocus()
+        await user.keyboard('j')
+        expect(row('b')).toHaveFocus()
+        await user.keyboard('{End}{ArrowDown}')
+        expect(row('d')).toHaveFocus()
+        expect(onSelectRun).not.toHaveBeenCalled()
+
+        // A toggle still opens its children, which join the list; the stop follows focus.
+        await user.keyboard('{ArrowUp}{Enter}{ArrowDown}')
+        expect(row('c')).toHaveFocus()
+        expect(stops()).toEqual([row('c')])
+        await user.keyboard('{Enter}')
+        expect(onSelectRun).toHaveBeenCalledWith(expect.objectContaining({ run_id: 'c' }))
+    })
+
     it('says a failed refresh may leave the list out of date, and leaves a failed first load to the main pane', () => {
         const { rerender } = render(<RunList error="Couldn’t load your runs." onSelectRun={vi.fn()} runs={[makeRun()]} selectedRunId={null} status="error" summaryLabel="1 run" />)
         expect(screen.getByTestId('run-list-error')).toHaveTextContent('Couldn’t refresh your runs; this list may be out of date.Try again')
+
+        rerender(<RunList error={UNREACHABLE_MESSAGE} onSelectRun={vi.fn()} runs={[makeRun()]} selectedRunId={null} status="error" summaryLabel="1 run" />)
+        expect(screen.getByTestId('run-list-error')).toHaveTextContent('Couldn’t reach Spark; showing the last known runs.Try again')
 
         rerender(<RunList error="Couldn’t load your runs." onSelectRun={vi.fn()} runs={[]} selectedRunId={null} status="error" summaryLabel="0 runs" />)
         expect(screen.queryByTestId('run-list-error')).toBeNull()

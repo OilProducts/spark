@@ -59,6 +59,9 @@ test("primary UI shells render and can be navigated", async ({ page }) => {
     await flowButton.click()
 
     await expect(page.getByTestId("canvas-workspace-primary")).toBeVisible()
+    // A flow opens on its canvas alone until its settings are asked for.
+    await expect(page.getByTestId("inspector-panel")).toHaveCount(0)
+    await page.getByRole("button", { name: "Flow settings", exact: true }).click()
     await expect(page.locator('[data-inspector-scope="graph"]')).toBeVisible()
     await page.screenshot({ path: screenshotPath("03-graph-inspector.png"), fullPage: true })
 
@@ -131,8 +134,8 @@ test("prompt edits trigger live preview diagnostics before blur for item 5.1-03"
     await flowButton.click()
 
     await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
-    await expect(page.getByRole("button", { name: "Add node", exact: true })).toBeVisible()
-    await page.getByRole("button", { name: "Add node", exact: true }).click()
+    await expect(page.getByRole("button", { name: "Add step", exact: true })).toBeVisible()
+    await page.getByRole("button", { name: "Add step", exact: true }).click()
 
     const newNode = page.locator(".react-flow__node").filter({ hasText: "New step" }).last()
     await expect(newNode).toBeVisible()
@@ -334,8 +337,8 @@ test("inline node and edge diagnostic badges render for item 7.1-02", async ({ p
     await flowButton.click()
 
     await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
-    await expect(page.getByRole("button", { name: "Add node", exact: true })).toBeVisible()
-    await page.getByRole("button", { name: "Add node", exact: true }).click()
+    await expect(page.getByRole("button", { name: "Add step", exact: true })).toBeVisible()
+    await page.getByRole("button", { name: "Add step", exact: true }).click()
 
     const newNode = page.locator(".react-flow__node").filter({ hasText: "New step" }).last()
     await expect(newNode).toBeVisible()
@@ -564,6 +567,7 @@ test("flow metadata edits trigger live preview diagnostics", async ({ page }) =>
     await page.getByTestId("activity-flows").click()
     await flowRow(page, flowName).click()
     await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
+    await page.getByRole("button", { name: "Flow settings", exact: true }).click()
     await page.getByTestId("graph-advanced-toggle").click()
     await page.getByTestId("graph-extension-attr-new-key").fill("smoke_note")
     await page.getByTestId("graph-extension-attr-new-value").fill(token)
@@ -583,6 +587,7 @@ test("flow metadata round trips through the file view without legacy stylesheet 
     await page.getByTestId("activity-flows").click()
     await flowRow(page, flowName).click()
     await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
+    await page.getByRole("button", { name: "Flow settings", exact: true }).click()
     await page.getByTestId("graph-advanced-toggle").click()
     await expect(page.getByTestId("graph-model-stylesheet-editor")).toHaveCount(0)
     await page.getByTestId("graph-extension-attr-new-key").fill("smoke_note")

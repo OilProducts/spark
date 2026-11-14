@@ -2,6 +2,7 @@ import { completePreferenceInteraction } from '@/features/settings/services/clie
 import { flowLoadFailed } from './model/flowLoadFailure'
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { ReactFlowProvider } from '@xyflow/react'
+import { ArrowLeft } from 'lucide-react'
 
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -9,8 +10,10 @@ import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { Editor } from './Editor'
 import { EditorGraphBridgeProvider } from './EditorGraphBridgeContext'
 import { Sidebar } from './Sidebar'
+import { selectFlowSettingsOpen } from './GraphSettings'
 import { FlowsPanelActions, FlowsPanelList, useFlowCatalogPanel } from './FlowsPanel'
 import { ViewLayout } from '@/components/app/view-layout'
+import { Button } from '@/components/ui/button'
 import { CanvasSessionModeProvider } from '@/features/workflow-canvas'
 
 const MIN_EDITOR_SIDEBAR_WIDTH = 256
@@ -41,6 +44,8 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     const hasActiveFlow = useStore((state) => Boolean(state.activeFlow) && !flowLoadFailed(state.flowLoadFailure, state.activeFlow, state.activeProjectPath))
     // Files mode has no inspector either.
     const isFilesMode = useStore((state) => state.editorMode === 'files')
+    // With its Flow settings closed, a flow with nothing selected shows its canvas alone.
+    const showInspector = useStore((state) => Boolean(state.selectedNodeId || state.selectedEdgeId) || selectFlowSettingsOpen(state))
     const catalog = useFlowCatalogPanel()
     const [isEditorSidebarResizing, setIsEditorSidebarResizing] = useState(false)
     const workspaceRef = useRef<HTMLDivElement | null>(null)
@@ -56,6 +61,13 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
         return () => observer.disconnect()
     }, [])
     const sidebarWidth = clampEditorSidebarWidth(editorSidebarWidth, workspaceWidth)
+
+    // Stacked, the flow list is above the open flow: go back up to it, onto the open flow's row.
+    const showFlowList = () => {
+        const panel = workspaceRef.current?.closest('[data-testid="flows-view"]')?.querySelector<HTMLElement>('[data-testid="side-panel"]')
+        panel?.scrollIntoView({ block: 'start' })
+        panel?.querySelector<HTMLElement>('[aria-current="true"]')?.focus()
+    }
 
     const persistSidebarWidth = () => completePreferenceInteraction({ editor_sidebar_width: useStore.getState().editorSidebarWidth })
 
@@ -178,11 +190,19 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                 ref={workspaceRef}
                 className={`flex h-full overflow-hidden ${isNarrowViewport ? 'flex-col' : 'flex-row'}`}
             >
+                {isNarrowViewport && activeFlow ? (
+                    <div className="shrink-0 px-3 pt-2">
+                        <Button type="button" variant="link" size="sm" className="h-auto p-0 text-muted-foreground" onClick={showFlowList}>
+                            <ArrowLeft aria-hidden="true" />
+                            All flows
+                        </Button>
+                    </div>
+                ) : null}
                 <ReactFlowProvider>
                     <CanvasSessionModeProvider mode="editor">
                         <EditorGraphBridgeProvider>
-                            {isNarrowViewport ? null : <Sidebar desktopWidthPx={sidebarWidth} />}
-                            {!isNarrowViewport && hasActiveFlow && !isFilesMode ? (
+                            {isNarrowViewport || !showInspector ? null : <Sidebar desktopWidthPx={sidebarWidth} />}
+                            {!isNarrowViewport && hasActiveFlow && !isFilesMode && showInspector ? (
                                 <div
                                     data-testid="editor-sidebar-resize-handle"
                                     role="separator"
@@ -202,7 +222,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                                 <Editor isActive={isActive} flowList={{ failed: catalog.loadFailed, retry: () => void catalog.refreshFlows() }} />
                             </div>
                             {/* Stacked, the canvas comes first, right under the flow list, and the inspector follows. */}
-                            {isNarrowViewport ? <Sidebar desktopWidthPx={sidebarWidth} /> : null}
+                            {isNarrowViewport && showInspector ? <Sidebar desktopWidthPx={sidebarWidth} /> : null}
                         </EditorGraphBridgeProvider>
                     </CanvasSessionModeProvider>
                 </ReactFlowProvider>

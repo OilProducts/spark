@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useNodes, useReactFlow } from '@xyflow/react'
-import { useStore, type DiagnosticEntry } from '@/store'
+import { useStore, type AppState, type DiagnosticEntry } from '@/store'
 import { buildCanonicalFlowModelFromEditorState, buildFlowDefinitionFromCanonicalFlowModel } from '@/lib/canonicalFlowModel'
 import { resolveGraphFieldDiagnostics } from '@/lib/inspectorFieldDiagnostics'
 import { toExtensionAttrEntries } from '@/lib/extensionAttrs'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
-import { Button } from '@/components/ui/button'
 import { InspectorScaffold } from './components/InspectorScaffold'
 import { normalizeProjectPath } from '@/lib/projectPaths'
 import type { TriggerResponse } from '@/lib/api/triggersApi'
@@ -27,9 +26,13 @@ import {
 } from './components/graph-settings/GraphSettingsSections'
 import { useEditorGraphBridgeRef } from './EditorGraphBridgeContext'
 
-interface GraphSettingsProps {
-    inline?: boolean
-}
+/**
+ * Whether the open flow shows its Flow settings when nothing is selected: the choice last made for it,
+ * else the "Open graph settings panel" preference.
+ */
+export const selectFlowSettingsOpen = (state: AppState) => (
+    state.activeFlow ? (state.editorGraphSettingsPanelOpenByFlow[state.activeFlow] ?? state.preferredGraphSettingsOpen) : false
+)
 
 /**
  * The triggers that start this flow in this project but leave a required launch input unset,
@@ -49,7 +52,7 @@ function triggersMissingInputs(triggers: TriggerResponse[], flow: string | null,
     })
 }
 
-export function GraphSettings({ inline = false }: GraphSettingsProps) {
+export function GraphSettings() {
     const activeFlow = useStore((state) => state.activeFlow)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const triggers = useStore((state) => state.triggersSession.triggers)
@@ -65,10 +68,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const setWorkingDir = useStore((state) => state.setWorkingDir)
     const viewMode = useStore((state) => state.viewMode)
     const uiDefaults = useStore((state) => state.uiDefaults)
-    const preferredGraphSettingsOpen = useStore((state) => state.preferredGraphSettingsOpen)
     const preferredAdvancedControls = useStore((state) => state.preferredAdvancedControls)
-    const editorGraphSettingsPanelOpenByFlow = useStore((state) => state.editorGraphSettingsPanelOpenByFlow)
-    const setEditorGraphSettingsPanelOpen = useStore((state) => state.setEditorGraphSettingsPanelOpen)
     const editorShowAdvancedFlowMetadataByFlow = useStore((state) => state.editorShowAdvancedFlowMetadataByFlow)
     const setEditorShowAdvancedFlowMetadata = useStore((state) => state.setEditorShowAdvancedFlowMetadata)
     const editorLaunchInputDraftsByFlow = useStore((state) => state.editorLaunchInputDraftsByFlow)
@@ -97,7 +97,6 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         [rawLaunchInputsValue],
     )
 
-    const isOpen = activeFlow ? (editorGraphSettingsPanelOpenByFlow[activeFlow] ?? preferredGraphSettingsOpen) : false
     const showAdvancedFlowMetadata = activeFlow
         ? (editorShowAdvancedFlowMetadataByFlow[activeFlow] ?? preferredAdvancedControls)
         : false
@@ -248,7 +247,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         })
     }
 
-    const inspectorContent = (
+    return (
         <InspectorScaffold
             scopeLabel="Graph"
             title="Flow settings"
@@ -308,32 +307,5 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                 />
             </div>
         </InspectorScaffold>
-    )
-
-    if (inline) {
-        return inspectorContent
-    }
-
-    return (
-        <div className="absolute right-4 top-4 z-20 flex flex-col items-end">
-            <Button
-                onClick={() => {
-                    if (!activeFlow) {
-                        return
-                    }
-                    setEditorGraphSettingsPanelOpen(activeFlow, !isOpen)
-                }}
-                variant="outline"
-                size="sm"
-                className="bg-background"
-            >
-                Graph settings
-            </Button>
-            {isOpen && (
-                <div className="mt-2 w-80 max-h-[calc(100vh-6rem)] overflow-y-auto rounded-md border border-border bg-card p-4 shadow-lg">
-                    {inspectorContent}
-                </div>
-            )}
-        </div>
     )
 }

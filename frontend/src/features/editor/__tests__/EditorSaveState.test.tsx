@@ -56,6 +56,26 @@ describe('Editor save state behavior', () => {
     expect(state.saveErrorMessage).toContain('review.ready')
   })
 
+  it('refuses to save a step with no route, as a just-added one is, without a request', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ status: 'saved' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const flow = (extra: Record<string, unknown>) => ({ flow: { schema_version: '2', id: 'demo', nodes: {
+      start: { kind: 'start', routes: { next: { to: 'fork', description: 'Go.' } } },
+      fork: { kind: 'parallel', config: { kind: 'parallel', branches: ['done'], join: 'done' } },
+      done: { kind: 'exit' },
+      ...extra,
+    } } })
+
+    expect(await saveFlowContent('demo', flow({ step_1: { kind: 'agent_task', label: 'New step' } }))).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(useStore.getState().saveErrorKind).toBe('validation_error')
+    expect(useStore.getState().saveErrorProblems).toEqual([{ message: '“New step” needs a route to another step.', file: null }])
+
+    // Exits and forks lead nowhere by routes, and save.
+    expect(await saveFlowContent('demo', flow({}))).toBe(true)
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
   it('classifies parse and validation errors with actionable remediation', async () => {
     vi.stubGlobal(
       'fetch',

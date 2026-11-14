@@ -305,6 +305,37 @@ describe('Flows panel layer badges', () => {
         expect(await screen.findByRole('button', { name: 'New title (alpha)' })).toBeVisible()
     })
 
+    it('finds flows by every word of their title, description or name, and shows each in full on hover', async () => {
+        resetSidebarState()
+        fetchFlowListMock.mockResolvedValue(['nightly-audit', 'team/release'])
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            const body = /\/workspace\/api\/flows\?/.test(String(input))
+                ? [{ name: 'nightly-audit', title: 'Nightly audit', description: 'Checks the build every night.', graph_label: '', graph_goal: '' }]
+                : { items: [] }
+            return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+        }))
+        const user = userEvent.setup()
+        renderWithFlowProvider(<FlowsPanelHarness />)
+        const audit = await screen.findByRole('button', { name: 'Nightly audit (nightly-audit)' })
+        expect(audit).toHaveAttribute('title', 'Nightly audit\nnightly-audit\nChecks the build every night.')
+        const search = screen.getByRole('searchbox', { name: 'Search flows by title, name or description' })
+
+        await user.type(search, 'BUILD night')
+        expect(audit).toBeVisible()
+        expect(screen.queryByRole('button', { name: 'team/release' })).not.toBeInTheDocument()
+
+        await user.clear(search)
+        await user.type(search, 'team/rel')
+        expect(screen.getByRole('button', { name: 'team/release' })).toBeVisible()
+        expect(screen.queryByRole('button', { name: 'Nightly audit (nightly-audit)' })).not.toBeInTheDocument()
+
+        await user.type(search, 'x')
+        expect(screen.getByTestId('flow-list-search-empty')).toHaveTextContent('No flows match the search.')
+        await user.clear(search)
+        expect(screen.queryByTestId('flow-list-search-empty')).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'team/release' })).toBeVisible()
+    })
+
     it('marks only customized bundled flows; the project heading already marks the project\'s own', async () => {
         resetSidebarState()
         fetchFlowListMock.mockReset()

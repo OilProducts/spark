@@ -79,7 +79,8 @@ export function ProjectBrowserDialog({
             {open ? (
                 <DialogContent
                     data-testid="project-browser-dialog"
-                    className="max-w-3xl gap-0 overflow-hidden p-0"
+                    // One shrinkable column, so a long path wraps inside the dialog instead of widening it past its buttons.
+                    className="grid-cols-[minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-3xl"
                 >
                     <DialogHeader className="border-b border-border/70 px-6 py-5">
                         <DialogTitle>Browse Spark Projects</DialogTitle>
@@ -96,7 +97,7 @@ export function ProjectBrowserDialog({
                                         <span className="text-sm text-muted-foreground">Loading current directory…</span>
                                     ) : (
                                         breadcrumbSegments.map((segment, index) => (
-                                            <div key={segment.path} className="flex items-center gap-1.5">
+                                            <div key={segment.path} className="flex min-w-0 max-w-full items-center gap-1.5">
                                                 {index === 0 && segment.label === '/' ? (
                                                     <Button
                                                         type="button"
@@ -115,8 +116,9 @@ export function ProjectBrowserDialog({
                                                         size="xs"
                                                         onClick={() => onBrowse(segment.path)}
                                                         disabled={isLoading}
+                                                        className="min-w-0 max-w-full"
                                                     >
-                                                        {segment.label}
+                                                        <span className="truncate">{segment.label}</span>
                                                     </Button>
                                                 )}
                                                 {index < breadcrumbSegments.length - 1 ? (
@@ -128,7 +130,7 @@ export function ProjectBrowserDialog({
                                 </div>
                                 <p
                                     data-testid="project-browser-current-path"
-                                    className="truncate rounded-md border border-border/70 px-3 py-2 font-mono text-xs text-foreground"
+                                    className="break-all rounded-md border border-border/70 px-3 py-2 font-mono text-xs text-foreground"
                                 >
                                     {currentPath || 'Resolving directory…'}
                                 </p>

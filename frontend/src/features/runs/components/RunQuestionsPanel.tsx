@@ -8,6 +8,8 @@ import { ProjectConversationMarkdown } from '@/features/projects/components/Proj
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useStore } from '@/store'
+import { selectSelectedRunId } from '@/state/runsSessionSelectors'
+import { focusRunHeading } from './RunHeaderBar'
 
 interface RunQuestionsPanelProps {
     confirmedQuestionIds: string[]
@@ -65,6 +67,25 @@ export function RunQuestionsPanel({
         window.addEventListener('keydown', onKeyDown, true)
         return () => window.removeEventListener('keydown', onKeyDown, true)
     }, [])
+    // Once an answer is sent, focus moves on to the next question, or to the run's heading when
+    // none is left, rather than dropping to the page with the answered question.
+    const answered = useRef(false)
+    const moveOnFromAnswer = () => {
+        answered.current = false
+        if (document.activeElement && document.activeElement !== document.body) return
+        const next = panelRef.current?.querySelector<HTMLElement>('[data-testid="run-pending-human-gate-item"]')
+        const runId = selectSelectedRunId(useStore.getState())
+        if (next) next.focus()
+        else if (runId) focusRunHeading(runId)
+    }
+    const submitting = Object.values(submittingGateIds).some(Boolean)
+    useEffect(() => {
+        if (answered.current && !submitting) moveOnFromAnswer()
+    })
+    // The last answer can take the panel away with it.
+    useEffect(() => () => {
+        if (answered.current) moveOnFromAnswer()
+    }, [])
     if (groupedPendingInterviewGates.length === 0) {
         return null
     }
@@ -105,12 +126,14 @@ export function RunQuestionsPanel({
                                 const disabled = !questionId || !confirmedQuestionIds.includes(questionId) || submittingGateIds[questionId] === true
                                 const isFreeform = gate.questionType === 'FREEFORM'
                                 const showOptions = Boolean(questionId) && (!isFreeform || gate.origin === 'agent_clarification') && gate.options.length > 0
+                                const showMultipleChoiceMetadata = gate.questionType === 'MULTIPLE_CHOICE' || gate.origin === 'agent_clarification'
                                 const noteId = questionId ? `run-gate-note-${questionId}` : undefined
                                 return (
                                     <li
                                         key={gate.eventId}
                                         data-testid="run-pending-human-gate-item"
-                                        className="flex max-w-[72ch] flex-col gap-3 rounded-xl border border-border bg-background p-4 text-sm text-foreground"
+                                        tabIndex={-1}
+                                        className="flex max-w-[72ch] flex-col gap-3 rounded-xl border border-border bg-background p-4 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                     >
                                         <p className="text-base font-medium leading-snug">{gate.prompt}</p>
                                         {gate.details && (
@@ -137,6 +160,7 @@ export function RunQuestionsPanel({
                                                     type="button"
                                                     data-testid={`run-pending-human-gate-freeform-submit-${questionId}`}
                                                     onClick={() => {
+                                                        answered.current = true
                                                         onSubmitPendingGateAnswer(gate, freeformAnswer)
                                                     }}
                                                     disabled={disabled || freeformAnswer.trim().length === 0}
@@ -173,7 +197,6 @@ export function RunQuestionsPanel({
                                                 >
                                                     {gate.options.map((option) => {
                                                         const semanticHint = pendingGateSemanticHint(gate.questionType, option.value)
-                                                        const showMultipleChoiceMetadata = gate.questionType === 'MULTIPLE_CHOICE' || gate.origin === 'agent_clarification'
                                                         const optionKey = showMultipleChoiceMetadata ? option.key : null
                                                         const description = showMultipleChoiceMetadata ? option.description : null
                                                         return (
@@ -184,6 +207,7 @@ export function RunQuestionsPanel({
                                                                     type="button"
                                                                     data-testid={`run-pending-human-gate-answer-${option.value}`}
                                                                     onClick={() => {
+                                                                        answered.current = true
                                                                         onSubmitPendingGateAnswer(gate, option.value, gateNote)
                                                                     }}
                                                                     disabled={disabled}
@@ -216,6 +240,12 @@ export function RunQuestionsPanel({
                                                         )
                                                     })}
                                                 </div>
+                                                {/* A key only picks its answer, so the key caps say how to send it. */}
+                                                {showMultipleChoiceMetadata && gate.options.some((option) => option.key) ? (
+                                                    <p data-testid="run-pending-human-gate-keys-hint" className="-mt-1 text-xs text-muted-foreground pointer-coarse:hidden">
+                                                        Press an answer’s key to pick it, then Enter to send it.
+                                                    </p>
+                                                ) : null}
                                             </>
                                         )}
                                         <div

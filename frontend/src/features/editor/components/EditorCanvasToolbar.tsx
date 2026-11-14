@@ -1,4 +1,4 @@
-import { Box, Boxes, FileCode, LayoutDashboard, Play, RotateCcw, SquarePlus, Workflow, type LucideIcon } from 'lucide-react'
+import { Box, Boxes, FileCode, LayoutDashboard, Play, RotateCcw, SlidersHorizontal, SquarePlus, Workflow, type LucideIcon } from 'lucide-react'
 
 import { SegmentedControl } from '@/components/app/segmented-control'
 import { Button } from '@/components/ui/button'
@@ -29,6 +29,8 @@ type EditorCanvasToolbarProps = {
     onRun: (projectPath: string) => void
     /** The minimap toggle; omitted where the canvas has no minimap. */
     minimap?: { shown: boolean; onToggle: () => void }
+    /** Shows or hides the flow's settings beside the canvas; `shown` while they are what the inspector shows. */
+    flowSettings?: { shown: boolean; onToggle: () => void }
 }
 
 // Below 42rem of toolbar the toggles and actions show only icons (named by aria-label), so the row stays one line beside the flow settings at 1280px.
@@ -59,6 +61,7 @@ export function EditorCanvasToolbar({
     runDefaultProjectPath,
     onRun,
     minimap,
+    flowSettings,
 }: EditorCanvasToolbarProps) {
     const isStructured = mode === 'structured'
     const canEditLayout = isStructured && !childFlowsExpanded
@@ -117,10 +120,25 @@ export function EditorCanvasToolbar({
 
             {isStructured ? (
                 <div role="group" aria-label="Actions" className="ml-auto flex shrink-0 items-center gap-2">
+                    {flowSettings ? (
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            aria-label="Flow settings"
+                            title={flowSettings.shown ? 'Hide flow settings' : 'Show flow settings'}
+                            aria-pressed={flowSettings.shown}
+                            className="aria-pressed:bg-accent aria-pressed:text-foreground"
+                            onClick={flowSettings.onToggle}
+                        >
+                            <SlidersHorizontal aria-hidden="true" className="@2xl:hidden" />
+                            <span className="hidden @2xl:inline">Flow settings</span>
+                        </Button>
+                    ) : null}
                     {canEditLayout ? (
-                        <Button type="button" size="sm" variant="outline" aria-label="Add node" title="Add node" onClick={onAddNode}>
+                        <Button type="button" size="sm" variant="outline" aria-label="Add step" title="Add step" onClick={onAddNode}>
                             <SquarePlus aria-hidden="true" className="@2xl:hidden" />
-                            <span className="hidden @2xl:inline">+ Node</span>
+                            <span className="hidden @2xl:inline">+ Step</span>
                         </Button>
                     ) : null}
                     {/* A disabled button shows no tooltip, so its wrapper says why Run is off. */}

@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use attractor_core::{
-    ExitOutcome, ExitResult, FlowDefinition, FlowNode, FlowRoute, JournalEntry, LaunchContext,
-    NodeConfig, NodeContracts, NodeKind, RunRecord,
+    ExitOutcome, ExitResult, FlowDefinition, FlowNode, FlowRoute, IndexMap, JournalEntry,
+    LaunchContext, NodeConfig, NodeContracts, NodeKind, RunRecord,
 };
 use attractor_runtime::usage::{estimate_model_cost, project_run_usage, RunUsageAccumulator};
 use attractor_runtime::{
@@ -483,8 +483,8 @@ impl spark_agent_adapter::CodergenBackend for LiveUsageBackend {
     }
 }
 
-fn routes(decision: &str, to: &str) -> BTreeMap<String, FlowRoute> {
-    BTreeMap::from([(
+fn routes(decision: &str, to: &str) -> IndexMap<String, FlowRoute> {
+    IndexMap::from([(
         decision.to_string(),
         FlowRoute {
             to: to.to_string(),

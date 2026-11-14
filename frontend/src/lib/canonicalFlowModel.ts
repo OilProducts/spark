@@ -159,6 +159,20 @@ const DEPRECATED_DOT_NODE_KEYS = new Set([
     'type',
     'stack.child_yamlfile',
 ])
+/** Step attrs with a field of their own in the flow or the step inspector; any other is an extension. */
+export const NODE_CORE_ATTR_KEYS = new Set<string>([
+    ...NODE_EXTENSION_CORE_KEYS,
+    ...DEPRECATED_DOT_NODE_KEYS,
+    ...EDITOR_NODE_EXCLUDED_ATTR_KEYS,
+    // The inspector's tool fields, saved as extensions.
+    'tool.hooks.pre',
+    'tool.hooks.post',
+    'tool.artifacts.paths',
+    'tool.artifacts.stdout',
+    'tool.artifacts.stderr',
+])
+/** Route attrs with a field of their own; any other is an extension. */
+export const EDGE_CORE_ATTR_KEYS = new Set<string>([...EDGE_EXTENSION_CORE_KEYS, ...EPHEMERAL_EDGE_ATTR_KEYS])
 
 function isCanonicalAttrValue(value: unknown): value is CanonicalAttrValue {
     if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {

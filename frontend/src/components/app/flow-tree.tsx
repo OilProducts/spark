@@ -134,7 +134,10 @@ function FlowTreeNodeRow({
             <Button
                 type="button"
                 aria-label={`${title ? `${title} (${node.path})` : node.path}${error ? ', has errors' : ''}`}
-                title={error ? `${node.path}\n${error}` : node.path}
+                // The row truncates its title and description; the tooltip has them in full.
+                title={[title, node.path, error ?? description].filter(Boolean).join('\n')}
+                aria-current={selectedFlow === node.path ? 'true' : undefined}
+                data-flow-name={node.path}
                 onClick={() => onSelectFlow(node.path)}
                 variant="ghost"
                 className={`h-auto min-h-9 w-full justify-start rounded-md px-3 py-2 pr-8 text-left text-sm transition-colors ${

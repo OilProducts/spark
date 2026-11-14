@@ -1498,6 +1498,14 @@ describe('RunsPanel', () => {
     expect(startBody.launch_context).toEqual({ 'context.topic': 'original topic', 'context.audience': 'operators' })
     expect(selectSelectedRunId(useStore.getState())).toBe('run-rerun-new')
     expect(useStore.getState().viewMode).toBe('runs')
+
+    // Focus waits for the new run to show, then lands on its heading rather than on the page.
+    act(() => {
+      window.dispatchEvent(new CustomEvent('spark:run-upsert', {
+        detail: { run: { ...selectedRun, run_id: 'run-rerun-new', status: 'running', outcome: null, ended_at: null } },
+      }))
+    })
+    await waitFor(() => expect(screen.getByTestId('run-header-title')).toHaveFocus())
   })
 
   it('opens the run flow in the editor with the relevant node queued for selection', async () => {
@@ -2694,7 +2702,7 @@ describe('RunsPanel', () => {
     })
   })
 
-  it('reconnects the runs list and selected run transports from the global reconnect control', async () => {
+  it('reconnects the runs list and selected run transports from the global reconnect control, and says when Spark can\'t be reached', async () => {
     const selectedRun = makeRun({
       run_id: 'run-reconnect',
       flow_name: 'selected.dot',
@@ -2707,8 +2715,10 @@ describe('RunsPanel', () => {
     const scopedRunsUrl = '/attractor/runs'
     const liveEventsUrl = '/workspace/api/live/events'
 
+    let reachable = true
     const fetchMock = vi.mocked(global.fetch)
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!reachable) throw new TypeError('Failed to fetch')
       const url = resolveRequestUrl(input)
       const method = init?.method ?? 'GET'
       if (method !== 'GET') {
@@ -2865,6 +2875,31 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
+      expect(screen.queryByTestId('runs-transport-reconnect-banner')).not.toBeInTheDocument()
+    })
+
+    // Spark goes away: once the stream fails to come back, the list says it shows the last runs it
+    // knew and the run says its live updates stopped, until the stream is back.
+    reachable = false
+    const lostSource = latestSourceMatching(liveEventsUrl)
+    act(() => lostSource?.fail())
+    await waitFor(() => expect(latestSourceMatching(liveEventsUrl)).not.toBe(lostSource))
+    act(() => latestSourceMatching(liveEventsUrl)?.fail())
+    await waitFor(() => {
+      expect(screen.getByTestId('run-list-error')).toHaveTextContent('Couldn’t reach Spark; showing the last known runs.')
+      expect(screen.getByTestId('runs-transport-reconnect-banner')).toBeVisible()
+    })
+    expect(screen.getByTestId('run-history-row')).toBeVisible()
+
+    reachable = true
+    const failedSource = latestSourceMatching(liveEventsUrl)
+    await waitFor(() => expect(latestSourceMatching(liveEventsUrl)).not.toBe(failedSource))
+    const backSource = latestSourceMatching(liveEventsUrl)
+    act(() => backSource?.open())
+    await waitFor(() => expect(latestSourceMatching(liveEventsUrl)).not.toBe(backSource))
+    act(() => latestSourceMatching(liveEventsUrl)?.open())
+    await waitFor(() => {
+      expect(screen.queryByTestId('run-list-error')).not.toBeInTheDocument()
       expect(screen.queryByTestId('runs-transport-reconnect-banner')).not.toBeInTheDocument()
     })
   })

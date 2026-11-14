@@ -28,7 +28,8 @@ export function InspectorScaffold({
             data-inspector-scope={scopeLabel.toLowerCase()}
         >
             <div className="space-y-2">
-                <h2 className="text-base font-semibold text-foreground">{title}</h2>
+                {/* Focusable, so opening a step or route from the inspector can land on it. */}
+                <h2 tabIndex={-1} className="rounded-sm text-base font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/30">{title}</h2>
                 {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
                 {entityValue ? (
                     <div className="rounded-lg bg-muted px-2.5 py-1.5 text-xs text-muted-foreground">

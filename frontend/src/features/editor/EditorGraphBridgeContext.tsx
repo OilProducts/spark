@@ -1,6 +1,6 @@
 import { createContext, useContext, useLayoutEffect, useRef, type MutableRefObject, type PropsWithChildren } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
-import type { Edge, Node } from '@xyflow/react'
+import type { Connection, Edge, Node } from '@xyflow/react'
 import type { CanonicalFlowDefinition } from '@/lib/canonicalFlowModel'
 
 type EditorGraphBridge = {
@@ -10,6 +10,8 @@ type EditorGraphBridge = {
   setEdges: Dispatch<SetStateAction<Edge[]>>
   /** The loaded flow definition, which carries what the canvas does not edit. */
   getFlow: () => CanonicalFlowDefinition | null
+  /** Adds a route between two steps, as dragging one on the canvas does; `data` sets its fields. */
+  connect: (params: Connection & { data?: Record<string, unknown> }) => void
 }
 
 const EditorGraphBridgeContext = createContext<MutableRefObject<EditorGraphBridge | null> | null>(null)

@@ -1,12 +1,16 @@
 import { useStore, type DiagnosticEntry } from "@/store"
-import { useMemo } from "react"
+import { useEffect, useMemo, useRef } from "react"
 import { useReactFlow, useStore as useReactFlowStore, type Edge, type Node } from "@xyflow/react"
-import { buildCanonicalFlowModelFromEditorState, buildFlowDefinitionFromCanonicalFlowModel } from "@/lib/canonicalFlowModel"
+import {
+    buildCanonicalFlowModelFromEditorState,
+    buildFlowDefinitionFromCanonicalFlowModel,
+    EDGE_CORE_ATTR_KEYS,
+    NODE_CORE_ATTR_KEYS,
+} from "@/lib/canonicalFlowModel"
 import { getHandlerType, getNodeFieldVisibility } from "@/lib/nodeVisibility"
 import { getToolHookCommandWarning } from "@/lib/graphAttrValidation"
 import { resolveEdgeFieldDiagnostics, resolveNodeFieldDiagnostics } from "@/lib/inspectorFieldDiagnostics"
 import { toExtensionAttrEntries } from "@/lib/extensionAttrs"
-import { EDGE_RENDER_ROUTE_KEY } from "@/lib/flowLayout"
 import {
     getReactFlowNodeTypeForShape,
     getShapeNodeStyle,
@@ -22,6 +26,7 @@ import {
     parseContextKeyList,
     serializeContextKeyList,
 } from '@/lib/flowContracts'
+import { filterAuthoredEdges, filterAuthoredNodes } from '@/features/workflow-canvas/derivedPreview'
 import { useEditorGraphBridgeRef } from './EditorGraphBridgeContext'
 import { flowLoadFailed } from './model/flowLoadFailure'
 
@@ -39,59 +44,6 @@ type FlowGraphSnapshot = {
     nodes: Node[]
     edges: Edge[]
 }
-const CORE_NODE_ATTR_KEYS = new Set<string>([
-    'label',
-    'kind',
-    'config',
-    'context',
-    'contracts',
-    'runtime',
-    'manager',
-    'retry',
-    'execution',
-    'ui',
-    'extensions',
-    'shape',
-    'flow_ref',
-    'input_map',
-    'output_map',
-    'routes',
-    'prompt',
-    'tool.command',
-    'tool.hooks.pre',
-    'tool.hooks.post',
-    'tool.artifacts.paths',
-    'tool.artifacts.stdout',
-    'tool.artifacts.stderr',
-    'max_parallel',
-    'type',
-    'max_retries',
-    'session',
-    'class',
-    'timeout',
-    'llm_model',
-    'llm_provider',
-    'llm_profile',
-    'reasoning_effort',
-    'manager.poll_interval',
-    'manager.max_cycles',
-    'manager.stop_condition',
-    'manager.actions',
-    'manager.steer_cooldown',
-    'stack.child_autostart',
-    'spark.reads_context',
-    'spark.writes_context',
-])
-const CORE_EDGE_ATTR_KEYS = new Set<string>([
-    'kind',
-    'decision',
-    'description',
-    'label',
-])
-const EXCLUDED_NODE_EXTENSION_ATTR_KEYS = new Set<string>(['status', 'human.default_choice'])
-// The canvas's own drawing state, never part of the flow.
-const EXCLUDED_EDGE_EXTENSION_ATTR_KEYS = new Set<string>([EDGE_RENDER_ROUTE_KEY])
-
 const NODE_KIND_TO_SHAPE: Record<string, string> = {
     start: 'Mdiamond',
     exit: 'Msquare',
@@ -184,6 +136,14 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         (editorGraphBridgeRef?.current?.setNodes ?? setNodes)(updater)
     const updateEdges = (updater: Parameters<typeof setEdges>[0]) =>
         (editorGraphBridgeRef?.current?.setEdges ?? setEdges)(updater)
+    const navRef = useRef<HTMLElement>(null)
+    // Opening a step or route from the inspector moves focus to the inspector that replaces it.
+    const focusInspectorRef = useRef(false)
+    useEffect(() => {
+        if (!focusInspectorRef.current) return
+        focusInspectorRef.current = false
+        navRef.current?.querySelector<HTMLElement>('h2')?.focus()
+    }, [selectedNodeId, selectedEdgeId])
     const { scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
         flowName: activeFlow,
         debounceMs: INSPECTOR_SAVE_DEBOUNCE_MS,
@@ -236,9 +196,35 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         updateNodeProperty(selectedNodeId, key, value)
     }
 
+    // Flow settings show even when the preference keeps them closed on open.
     const openGraphChildSettings = () => {
         setSelectedEdgeId(null)
         setSelectedNodeId(null)
+        if (activeFlow) useStore.getState().setEditorGraphSettingsPanelOpen(activeFlow, true)
+    }
+
+    // As a click on the canvas would: it alone is selected, and the inspector shows it.
+    const openOnCanvas = (nodeId: string | null, edgeId: string | null) => {
+        setSelectedNodeId(nodeId)
+        setSelectedEdgeId(edgeId)
+        updateNodes((current) => current.map((node) => (
+            node.selected === (node.id === nodeId) ? node : { ...node, selected: node.id === nodeId }
+        )))
+        updateEdges((current) => current.map((edge) => (
+            edge.selected === (edge.id === edgeId) ? edge : { ...edge, selected: edge.id === edgeId }
+        )))
+        focusInspectorRef.current = true
+    }
+
+    const addRoute = (target: string, decision: string) => {
+        if (!selectedNodeId) return
+        editorGraphBridgeRef?.current?.connect({
+            source: selectedNodeId,
+            target,
+            sourceHandle: null,
+            targetHandle: null,
+            ...(decision ? { data: { decision } } : {}),
+        })
     }
 
     const selectedNode = nodes.find(n => n.id === selectedNodeId);
@@ -246,27 +232,35 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const selectedNodeExtensionEntries = useMemo(
         () => toExtensionAttrEntries(
             (selectedNode?.data ?? {}) as Record<string, unknown>,
-            CORE_NODE_ATTR_KEYS,
-            EXCLUDED_NODE_EXTENSION_ATTR_KEYS,
+            NODE_CORE_ATTR_KEYS,
         ),
         [selectedNode?.data],
     )
     const selectedEdgeExtensionEntries = useMemo(
         () => toExtensionAttrEntries(
             (selectedEdge?.data ?? {}) as Record<string, unknown>,
-            CORE_EDGE_ATTR_KEYS,
-            EXCLUDED_EDGE_EXTENSION_ATTR_KEYS,
+            EDGE_CORE_ATTR_KEYS,
         ),
         [selectedEdge?.data],
     )
-    // A fork's branch and join edges are its structure; other edges are routes.
-    const selectedNodeForkEdges = selectedNode?.data?.kind === 'parallel'
-        ? edges.filter((edge) => edge.source === selectedNode.id)
-        : []
-    const selectedNodeFork = {
-        branches: selectedNodeForkEdges.filter((edge) => edge.data?.kind !== 'join').map((edge) => edge.target),
-        join: selectedNodeForkEdges.find((edge) => edge.data?.kind === 'join')?.target ?? null,
+    // A step goes by its label, as the canvas shows it.
+    const stepTitle = (nodeId: string) => {
+        const label = nodes.find((node) => node.id === nodeId)?.data?.label
+        return typeof label === 'string' && label.trim() ? label.trim() : nodeId
     }
+    // A fork's connections are its branches and join; other steps' are routes, named by decision.
+    const selectedNodeRoutes = filterAuthoredEdges(edges).filter((edge) => edge.source === selectedNodeId).map((edge) => ({
+        id: edge.id,
+        name: selectedNode?.data?.kind === 'parallel'
+            ? (edge.data?.kind === 'join' ? 'join' : 'branch')
+            : String(edge.data?.decision || 'next'),
+        label: typeof edge.data?.label === 'string' ? edge.data.label : '',
+        target: stepTitle(edge.target),
+    }))
+    // Nothing routes back into a start step.
+    const routeTargets = filterAuthoredNodes(nodes)
+        .filter((node) => node.data?.kind !== 'start')
+        .map((node) => ({ id: node.id, title: stepTitle(node.id) }))
     const selectedEdgeIsFork = nodes.find((node) => node.id === selectedEdge?.source)?.data?.kind === 'parallel'
     const handlerType = getHandlerType((selectedNode?.data?.kind as string) || '')
     const selectedNodeReadsContextRaw = typeof selectedNode?.data?.['spark.reads_context'] === 'string'
@@ -522,6 +516,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
 
     return (
         <nav
+            ref={navRef}
             data-testid="inspector-panel"
             data-inspector-active-scope={activeInspectorScope}
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
@@ -549,7 +544,10 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                         selectedNodeExtensionEntries={selectedNodeExtensionEntries}
                         selectedNodeToolHookPreWarning={selectedNodeToolHookPreWarning}
                         selectedNodeToolHookPostWarning={selectedNodeToolHookPostWarning}
-                        selectedNodeFork={selectedNodeFork}
+                        selectedNodeRoutes={selectedNodeRoutes}
+                        routeTargets={routeTargets}
+                        onOpenRoute={(edgeId) => openOnCanvas(null, edgeId)}
+                        onAddRoute={addRoute}
                         onPropertyChange={handlePropertyChange}
                         onOpenGraphChildSettings={openGraphChildSettings}
                         onReadsContextChange={handleReadsContextChange}
@@ -570,6 +568,8 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                         selectedEdgeExtensionEntries={selectedEdgeExtensionEntries}
                         edgeFieldDiagnostics={edgeFieldDiagnostics}
                         isForkEdge={selectedEdgeIsFork}
+                        stepTitle={stepTitle}
+                        onOpenStep={(nodeId) => openOnCanvas(nodeId, null)}
                         onPropertyChange={handleEdgePropertyChange}
                         onExtensionValueChange={handleEdgeExtensionValueChange}
                         onExtensionRemove={handleEdgeExtensionRemove}

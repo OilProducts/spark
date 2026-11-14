@@ -86,6 +86,7 @@ import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button';
 import { useRegisterEditorGraphBridge } from './EditorGraphBridgeContext';
 import { EditorCanvasToolbar } from './components/EditorCanvasToolbar';
+import { selectFlowSettingsOpen } from './GraphSettings';
 import { EditorSaveStatus } from './components/EditorSaveStatus';
 import { flowFileChanges, FlowFilesView, hasFlowFileChanges, ProblemList, type FlowFileDrafts, type FlowFilesError } from './components/FlowFilesView';
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection';
@@ -244,6 +245,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         state.activeFlow ? (state.editorExpandChildFlowsByFlow[state.activeFlow] ?? state.preferredExpandChildFlows) : false
     ));
     const setEditorExpandChildFlows = useStore((state) => state.setEditorExpandChildFlows);
+    const flowSettingsShown = useStore((state) => !selectedNodeId && !selectedEdgeId && selectFlowSettingsOpen(state));
+    const setEditorGraphSettingsPanelOpen = useStore((state) => state.setEditorGraphSettingsPanelOpen);
     const hasValidationErrors = useStore((state) => state.hasValidationErrors);
     const saveState = useStore((state) => state.saveState);
     const workingDir = useStore((state) => state.workingDir);
@@ -330,12 +333,14 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const isExpandedReadOnlyPreview = editorMode === 'structured' && expandChildFlows;
     // The file view edits the files; its canvas only selects nodes.
     const isCanvasReadOnly = isExpandedReadOnlyPreview || editorMode === 'files';
+    const connectRef = useRef<(params: Connection | Edge) => void>(() => {});
     const editorGraphBridge = useMemo(() => ({
         getNodes: () => canvasGraphRef.current.nodes,
         setNodes,
         getEdges: () => canvasGraphRef.current.edges,
         setEdges,
         getFlow: () => canonicalFlowRef.current,
+        connect: (params: Connection | Edge) => connectRef.current(params),
     }), [setEdges, setNodes]);
 
     useRegisterEditorGraphBridge(editorGraphBridge);
@@ -1191,7 +1196,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 const description = `Continue to ${String(target?.data?.label || params.target)}.`
                 const nextEdge: Edge = {
                     ...params,
-                    ...(isFork || ('data' in params && params.data?.decision) ? {} : { data: { ...('data' in params ? params.data : {}), decision, description } }),
+                    ...(isFork ? {} : { data: { decision, description, ...('data' in params ? params.data : {}) } }),
                     id: buildEdgeIdForConnection(params, currentEdges),
                     type: EDGE_TYPE,
                     className: EDGE_CLASS,
@@ -1220,6 +1225,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         },
         [expandChildFlows, nodes, scheduleEdgeRouting, scheduleSave, setEdges],
     );
+    // The inspector's route form adds a route through the same path as a drag.
+    useEffect(() => { connectRef.current = onConnect; }, [onConnect]);
 
     const onAddNode = useCallback(() => {
         if (!flowName || expandChildFlows) return;
@@ -1614,6 +1621,17 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     onAddNode={onAddNode}
                     runDefaultProjectPath={runDefaultProjectPath}
                     minimap={isExpandedReadOnlyPreview ? undefined : { shown: showMinimap, onToggle: () => setShowMinimap((shown) => !shown) }}
+                    // Opening them leaves the selected step, so the inspector shows them.
+                    flowSettings={{
+                        shown: flowSettingsShown,
+                        onToggle: () => {
+                            if (!flowSettingsShown) {
+                                setSelectedNodeId(null);
+                                setSelectedEdgeId(null);
+                            }
+                            setEditorGraphSettingsPanelOpen(flowName, !flowSettingsShown);
+                        },
+                    }}
                     onRun={(projectPath) => {
                         flushPendingSave()
                         setRunProjectPath(projectPath)
@@ -1730,7 +1748,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                                     data-layout-ms={Math.round(lastLayoutMs)}
                                     className="inline-flex items-center rounded-md border border-border/70 bg-background px-3 py-1.5 text-xs text-muted-foreground"
                                 >
-                                    Canvas profile: {performanceProfile} ({nodeCount} nodes). Preview debounce: {previewDebounceMs}ms.
+                                    Canvas profile: {performanceProfile} ({nodeCount} steps). Preview debounce: {previewDebounceMs}ms.
                                     {' '}Optimizations: {optimizationLabel}.
                                 </div>
                             </>

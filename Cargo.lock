@@ -277,6 +277,7 @@ dependencies = [
 name = "attractor-core"
 version = "0.1.0"
 dependencies = [
+ "indexmap 2.14.2",
  "schemars 0.8.22",
  "serde",
  "serde_json",

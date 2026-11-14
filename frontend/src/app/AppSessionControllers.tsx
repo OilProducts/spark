@@ -23,7 +23,7 @@ import { buildWorkspaceLiveEventsUrl, dispatchConversationLiveEnvelope } from '@
 import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
-import { requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
+import { reportRunsTransportLost, requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { addsEntry, missionKey, parsePlaceHash, placeHash, placeOf, roleKey, type Place } from './runsRouting'
 import { defaultProjectChoice } from '@/features/projects/model/projectChoices'
 import { refreshAttention } from './useAttention'
@@ -545,6 +545,8 @@ export function WorkspaceLiveEventsController() {
                 source.close()
                 eventSource = null
                 failedConnects += 1
+                // Spark is unreachable: runs say so instead of looking live.
+                if (failedConnects === 2) reportRunsTransportLost()
                 if (reconnectTimer !== null) {
                     window.clearTimeout(reconnectTimer)
                 }

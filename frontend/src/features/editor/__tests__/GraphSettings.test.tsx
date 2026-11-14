@@ -239,11 +239,11 @@ describe('Graph and settings behavior', () => {
 
   it('validates typed FlowDefinition defaults and exposes only extension metadata in advanced settings', async () => {
     const user = userEvent.setup()
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     expect(screen.getByTestId('graph-structured-form')).toBeVisible()
     expect(screen.getByTestId('flow-metadata-help')).toHaveTextContent('Leave blank to omit the field from the flow.')
-    expect(screen.getByRole('button', { name: 'Apply to nodes' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Apply to steps' })).toBeEnabled()
     await openPicker(user)
     expect(screen.getByRole('button', { name: 'XHigh' })).toBeVisible()
     await user.keyboard('{Escape}')
@@ -268,7 +268,7 @@ describe('Graph and settings behavior', () => {
     { graphThinking: '', workspaceThinking: 'budget', graphBudget: '', expectedThinking: 'budget', expectedBudget: 2048 },
     { graphThinking: 'budget', workspaceThinking: 'budget', graphBudget: '', expectedThinking: 'budget', expectedBudget: 2048 },
     { graphThinking: 'budget', workspaceThinking: 'budget', graphBudget: '4096', expectedThinking: 'budget', expectedBudget: 4096 },
-  ])('Apply to nodes resolves thinking and budget: $graphThinking / $workspaceThinking / $graphBudget', async ({
+  ])('Apply to steps resolves thinking and budget: $graphThinking / $workspaceThinking / $graphBudget', async ({
     graphThinking, workspaceThinking, graphBudget, expectedThinking, expectedBudget,
   }) => {
     const user = userEvent.setup()
@@ -280,18 +280,18 @@ describe('Graph and settings behavior', () => {
       <ReactFlowProvider initialNodes={[{
         id: 'review', position: { x: 0, y: 0 },
         data: { label: 'Review', thinking: 'budget', thinking_budget_tokens: '8192' },
-      }]}>
-        <GraphSettings inline />
+      }, { id: 'done', position: { x: 0, y: 100 }, data: { label: 'Done', kind: 'exit' } }]} initialEdges={[{ id: 'review-done', source: 'review', target: 'done' }]}>
+        <GraphSettings />
       </ReactFlowProvider>,
     )
 
-    await user.click(screen.getByRole('button', { name: 'Apply to nodes' }))
+    await user.click(screen.getByRole('button', { name: 'Apply to steps' }))
 
     await waitFor(() => {
       const request = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST')
       expect(request).toBeDefined()
       const { flow } = JSON.parse(String(request![1]?.body))
-      expect(Object.keys(flow.nodes)).toEqual(['review'])
+      expect(Object.keys(flow.nodes)).toEqual(['review', 'done'])
       const review = JSON.stringify(flow.nodes.review)
       if (expectedThinking) expect(review).toContain(`"thinking":"${expectedThinking}"`)
       else expect(review).not.toContain('"thinking"')
@@ -306,7 +306,7 @@ describe('Graph and settings behavior', () => {
       useStore.getState().setFlowMetadata({ custom_attr: 'keep me' } as Record<string, string>)
     })
 
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     // Typed key by key: spaces must survive between keystrokes.
     await user.type(screen.getByLabelText('Title'), ' Implement from plan file ')
@@ -339,7 +339,7 @@ describe('Graph and settings behavior', () => {
       triggersSession: { ...state.triggersSession, triggers: [trigger('nightly', {}), trigger('weekly', { 'context.request.version': '2.0.0' })] },
       flowMetadata: { inputs: JSON.stringify([{ key: 'context.request.version', label: 'Release version', type: 'string', description: '', required: true }]) },
     }))
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     const gaps = await screen.findByTestId('graph-launch-inputs-trigger-gaps')
     expect(gaps).toHaveTextContent('A trigger doesn’t set a required input, so a run it starts fails:Trigger nightly needs Release version')
@@ -350,7 +350,7 @@ describe('Graph and settings behavior', () => {
 
   it('persists launch input declarations as FlowDefinition inputs', async () => {
     const user = userEvent.setup()
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     expect(screen.getByTestId('graph-launch-inputs-editor')).toBeVisible()
     await user.click(screen.getByTestId('graph-launch-input-add'))
@@ -384,7 +384,7 @@ describe('Graph and settings behavior', () => {
 
   it('authors FlowDefinition defaults without DOT defaults or subgraph payloads', async () => {
     const user = userEvent.setup()
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     expect(screen.queryByTestId('graph-scoped-defaults-section')).not.toBeInTheDocument()
     expect(screen.queryByTestId('graph-subgraph-add')).not.toBeInTheDocument()
@@ -437,14 +437,9 @@ describe('Graph and settings behavior', () => {
     expect(review).not.toContain('"type"')
   })
 
-  it('preserves panel state, advanced toggle, and invalid launch-input drafts across remounts', async () => {
+  it('preserves the advanced toggle and invalid launch-input drafts across remounts', async () => {
     const user = userEvent.setup()
     const firstRender = wrapWithFlowProvider(<GraphSettings />)
-
-    await user.click(screen.getByRole('button', { name: 'Graph settings' }))
-    await waitFor(() => {
-      expect(screen.getByTestId('graph-structured-form')).toBeVisible()
-    })
 
     await user.click(screen.getByTestId('graph-launch-input-add'))
     fireEvent.change(screen.getByTestId('graph-launch-input-label-0'), {
@@ -473,7 +468,7 @@ describe('Graph and settings behavior', () => {
 
   it('edits the execution lock key as FlowDefinition execution_lock', async () => {
     const user = userEvent.setup()
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     await user.type(screen.getByLabelText('One at a time (lock name)'), 'integration')
     expect(useStore.getState().flowMetadata.execution_lock).toBe('integration')
@@ -493,7 +488,7 @@ describe('Graph and settings behavior', () => {
 
   it('does not autosave when graph attrs are replaced from hydrated state', async () => {
     const fetchMock = vi.mocked(fetch)
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     const saveRequestsBefore = fetchMock.mock.calls.filter(([, init]) => (init?.method ?? 'GET') === 'POST').length
 

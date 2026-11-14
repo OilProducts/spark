@@ -258,7 +258,7 @@ const GraphSettingsHarness = ({ nodes, edges }: { nodes: Node[]; edges: Edge[] }
     <div style={{ width: 800, height: 600 }}>
       <ReactFlow nodes={nodes} edges={edges} fitView />
     </div>
-    <GraphSettings inline />
+    <GraphSettings />
   </>
 )
 
@@ -1320,7 +1320,7 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('graph-extension-attr-new-key')).toBeVisible()
     expect(screen.getByTestId('graph-extension-attr-new-value')).toBeVisible()
     expect(screen.getByRole('button', { name: /^Model:/ })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Apply to nodes' }).className).toContain('focus-visible')
+    expect(screen.getByRole('button', { name: 'Apply to steps' }).className).toContain('focus-visible')
     expect(screen.getByRole('button', { name: 'Use workspace default' }).className).toContain('focus-visible')
 
     cleanup()
@@ -1766,7 +1766,7 @@ useStore.getState().setRunsSelectedRunId('run-viewport-regression-mobile');
 
     renderWithFlowProvider(<Editor />)
 
-    await screen.findByRole('button', { name: 'Add node' })
+    await screen.findByRole('button', { name: 'Add step' })
     expect(screen.queryByTestId('canvas-interaction-performance-budget')).not.toBeInTheDocument()
     expect(screen.queryByTestId('canvas-performance-profile')).not.toBeInTheDocument()
 
@@ -2431,7 +2431,7 @@ useStore.getState().setRunsSelectedRunId(runId);
 
   it('[CID:6.5.02] omits graph stylesheet diagnostics from FlowDefinition settings', async () => {
     const user = userEvent.setup()
-    renderWithFlowProvider(<GraphSettings inline />)
+    renderWithFlowProvider(<GraphSettings />)
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
     expect(screen.queryByTestId('graph-model-stylesheet-selector-guidance')).not.toBeInTheDocument()
@@ -2452,7 +2452,7 @@ useStore.getState().setRunsSelectedRunId(runId);
 
   it('[CID:6.6.01] omits graph-scope tool hook fields from FlowDefinition settings', async () => {
     const user = userEvent.setup()
-    renderWithFlowProvider(<GraphSettings inline />)
+    renderWithFlowProvider(<GraphSettings />)
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
     expect(screen.queryByTestId('graph-attr-input-tool.hooks.pre')).not.toBeInTheDocument()
@@ -2517,7 +2517,7 @@ useStore.getState().setRunsSelectedRunId(runId);
 
   it('[CID:6.6.03] renders tool hook warning surfaces in node editors only', async () => {
     const user = userEvent.setup()
-    renderWithFlowProvider(<GraphSettings inline />)
+    renderWithFlowProvider(<GraphSettings />)
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
     expect(screen.queryByTestId('graph-attr-input-tool.hooks.pre')).not.toBeInTheDocument()
@@ -4650,12 +4650,13 @@ useStore.getState().setRunsSelectedRunId(runId);
     await screen.findByText('Start')
     const nodeCount = () => document.querySelectorAll('.react-flow__node').length
     const loadedNodes = nodeCount()
-    await user.click(screen.getByRole('button', { name: 'Add node' }))
+    await user.click(screen.getByRole('button', { name: 'Add step' }))
     await waitFor(() => expect(nodeCount()).toBe(loadedNodes + 1))
 
     await user.click(screen.getByRole('button', { name: 'Files' }))
-    await waitFor(() => expect(saveRequestCount).toBeGreaterThanOrEqual(1))
-    await waitFor(() => expect(useStore.getState().saveErrorMessage).toContain('flow has no start node'))
+    // A new step leads nowhere, so its flow is refused without a request.
+    await waitFor(() => expect(useStore.getState().saveErrorMessage).toContain('“New step” needs a route to another step.'))
+    expect(saveRequestCount).toBe(0)
 
     expect(screen.queryByTestId('flow-files-view')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Structured' })).toHaveAttribute('aria-pressed', 'true')
@@ -4704,7 +4705,9 @@ useStore.getState().setRunsSelectedRunId(runId);
             id: 'end',
             label: 'End',
             shape: 'Msquare',
+            kind: 'exit',
           },
+          { id: 'detour', label: 'Detour', prompt: 'Look around' },
         ],
         edges: [
           {
@@ -4713,6 +4716,8 @@ useStore.getState().setRunsSelectedRunId(runId);
             label: 'next',
             x_unsurfaced_edge: 'keep-edge',
           },
+          { from: 'start', to: 'detour', label: 'detour' },
+          { from: 'detour', to: 'end', label: 'next' },
         ],
       },
       diagnostics: [],
@@ -4739,8 +4744,9 @@ useStore.getState().setRunsSelectedRunId(runId);
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
-    await screen.findByText('Start')
-    await user.click(screen.getByRole('button', { name: 'Add node' }))
+    await screen.findByText('Detour')
+    fireEvent.click(document.querySelector('.react-flow__node[data-id="detour"]') as HTMLElement)
+    await user.keyboard('{Backspace}')
 
     await waitFor(() => {
       expect(savedPayloads.length).toBeGreaterThanOrEqual(1)
@@ -4829,7 +4835,7 @@ useStore.getState().setRunsSelectedRunId(runId);
       } as never)
     })
 
-    renderWithFlowProvider(<GraphSettings inline />)
+    renderWithFlowProvider(<GraphSettings />)
     await user.click(screen.getByTestId('graph-advanced-toggle'))
     const graphEditor = await screen.findByTestId('graph-extension-attrs-editor')
     expect(within(graphEditor).getByDisplayValue('x_graph_extension')).toBeVisible()
@@ -4870,8 +4876,10 @@ useStore.getState().setRunsSelectedRunId(runId);
           x_node_extension: 'node-extra',
         },
       },
+      { id: 'done', position: { x: 360, y: 0 }, data: { label: 'Done', kind: 'exit' } },
     ]
     const edges: Edge[] = [
+      { id: 'edge-task-done', source: 'task', target: 'done' },
       {
         id: 'edge-start-task',
         source: 'start',
@@ -4936,8 +4944,10 @@ useStore.getState().setRunsSelectedRunId(runId);
           x_node_extension_number: 23,
         },
       },
+      { id: 'done', position: { x: 360, y: 0 }, data: { label: 'Done', kind: 'exit' } },
     ]
     const edges: Edge[] = [
+      { id: 'edge-task-done', source: 'task', target: 'done' },
       {
         id: 'edge-start-task',
         source: 'start',

@@ -7,8 +7,8 @@ use std::sync::{
 
 use attractor_core::{
     attr_bool, attr_text, ContextMap, ExitOutcome, ExitResult, FailureKind, FlowDefinition,
-    FlowNode, FlowRoute, LaunchContext, ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind,
-    NodeRuntimeConfig, Outcome, OutcomeStatus, RunRecord,
+    FlowNode, FlowRoute, IndexMap, LaunchContext, ManagerLoopConfig, NodeConfig, NodeContracts,
+    NodeKind, NodeRuntimeConfig, Outcome, OutcomeStatus, RunRecord,
 };
 use attractor_runtime::{
     ChildRunResult, CreateRunRequest, ExecuteRunRequest, NodeExecutionRequest, NodeExecutor,
@@ -28,7 +28,7 @@ fn route(to: &str) -> FlowRoute {
     }
 }
 
-fn routes(entries: &[(&str, &str)]) -> BTreeMap<String, FlowRoute> {
+fn routes(entries: &[(&str, &str)]) -> IndexMap<String, FlowRoute> {
     entries
         .iter()
         .map(|(decision, to)| (decision.to_string(), route(to)))
@@ -3330,10 +3330,7 @@ fn branch_flow(tolerate: bool) -> FlowDefinition {
                         max_visits: Some(1),
                         ..NodeRuntimeConfig::default()
                     }),
-                    ..agent(
-                        "stray",
-                        &[("done", "join"), ("again", "stray"), ("blocked", "failed")],
-                    )
+                    ..agent("stray", &STRAY_ROUTES)
                 },
             ),
             ("join", fan_in("after")),
@@ -3344,8 +3341,9 @@ fn branch_flow(tolerate: bool) -> FlowDefinition {
     )
 }
 
+/// `stray`'s routes, in the declared order its errors list them.
 const STRAY_ROUTES: [(&str, &str); 3] =
-    [("again", "stray"), ("blocked", "failed"), ("done", "join")];
+    [("done", "join"), ("again", "stray"), ("blocked", "failed")];
 
 /// Runs `flow` with `stray` answering `stray` and every other agent
 /// completing `done`; returns the result and the agent nodes executed.

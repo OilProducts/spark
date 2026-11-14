@@ -154,6 +154,8 @@ it('asks which project "+ New" starts a chat in, Home first then recent projects
     await user.click(items[2])
     expect(useStore.getState().activeProjectPath).toBe('/work/busy')
     expect(screen.getByText('New chat in busy')).toBeVisible()
+    // Typing goes straight into the new chat.
+    await waitFor(() => expect(screen.getByTestId('project-ai-conversation-input')).toHaveFocus())
 })
 
 it('names the open thread in the header and switches its mode from the compact control', async () => {

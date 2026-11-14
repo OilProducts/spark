@@ -47,7 +47,7 @@ test('the Roles view lists roles, standing first, and starts a standing role int
     const usage = detail.getByTestId('role-usage').getByRole('button', { name: / in / }).first()
     const [stepLabel, linkedFlow] = (await usage.getAttribute('aria-label'))!.split(' in ')
     await page.getByTestId('activity-flows').click()
-    await page.getByTestId('editor-flow-tree').locator(`button[title*="/"]:not([aria-expanded]):not([title="${linkedFlow}"])`).first().click()
+    await page.getByTestId('editor-flow-tree').locator(`button[data-flow-name*="/"]:not([data-flow-name="${linkedFlow}"])`).first().click()
     await expect(page.locator('.react-flow__node').first()).toBeVisible()
     await page.getByTestId('activity-roles').click()
     await usage.click()
@@ -118,7 +118,7 @@ test('badges leave room for a role\'s title and meta, and for a flow\'s name', a
 
     await page.getByTestId('activity-flows').click()
     // A flow row is named by the flow's title; its file name is on hover.
-    const flowRow = page.getByTestId('editor-flow-tree').locator(`button[title="${flow}"]`)
+    const flowRow = page.getByTestId('editor-flow-tree').locator(`button[data-flow-name="${flow}"]`)
     await expect(flowRow.getByTestId('definition-badge')).toHaveText(['customized'])
     const name = flowRow.locator('span.truncate').first()
     expect(await name.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)

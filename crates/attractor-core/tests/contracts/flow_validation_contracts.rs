@@ -218,7 +218,7 @@ fn kinds_declare_their_decision_domains() {
         has(
             &found,
             "decision_domain",
-            "agent_task nodes need at least one route"
+            "agent_task steps need at least one route"
         ),
         "{found:?}"
     );
@@ -321,7 +321,7 @@ fn graphs_need_reachable_nodes_exits_and_no_ordinary_leaves() {
         has(
             &found,
             "decision_domain",
-            "gate.md: human_gate nodes need at least one route"
+            "gate.md: human_gate steps need at least one route"
         ),
         "{found:?}"
     );

@@ -13,8 +13,8 @@ use std::sync::RwLock;
 
 use attractor_core::{
     ExecutionConfig, FlowDefaults, FlowDefinition, FlowDefinitionError, FlowDiagnostic,
-    FlowExecutionLock, FlowInput, FlowMetadata, FlowNode, FlowRoute, ManagerLoopConfig, NodeConfig,
-    NodeContracts, NodeKind, NodeRuntimeConfig, RetryConfig, UiConfig,
+    FlowExecutionLock, FlowInput, FlowMetadata, FlowNode, FlowRoute, IndexMap, ManagerLoopConfig,
+    NodeConfig, NodeContracts, NodeKind, NodeRuntimeConfig, RetryConfig, UiConfig,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -85,9 +85,9 @@ struct NodeFile {
     ui: Option<UiConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     extensions: BTreeMap<String, Value>,
-    /// The node's decisions: `<decision>: {to, description, label?}`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    routes: BTreeMap<String, FlowRoute>,
+    /// The node's decisions in authored order: `<decision>: {to, description, label?}`.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    routes: IndexMap<String, FlowRoute>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,10 +279,23 @@ pub fn render_flow_files(
 /// deleting the files of removed nodes. Returns the names of the files it
 /// wrote or deleted.
 pub fn write_flow_dir(dir: &Path, flow: &FlowDefinition) -> Result<Vec<String>, FlowSourceError> {
-    let flow = flow.normalize();
+    let mut flow = flow.normalize();
     let _guard = FLOW_DIR_LOCK
         .write()
         .unwrap_or_else(|error| error.into_inner());
+    // ponytail: a flow saved as JSON keeps each node file's route order, new
+    // decisions last: JSON from the API's sorted objects would otherwise
+    // reorder (and rewrite) untouched files. Reorder routes through a files save.
+    for (node_id, node) in flow.nodes.iter_mut() {
+        if let Some(existing) = fs::read_to_string(dir.join(format!("{node_id}.md")))
+            .ok()
+            .and_then(|text| parse_node_file(node_id, &text).ok())
+        {
+            node.routes.sort_by_key(|decision, _| {
+                existing.routes.get_index_of(decision).unwrap_or(usize::MAX)
+            });
+        }
+    }
     let files = render_flow_files(&flow)?;
     let mut changed = files
         .iter()

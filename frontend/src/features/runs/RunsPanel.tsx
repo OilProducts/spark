@@ -24,7 +24,7 @@ import { RunContextItem } from './components/RunContextItem'
 import { RunArtifactViewer } from './components/RunArtifactViewer'
 import { RunList } from './components/RunList'
 import { RunContinuationPanel } from './components/RunContinuationPanel'
-import { RunHeaderBar } from './components/RunHeaderBar'
+import { focusRunHeading, RunHeaderBar } from './components/RunHeaderBar'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { formatDuration, runHasEnded, type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
@@ -126,6 +126,8 @@ export function RunsPanel() {
     const setPendingEditorNodeSelection = useStore((state) => state.setPendingEditorNodeSelection)
     const [continuationDraft, setContinuationDraft] = useState<ContinuationDraft | null>(null)
     const [rerunRun, setRerunRun] = useState<RunRecord | null>(null)
+    // A re-run's dialog closes onto the new run: focus goes to its heading, not to the page.
+    const rerunLaunchedRef = useRef<string | null>(null)
     const selectedRunSummary = useStore((state) => (
         state.runsListSession.runs.find((run) => run.run_id === selectedRunId) ?? null
     ))
@@ -508,7 +510,9 @@ export function RunsPanel() {
                     />
                 </div>
             )}
-            <div className={isNarrowViewport ? 'space-y-6 p-4' : 'flex min-h-0 flex-1 flex-col gap-4 px-6 py-5'}>
+            {/* A continuation's panel stacks above the run, which keeps its full height; the column
+                scrolls between them, so the panel never squeezes the steps and the graph. */}
+            <div className={isNarrowViewport ? 'space-y-6 p-4' : cn('flex min-h-0 flex-1 flex-col gap-4 px-6 py-5', activeContinuationDraft && 'overflow-y-auto')}>
                 {/* One notice for whatever of this run couldn't load or stopped updating; the
                     parts it names say so in place instead of looking empty. */}
                 {selectedRunStatusSync === 'degraded' || (selectedRun && degradedRunPanels.length > 0) ? (
@@ -556,7 +560,10 @@ export function RunsPanel() {
                             setContinuationDraft((draft) => (draft ? { ...draft, ...patch } : draft))
                         }}
                         onCancel={() => setContinuationDraft(null)}
-                        onContinued={() => setContinuationDraft(null)}
+                        onContinued={(runId) => {
+                            setContinuationDraft(null)
+                            if (runId) focusRunHeading(runId)
+                        }}
                     />
                 )}
                 {/* Until the history loads, no runs says nothing; a failed load says so once, here. */}
@@ -580,7 +587,7 @@ export function RunsPanel() {
                 {selectedRun && (
                     <div ref={runBodyRef} className={isNarrowViewport
                         ? 'space-y-6'
-                        : 'flex min-h-0 flex-1 gap-6'}
+                        : cn('flex min-h-0 flex-1 gap-6', activeContinuationDraft && 'min-h-full')}
                     >
                         <div className={isNarrowViewport
                             ? undefined
@@ -718,6 +725,14 @@ export function RunsPanel() {
                 <DialogContent
                     data-testid="run-rerun-dialog"
                     className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-2xl"
+                    onCloseAutoFocus={(event) => {
+                        const runId = rerunLaunchedRef.current
+                        rerunLaunchedRef.current = null
+                        if (runId) {
+                            event.preventDefault()
+                            focusRunHeading(runId)
+                        }
+                    }}
                 >
                     <DialogTitle className="sr-only">Re-run flow</DialogTitle>
                     {rerunRun ? (
@@ -735,7 +750,8 @@ export function RunsPanel() {
                             infoNotice={rerunRun.launch_context
                                 ? null
                                 : 'Original launch inputs were not recorded for this run; the form starts from the flow defaults.'}
-                            onLaunched={() => {
+                            onLaunched={(runId) => {
+                                rerunLaunchedRef.current = runId
                                 setRerunRun(null)
                             }}
                         />

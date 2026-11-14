@@ -91,12 +91,16 @@ export function useTriggerEditor({
     const externalChange = dirty && currentEditDraft?.expectedRevision !== selectedTrigger?.revision
     useSettingsNavigationProtection(dirty, pending)
 
+    // The trigger last saved, which says "Saved." until it's edited again or another is shown.
+    const [savedFor, setSavedFor] = useState<string | null>(null)
+
+    /** Resolves true once the trigger is created and selected. */
     const onCreateTrigger = async () => {
         // Until the flow's inputs are known, its required ones can't be checked.
-        if (pendingRef.current || newFlowInputs === null) return
+        if (pendingRef.current || newFlowInputs === null) return false
         if (Object.keys(validateTriggerForm(newTriggerForm, false, newFlowInputs)).length) {
             setErrorsShownFor('new')
-            return
+            return false
         }
         pendingRef.current = true
         setPending(true)
@@ -119,8 +123,10 @@ export function useTriggerEditor({
             await refreshTriggers()
             setSelectedTriggerId(triggerKey(created))
             updateTriggersSession({ createFormOpen: false })
+            return true
         } catch (nextError) {
             setError(nextError instanceof Error ? nextError.message : 'Unable to create trigger.')
+            return false
         } finally {
             pendingRef.current = false
             setPending(false)
@@ -152,6 +158,7 @@ export function useTriggerEditor({
             }
             setTriggersSessionEditDraft(triggerKey(selectedTrigger), null)
             setErrorsShownFor(null)
+            setSavedFor(triggerKey(selectedTrigger))
             await refreshTriggers()
         } catch (nextError) {
             setError(nextError instanceof Error ? nextError.message : 'Unable to save trigger.')
@@ -194,6 +201,7 @@ export function useTriggerEditor({
     return {
         pending,
         dirty,
+        saved: !dirty && selectedTrigger !== null && savedFor === triggerKey(selectedTrigger),
         externalChange,
         discard: () => {
             if (pendingRef.current || !selectedTrigger) return

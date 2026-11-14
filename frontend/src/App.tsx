@@ -32,8 +32,16 @@ function App() {
         data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
         className={`h-screen flex antialiased bg-ground text-foreground ${isNarrowViewport ? 'flex-col' : 'flex-row'}`}
       >
+        {/* A button, not a #link: the hash is the app's place. */}
+        <button
+          type="button"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:shadow-md focus:outline-none focus:ring-2 focus:ring-ring"
+          onClick={() => document.getElementById('app-main')?.focus()}
+        >
+          Skip to content
+        </button>
         <ActivityBar />
-        <main data-testid="app-main" className="flex-1 min-w-0 min-h-0 relative flex flex-col overflow-hidden">
+        <main id="app-main" tabIndex={-1} data-testid="app-main" className="flex-1 min-w-0 min-h-0 relative flex flex-col overflow-hidden outline-none">
           <div
             data-testid="canvas-workspace-primary"
             data-canvas-active={String(isCanvasMode)}
