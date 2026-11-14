@@ -310,6 +310,24 @@ const journalEntrySummary = (event: TimelineEventEntry, nodeLabel: NodeLabel): s
     ) ?? event.summary
 )
 
+/**
+ * The journal's entries, oldest first, as its list shows them. A gate's answer is recorded twice:
+ * as delivered to the gate (with its question ID, by decision ID) and as the gate took it (by its
+ * label); the list keeps the latter once it is there.
+ */
+const journalEntriesShown = (journal: TimelineEventEntry[]): TimelineEventEntry[] => {
+    const isDelivery = (event: TimelineEventEntry) => event.type === 'InterviewCompleted' && Boolean(event.questionId ?? event.payload.question_id)
+    return journal.filter((event, index) => {
+        if (!isDelivery(event)) return true
+        const next = journal.slice(index + 1).find((later) => (
+            later.nodeId === event.nodeId
+            && later.sourceScope === event.sourceScope
+            && (later.type === 'InterviewCompleted' || later.type === 'InterviewStarted')
+        ))
+        return !(next?.type === 'InterviewCompleted' && !isDelivery(next))
+    })
+}
+
 const toTimelineEvent = (value: unknown): TimelineEventEntry | null => {
     const payload = asRecord(value)
     if (!payload) {
@@ -832,6 +850,7 @@ export {
     buildTimelineTypeOptions,
     enrichPendingInterviewGate,
     filterAnsweredPendingInterviewGates,
+    journalEntriesShown,
     journalEntrySummary,
     mergePendingInterviewGatesWithSnapshots,
     PENDING_GATE_FALLBACK_RECEIVED_AT,

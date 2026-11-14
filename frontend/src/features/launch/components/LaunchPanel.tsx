@@ -413,8 +413,7 @@ export function LaunchPanel({
                             >
                                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                     <span className="capitalize">{diagnostic.severity}</span>
-                                    <span>{diagnostic.rule_id}</span>
-                                    {diagnostic.node_id ? <span>{diagnostic.node_id}</span> : null}
+                                    {diagnostic.node_id ? <span>· node {diagnostic.node_id}</span> : null}
                                 </div>
                                 <p className="mt-1 text-sm text-foreground">{diagnostic.message}</p>
                             </li>

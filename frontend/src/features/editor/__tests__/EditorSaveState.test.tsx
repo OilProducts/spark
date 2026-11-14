@@ -155,7 +155,7 @@ describe('Editor save state behavior', () => {
     expect(saveState.saveState).toBe('error')
     expect(saveState.saveErrorKind).toBe('network')
     expect(resolveSaveRemediation(saveState.saveState, saveState.saveErrorKind)).toEqual({
-      message: 'Retry save now, and verify backend connectivity if this repeats.',
+      message: 'Retry the save. If it fails again, check that Spark is still running.',
       allowRetry: true,
     })
 
@@ -208,7 +208,8 @@ describe('Editor save state behavior', () => {
   it('shows the save state in the toolbar: a brief Saved, and why edits are not saved', () => {
     vi.useFakeTimers()
     try {
-      render(<EditorSaveStatus />)
+      const reload = vi.fn()
+      render(<EditorSaveStatus onReload={reload} />)
       const status = screen.getByTestId('editor-save-status')
       act(() => useStore.getState().markSaveSuccess())
       expect(status).toHaveTextContent('Saved')
@@ -222,7 +223,16 @@ describe('Editor save state behavior', () => {
 
       act(() => useStore.getState().markSaveFailure('Flow save failed: offline', 'network'))
       expect(status).toHaveTextContent('Save failed: Flow save failed: offline')
+      expect(screen.getByText(/^Flow save failed: offline/)).toBeVisible()
       expect(screen.getByTestId('editor-save-retry')).toBeVisible()
+      expect(screen.queryByTestId('editor-save-reload')).not.toBeInTheDocument()
+
+      // A conflict says how to get out of it, with a button to do it, not only in a tooltip.
+      act(() => useStore.getState().markSaveConflict('The flow was changed elsewhere since it was opened.'))
+      expect(screen.getByText(/Reload the flow to get the saved version/)).toBeVisible()
+      expect(screen.queryByTestId('editor-save-retry')).not.toBeInTheDocument()
+      act(() => screen.getByTestId('editor-save-reload').click())
+      expect(reload).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }

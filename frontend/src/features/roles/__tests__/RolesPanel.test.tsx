@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { useStore } from '@/store'
 import { RolesPanel } from '../RolesPanel'
@@ -100,6 +100,9 @@ it('groups usage by flow and shows a started role\'s live status once, with its 
     fireEvent.click(row('reviewer'))
     const usage = await screen.findByTestId('role-usage')
     expect(within(usage).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['local · review, recheck', 'other · check'])
+    fireEvent.click(within(usage).getByRole('button', { name: 'recheck in local' }))
+    expect(useStore.getState()).toMatchObject({ viewMode: 'editor', activeFlow: 'local', pendingEditorNodeSelection: { flowName: 'local', nodeId: 'recheck' } })
+    act(() => useStore.setState({ viewMode: 'roles' }))
     expect(screen.queryByTestId('role-live-status')).not.toBeInTheDocument()
     fireEvent.click(row('keeper'))
     expect(await screen.findAllByTestId('role-live-status')).toHaveLength(1)

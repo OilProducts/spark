@@ -18,7 +18,7 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { formatTimestamp, type ArtifactListEntry, type TimelineEventEntry } from '../model/shared'
-import { journalEntrySummary } from '../model/timelineModel'
+import { journalEntriesShown, journalEntrySummary } from '../model/timelineModel'
 import {
     VISIT_OUTCOME_LABELS,
     formatVisitDuration,
@@ -828,13 +828,14 @@ function RunJournal({ journal, flowNodes, timelineError }: {
     const nodeLabel = (nodeId: string, scope: TimelineEventEntry['sourceScope']) => (
         (scope === 'root' ? flowNodes[nodeId]?.label : null) ?? humanizeNodeId(nodeId)
     )
+    const entries = journalEntriesShown(journal)
     let previousDay = ''
     return (
         <section data-testid="run-journal-panel" className="flex flex-col gap-3">
             <h2 className="text-base font-semibold text-foreground">Journal</h2>
             {timelineError ? <InlineError data-testid="run-event-timeline-error">{timelineError}</InlineError> : null}
             <ol className="flex flex-col gap-1 text-sm">
-                {journal.map((event) => {
+                {entries.map((event) => {
                     const date = new Date(event.receivedAt)
                     const valid = !Number.isNaN(date.getTime())
                     const day = valid ? JOURNAL_DAY.format(date) : ''

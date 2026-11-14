@@ -27,12 +27,12 @@ export function resolveSaveRemediation(
     }
     if (saveErrorKind === 'conflict') {
         return {
-            message: 'Reload the flow to sync backend changes, then re-apply edits.',
+            message: 'Reload the flow to get the saved version, then make your edits again.',
             allowRetry: false,
         }
     }
     return {
-        message: 'Retry save now, and verify backend connectivity if this repeats.',
+        message: 'Retry the save. If it fails again, check that Spark is still running.',
         allowRetry: true,
     }
 }

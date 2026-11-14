@@ -275,6 +275,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const [flowFiles, setFlowFiles] = useState<FlowFile[]>([]);
     // The file view's unsaved edits by file name, kept here so a mode switch cannot drop them.
     const [fileDrafts, setFileDrafts] = useState<FlowFileDrafts>({});
+    const fileDraftsRef = useRef(fileDrafts);
+    useEffect(() => { fileDraftsRef.current = fileDrafts; }, [fileDrafts]);
     const [fileSaveError, setFileSaveError] = useState<FlowFilesError | null>(null);
     // The file a broken flow's problem link opens the file view on.
     const [filesFocus, setFilesFocus] = useState<string | null>(null);
@@ -415,7 +417,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         });
     }, [setNodes, setSelectedEdgeId, setSelectedNodeId]);
 
-    const { flushPendingSave, saveNow, scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
+    const { clearPendingSave, flushPendingSave, saveNow, scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
         flowName,
         debounceMs: 250,
         buildContent: (snapshot, currentFlowName) => ({
@@ -1194,7 +1196,11 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             return newNodes;
         });
         const rect = readNodeRect(newNode);
-        void setCenter(rect.x + rect.width / 2, rect.y + rect.height / 2, { zoom: getZoom(), duration: 200 });
+        // In the upper third of the canvas, clear of the Validation panel that opens at its bottom
+        // for the new step's missing route.
+        const zoom = getZoom();
+        const lift = (canvasPaneRef.current?.clientHeight ?? 0) / 6 / zoom;
+        void setCenter(rect.x + rect.width / 2, rect.y + rect.height / 2 + lift, { zoom, duration: 200 });
     }, [edges, enforceSingleSelectedNode, expandChildFlows, flowMetadata, flowName, getZoom, nodes, scheduleEdgeRouting, scheduleSave, setCenter, setNodes, uiDefaults]);
 
     const applyLaidOutGraph = useCallback((layoutGraph: LaidOutFlowGraph) => {
@@ -1252,6 +1258,19 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         setFlowReloadToken((token) => token + 1);
     }, []);
 
+    // After a save conflict, the way out: drop the unsaved edits and load the flow as saved.
+    const reloadSavedFlow = useCallback(async () => {
+        if (!(await confirm({
+            title: 'Reload the saved flow?',
+            description: 'Your edits since the last save are replaced by the flow as it is saved now.',
+            confirmLabel: 'Reload flow',
+            cancelLabel: 'Keep editing',
+        }))) return;
+        clearPendingSave();
+        useStore.getState().resetSaveState();
+        reloadFlow();
+    }, [clearPendingSave, confirm, reloadFlow]);
+
     /** Saves the file view's edited files, then reloads the flow so the canvas shows them. */
     const saveFileDrafts = useCallback(async () => {
         if (!flowName) return false;
@@ -1280,7 +1299,10 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         }
         // Each view leaves only once its edits are saved; a refused save keeps them, and its error, in view.
         if (editorMode === 'files') {
+            const savedDrafts = fileDrafts;
             if (!(await saveFileDrafts())) return;
+            // Edits typed while the save ran aren't in it: stay in the files with them unsaved.
+            if (fileDraftsRef.current !== savedDrafts) return;
             setFileDrafts({});
             setFileSaveError(null);
         } else {
@@ -1295,7 +1317,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         setEditorMode(mode);
         useStore.setState({ preferredEditorMode: mode });
         completePreferenceInteraction({ editor_mode: mode });
-    }, [editorMode, edges, flowName, flushPendingSave, isHydrated, nodes, reloadFlow, saveFileDrafts, saveNow, setEditorMode]);
+    }, [editorMode, edges, fileDrafts, flowName, flushPendingSave, isHydrated, nodes, reloadFlow, saveFileDrafts, saveNow, setEditorMode]);
 
     useEffect(() => {
         if (!isHydrated) { initialModeFlowRef.current = null; return; }
@@ -1634,7 +1656,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     </div>
                 )}
 
-                {flowOpen && editorMode === 'structured' && <EditorSaveStatus className="absolute right-3 top-3 z-10" />}
+                {flowOpen && editorMode === 'structured' && <EditorSaveStatus className="absolute right-3 top-3 z-10" onReload={() => void reloadSavedFlow()} />}
                 {flowOpen && editorMode === 'structured' && <ValidationPanel />}
 
                 {flowOpen && flowName && editorMode === 'structured' && isRunPanelOpen ? (

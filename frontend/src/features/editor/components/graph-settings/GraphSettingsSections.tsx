@@ -183,7 +183,7 @@ export function GraphMetadataSection({
                         value={flowMetadata.title || ''}
                         onChange={(event) => updateFlowMetadata('title', event.target.value)}
                         className="h-8 text-sm"
-                        placeholder="Implement from plan file"
+                        placeholder="The name shown in the flow list"
                     />
                 </GraphSettingsField>
                 <GraphSettingsField
@@ -196,7 +196,7 @@ export function GraphMetadataSection({
                         onChange={(event) => updateFlowMetadata('description', event.target.value)}
                         rows={3}
                         className="min-h-20 px-2 py-1 text-sm"
-                        placeholder="Snapshot a plan file, implement it, and iterate until complete."
+                        placeholder="What the flow does, shown when choosing one to run"
                     />
                 </GraphSettingsField>
                 <GraphSettingsField

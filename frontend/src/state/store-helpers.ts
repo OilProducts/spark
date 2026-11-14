@@ -100,9 +100,7 @@ export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): s
         if (!/^\d+$/.test(trimmed)) return trimmed
         return `${Math.max(0, parseInt(trimmed, 10))}`
     }
-    if (STRING_GRAPH_ATTR_KEYS.includes(key)) {
-        return value.trim()
-    }
+    // Text keeps its spaces while being typed; saving trims it (buildFlowDefinitionFromCanonicalFlowModel).
     return value
 }
 

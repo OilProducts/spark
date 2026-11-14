@@ -43,11 +43,25 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 /** The flow nodes that use a role, each flow's nodes together. */
-export function RoleUsage({ item }: { item: DefinitionItem }) {
+/** Each flow and step that uses the role, as links that open it in the flow editor. */
+export function RoleUsage({ project, item }: { project: string; item: DefinitionItem }) {
     const flows = usageByFlow(item.usage ?? [])
+    const open = (flowName: string, nodeId: string | null) => {
+        const state = useStore.getState()
+        state.setActiveProjectPath(project)
+        state.setActiveFlow(flowName)
+        state.setPendingEditorNodeSelection({ flowName, nodeId })
+        state.setViewMode('editor')
+    }
+    const link = 'h-auto p-0 text-sm font-normal'
     return flows.length
         ? <ul data-testid="role-usage" className="flex flex-col gap-0.5 text-sm">{flows.map(([flow, nodes]) => <li key={flow}>
-            {flow} <span className="text-muted-foreground">· {nodes.join(', ')}</span>
+            <Button type="button" variant="link" className={link} onClick={() => open(flow, null)}>{flow}</Button>
+            <span className="text-muted-foreground"> · </span>
+            {nodes.map((node, index) => <span key={node}>
+                {index > 0 ? <span className="text-muted-foreground">, </span> : null}
+                <Button type="button" variant="link" className={link} aria-label={`${node} in ${flow}`} onClick={() => open(flow, node)}>{node}</Button>
+            </span>)}
         </li>)}</ul>
         : <p className="text-sm text-muted-foreground">No flow node uses this role.</p>
 }
@@ -134,7 +148,7 @@ function RoleDetail({ project, item, pending, onStart, startError }: RoleControl
         <p className="text-xs text-muted-foreground">{item.path}</p>
         {error && <InlineError dense>{error}</InlineError>}
         {item.live && <Section title="Live status"><LiveDetails project={project} role={item.live} /></Section>}
-        <Section title="Used in"><RoleUsage item={item} /></Section>
+        <Section title="Used in"><RoleUsage project={project} item={item} /></Section>
         <Section title="Prompt">
             {detail ? detail.files.map((file) => <div key={file.name} data-testid="role-file" className="rounded-md border p-3">
                 <RolePrompt content={file.content} />

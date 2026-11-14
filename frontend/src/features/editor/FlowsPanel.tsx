@@ -16,6 +16,20 @@ import { flowTitle } from '@/features/runs/model/runOverviewModel'
 
 import { deleteFlowCatalogEntry, loadFlowCatalog, loadFlowSummaries } from './services/flowCatalog'
 
+// A typed flow name as a portable path: "ops/Nightly Audit" is saved as ops/nightly-audit.
+export const flowPathFrom = (text: string) => text.split('/')
+    .map((part) => part.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '-').replace(/^-+|-+$/g, ''))
+    .filter(Boolean)
+    .join('/')
+
+// Its title is the name as typed, or a readable form of a path-like name: "nightly-audit" reads "Nightly audit".
+const flowTitleFrom = (text: string) => {
+    const leaf = text.split('/').map((part) => part.trim()).filter(Boolean).pop() ?? text.trim()
+    if (leaf !== flowPathFrom(leaf)) return leaf
+    const words = leaf.replace(/[-_]+/g, ' ')
+    return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
 /** The installed flows, grouped by folder, for the Flows panel. */
 function useFlowCatalogPanel() {
     const { alert, confirm, prompt } = useDialogController()
@@ -123,23 +137,29 @@ function useFlowCatalogPanel() {
     }, [savedVersion])
 
     const createNewFlow = async () => {
-        const name = await prompt({
+        const typed = await prompt({
             title: 'Create flow',
-            description: 'Enter a flow path such as demos/demo.',
-            label: 'Flow path',
-            placeholder: 'demos/demo',
+            description: 'Name the flow. Put it in a folder with a slash, such as ops/Nightly audit.',
+            label: 'Flow name',
+            placeholder: 'ops/Nightly audit',
             confirmLabel: 'Create',
             requireInput: true,
+            check: (value) => {
+                const path = flowPathFrom(value)
+                if (!path) return { ok: false, message: 'Use at least one letter or number.' }
+                if (flows.includes(path)) return { ok: false, message: `A flow named ${path} already exists. Pick another name, or open it from the list.` }
+                return { ok: true, message: `Saved as ${path}` }
+            },
         })
-        if (!name) return;
+        const fileName = typed ? flowPathFrom(typed) : ''
+        if (!fileName || flows.includes(fileName)) return;
 
-        const fileName = name;
         const flowId = sanitizeFlowId(fileName);
         // A minimal FlowDefinition; empty defaults drop out of the JSON.
         const flow = {
             schema_version: '2',
             id: flowId,
-            title: fileName,
+            title: flowTitleFrom(typed!),
             description: '',
             goal: '',
             defaults: {

@@ -38,7 +38,7 @@ function buildErrorMessage(status: string | undefined, error: string | undefined
         return `Save blocked by validation errors: ${error ?? FALLBACK_SAVE_FAILURE_MESSAGE}`
     }
     if (status === 'conflict' || statusCode === 409) {
-        return `Save conflict detected: ${error ?? 'The flow was modified elsewhere. Refresh and re-apply your changes.'}`
+        return error ?? 'The flow was changed elsewhere since it was opened.'
     }
     if (error) {
         return error

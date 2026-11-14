@@ -130,6 +130,37 @@ fn get_and_delete_missing_flow_match_error_contract() {
 }
 
 #[test]
+fn get_and_delete_decode_the_flow_name_in_the_path() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("project");
+    let service = AttractorApiService::new(settings(temp.path()));
+    assert_eq!(
+        service
+            .save_flow(save("ops/Nightly Audit", &valid_flow(), &project))
+            .status_code,
+        200
+    );
+    let query = format!(
+        "?project_path={}",
+        project.to_string_lossy().replace(' ', "%20")
+    );
+
+    let get = service.dispatch("GET", &format!("/api/flows/ops/Nightly%20Audit{query}"), "");
+    assert_eq!(get.status_code, 200, "{}", get.body);
+    assert_eq!(get.body["name"], "ops/Nightly Audit");
+
+    let delete = service.dispatch(
+        "DELETE",
+        &format!("/api/flows/ops/Nightly%20Audit{query}"),
+        "",
+    );
+    assert_eq!(delete.status_code, 200, "{}", delete.body);
+    assert!(!project
+        .join(".spark/definitions/flows/ops/Nightly Audit")
+        .exists());
+}
+
+#[test]
 fn flow_name_safety_errors_are_exposed_through_api_responses() {
     let temp = tempfile::tempdir().expect("tempdir");
     let service = AttractorApiService::new(settings(temp.path()));

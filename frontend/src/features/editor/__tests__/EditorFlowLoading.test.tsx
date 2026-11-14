@@ -480,6 +480,31 @@ describe('Editor file view', () => {
     expect(screen.getByTestId('flow-files-save')).toBeDisabled()
   })
 
+  it('keeps edits typed while the save before leaving the files runs, and stays in the files', async () => {
+    const user = userEvent.setup()
+    let finishSave: (response: Response) => void = () => {}
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { finishSave = resolve }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderEditor()
+    const editor = await screen.findByTestId('flow-file-editor')
+    const first = '---\nid: demo\n---\nFirst edit.\n'
+    const later = '---\nid: demo\n---\nFirst edit. And a later one.\n'
+    fireEvent.change(editor, { target: { value: first } })
+
+    await user.click(screen.getByRole('button', { name: 'Structured' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    fireEvent.change(screen.getByTestId('flow-file-editor'), { target: { value: later } })
+    vi.mocked(loadEditorFlowPayload).mockResolvedValue({
+      name: 'demo', layer: 'org', files: [{ name: 'flow.md', content: first }, files[1]], flow: { id: 'demo' },
+    })
+    await act(async () => finishSave(new Response(JSON.stringify({ status: 'saved', name: 'demo' }), { status: 200 })))
+
+    await waitFor(() => expect(loadEditorFlowPayload).toHaveBeenCalledTimes(2))
+    expect(useStore.getState().editorMode).toBe('files')
+    expect(screen.getByTestId('flow-file-editor')).toHaveValue(later)
+    expect(screen.getByTestId('flow-files-save')).toBeEnabled()
+  })
+
   it('adds and deletes node files, sending both in one save', async () => {
     const user = userEvent.setup()
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: 'saved', name: 'demo' }), { status: 200 }))

@@ -302,19 +302,15 @@ describe('Graph and settings behavior', () => {
   it('surfaces FlowDefinition title and description fields without leaking them into extension attrs', async () => {
     const user = userEvent.setup()
     act(() => {
-      useStore.getState().setFlowMetadata({
-        title: '  Implement from plan file  ',
-        description: '  Snapshot a plan file, implement it, and iterate until complete.  ',
-        custom_attr: 'keep me',
-      } as Record<string, string>)
+      useStore.getState().setFlowMetadata({ custom_attr: 'keep me' } as Record<string, string>)
     })
 
     wrapWithFlowProvider(<GraphSettings inline />)
 
-    expect(screen.getByLabelText('Title')).toHaveValue('Implement from plan file')
-    expect(screen.getByLabelText('Description')).toHaveValue(
-      'Snapshot a plan file, implement it, and iterate until complete.',
-    )
+    // Typed key by key: spaces must survive between keystrokes.
+    await user.type(screen.getByLabelText('Title'), ' Implement from plan file ')
+    await user.type(screen.getByLabelText('Description'), 'Snapshot a plan file, implement it, and iterate until complete. ')
+    expect(screen.getByLabelText('Title')).toHaveValue(' Implement from plan file ')
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
     expect(screen.getByTestId('graph-extension-attrs-editor')).toBeVisible()

@@ -1,6 +1,7 @@
 import {
   buildGroupedPendingInterviewGates,
   buildPendingInterviewGates,
+  journalEntriesShown,
   journalEntrySummary,
   toTimelineEvent,
 } from '@/features/runs/model/timelineModel'
@@ -84,6 +85,19 @@ describe('timelineModel', () => {
       node_id: 'run_tests', source_scope: 'child', source_parent_node_id: 'run_milestone', source_flow_name: 'child-flow',
     })).toBe('Child flow child-flow via Run Milestone: run_tests started')
     expect(line('log', { msg: 'hello' })).toBe('server log')
+  })
+
+  it('shows a gate answer once: as the gate took it, not also as delivered', () => {
+    const entry = (sequence: number, rawType: string, payload: Record<string, unknown>) => toTimelineEvent({
+      id: `journal-${sequence}`, sequence, emitted_at: '2026-07-08T10:00:00Z', kind: 'interview', raw_type: rawType,
+      summary: rawType, severity: 'info', source_scope: 'root', node_id: 'approve', payload,
+    })!
+    const asked = entry(1, 'InterviewStarted', {})
+    const delivered = entry(2, 'InterviewCompleted', { question_id: 'q-1', answer: 'approve' })
+    const taken = entry(3, 'InterviewCompleted', { answer: 'Approve' })
+    expect(journalEntriesShown([asked, delivered, taken])).toEqual([asked, taken])
+    // Until the gate takes it, the delivered answer is the record.
+    expect(journalEntriesShown([asked, delivered])).toEqual([asked, delivered])
   })
 
   it('derives pending interview gates from live events and fallback question snapshots', () => {

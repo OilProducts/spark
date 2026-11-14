@@ -3250,14 +3250,21 @@ fn dispatch_attractor_route(
         },
         ("GET", "/api/llm-profiles") => service.list_llm_profiles(),
         ("GET", "/api/execution-placement-settings") => service.get_execution_placement_settings(),
-        ("GET", path) if path.starts_with("/api/flows/") => service.get_flow(
-            path.trim_start_matches("/api/flows/"),
-            query_string(&query, "project_path").as_deref(),
-        ),
-        ("DELETE", path) if path.starts_with("/api/flows/") => service.delete_flow(
-            path.trim_start_matches("/api/flows/"),
-            query_string(&query, "project_path").as_deref(),
-        ),
+        ("GET" | "DELETE", path) if path.starts_with("/api/flows/") => {
+            let encoded = path.trim_start_matches("/api/flows/");
+            let Ok(flow_name) = percent_decode_path(encoded) else {
+                return RuntimeRouteResponse::json(
+                    400,
+                    json!({"detail": format!("Invalid flow name in path: {encoded}")}),
+                );
+            };
+            let project_path = query_string(&query, "project_path");
+            if method == "GET" {
+                service.get_flow(&flow_name, project_path.as_deref())
+            } else {
+                service.delete_flow(&flow_name, project_path.as_deref())
+            }
+        }
         _ if path.starts_with("/pipelines/") => {
             dispatch_pipeline_route(service, &method, &path, &query, body)
         }

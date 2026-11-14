@@ -191,7 +191,7 @@ describe('Editor sidebar manual refresh', () => {
 
         fetchFlowListMock
             .mockResolvedValueOnce(['alpha'])
-            .mockResolvedValueOnce(['alpha', 'beta'])
+            .mockResolvedValueOnce(['alpha', 'beta-flow'])
 
         renderWithFlowProvider(<SidebarHarness />)
 
@@ -200,15 +200,24 @@ describe('Editor sidebar manual refresh', () => {
         })
 
         await user.click(screen.getByRole('button', { name: 'New flow' }))
-        await user.type(screen.getByTestId('shared-dialog-input'), 'beta')
+        const input = screen.getByTestId('shared-dialog-input')
+        // A taken name can't be created over.
+        await user.type(input, 'Alpha')
+        expect(screen.getByTestId('shared-dialog-check')).toHaveTextContent('A flow named alpha already exists')
+        expect(screen.getByTestId('shared-dialog-confirm')).toBeDisabled()
+        await user.clear(input)
+        // A name with spaces and capitals is saved under a portable path, titled as typed.
+        await user.type(input, 'Beta Flow')
+        expect(screen.getByTestId('shared-dialog-check')).toHaveTextContent('Saved as beta-flow')
         await user.click(screen.getByTestId('shared-dialog-confirm'))
 
         await waitFor(() => {
             expect(saveFlowContentMock).toHaveBeenCalledWith(
-                'beta',
+                'beta-flow',
                 { flow: expect.objectContaining({
                     schema_version: '2',
-                    id: 'beta',
+                    id: 'beta_flow',
+                    title: 'Beta Flow',
                     nodes: {
                         start: expect.objectContaining({
                             kind: 'start',
@@ -224,10 +233,10 @@ describe('Editor sidebar manual refresh', () => {
         })
         await waitFor(() => {
             expect(fetchFlowListMock).toHaveBeenCalledTimes(2)
-            expect(useStore.getState().activeFlow).toBe('beta')
+            expect(useStore.getState().activeFlow).toBe('beta-flow')
         })
 
-        expect(screen.getByRole('button', { name: 'beta' })).toBeVisible()
+        expect(screen.getByRole('button', { name: 'beta-flow' })).toBeVisible()
     })
 
     it('keeps delete-flow refresh behavior intact', async () => {
