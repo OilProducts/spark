@@ -53,10 +53,12 @@ export function FlowTree({
     dataTestId,
 }: FlowTreeProps) {
     const sections = useMemo(() => {
-        const own = flows.filter((flow) => projectFlows?.has(flow))
-        if (own.length === 0) {
+        // The headings follow the project, not the search: a search that hides the project's
+        // flows still lists what's left under "Bundled with Spark".
+        if (!projectFlows?.size) {
             return [{ label: null, tree: buildFlowTree(flows) }]
         }
+        const own = flows.filter((flow) => projectFlows.has(flow))
         return [
             { label: projectLabel ? `${projectLabel}'s flows` : 'This project', tree: buildFlowTree(own) },
             { label: 'Bundled with Spark', tree: buildFlowTree(flows.filter((flow) => !projectFlows?.has(flow))) },

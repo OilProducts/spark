@@ -58,6 +58,10 @@ describe('FlowTree', () => {
     const named = screen.getByRole('region', { name: "acme's flows" })
     expect(within(named).getByRole('button', { name: 'Nightly audit (nightly-audit)' })).toHaveTextContent('Checks the build every night.')
 
+    // A search that leaves none of the project's flows keeps the rest under their heading.
+    rerender(<FlowTree flows={['examples/simple-linear']} projectFlows={new Set(['nightly-audit'])} selectedFlow={null} onSelectFlow={onSelectFlow} />)
+    expect(screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)).toEqual(['Bundled with Spark'])
+
     // Without project flows (or before they are known) the tree is one unlabelled list.
     rerender(<FlowTree flows={flows} projectFlows={new Set()} selectedFlow={null} onSelectFlow={onSelectFlow} />)
     expect(screen.queryByRole('heading')).toBeNull()

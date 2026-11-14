@@ -131,6 +131,8 @@ it('shows a draft with its objective in the rail, Start and Edit, and the reply 
     })
     fireEvent.click(detail().getByRole('button', { name: 'Start' }))
     await waitFor(() => expect(detail().getByLabelText('Reply')).toBeEnabled())
+    // Start goes away once the mission runs, so focus moves to the mission's heading, not the page.
+    expect(detail().getByRole('heading', { level: 1, name: 'Deliver search' })).toHaveFocus()
     expect(calls[0].url).toBe('/workspace/api/missions/task-1/start?project_path=%2Fproject')
     expect(detail().getByRole('status')).toHaveTextContent('Running Agent is working')
     expect(within(screen.getByRole('region', { name: 'Running' })).getByRole('button', { name: 'Deliver search' })).toBeInTheDocument()

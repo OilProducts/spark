@@ -978,6 +978,21 @@ describe('ProjectConversationHistory', () => {
         })
     })
 
+    it('names each answer field by its question and keeps unsent answers when the chat is reopened', async () => {
+        const user = userEvent.setup()
+        const entry = makeRequestUserInputEntry({ id: 'request-user-input-drafts' })
+        const { unmount } = renderHistory([entry])
+
+        const choices = screen.getByRole('group', { name: 'Path Which path should I take?' })
+        await user.click(within(choices).getByRole('button', { name: 'Inline card' }))
+        await user.type(screen.getByRole('textbox', { name: 'Constraints What constraints matter?' }), 'Keep it small.')
+        unmount()
+
+        renderHistory([entry])
+        expect(screen.getByRole('button', { name: 'Inline card' })).toHaveAttribute('aria-pressed', 'true')
+        expect(screen.getByRole('textbox', { name: 'Constraints What constraints matter?' })).toHaveValue('Keep it small.')
+    })
+
     it('renders answered request_user_input segments as compact summaries', () => {
         renderHistory([
             makeRequestUserInputEntry({

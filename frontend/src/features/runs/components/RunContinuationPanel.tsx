@@ -6,6 +6,7 @@ import { Well } from '@/components/app/well'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import {
     launchErrorMessage,
@@ -253,11 +254,16 @@ export function RunContinuationPanel({
                 <div className="space-y-4">
                     <div className="space-y-2">
                         <Label htmlFor="run-continuation-working-directory">Working directory</Label>
-                        <Input
+                        {/* Wraps so a long path shows whole; it is still one line, so Enter adds no break. */}
+                        <Textarea
                             id="run-continuation-working-directory"
                             data-testid="run-continuation-working-directory-input"
+                            rows={1}
+                            spellCheck={false}
+                            className="min-h-9 resize-none break-all py-1.5"
                             value={draft.workingDir}
-                            onChange={(event) => onDraftChange({ workingDir: event.target.value })}
+                            onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault() }}
+                            onChange={(event) => onDraftChange({ workingDir: event.target.value.replace(/[\r\n]+/g, '') })}
                         />
                     </div>
                     <div className="space-y-2">

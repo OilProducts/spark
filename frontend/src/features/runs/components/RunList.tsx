@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { ChevronDown, ChevronRight, Layers, Search } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -94,6 +94,7 @@ export function RunList({
     // else the open run's, else the first. Arrows, j/k, Home and End move between its rows and
     // toggles; Enter or Space opens one, since opening a run loads it and adds a history entry.
     const listRef = useRef<HTMLDivElement>(null)
+    const keysHintId = useId()
     const placeTabStop = (focused: EventTarget | null = document.activeElement) => {
         const items = [...listRef.current?.querySelectorAll('button') ?? []]
         const stop = items.find((item) => item === focused)
@@ -452,6 +453,9 @@ export function RunList({
             ) : (
                 <div
                     ref={listRef}
+                    role="group"
+                    aria-label="Run list"
+                    aria-describedby={keysHintId}
                     data-testid="run-list-scroll-region"
                     data-own-keys="jk"
                     onKeyDown={onListKeyDown}
@@ -459,6 +463,7 @@ export function RunList({
                     onBlur={(event) => placeTabStop(event.relatedTarget)}
                     className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-4"
                 >
+                    <p id={keysHintId} className="sr-only">Up and down arrows, or J and K, move between runs; Enter opens one.</p>
                     {renderRunGroup('needs-input', 'Needs input', needsInputRuns, 'text-warning')}
                     {renderRunGroup('running', 'Running', runningRuns)}
                     {visibleQueuedLockGroups.map((group) => (

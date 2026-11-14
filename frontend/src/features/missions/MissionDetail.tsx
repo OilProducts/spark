@@ -182,7 +182,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                 </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
-                {status === 'draft' && <><Button type="button" size="sm" disabled={disabled} onClick={() => void control('start')}>Start</Button>
+                {status === 'draft' && <><Button type="button" size="sm" disabled={disabled} onClick={() => void control('start').then(started => { if (started) heading.current?.focus({ preventScroll: true }) })}>Start</Button>
                     <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={edit}>Edit</Button></>}
                 {(status === 'running' || status === 'needs_you') && <><Button type="button" size="sm" variant="outline" aria-label="Mark mission done" disabled={disabled} onClick={() => void end(false)}>Mark done</Button>
                     <Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => void end(true)}>Cancel mission</Button></>}

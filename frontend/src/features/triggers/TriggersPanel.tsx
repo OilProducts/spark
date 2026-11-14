@@ -329,7 +329,7 @@ export function TriggersPanel() {
               ) : null}
               <CardHeader className="flex flex-row items-start justify-between gap-2 px-0">
                 <div className="min-w-0">
-                  <CardTitle role="heading" aria-level={1} tabIndex={-1} data-testid="trigger-detail-heading" className="truncate text-xl leading-snug font-semibold tracking-tight outline-none">{selectedTrigger.name}</CardTitle>
+                  <CardTitle role="heading" aria-level={1} tabIndex={-1} data-testid="trigger-detail-heading" className="truncate rounded-sm text-xl leading-snug font-semibold tracking-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{selectedTrigger.name}</CardTitle>
                   <div className="mt-1 text-sm text-muted-foreground">
                     {selectedTrigger.protected ? 'System trigger' : 'Custom trigger'}
                   </div>

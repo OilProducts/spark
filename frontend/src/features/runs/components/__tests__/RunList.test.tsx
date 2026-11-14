@@ -357,6 +357,8 @@ describe('RunList', () => {
 
         // Tab enters at the open run, and Tab again leaves the list.
         expect(screen.getByRole('navigation', { name: 'Runs' })).toBe(screen.getByTestId('run-list-panel'))
+        // Entering the list says how to move in it.
+        expect(screen.getByRole('group', { name: 'Run list' })).toHaveAccessibleDescription(/arrows, or J and K, move between runs/)
         expect(stops()).toEqual([row('d')])
         await user.click(screen.getByTestId('run-list-search-input'))
         await user.tab()
