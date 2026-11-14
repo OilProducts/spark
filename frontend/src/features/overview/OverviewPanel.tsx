@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils'
+import { useNow } from '@/lib/useNow'
 import { useEffect, useState, type ComponentProps, type ReactNode } from 'react'
 import { Check, MessageSquare } from 'lucide-react'
 
@@ -170,8 +171,7 @@ export function OverviewPanel() {
     const [showAllNeedsYou, setShowAllNeedsYou] = useState(false)
     useEffect(() => { if (loadedAttention) markAttentionSeen(loadedAttention) }, [loadedAttention])
     useEffect(() => { if (listsLoaded) markFinishedSeen(runs, missions) }, [listsLoaded, runs, missions])
-    // eslint-disable-next-line react-hooks/purity -- render-time clock for relative dates; the view re-renders on run and mission updates
-    const now = Date.now()
+    const now = useNow(runs.some((run) => run.status === 'running'))
     const attentionTime = attentionTimes(attention, runs, now)
 
     const last = lastChat(chats, runs, missions)

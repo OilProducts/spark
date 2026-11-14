@@ -414,10 +414,17 @@ fn json_tools_require_exit_zero_and_one_declared_decision() {
         json!({"command": command, "decision_field": "decision",
         "output_map": {"context.result.count": "count"}})
     };
-    let (run, calls) = run_tool(json_mode(r#"printf '{"decision":"rejected","count":3}'"#));
+    let (run, calls) = run_tool(json_mode(
+        r#"printf '{"decision":"rejected","count":3,"notes":"3 checks failed"}'"#,
+    ));
     assert_eq!(run.result.status, "completed");
     assert_eq!(calls.lock().unwrap().clone(), ["repair"]);
     assert_eq!(run.result.context["context.result.count"], json!(3));
+    // The notes are the JSON's own notes, not the object that carried the decision.
+    assert_eq!(
+        run.status_json("check", 1, 0)["notes"],
+        json!("3 checks failed")
+    );
 
     for (command, reason) in [
         (

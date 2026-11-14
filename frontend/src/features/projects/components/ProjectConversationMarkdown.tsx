@@ -176,7 +176,7 @@ function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false 
     return <MarkdownContext.Provider value={enableCodeCopy}>
         <div className="conversation-markdown min-w-0">
             <ReactMarkdown components={markdownComponents} skipHtml
-                remarkPlugins={[remarkGfm, remarkMath, safeBreaksAndCode]}
+                remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode]}
                 rehypePlugins={[[footnoteLabels, `markdown-${id}-`], [rehypeKatex, { trust: false, strict: 'error' }], [rehypeHighlight, { detect: false, ignoreMissing: true }]]}
                 remarkRehypeOptions={remarkRehypeOptions}
                 urlTransform={(url) => destination(url) === 'unsafe' ? '' : url}

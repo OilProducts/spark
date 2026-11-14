@@ -1,4 +1,7 @@
 import type { DiagnosticEntry } from '@/state/store-types'
+import { fetchSpark } from '../fetchSpark'
+
+export { fetchSpark }
 
 type UnknownRecord = Record<string, unknown>
 
@@ -188,7 +191,7 @@ export async function fetchJsonWithValidation<T>(
     endpoint: string,
     parser: (payload: unknown, endpoint: string) => T,
 ): Promise<T> {
-    const response = await fetch(url, init)
+    const response = await fetchSpark(url, init)
     if (!response.ok) {
         throw await extractHttpError(response, endpoint)
     }
@@ -202,7 +205,7 @@ export async function fetchTextWithValidation<T>(
     endpoint: string,
     parser: (payload: unknown, endpoint: string) => T,
 ): Promise<T> {
-    const response = await fetch(url, init)
+    const response = await fetchSpark(url, init)
     if (!response.ok) {
         throw await extractHttpError(response, endpoint)
     }

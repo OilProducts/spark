@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 
 import { buildHydratedFlowGraph, layoutWithElk } from '@/features/workflow-canvas/flowCanvasShared'
 import { filterAuthoredEdges, filterAuthoredNodes } from '@/features/workflow-canvas/derivedPreview'
+import { routeLabels } from '@/features/workflow-canvas/ValidationEdge'
 import { EDGE_RENDER_ROUTE_KEY } from '@/lib/flowLayout'
 import type { PreviewResponsePayload } from '@/lib/attractorClient'
 import {
@@ -663,8 +664,8 @@ describe('flowCanvasShared', () => {
             title: 'Roles',
             nodes: {
                 start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'first', description: 'Enter the first workflow step.' } } },
-                first: { kind: 'agent_task', label: 'First', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review A.' }, routes: { done: { to: 'second', description: 'Reviewed.' } } },
-                second: { kind: 'agent_task', label: 'Second', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review B.' }, routes: done },
+                first: { kind: 'agent_task', label: 'First', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review A.' }, contracts: { response: 'decision_envelope' }, routes: { done: { to: 'second', description: 'Reviewed.' } } },
+                second: { kind: 'agent_task', label: 'Second', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review B.' }, contracts: { response: 'decision_envelope' }, routes: done },
                 done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
             },
         }
@@ -1051,8 +1052,8 @@ describe('schema-2 routes and fork structure', () => {
             nodes: {
                 start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'fork', description: 'Enter the first workflow step.' } } },
                 fork: { kind: 'parallel', label: 'Fork', config: { kind: 'parallel', branches: ['a', 'b'], join: 'join', tolerate_branch_execution_errors: true } },
-                a: { kind: 'agent_task', label: 'A', config: { kind: 'agent_task', prompt: 'A.' }, routes: { done: { to: 'join', description: 'Done.' } } },
-                b: { kind: 'agent_task', label: 'B', config: { kind: 'agent_task', prompt: 'B.' }, routes: { done: { to: 'join', description: 'Done.' } } },
+                a: { kind: 'agent_task', label: 'A', config: { kind: 'agent_task', prompt: 'A.' }, contracts: { response: 'decision_envelope' }, routes: { done: { to: 'join', description: 'Done.' } } },
+                b: { kind: 'agent_task', label: 'B', config: { kind: 'agent_task', prompt: 'B.' }, contracts: { response: 'decision_envelope' }, routes: { done: { to: 'join', description: 'Done.' } } },
                 join: { kind: 'fan_in', label: 'Join', config: { kind: 'fan_in' }, routes: { next: { to: 'done', description: 'All branches settled.' } } },
                 done: exitNode('completed', 'success'),
             },
@@ -1069,5 +1070,37 @@ describe('schema-2 routes and fork structure', () => {
         const withoutB = hydrated.edges.filter((edge) => !(edge.source === 'fork' && edge.target === 'b'))
         expect(buildFlow('forking', hydrated.nodes, withoutB, hydrated.flowMetadata, hydrated.flow).nodes.fork.config)
             .toEqual({ ...forkFlow.nodes.fork.config, branches: ['a'] })
+    })
+
+    it('gives every agent task the decision response contract and drops it from other kinds', () => {
+        const hydrated = hydrate({
+            schema_version: '2',
+            id: 'kinds',
+            title: 'Kinds',
+            nodes: {
+                start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'work', description: 'Begin.' } } },
+                work: { kind: 'agent_task', label: 'Work', config: { kind: 'agent_task', prompt: 'Work.' }, routes: { done: { to: 'done', description: 'Done.' } } },
+                done: exitNode('completed', 'success'),
+            },
+        })
+        const added = { ...hydrated.nodes[1], id: 'step_1', data: { label: 'New step', kind: 'agent_task' } }
+        const saved = buildFlow('kinds', [...hydrated.nodes, added], hydrated.edges, hydrated.flowMetadata, hydrated.flow)
+        expect(saved.nodes.work.contracts).toEqual({ response: 'decision_envelope' })
+        expect(saved.nodes.step_1.contracts).toEqual({ response: 'decision_envelope' })
+        const gate = hydrated.nodes.map((node) => node.id === 'work' ? { ...node, data: { ...node.data, kind: 'human_gate' } } : node)
+        expect(buildFlow('kinds', gate, hydrated.edges, hydrated.flowMetadata, saved).nodes.work.contracts).toBeUndefined()
+    })
+})
+
+describe('routeLabels', () => {
+    const edge = (id: string, source: string, data: Record<string, unknown>, hidden = false) => ({ id, source, target: `${id}_to`, data, hidden })
+    it('names a choosing node\'s routes by decision, keeps explicit labels and leaves a lone route bare', () => {
+        const labels = routeLabels([
+            edge('a', 'review', { decision: 'needs_changes' }),
+            edge('b', 'review', { decision: 'approved', label: 'Ship it' }),
+            edge('c', 'build', { decision: 'done' }),
+            edge('d', 'build', { decision: 'retry' }, true),
+        ])
+        expect(Object.fromEntries(labels)).toEqual({ a: 'needs changes', b: 'Ship it', c: '', d: '' })
     })
 })

@@ -12,6 +12,7 @@ import {
     expectObjectRecord,
     expectString,
     fetchJsonWithValidation,
+    fetchSpark,
     fetchTextWithValidation,
     parseDiagnosticList,
 } from './shared'
@@ -916,7 +917,7 @@ export async function saveFlowValidated(
     content: FlowSaveContent,
     projectPath: string | null,
 ): Promise<SaveFlowApiResponse> {
-    const response = await fetch(attractorUrl('/api/flows'), {
+    const response = await fetchSpark(attractorUrl('/api/flows'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

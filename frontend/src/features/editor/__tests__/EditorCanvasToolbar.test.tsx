@@ -55,7 +55,8 @@ describe('EditorCanvasToolbar', () => {
         expect(screen.queryByRole('group', { name: 'Layout' })).not.toBeInTheDocument()
         expect(screen.queryByRole('button', { name: '+ Node' })).not.toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'Run…' })).toBeDisabled()
-        expect(screen.getByRole('button', { name: 'Run…' })).toHaveAttribute('title', 'Save pending')
+        expect(screen.getByRole('button', { name: 'Run…' })).toHaveAccessibleDescription('Save pending')
+        expect(screen.getByTitle('Save pending')).toContainElement(screen.getByRole('button', { name: 'Run…' }))
     })
 
     it('shows only the mode choices in the file view', async () => {

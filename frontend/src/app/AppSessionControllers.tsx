@@ -23,8 +23,9 @@ import { buildWorkspaceLiveEventsUrl, dispatchConversationLiveEnvelope } from '@
 import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
-import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
+import { requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { addsEntry, missionKey, parsePlaceHash, placeHash, placeOf, type Place } from './runsRouting'
+import { refreshAttention } from './useAttention'
 
 type ConversationStreamArgs = Parameters<typeof useConversationStream>[0]
 
@@ -313,6 +314,8 @@ export function WorkspaceLiveEventsController() {
         let eventSource: EventSource | null = null
         let reconnectTimer: ReturnType<typeof window.setTimeout> | null = null
         let closed = false
+        // Failed connects in a row: two or more mean Spark was unreachable, not a routine drop.
+        let failedConnects = 0
 
         // Summary changes that arrive before a cursorless connection's snapshot wait for it.
         let awaitingSummarySnapshot = false
@@ -376,6 +379,7 @@ export function WorkspaceLiveEventsController() {
 
         const handleMessage = (event: MessageEvent<string>, source: EventSource) => {
             if (!isCurrent(source)) return
+            failedConnects = 0
             try {
                 const envelope = JSON.parse(event.data) as {
                     type?: string
@@ -525,6 +529,12 @@ export function WorkspaceLiveEventsController() {
                 // This connection's first frames restore whatever is still thinking; the rest ended unseen.
                 useLiveThinkingStore.getState().clear()
                 window.dispatchEvent(new Event('spark:settings-live-event'))
+                // Back after an outage: reload what failed meanwhile, as Reconnect would.
+                if (failedConnects >= 2) {
+                    refreshAttention()
+                    requestRunsTransportReconnect()
+                }
+                failedConnects = 0
             }
             source.onmessage = (event) => handleMessage(event, source)
             source.onerror = () => {
@@ -533,6 +543,7 @@ export function WorkspaceLiveEventsController() {
                 }
                 source.close()
                 eventSource = null
+                failedConnects += 1
                 if (reconnectTimer !== null) {
                     window.clearTimeout(reconnectTimer)
                 }

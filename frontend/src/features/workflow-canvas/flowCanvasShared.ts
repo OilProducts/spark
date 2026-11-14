@@ -31,7 +31,7 @@ import {
     TaskNode,
     ToolNode,
 } from './TaskNode'
-import { MAX_ROUTE_LABEL_SCALE, routeLabelSize, ValidationEdge } from './ValidationEdge'
+import { MAX_ROUTE_LABEL_SCALE, routeLabels, routeLabelSize, ValidationEdge } from './ValidationEdge'
 import type { WorkflowCanvasPreviewResponse } from './model/types'
 
 export const nodeTypes = {
@@ -470,7 +470,7 @@ function buildElkLayoutGraph(nodes: Node[], edges: Edge[]) {
         })),
         edges: edges.map((edge) => {
             // A labelled route gets room between the rows it joins for its label, at its largest.
-            const label = typeof edge.data?.label === 'string' ? edge.data.label.trim() : ''
+            const label = routeLabels(edges).get(edge.id) ?? ''
             return {
                 id: edge.id,
                 sources: [edge.source],

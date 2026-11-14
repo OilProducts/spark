@@ -21,7 +21,7 @@ export function resolveSaveRemediation(
     }
     if (saveErrorKind === 'validation_error') {
         return {
-            message: 'Resolve highlighted validation errors, then save again.',
+            message: 'Fix the errors listed under Validation; the flow saves with your next change.',
             allowRetry: false,
         }
     }

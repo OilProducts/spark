@@ -110,11 +110,15 @@ export function EditorCanvasToolbar({
             {isStructured ? (
                 <div role="group" aria-label="Actions" className="ml-auto flex shrink-0 items-center gap-2">
                     {canEditLayout ? <Button type="button" size="sm" variant="outline" onClick={onAddNode}>+ Node</Button> : null}
-                    <ProjectPicker heading="Run in" testId="run-flow-project-picker" defaultProjectPath={runDefaultProjectPath} onPick={onRun}>
-                        <Button data-testid="editor-run-button" type="button" size="sm" variant="outline" disabled={Boolean(runDisabledReason)} title={runDisabledReason ?? undefined}>
-                            Run…
-                        </Button>
-                    </ProjectPicker>
+                    {/* A disabled button shows no tooltip, so its wrapper says why Run is off. */}
+                    <span title={runDisabledReason ?? undefined} className="inline-flex">
+                        <ProjectPicker heading="Run in" testId="run-flow-project-picker" defaultProjectPath={runDefaultProjectPath} onPick={onRun}>
+                            <Button data-testid="editor-run-button" type="button" size="sm" variant="outline" disabled={Boolean(runDisabledReason)} aria-describedby={runDisabledReason ? 'editor-run-disabled-reason' : undefined}>
+                                Run…
+                            </Button>
+                        </ProjectPicker>
+                    </span>
+                    {runDisabledReason ? <span id="editor-run-disabled-reason" className="sr-only">{runDisabledReason}</span> : null}
                 </div>
             ) : null}
         </div>

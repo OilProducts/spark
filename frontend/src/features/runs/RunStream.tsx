@@ -84,17 +84,22 @@ export function RunStream() {
     const [fadeSavedToast, setFadeSavedToast] = useState(false)
     const savedToastFadeTimerRef = useRef<number | null>(null)
     const savedToastDismissTimerRef = useRef<number | null>(null)
+    // A flow saves only once it validates; the Validation panel lists what to fix, so the raw text stays in the tooltip.
+    const blockedByValidation = saveState === 'error' && saveErrorKind === 'validation_error'
     const saveStateLabel =
         saveState === 'saving'
-            ? 'Saving...'
+            ? 'Saving…'
             : saveState === 'saved'
                 ? 'Saved'
                 : saveState === 'conflict'
-                    ? 'Save Conflict'
-                    : saveState === 'error'
-                        ? 'Save Failed'
-                        : ''
+                    ? 'Save conflict'
+                    : blockedByValidation
+                        ? 'Not saved yet'
+                        : saveState === 'error'
+                            ? 'Save failed'
+                            : ''
     const remediation = resolveSaveRemediation(saveState, saveErrorKind)
+    const shownSaveError = blockedByValidation ? null : saveErrorMessage
     const shouldShowPersistentSaveIndicator = saveState === 'saving' || saveState === 'error' || saveState === 'conflict'
     const showSaveStateIndicator = saveState === 'saved' || showSavedToast || shouldShowPersistentSaveIndicator
     const shouldFadeSaveCard = showSavedToast && !shouldShowPersistentSaveIndicator
@@ -635,8 +640,11 @@ export function RunStream() {
             {showSaveStateIndicator ? (
                 <div
                     data-testid="global-save-state-indicator"
-                    className={`pointer-events-auto rounded-md border px-2 py-1 text-xs font-medium shadow-sm transition-opacity duration-1000 ${
-                        saveState === 'error'
+                    role="status"
+                    className={`pointer-events-auto max-w-sm rounded-md border px-2 py-1 text-xs font-medium shadow-sm transition-opacity duration-1000 ${
+                        blockedByValidation
+                            ? 'border-border bg-background text-warning'
+                            : saveState === 'error'
                             ? 'border-border bg-background text-destructive'
                             : saveState === 'conflict'
                                 ? 'border-border bg-background text-warning'
@@ -647,7 +655,7 @@ export function RunStream() {
                     title={saveErrorMessage || undefined}
                 >
                     {saveStateLabel ? <span>{saveStateLabel}</span> : null}
-                    {saveErrorMessage ? <span className="ml-1">- {saveErrorMessage}</span> : null}
+                    {shownSaveError ? <span className="ml-1 break-words">– {shownSaveError}</span> : null}
                     {remediation ? (
                         <p data-testid="global-save-remediation-hint" className="mt-1 text-xs font-normal leading-4">
                             {remediation.message}

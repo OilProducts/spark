@@ -7,6 +7,7 @@ import {
     MarkerType,
     useNodesState,
     useEdgesState,
+    useReactFlow,
     applyNodeChanges,
     applyEdgeChanges,
 } from '@xyflow/react';
@@ -234,6 +235,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const activeProjectPath = useStore((state) => state.activeProjectPath);
     const model = useStore((state) => state.model);
     const setViewMode = useStore((state) => state.setViewMode);
+    const { setCenter, getZoom } = useReactFlow();
     const [nodes, setNodes] = useNodesState<Node>([]);
     const [edges, setEdges] = useEdgesState<Edge>([]);
     const hydratedRef = useRef(false);
@@ -1082,15 +1084,24 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         const defaultProfile = flowMetadata.llm_profile || uiDefaults.llm_profile || '';
         const defaultProvider = defaultProfile ? '' : (flowMetadata.llm_provider || uiDefaults.llm_provider || '');
         const defaultReasoning = flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || '';
-        const newNodeId = `node_${Math.floor(Math.random() * 10000)}`;
+        const ids = new Set(nodes.map((node) => node.id));
+        let count = 1;
+        while (ids.has(`step_${count}`)) count += 1;
+        const newNodeId = `step_${count}`;
         const shape = 'box'
+        // Beside the graph, level with its top, so it never lands on another step.
+        const rects = filterAuthoredNodes(nodes).map(readNodeRect);
+        const position = rects.length > 0
+            ? { x: Math.max(...rects.map((rect) => rect.x + rect.width)) + 80, y: Math.min(...rects.map((rect) => rect.y)) }
+            : { x: 0, y: 0 };
         const newNode: Node = {
             id: newNodeId,
             type: getReactFlowNodeTypeForShape(shape),
             style: getShapeNodeStyle(shape),
-            position: { x: Math.random() * 200 + 100, y: Math.random() * 200 + 100 },
+            position,
+            selected: true,
             data: {
-                label: 'New Node',
+                label: count === 1 ? 'New step' : `New step ${count}`,
                 kind: 'agent_task',
                 shape,
                 status: 'idle',
@@ -1102,14 +1113,17 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         };
 
         setNodes(nds => {
-            const newNodes = [...nds, newNode];
+            // Selected, so the inspector opens on it.
+            const newNodes = [...enforceSingleSelectedNode(nds, newNodeId), newNode];
             scheduleSave({ nodes: newNodes, edges });
             scheduleEdgeRouting(newNodes, edges, {
                 persistAfter: true,
             })
             return newNodes;
         });
-    }, [edges, expandChildFlows, flowMetadata, flowName, scheduleEdgeRouting, scheduleSave, setNodes, uiDefaults]);
+        const rect = readNodeRect(newNode);
+        void setCenter(rect.x + rect.width / 2, rect.y + rect.height / 2, { zoom: getZoom(), duration: 200 });
+    }, [edges, enforceSingleSelectedNode, expandChildFlows, flowMetadata, flowName, getZoom, nodes, scheduleEdgeRouting, scheduleSave, setCenter, setNodes, uiDefaults]);
 
     const applyLaidOutGraph = useCallback((layoutGraph: LaidOutFlowGraph) => {
         layoutStateRef.current = layoutGraph.layout

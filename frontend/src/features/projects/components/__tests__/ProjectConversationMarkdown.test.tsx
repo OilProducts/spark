@@ -96,7 +96,7 @@ describe('shared Markdown', () => {
     it('uses the shared renderer through the run transcript', () => {
         const entry = segmentTimelineEntry({
             id: 'run', turn_id: 'turn', order: 1, kind: 'assistant_message', role: 'assistant',
-            status: 'complete', timestamp: '', updated_at: '', content: '~~Run output~~ $x$',
+            status: 'complete', timestamp: '', updated_at: '', content: '~~Run output~~ $$x$$',
             node_id: 'node', attempt: 1, source_scope: 'root', source_parent_node_id: null,
             source_flow_name: null, source_run_id: null, latest_sequence: 1,
         })!
@@ -193,12 +193,13 @@ describe('shared Markdown', () => {
     })
 
     it('renders math safely and only transforms attribute-free HTML breaks outside code', () => {
-        const { container } = render(markdown('a<br>b<br/>c<br />d\nsoft\n\n`<br>`\n\n```html\n<br>\n```\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\nx<br onclick="evil()">y\n\n$x^2$\n\n$$\n\\frac{1}{2}\n$$\n\n$\\notACommand{x}$\n\n$\\href{javascript:alert(1)}{unsafe}$'))
+        const { container } = render(markdown('a<br>b<br/>c<br />d\nsoft\n\n`<br>`\n\n```html\n<br>\n```\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\nx<br onclick="evil()">y\n\n$$x^2$$\n\n$$\n\\frac{1}{2}\n$$\n\n$$\\notACommand{x}$$\n\n$$\\href{javascript:alert(1)}{unsafe}$$\n\nCosts $31.10: $26.97'))
         expect(container.querySelectorAll('br')).toHaveLength(3)
         expect(container.querySelectorAll('.katex').length).toBeGreaterThanOrEqual(2)
         expect(container.textContent).toContain('\\notACommand')
         expect(container.querySelector('script, img, [onclick], a[href^="javascript"]')).toBeNull()
         expect(container.querySelector('p')?.textContent).toContain('d\nsoft')
+        expect(container.textContent).toContain('Costs $31.10: $26.97')
     })
 
     it.each(['project', 'run'])('renders expanded %s thinking with optional bold headings, leaving raw output literal', (prefix) => {

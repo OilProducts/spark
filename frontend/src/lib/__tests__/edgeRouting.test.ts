@@ -131,4 +131,10 @@ describe('edgeRouting', () => {
         const taken = { left: 30, right: 115, top: 30, bottom: 50 }
         expect(routeLabelAnchor(route, [crossing, alongside], [taken])).toEqual({ x: 0, y: 20 })
     })
+
+    it('sets a self-loop\'s label beside the loop when every spot on it covers the node', () => {
+        const node = { left: 0, right: 200, top: 0, bottom: 80 }
+        const loop = [{ x: 200, y: 20 }, { x: 220, y: 20 }, { x: 220, y: 60 }, { x: 200, y: 60 }]
+        expect(routeLabelAnchor(loop, [], [node])).toEqual({ x: 250, y: 40 })
+    })
 })

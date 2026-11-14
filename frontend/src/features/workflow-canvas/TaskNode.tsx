@@ -398,7 +398,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         )}
                         title={diagnosticsForNode.map((diag) => diag.message).join('\n')}
                     >
-                        {diagnosticsCount} {hasDiagnosticError ? 'Error' : hasDiagnosticWarning ? 'Warn' : 'Info'}
+                        {diagnosticsCount} {hasDiagnosticError ? 'error' : hasDiagnosticWarning ? 'warning' : 'note'}{diagnosticsCount === 1 ? '' : 's'}
                     </div>
                 )}
             </div>

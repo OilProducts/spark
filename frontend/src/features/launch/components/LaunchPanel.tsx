@@ -329,7 +329,7 @@ export function LaunchPanel({
                     aria-describedby="launch-panel-run-name-hint"
                     className="h-8 text-sm"
                 />
-                <p id="launch-panel-run-name-hint" className="text-xs text-muted-foreground">Tells this run apart in Runs, Needs you and the Inbox. Left empty, it is listed as {panelTitle}.</p>
+                <p id="launch-panel-run-name-hint" className="text-xs text-muted-foreground">Tells this run apart in Runs, Needs you and the Inbox. Left empty, it is named from {parsedLaunchInputs.entries.length > 0 ? <>its inputs, or listed as {panelTitle} without them</> : <>the flow, as {panelTitle}</>}.</p>
             </div>
 
             {/* Where and how it runs: rarely changed, so folded under one line that says what it will use. */}

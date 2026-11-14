@@ -8,6 +8,7 @@ import {
     expectObjectRecord,
     expectString,
     extractHttpError,
+    fetchSpark,
     parseJsonPayload,
 } from './shared'
 import { notifyAttentionChanged } from './attentionApi'
@@ -1088,7 +1089,7 @@ async function fetchConversationRead<T>(
     endpoint: string,
     parser: (payload: unknown, endpoint: string) => T,
 ): Promise<T> {
-    const response = await fetch(workspaceUrl(path))
+    const response = await fetchSpark(workspaceUrl(path))
     if (response.status === 409) {
         const reset = await response.clone().json()
             .then((payload: unknown) => parseConversationResetResponse(payload, endpoint))

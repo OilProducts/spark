@@ -1,10 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
+import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { fetchWorkspaceFlowListValidated, type WorkspaceFlowResponse } from '@/lib/api/flowsApi'
 
-/** The flows a project can run, with their titles and descriptions; null while loading. */
+/** The flows a project can run, with their titles and descriptions; null while loading. Reloads when Spark reconnects. */
 export function useFlowSummaries(projectPath: string | null) {
     const [loaded, setLoaded] = useState<{ projectPath: string | null; flows: WorkspaceFlowResponse[]; error: string | null } | null>(null)
+    const [attempt, setAttempt] = useState(0)
+    const reconnectSignal = useRunsTransportReconnectSignal()
     useEffect(() => {
         let cancelled = false
         fetchWorkspaceFlowListValidated(projectPath)
@@ -13,6 +16,7 @@ export function useFlowSummaries(projectPath: string | null) {
                 if (!cancelled) setLoaded({ projectPath, flows: [], error: error instanceof Error ? error.message : 'The flows could not be loaded.' })
             })
         return () => { cancelled = true }
-    }, [projectPath])
-    return loaded?.projectPath === projectPath ? loaded : null
+    }, [projectPath, attempt, reconnectSignal])
+    const current = loaded?.projectPath === projectPath ? loaded : null
+    return useMemo(() => current && { ...current, retry: () => setAttempt((value) => value + 1) }, [current])
 }

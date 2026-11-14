@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { cn } from '@/lib/utils'
+import { useNow } from '@/lib/useNow'
 import { useRunsList } from './hooks/useRunsList'
 import { useRunActions } from './hooks/useRunActions'
 import { useRunDetails } from './hooks/useRunDetails'
@@ -134,6 +135,7 @@ export function RunsPanel() {
         selectedRunId ? state.runDetailSessionsByRunId[selectedRunId] ?? null : null
     ))
     const selectedRun = selectedRunDetailSession?.record ?? selectedRunSummary
+    const isSelectedRunLive = selectedRun ? !runHasEnded(selectedRun.status) : false
     // The editor opens a run's flow from the run's own project.
     const runProjectPath = selectedRun?.project_path ?? null
     const flowCatalog = useFlowCatalog(runProjectPath, Boolean(selectedRunId))
@@ -204,8 +206,7 @@ export function RunsPanel() {
         && !selectedRun
         && status !== 'ready'
         && status !== 'error'
-    // eslint-disable-next-line react-hooks/purity -- intentional render-time clock snapshot for elapsed-time labels; re-renders are driven by stream events
-    const now = Date.now()
+    const now = useNow(isSelectedRunLive)
     const [artifactViewerPath, setArtifactViewerPath] = useState<string | null>(null)
     const openArtifact = useCallback((entry: { path: string; viewable: boolean }) => {
         setArtifactViewerPath(entry.path)
@@ -330,11 +331,11 @@ export function RunsPanel() {
     }, [selectedRun?.run_id])
 
     const selectNode = useCallback((nodeId: string | null) => {
-        if (!selectedRun?.run_id) {
+        if (!selectedRunTimelineId) {
             return
         }
-        updateRunDetailSession(selectedRun.run_id, { selectedNodeId: nodeId })
-    }, [selectedRun?.run_id, updateRunDetailSession])
+        updateRunDetailSession(selectedRunTimelineId, { selectedNodeId: nodeId })
+    }, [selectedRunTimelineId, updateRunDetailSession])
 
     useEffect(() => {
         if (!selectedNodeId) {
@@ -556,12 +557,16 @@ export function RunsPanel() {
                 {selectedRun && degradedRunPanels.length > 0 && (
                     <div
                         data-testid="run-partial-api-failure-banner"
-                        className="rounded-md border-0 border-l border-warning px-3 py-2 text-sm text-warning"
+                        role="status"
+                        className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border-0 border-l border-warning px-3 py-2 text-sm text-warning"
                     >
-                        Some run details couldn't load.
-                        <span className="ml-1 text-xs">
-                            Affected surfaces: {degradedRunPanels.join(', ')}.
+                        <span>
+                            Some run details couldn't load.
+                            <span className="ml-1 text-xs">
+                                Affected surfaces: {degradedRunPanels.join(', ')}.
+                            </span>
                         </span>
+                        <Button type="button" variant="outline" size="xs" onClick={requestRunsTransportReconnect}>Try again</Button>
                     </div>
                 )}
                 {/* Until the history loads, no runs says nothing; a failed load says so once, here. */}
@@ -742,7 +747,6 @@ export function RunsPanel() {
                             onLaunched={() => {
                                 setRerunRun(null)
                             }}
-                            onClose={() => setRerunRun(null)}
                         />
                     ) : null}
                 </DialogContent>

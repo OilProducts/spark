@@ -346,7 +346,7 @@ nodeDiagnostics: {
         expect(screen.getByText('Needs input')).toBeInTheDocument()
         expect(screen.queryByText('Human Input Required')).not.toBeInTheDocument()
         expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
-        expect(screen.getByTestId('node-diagnostic-badge')).toHaveTextContent('1 Warn')
+        expect(screen.getByTestId('node-diagnostic-badge')).toHaveTextContent('1 warning')
         expect(
             [...container.querySelectorAll('.react-flow__handle')].every((handle) =>
                 handle.className.includes('pointer-events-none'),

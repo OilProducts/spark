@@ -154,7 +154,12 @@ function FlowChooser({ projectPath, onProjectChange, onChoose }: {
             </div>
             <div data-testid="run-flow-list" className="-mx-2 min-h-0 flex-1 overflow-y-auto px-2" aria-busy={summaries === null}>
                 {summaries === null ? <p className="py-6 text-center text-sm text-muted-foreground">Loading flows…</p> : null}
-                {summaries?.error ? <InlineError>{summaries.error}</InlineError> : null}
+                {summaries?.error ? (
+                    <InlineError title="Couldn’t load the flows">
+                        <p>{summaries.error}</p>
+                        <Button type="button" variant="outline" size="sm" className="mt-2" onClick={summaries.retry}>Try again</Button>
+                    </InlineError>
+                ) : null}
                 {summaries && !summaries.error && own.length === 0 && folders.length === 0 ? (
                     <p className="py-6 text-center text-sm text-muted-foreground">
                         {query ? 'No flow matches that search.' : 'This project has no flows yet.'}

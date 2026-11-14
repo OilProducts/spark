@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useReactFlow } from '@xyflow/react';
 import { useStore } from '@/store';
 import { useNarrowViewport } from '@/lib/useNarrowViewport';
@@ -38,10 +39,17 @@ export function ValidationPanel() {
     const { getNode, getEdges, setCenter, setNodes, setEdges } = useReactFlow();
     const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
     const [sortMode, setSortMode] = useState<SortMode>('severity');
+    const [collapsed, setCollapsed] = useState(false);
 
     if (viewMode !== 'editor' || diagnostics.length === 0) {
         return null;
     }
+
+    const counts = (['error', 'warning', 'info'] as const)
+        .map((severity) => [severity, diagnostics.filter((diag) => diag.severity === severity).length] as const)
+        .filter(([, count]) => count > 0)
+        .map(([severity, count]) => `${count} ${severity === 'info' ? 'note' : severity}${count === 1 ? '' : 's'}`)
+        .join(' · ');
 
     const filteredDiagnostics = diagnostics.filter((diag) =>
         severityFilter === 'all' ? true : diag.severity === severityFilter,
@@ -151,18 +159,31 @@ export function ValidationPanel() {
                 isNarrowViewport ? 'bottom-2 left-2 right-2 w-auto' : 'bottom-4 left-4 w-80'
             }`}
         >
-            <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-foreground">Validation</div>
-                <div className="text-xs font-medium text-muted-foreground">
-                    {hasValidationErrors ? 'Errors present' : 'Warnings only'}
-                </div>
-            </div>
+            <button
+                type="button"
+                data-testid="validation-panel-toggle"
+                aria-expanded={!collapsed}
+                onClick={() => setCollapsed((value) => !value)}
+                className="flex w-full items-center justify-between gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+            >
+                <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                    {collapsed ? <ChevronRight aria-hidden="true" className="size-4" /> : <ChevronDown aria-hidden="true" className="size-4" />}
+                    Validation
+                </span>
+                <span className={`text-xs font-medium ${hasValidationErrors ? 'text-destructive' : 'text-warning'}`}>{counts}</span>
+            </button>
+            {collapsed ? null : <>
+            {hasValidationErrors ? (
+                <p className="mt-1 text-xs text-muted-foreground">Fix the errors to save and run this flow.</p>
+            ) : null}
             <div className="mt-2 flex items-center justify-between gap-2">
                 <NativeSelect
                     data-testid="validation-sort-select"
+                    aria-label="Sort"
                     value={sortMode}
                     onChange={(event) => setSortMode(event.target.value as SortMode)}
-                    className="h-7 w-auto px-2 text-sm"
+                    size="sm"
+                    className="h-7 py-0 pl-2 pr-8 text-xs"
                 >
                     <option value="severity">Sort: severity</option>
                     <option value="line">Sort: line</option>
@@ -238,6 +259,7 @@ export function ValidationPanel() {
                     </div>
                 )}
             </div>
+            </>}
         </div>
     );
 }

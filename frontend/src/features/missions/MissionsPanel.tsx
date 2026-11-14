@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from '@/store'
+import { fetchSpark } from '@/lib/fetchSpark'
 import { Button } from '@/components/ui/button'
 import { InlineError } from '@/components/app/inline-error'
 import { ListGroupLabel, SidePanelRow } from '@/components/app/side-panel-row'
@@ -39,7 +40,7 @@ export class MissionConflict extends Error {}
 export async function request<T>(project: string, id = '', body?: unknown, action = ''): Promise<T> {
     const method = body === undefined ? undefined : action || !id ? 'POST' : 'PATCH'
     const query = project ? `${action.includes('?') ? '&' : '?'}project_path=${encodeURIComponent(project)}` : ''
-    const response = await fetch(`/workspace/api/missions${id ? `/${encodeURIComponent(id)}` : ''}${action}${query}`, method ? { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined)
+    const response = await fetchSpark(`/workspace/api/missions${id ? `/${encodeURIComponent(id)}` : ''}${action}${query}`, method ? { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined)
     const value = await response.json()
     if (response.status === 409) throw new MissionConflict((action && value.detail) || 'This mission changed on the server. Your edits are preserved. Refresh and reconcile the latest revision before saving.')
     if (!response.ok) throw new Error(value.detail || 'Mission request failed')

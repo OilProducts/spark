@@ -750,9 +750,11 @@ function runtimeFromAttrs(attrs: CanonicalAttrMap, baseRuntime?: Record<string, 
     })
 }
 
-function contractsFromAttrs(attrs: CanonicalAttrMap, baseContracts?: Record<string, unknown> | null): Record<string, unknown> | undefined {
+function contractsFromAttrs(attrs: CanonicalAttrMap, kind: string, baseContracts?: Record<string, unknown> | null): Record<string, unknown> | undefined {
     return compactObject({
         ...(baseContracts ?? {}),
+        // Agent tasks answer with the one response contract there is; no other kind takes one.
+        response: kind === 'agent_task' ? 'decision_envelope' : undefined,
         reads_context: parseStringArrayJson(attrs['spark.reads_context']).length > 0
             ? parseStringArrayJson(attrs['spark.reads_context'])
             : baseContracts?.reads_context,
@@ -804,7 +806,7 @@ function nodeFromCanonicalAttrs(
         role: 'role' in attrs ? readStringAttr(attrs, 'role') || undefined : baseNode?.role,
         config: nodeConfigFromAttrs(kind, attrs, asRecord(baseNode?.config), fork),
         context: asRecord(attrs.context) ?? asRecord(baseNode?.context) ?? undefined,
-        contracts: contractsFromAttrs(attrs, asRecord(baseNode?.contracts)),
+        contracts: contractsFromAttrs(attrs, kind, asRecord(baseNode?.contracts)),
         runtime: runtimeFromAttrs(attrs, asRecord(baseNode?.runtime)),
         manager: managerFromAttrs(attrs, asRecord(baseNode?.manager)),
         retry: retryFromAttrs(attrs, asRecord(baseNode?.retry)),

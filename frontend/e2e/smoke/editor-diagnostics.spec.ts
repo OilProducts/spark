@@ -134,7 +134,7 @@ test("prompt edits trigger live preview diagnostics before blur for item 5.1-03"
     await expect(page.getByRole("button", { name: "+ Node", exact: true })).toBeVisible()
     await page.getByRole("button", { name: "+ Node", exact: true }).click()
 
-    const newNode = page.locator(".react-flow__node").filter({ hasText: "New Node" }).last()
+    const newNode = page.locator(".react-flow__node").filter({ hasText: "New step" }).last()
     await expect(newNode).toBeVisible()
     await newNode.click()
 
@@ -337,7 +337,7 @@ test("inline node and edge diagnostic badges render for item 7.1-02", async ({ p
     await expect(page.getByRole("button", { name: "+ Node", exact: true })).toBeVisible()
     await page.getByRole("button", { name: "+ Node", exact: true }).click()
 
-    const newNode = page.locator(".react-flow__node").filter({ hasText: "New Node" }).last()
+    const newNode = page.locator(".react-flow__node").filter({ hasText: "New step" }).last()
     await expect(newNode).toBeVisible()
     await newNode.click()
 
@@ -358,8 +358,8 @@ test("inline node and edge diagnostic badges render for item 7.1-02", async ({ p
     await promptField.fill(promptToken)
     await previewRequest
 
-    await expect(page.getByTestId("node-diagnostic-badge")).toContainText("1 Warn")
-    await expect(page.getByTestId("edge-diagnostic-badge").first()).toContainText("1 Error")
+    await expect(page.getByTestId("node-diagnostic-badge")).toContainText("1 warning")
+    await expect(page.getByTestId("edge-diagnostic-badge").first()).toContainText("1 error")
     await page.screenshot({ path: screenshotPath("14-inline-diagnostic-badges.png"), fullPage: true })
   } finally {
     await deleteFlowAfterSmoke(page, flowName)

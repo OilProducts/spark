@@ -95,7 +95,7 @@ describe('Editor save state behavior', () => {
     expect(saveState.saveErrorKind).toBe('validation_error')
     expect(saveState.saveErrorMessage).toContain('Save blocked by validation errors')
     expect(resolveSaveRemediation(saveState.saveState, saveState.saveErrorKind)).toEqual({
-      message: 'Resolve highlighted validation errors, then save again.',
+      message: 'Fix the errors listed under Validation; the flow saves with your next change.',
       allowRetry: false,
     })
   })

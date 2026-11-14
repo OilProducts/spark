@@ -104,10 +104,14 @@ export function routeLabelAnchor(
         const middle = (start + end) / 2
         const pointAt = (position: number): LabelAnchor => (horizontal ? { x: position, y: from.y } : { x: from.x, y: position })
         // ponytail: samples every 8px; labels are few, so this stays cheap on the largest flows.
+        // Beside a vertical run too, at a cost, for a short one (a node's self-loop) with no clear spot on the line.
+        const besides = horizontal ? [] : [-1, 1].map((side) => side * (size.width / 2 + 6))
         for (let position = Math.min(start, end) + half; position <= Math.max(start, end) - half + 0.5; position += 8) {
             consider(pointAt(position), at, travelled + Math.abs(position - middle))
+            for (const offset of besides) consider({ x: from.x + offset, y: position }, at, 1e5 + travelled + Math.abs(position - middle))
         }
         consider(pointAt(middle), at, travelled)
+        for (const offset of besides) consider({ x: from.x + offset, y: middle }, at, 1e5 + travelled)
         travelled += length
     })
     return best.anchor ?? getRouteMidpoint(route)
@@ -117,7 +121,7 @@ export function routeLabelAnchor(
 function placeRouteLabels(edges: Edge[], nodes: Node[], scale: number): Map<string, LabelAnchor> {
     const routes = edges.flatMap((edge) => {
         const route = edge.hidden ? null : readRenderRoute((edge.data as Record<string, unknown> | undefined)?.[EDGE_RENDER_ROUTE_KEY])
-        return route ? [{ id: edge.id, route, label: edgeRouteLabel(edge.data) }] : []
+        return route ? [{ id: edge.id, route, label: routeLabels(edges).get(edge.id) ?? '' }] : []
     })
     // The laid-out size: a run graph's nodes are never measured into its store.
     const placed: LabelBox[] = nodes.flatMap((node) => {
@@ -150,10 +154,30 @@ function routeLabelAnchors(edges: Edge[], nodes: Node[], scale: number): Map<str
     return anchors
 }
 
-// A route's label names a choice (a human gate's answers); routes without one stay unlabelled.
-function edgeRouteLabel(data: unknown): string {
-    const label = (data as Record<string, unknown> | undefined)?.label
-    return typeof label === 'string' ? label.trim() : ''
+const edgeDataString = (edge: Edge, key: string): string => {
+    const value = (edge.data as Record<string, unknown> | undefined)?.[key]
+    return typeof value === 'string' ? value.trim() : ''
+}
+
+// What each route is called on the canvas: its own label, else its decision where its node
+// chooses between routes, so a fork in the work reads at a glance. A lone route stays unlabelled.
+const routeLabelsByEdges = new WeakMap<readonly Edge[], Map<string, string>>()
+export function routeLabels(edges: readonly Edge[]): Map<string, string> {
+    let labels = routeLabelsByEdges.get(edges)
+    if (labels) return labels
+    const decisionsBySource = new Map<string, Set<string>>()
+    for (const edge of edges) {
+        const decision = edgeDataString(edge, 'decision')
+        if (!decision || edge.hidden) continue
+        decisionsBySource.set(edge.source, (decisionsBySource.get(edge.source) ?? new Set()).add(decision))
+    }
+    labels = new Map(edges.map((edge) => {
+        const decision = edgeDataString(edge, 'decision')
+        const choosing = (decisionsBySource.get(edge.source)?.size ?? 0) > 1
+        return [edge.id, edgeDataString(edge, 'label') || (choosing ? decision.replace(/_/g, ' ') : '')]
+    }))
+    routeLabelsByEdges.set(edges, labels)
+    return labels
 }
 
 function buildFallbackRoute(sourceX: number, sourceY: number, targetX: number, targetY: number): EdgeRoute {
@@ -195,7 +219,7 @@ export function ValidationEdge({
         ?? buildFallbackRoute(sourceX, sourceY, targetX, targetY)
     const edgePath = buildRoundedPolylinePath(renderRoute)
     const labelPoint = getRouteMidpoint(renderRoute)
-    const routeLabel = edgeRouteLabel(data)
+    const routeLabel = useFlowStore((state) => routeLabels(state.edges).get(id) ?? '')
     // Only a labelled edge reads the other routes, to keep its label off them and their labels.
     const flowEdges = useFlowStore((state) => (routeLabel ? state.edges : null))
     const flowNodes = useFlowStore((state) => (routeLabel ? state.nodes : null))
@@ -300,7 +324,7 @@ export function ValidationEdge({
                                 className={`rounded-full border border-border bg-background/95 px-2 py-0.5 text-xs font-medium ${badgeClass}`}
                                 title={diagnosticsForEdge.map((diag) => diag.message).join('\n')}
                             >
-                                {diagnosticsForEdge.length} {hasError ? 'Error' : hasWarning ? 'Warn' : hasInfo ? 'Info' : 'Issue'}
+                                {diagnosticsForEdge.length} {hasError ? 'error' : hasWarning ? 'warning' : hasInfo ? 'note' : 'issue'}{diagnosticsForEdge.length === 1 ? '' : 's'}
                             </div>
                         ) : null}
                     </div>

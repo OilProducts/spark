@@ -195,6 +195,9 @@ describe('buildRunVisits', () => {
     const runEnd = event('PipelineFailed', { error: 'aborted_by_user' })
     const canceled = build({ journal: [...journal, runEnd], runStatus: 'canceled' })
     expect(canceled[1].endedAt).toBe(runEnd.receivedAt)
+    // The node a cancel killed errors as it stops: the cancel ended it, not an error.
+    const killed = build({ journal: [...stage('start', 0), ...stage('evaluate', 1, 'error'), runEnd], runStatus: 'canceled' })
+    expect(killed[1].outcome).toBe('interrupted')
 
     const failedRun = build({
       journal: [...stage('start', 0), started('validate', 1), failed('validate', 1, 'tool command failed with code 1')],
