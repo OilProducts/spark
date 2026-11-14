@@ -17,11 +17,27 @@ const isInteractiveSelector = (state: { nodesDraggable: boolean; nodesConnectabl
     state.nodesDraggable || state.nodesConnectable || state.elementsSelectable
 )
 
-// The shown steps as `id` and label pairs, one per line, so moving a step re-renders nothing.
-const stepListSelector = (state: ReactFlowState) => state.nodes
-    .filter((node) => !node.hidden)
-    .map((node) => `${node.id}\t${(typeof node.data?.label === 'string' && node.data.label.trim()) || node.id}`)
-    .join('\n')
+// The shown steps as `id` and label pairs, one per line, so moving a step re-renders nothing. They
+// come in the flow's order, as a reader follows it: from its first steps along their routes, any
+// step no route reaches last.
+const stepListSelector = (state: ReactFlowState) => {
+    const next = new Map<string, string[]>()
+    for (const edge of state.edges) next.set(edge.source, [...(next.get(edge.source) ?? []), edge.target])
+    const targets = new Set(state.edges.map((edge) => edge.target))
+    const order = new Map<string, number>()
+    const queue = state.nodes.filter((node) => !targets.has(node.id)).map((node) => node.id)
+    for (const id of queue) {
+        if (order.has(id)) continue
+        order.set(id, order.size)
+        queue.push(...(next.get(id) ?? []))
+    }
+    const rank = (id: string) => order.get(id) ?? Number.MAX_SAFE_INTEGER
+    return state.nodes
+        .filter((node) => !node.hidden)
+        .sort((left, right) => rank(left.id) - rank(right.id))
+        .map((node) => `${node.id}\t${(typeof node.data?.label === 'string' && node.data.label.trim()) || node.id}`)
+        .join('\n')
+}
 
 /**
  * Zoom, fit, minimap and lock buttons for a graph, shown in its toolbar rather than over the
@@ -42,6 +58,12 @@ export function CanvasViewControls({ minimap, lockable = false, className }: Can
             zoom: Math.max(getZoom(), READABLE_ZOOM),
             duration: 200,
         })
+        // It glows a moment, so the eye finds it among its neighbours.
+        Array.from(store.getState().domNode?.querySelectorAll('.react-flow__node') ?? [])
+            .find((element) => element.getAttribute('data-id') === id)?.animate?.(
+            [{ filter: 'drop-shadow(0 0 10px hsl(var(--primary)))' }, { filter: 'none' }],
+            { duration: 1600, easing: 'ease-out' },
+        )
     }
 
     return (

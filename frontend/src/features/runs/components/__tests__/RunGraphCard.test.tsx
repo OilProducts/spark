@@ -136,15 +136,19 @@ describe('RunGraphCard', () => {
         expect(useStore.getState().runDetailSessionsByRunId[run.run_id]?.expandChildFlows).toBe(true)
     })
 
-    it('goes to a step chosen by name', async () => {
+    it('goes to a step chosen by name, listing them in the flow\'s order', async () => {
         const run = makeRun('run-go-to-step')
         useStore.getState().setRunsSelectedRunId(run.run_id)
         loadRunGraphPreviewMock.mockResolvedValue({
             status: 'ok',
             graph: {
                 graph_attrs: {},
-                nodes: [{ id: 'start', label: 'Start', shape: 'Mdiamond' }, { id: 'review', label: 'Review', shape: 'box' }],
-                edges: [{ from: 'start', to: 'review' }],
+                nodes: [
+                    { id: 'apply', label: 'Apply', shape: 'box' },
+                    { id: 'review', label: 'Review', shape: 'box' },
+                    { id: 'start', label: 'Start', shape: 'Mdiamond' },
+                ],
+                edges: [{ from: 'start', to: 'review' }, { from: 'review', to: 'apply' }],
             },
             diagnostics: [],
             errors: [],
@@ -156,7 +160,7 @@ describe('RunGraphCard', () => {
 
         await screen.findByTestId('rf__node-review')
         const goTo = screen.getByRole('combobox', { name: 'Go to step' })
-        expect(within(goTo).getAllByRole('option').map((option) => option.textContent)).toEqual(['Go to step', 'Start', 'Review'])
+        expect(within(goTo).getAllByRole('option').map((option) => option.textContent)).toEqual(['Go to step', 'Start', 'Review', 'Apply'])
         const viewport = () => (document.querySelector('.react-flow__viewport') as HTMLElement).style.transform
         const before = viewport()
         fireEvent.change(goTo, { target: { value: 'review' } })
