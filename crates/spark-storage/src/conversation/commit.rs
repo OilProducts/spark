@@ -852,11 +852,15 @@ pub(crate) fn summary(connection: &Connection, conversation_id: &str) -> Result<
         [conversation_id],
         |row| row.get(0),
     )?;
+    // A pending review, or a question the assistant waits on an answer to.
     let needs_attention = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM artifacts INDEXED BY artifacts_pending \
          WHERE conversation_id = ?1 AND deleted = 0 AND \
          ((status = 'pending' AND collection = 'flow_run_requests') OR \
-         (status = 'pending_review' AND collection = 'proposed_plans')))",
+         (status = 'pending_review' AND collection = 'proposed_plans'))) OR \
+         EXISTS(SELECT 1 FROM segments INDEXED BY segments_status \
+         WHERE status = 'pending' AND conversation_id = ?1 \
+         AND kind = 'request_user_input' AND deleted = 0)",
         [conversation_id],
         |row| row.get(0),
     )?;

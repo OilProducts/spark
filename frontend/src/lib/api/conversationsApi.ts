@@ -220,6 +220,8 @@ export interface ConversationSummaryResponse {
     standing_role?: StandingRoleSummary | null
     /** An assistant turn is pending or streaming. */
     running?: boolean
+    /** Something in the chat waits on you: a question, a flow run request or a plan to review. */
+    needs_attention?: boolean
 }
 
 export interface StandingRoleSummary {
@@ -1031,6 +1033,7 @@ export function conversationSummaryFromRow(
         launched_run_ids: payload.launched_run_ids,
         standing_role: payload.standing_role ?? null,
         running: payload.running,
+        needs_attention: payload.needs_attention,
     }
 }
 

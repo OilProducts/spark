@@ -69,7 +69,12 @@ pub fn seed_conversation_snapshot(store: &Arc<ConversationStore>, snapshot: &Val
         .any(|artifact| artifact["status"].as_str().unwrap_or("pending") == "pending")
         || artifacts.proposed_plans.iter().any(|artifact| {
             artifact["status"].as_str().unwrap_or("pending_review") == "pending_review"
-        });
+        })
+        || record
+            .transcript
+            .segments
+            .iter()
+            .any(|segment| segment.kind == "request_user_input" && segment.status == "pending");
     let launched_run_ids: Vec<String> = artifacts
         .flow_launches
         .iter()

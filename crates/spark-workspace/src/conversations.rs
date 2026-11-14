@@ -600,7 +600,8 @@ impl WorkspaceConversationService {
     }
 
     /// Everything currently waiting on a human, across surfaces: runs parked
-    /// at a gate, agent flow-run requests, and proposed plans pending review.
+    /// at a gate, missions, chat questions, agent flow-run requests, and
+    /// proposed plans pending review.
     /// Derived entirely from state the runtime already records.
     pub fn pending_attention(&self) -> WorkspaceResult<Vec<Value>> {
         let mut items = Vec::new();
@@ -672,10 +673,13 @@ impl WorkspaceConversationService {
             self.settings.clone(),
             self.store.clone(),
         );
+        // A mission's conversation asks through its mission.
+        let mut mission_ids = std::collections::HashSet::new();
         for project in
             ProjectRegistry::new(self.settings.data_dir.clone()).list_project_records()?
         {
             for mission in missions.list(&project.project_path).unwrap_or_default() {
+                mission_ids.insert(mission.id.clone());
                 if !mission.fields.archived
                     && mission.status == crate::missions::MissionStatus::NeedsYou
                 {
@@ -707,6 +711,25 @@ impl WorkspaceConversationService {
                 .get("conversation_handle")
                 .cloned()
                 .unwrap_or_default();
+            // A chat whose assistant waits on an answer: one item per question asked.
+            let questions = if mission_ids.contains(&conversation_id) {
+                Vec::new()
+            } else {
+                repository.pending_questions(&conversation_id)?
+            };
+            for segment in questions {
+                let request = &segment["request_user_input"];
+                items.push(json!({
+                    "kind": "chat_question",
+                    "id": request["request_id"],
+                    "title": row.payload.as_ref().map_or(&Value::Null, |payload| &payload["title"]),
+                    "question": request["questions"][0]["question"],
+                    "project_path": project_path,
+                    "conversation_id": conversation_id,
+                    "conversation_handle": handle,
+                    "updated_at": segment["updated_at"],
+                }));
+            }
             for (collection, pending_status, kind) in [
                 ("flow_run_requests", "pending", "flow_run_request"),
                 ("proposed_plans", "pending_review", "proposed_plan"),

@@ -8,13 +8,13 @@ export const notifyAttentionChanged = <T,>(value: T): T => {
     return value
 }
 
-export type AttentionKind = 'run_gate' | 'flow_run_request' | 'proposed_plan' | 'mission'
+export type AttentionKind = 'run_gate' | 'chat_question' | 'flow_run_request' | 'proposed_plan' | 'mission'
 
 export interface AttentionItem {
     kind: AttentionKind
     id: string
     title: string
-    /** What a run's gate asks. */
+    /** What a run's gate or a chat asks. */
     question?: string
     /** The flow a run gate's run belongs to. */
     flow_name?: string
@@ -25,7 +25,7 @@ export interface AttentionItem {
     updated_at: string
 }
 
-const ATTENTION_KINDS: ReadonlySet<string> = new Set(['run_gate', 'flow_run_request', 'proposed_plan', 'mission'])
+const ATTENTION_KINDS: ReadonlySet<string> = new Set(['run_gate', 'chat_question', 'flow_run_request', 'proposed_plan', 'mission'])
 
 function parseAttentionItems(payload: unknown, endpoint: string): AttentionItem[] {
     const record = expectObjectRecord(payload, endpoint)

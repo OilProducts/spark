@@ -12,6 +12,7 @@ const ATTENTION_POLL_MS = 15_000
 
 export const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
     run_gate: 'Run waiting for input',
+    chat_question: 'Chat waiting for your answer',
     flow_run_request: 'Flow run request',
     proposed_plan: 'Plan pending review',
     mission: 'Mission needs you',
@@ -103,10 +104,12 @@ let stopAttentionPolling = () => {}
 /** Pending attention, polled and refreshed when a run's status changes; null until the first fetch resolves. */
 export function useAttentionItems() {
     const items = useSyncExternalStore(subscribeAttention, () => attentionItems)
-    // A run or mission leaving or reaching a question changes what waits on you; don't wait for the next poll.
+    // A run, mission or chat leaving or reaching a question changes what waits on you; don't wait for the next poll.
     const runStatuses = useStore((state) => [
         ...state.runsListSession.runs.map((run) => `${run.run_id}:${run.status}`),
         ...state.missionBoard.map((mission) => `${mission.id}:${mission.status ?? ''}`),
+        ...Object.values(state.homeConversationCache.summariesByProjectPath).flat()
+            .filter((chat) => chat.needs_attention).map((chat) => chat.conversation_id),
     ].join(','))
     const firstStatuses = useRef(runStatuses)
     useEffect(() => {
