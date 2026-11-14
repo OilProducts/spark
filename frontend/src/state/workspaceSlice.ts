@@ -75,7 +75,11 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
     },
     chatOriginProjectPath: null,
     projectPagePath: restoredRouteState.projectPagePath,
-    openProjectPage: (projectPath) => set({ projectPagePath: projectPath }),
+    projectPageSettingsRequest: null,
+    openProjectPage: (projectPath, section) => set({
+        projectPagePath: projectPath,
+        projectPageSettingsRequest: section === 'settings' ? {} : null,
+    }),
     selectedMission: restoredRouteState.selectedMission,
     setSelectedMission: (selection) => set({ selectedMission: selection }),
     selectedRole: null,

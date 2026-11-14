@@ -215,9 +215,11 @@ export function RunsPanel() {
         && status !== 'ready'
         && status !== 'error'
     const now = useNow(isSelectedRunLive)
-    const [artifactViewerPath, setArtifactViewerPath] = useState<string | null>(null)
+    // The file the viewer shows, which Try again loads again.
+    const [openedArtifact, setOpenedArtifact] = useState<{ path: string; viewable: boolean } | null>(null)
+    const artifactViewerPath = openedArtifact?.path ?? null
     const openArtifact = useCallback((entry: { path: string; viewable: boolean }) => {
-        setArtifactViewerPath(entry.path)
+        setOpenedArtifact(entry)
         void viewArtifact(entry)
     }, [viewArtifact])
     const detailsScrollRef = useRef<HTMLDivElement | null>(null)
@@ -709,11 +711,12 @@ export function RunsPanel() {
                 open={artifactViewerPath !== null}
                 onOpenChange={(open) => {
                     if (!open) {
-                        setArtifactViewerPath(null)
+                        setOpenedArtifact(null)
                     }
                 }}
                 isLoading={isArtifactViewerLoading}
                 error={artifactViewerError}
+                onRetry={openedArtifact?.viewable ? () => void viewArtifact(openedArtifact) : undefined}
                 payload={artifactViewerPayload || null}
                 downloadHref={artifactViewerPath ? artifactDownloadHref(artifactViewerPath) || null : null}
             />

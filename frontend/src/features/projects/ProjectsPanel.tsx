@@ -82,6 +82,8 @@ export function ProjectsPanel() {
             >
                 {projectPagePath ? (
                     <ProjectPage
+                        // Another project's page starts afresh, with no search of the last one's chats.
+                        key={projectPagePath}
                         projectPath={projectPagePath}
                         chats={sidebarProps.conversationSummariesByProjectPath[projectPagePath] ?? []}
                         formatConversationAgeShort={sidebarProps.formatConversationAgeShort}

@@ -173,7 +173,9 @@ export interface WorkspaceSlice {
     setActiveProjectPath: (projectPath: string | null) => void
     /** The project whose page the Chats view shows instead of a chat. */
     projectPagePath: string | null
-    openProjectPage: (projectPath: string | null) => void
+    /** Set anew each time a project's page is opened at its settings, which the page then scrolls to. */
+    projectPageSettingsRequest: object | null
+    openProjectPage: (projectPath: string | null, section?: 'settings') => void
     selectedMission: MissionSelection | null
     setSelectedMission: (selection: MissionSelection | null) => void
     selectedRole: RoleSelection | null

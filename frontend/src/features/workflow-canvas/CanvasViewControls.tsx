@@ -19,7 +19,7 @@ const isInteractiveSelector = (state: { nodesDraggable: boolean; nodesConnectabl
 
 // The shown steps as `id` and label pairs, one per line, so moving a step re-renders nothing. They
 // come in the flow's order, as a reader follows it: from its first steps along their routes, any
-// step no route reaches last.
+// step no route reaches after them, and the exits, where routes end, last.
 const stepListSelector = (state: ReactFlowState) => {
     const next = new Map<string, string[]>()
     for (const edge of state.edges) next.set(edge.source, [...(next.get(edge.source) ?? []), edge.target])
@@ -31,10 +31,12 @@ const stepListSelector = (state: ReactFlowState) => {
         order.set(id, order.size)
         queue.push(...(next.get(id) ?? []))
     }
-    const rank = (id: string) => order.get(id) ?? Number.MAX_SAFE_INTEGER
+    const rank = (node: ReactFlowState['nodes'][number]) => (
+        (node.type === 'exitNode' ? state.nodes.length : 0) + (order.get(node.id) ?? state.nodes.length - 1)
+    )
     return state.nodes
         .filter((node) => !node.hidden)
-        .sort((left, right) => rank(left.id) - rank(right.id))
+        .sort((left, right) => rank(left) - rank(right))
         .map((node) => `${node.id}\t${(typeof node.data?.label === 'string' && node.data.label.trim()) || node.id}`)
         .join('\n')
 }

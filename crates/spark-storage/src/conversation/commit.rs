@@ -898,9 +898,36 @@ pub(crate) fn derived_title(connection: &Connection, conversation_id: &str) -> R
         .optional()?;
     Ok(first
         .flatten()
-        .map(|content| truncate_text(&content, 64))
+        .map(|content| title_from_first_message(&content))
         .filter(|title| !title.is_empty())
         .unwrap_or_else(|| "New thread".to_string()))
+}
+
+/// A first message's title: its first paragraph of prose, shortened. Code
+/// fences and the code in them are left out, unless the message is only code.
+pub fn title_from_first_message(content: &str) -> String {
+    let is_fence = |line: &str| {
+        let line = line.trim_start();
+        line.starts_with("```") || line.starts_with("~~~")
+    };
+    let mut in_fence = false;
+    let mut paragraph = Vec::new();
+    for line in content.lines() {
+        if is_fence(line) {
+            in_fence = !in_fence;
+        } else if !in_fence && !line.trim().is_empty() {
+            paragraph.push(line);
+            continue;
+        }
+        // A blank line, a fence or code ends the first paragraph.
+        if !paragraph.is_empty() {
+            break;
+        }
+    }
+    if paragraph.is_empty() {
+        paragraph = content.lines().filter(|line| !is_fence(line)).collect();
+    }
+    truncate_text(&paragraph.join("\n"), 64)
 }
 
 /// Completed assistant replies, counted up to 2: title generation only asks

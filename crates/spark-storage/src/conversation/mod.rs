@@ -33,7 +33,7 @@ pub(crate) use tool_output::{
 };
 
 pub use attachments::{turn_attachment_ids, ConversationAttachment, ATTACHMENTS_DIR_NAME};
-pub use commit::ConversationCommit;
+pub use commit::{title_from_first_message, ConversationCommit};
 pub(crate) use database::open_state_database;
 pub use database::{
     CatchUp, ChangeBatch, ChangeScope, CheckpointFault, CheckpointedView, ConversationDatabase,

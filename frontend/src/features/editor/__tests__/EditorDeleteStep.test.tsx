@@ -1,5 +1,6 @@
 import { Editor, viewportShowingNewStep } from '@/features/editor/Editor'
 import { EditorGraphBridgeProvider } from '@/features/editor/EditorGraphBridgeContext'
+import { GraphSettings } from '@/features/editor/GraphSettings'
 import { Sidebar } from '@/features/editor/Sidebar'
 import { resetFlowSaveBaselines } from '@/lib/flowPersistence'
 import { useStore } from '@/store'
@@ -272,12 +273,34 @@ describe('Editor step deletion', () => {
     await user.type(exitCodes, '0 = approved\n1 = failed')
     await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1).toMatchObject({ label: 'Review Checks' }))
 
-    await user.click(screen.getByRole('button', { name: 'Undo edit' }))
+    // Undo names the step it sets back, by its name now.
+    await user.click(screen.getByRole('button', { name: 'Undo edit to Review Checks' }))
     expect(exitCodes).toHaveValue('0 = approved')
-    await user.click(screen.getByRole('button', { name: 'Undo edit' }))
+    await user.click(screen.getByRole('button', { name: 'Undo edit to Review Checks' }))
     expect(screen.getByRole('textbox', { name: 'Label' })).toHaveValue('Review')
     expect(screen.getByTestId('editor-undo')).toHaveAttribute('aria-disabled', 'true')
     await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1).toMatchObject({ label: 'Review', config: { exit_codes: { '0': 'approved' } } }))
+  })
+
+  it('takes back a flow settings edit with Undo, after a step edit made before it', async () => {
+    vi.mocked(loadEditorPreview).mockImplementation(previewOf(REVIEW_FLOW))
+    const user = userEvent.setup()
+    render(<ReactFlowProvider><EditorGraphBridgeProvider><Editor /><Sidebar /><GraphSettings /></EditorGraphBridgeProvider></ReactFlowProvider>)
+    await waitFor(() => expect(canvasNode('step_1')).not.toBeNull())
+    fireEvent.click(canvasNode('step_1') as HTMLElement)
+    await user.type(await screen.findByRole('textbox', { name: 'Label' }), ' Changes')
+
+    const flowDescription = within(screen.getByTestId('graph-structured-form')).getByRole('textbox', { name: /^Description/ })
+    await user.click(flowDescription)
+    await user.paste('Review a change, then ship it.')
+    await waitFor(() => expect(saves.at(-1)?.flow).toMatchObject({ description: 'Review a change, then ship it.' }))
+
+    await user.click(screen.getByRole('button', { name: 'Undo flow settings edit' }))
+    expect(flowDescription).toHaveValue('')
+    await waitFor(() => expect(saves.at(-1)?.flow).not.toHaveProperty('description', 'Review a change, then ship it.'))
+    expect(saves.at(-1)?.flow.nodes.step_1).toMatchObject({ label: 'Review Changes' })
+    await user.click(screen.getByRole('button', { name: 'Undo edit to Review Changes' }))
+    await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1).toMatchObject({ label: 'Review' }))
   })
 
   it('saves an inspector edit made in one event, such as a paste, and a route edit after it', async () => {

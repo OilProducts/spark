@@ -168,6 +168,30 @@ fn settle(repo: &ConversationRepository, conversation_id: &str, project_path: &s
 }
 
 #[test]
+fn a_first_message_titles_its_chat_by_its_first_paragraph_of_prose() {
+    use spark_storage::conversation::title_from_first_message;
+    assert_eq!(
+        title_from_first_message("Does this look right?\n\n```js\nconst a = 1\n```\n\nAnd this?"),
+        "Does this look right?"
+    );
+    assert_eq!(
+        title_from_first_message("Fix the bug\nwhere saves fail:\n```\npanic\n```"),
+        "Fix the bug where saves fail:"
+    );
+    // Only code: the code, without its fences.
+    assert_eq!(
+        title_from_first_message("```rust\nfn main() {}\n```"),
+        "fn main() {}"
+    );
+    assert_eq!(
+        title_from_first_message(&"word ".repeat(20))
+            .chars()
+            .count(),
+        64
+    );
+}
+
+#[test]
 fn accepting_a_message_creates_the_conversation_and_returns_only_changed_rows() {
     let project_path = "/projects/commit-basics";
     let _temp = tempfile::tempdir().expect("tempdir");

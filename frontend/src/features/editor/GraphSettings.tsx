@@ -60,8 +60,8 @@ export function GraphSettings() {
     const flowMetadata = useStore((state) => state.flowMetadata)
     const flowMetadataErrors = useStore((state) => state.flowMetadataErrors)
     const flowMetadataUserEditVersion = useStore((state) => state.flowMetadataUserEditVersion)
-    const setFlowMetadata = useStore((state) => state.setFlowMetadata)
-    const updateFlowMetadata = useStore((state) => state.updateFlowMetadata)
+    const storeSetFlowMetadata = useStore((state) => state.setFlowMetadata)
+    const storeUpdateFlowMetadata = useStore((state) => state.updateFlowMetadata)
     const model = useStore((state) => state.model)
     const setModel = useStore((state) => state.setModel)
     const workingDir = useStore((state) => state.workingDir)
@@ -81,6 +81,18 @@ export function GraphSettings() {
     const updateNodes = (nextNodes: Parameters<typeof setNodes>[0]) =>
         (editorGraphBridgeRef?.current?.setNodes ?? setNodes)(nextNodes)
     const flowNodes = useNodes()
+    // Each edit first tells Undo the settings as they were; edits to one field in a row are one.
+    const recordFlowEdit = (key: string | null) => editorGraphBridgeRef?.current?.recordFieldEdit(
+        key === null ? null : `flow:${key}`, { flowMetadata: useStore.getState().flowMetadata },
+    )
+    const updateFlowMetadata: typeof storeUpdateFlowMetadata = (key, value) => {
+        if (String(useStore.getState().flowMetadata[key] ?? '') !== value) recordFlowEdit(String(key))
+        storeUpdateFlowMetadata(key, value)
+    }
+    const setFlowMetadata = (metadata: typeof flowMetadata, key: string | null) => {
+        recordFlowEdit(key)
+        storeSetFlowMetadata(metadata)
+    }
     const autosaveScopeRef = useRef<string | null>(null)
     const lastHandledFlowMetadataVersionRef = useRef(flowMetadataUserEditVersion)
     const canApplyDefaults = !!activeFlow && viewMode === 'editor'
@@ -133,6 +145,7 @@ export function GraphSettings() {
 
         const currentNodes = readNodes()
         if (currentNodes.length === 0) return
+        editorGraphBridgeRef?.current?.recordFieldEdit(null, { nodes: currentNodes })
 
         const updatedNodes = currentNodes.map((node) => ({
             ...node,
@@ -231,20 +244,20 @@ export function GraphSettings() {
         setFlowMetadata({
             ...flowMetadata,
             [key]: value,
-        })
+        }, key)
     }
 
     const handleFlowMetadataExtensionRemove = (key: string) => {
         const nextFlowMetadata = { ...flowMetadata } as Record<string, unknown>
         delete nextFlowMetadata[key]
-        setFlowMetadata(nextFlowMetadata)
+        setFlowMetadata(nextFlowMetadata, null)
     }
 
     const handleFlowMetadataExtensionAdd = (key: string, value: string) => {
         setFlowMetadata({
             ...flowMetadata,
             [key]: value,
-        })
+        }, null)
     }
 
     return (

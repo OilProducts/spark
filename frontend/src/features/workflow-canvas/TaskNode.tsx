@@ -306,6 +306,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                     {isEditingLabel ? (
                         <input
                             ref={inputRef}
+                            aria-label="Step name"
                             value={draftLabel}
                             onChange={(event) => setDraftLabel(event.target.value)}
                             onBlur={commitLabel}

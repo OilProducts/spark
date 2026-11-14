@@ -147,8 +147,10 @@ describe('RunGraphCard', () => {
                     { id: 'apply', label: 'Apply', shape: 'box' },
                     { id: 'review', label: 'Review', shape: 'box' },
                     { id: 'start', label: 'Start', shape: 'Mdiamond' },
+                    { id: 'failed', label: 'Failed', kind: 'exit' },
                 ],
-                edges: [{ from: 'start', to: 'review' }, { from: 'review', to: 'apply' }],
+                // An exit the start already reaches still lists after the steps.
+                edges: [{ from: 'start', to: 'failed' }, { from: 'start', to: 'review' }, { from: 'review', to: 'apply' }],
             },
             diagnostics: [],
             errors: [],
@@ -160,7 +162,7 @@ describe('RunGraphCard', () => {
 
         await screen.findByTestId('rf__node-review')
         const goTo = screen.getByRole('combobox', { name: 'Go to step' })
-        expect(within(goTo).getAllByRole('option').map((option) => option.textContent)).toEqual(['Go to step', 'Start', 'Review', 'Apply'])
+        expect(within(goTo).getAllByRole('option').map((option) => option.textContent)).toEqual(['Go to step', 'Start', 'Review', 'Apply', 'Failed'])
         const viewport = () => (document.querySelector('.react-flow__viewport') as HTMLElement).style.transform
         const before = viewport()
         fireEvent.change(goTo, { target: { value: 'review' } })

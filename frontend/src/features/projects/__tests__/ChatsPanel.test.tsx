@@ -87,6 +87,8 @@ it('shows or hides a project\'s chats from its name, and opens its settings only
     expect(within(group('/work/busy')).queryByTestId('chats-chat-row')).not.toBeInTheDocument()
     await user.click(within(group('/work/busy')).getByRole('button', { name: 'Project settings for busy' }))
     expect(useStore.getState().projectPagePath).toBe('/work/busy')
+    // The page opens at its settings, below the project's chats.
+    await waitFor(() => expect(within(screen.getByTestId('project-page')).getByRole('heading', { name: 'Settings' })).toHaveFocus())
 })
 
 it('names the project a first message starts a chat in, and opens the group of a chat opened elsewhere', async () => {
@@ -119,6 +121,14 @@ it('shows a project\'s recent chats with a "more" link to its project page', asy
     expect(within(page).getByTestId('project-settings-dialog')).toBeInTheDocument()
     expect(within(page).getByRole('heading', { name: 'Project model defaults' })).toBeInTheDocument()
     expect(within(page).getByTestId('project-page-remove')).toBeEnabled()
+    expect(within(page).getByRole('heading', { name: 'Settings' })).not.toHaveFocus()
+
+    // Its chats are searched by title or latest message.
+    await user.type(within(page).getByRole('searchbox', { name: 'Search chats by title or latest message' }), 'busy-3')
+    expect(within(page).getAllByTestId('project-page-chat').map((chat) => chat.textContent)).toEqual([expect.stringContaining('Chat busy-3')])
+    await user.type(within(page).getByRole('searchbox', { name: 'Search chats by title or latest message' }), 'x')
+    expect(within(page).queryByTestId('project-page-chat')).not.toBeInTheDocument()
+    expect(within(page).getByTestId('project-page-chat-search-empty')).toHaveTextContent('No chats match “busy-3x”.')
 })
 
 it('marks a project whose folder is missing and offers no new chat there', () => {

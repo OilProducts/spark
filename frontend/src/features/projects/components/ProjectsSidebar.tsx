@@ -132,7 +132,7 @@ export function ProjectsSidebar({
                                 data-testid="chats-project-settings"
                                 aria-label={`Project settings for ${label}`}
                                 title="Project settings"
-                                onClick={() => openProjectPage(projectPath)}
+                                onClick={() => openProjectPage(projectPath, 'settings')}
                                 className={rowActionClassName}
                             >
                                 <Settings className="size-3.5" />

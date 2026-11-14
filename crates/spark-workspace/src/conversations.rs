@@ -5056,7 +5056,7 @@ fn derive_conversation_title(turns: Option<&Vec<Value>>) -> String {
                 object
                     .get("content")
                     .and_then(Value::as_str)
-                    .map(|value| truncate_text(value, 64))
+                    .map(spark_storage::conversation::title_from_first_message)
             } else {
                 None
             }

@@ -1,4 +1,5 @@
-import { Plus, Trash2 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Plus, Search, Settings, Trash2 } from 'lucide-react'
 
 import { useStore } from '@/store'
 import { InlineError } from '@/components/app/inline-error'
@@ -8,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { ProjectModelSettingsEditor } from '@/features/settings/ProjectModelSettingsEditor'
 
 import { ProjectExecutionSettings } from './ProjectExecutionSettings'
-import { StandingRoleChip } from './ProjectsSidebar'
+import { RECENT_CHATS_PER_PROJECT, StandingRoleChip } from './ProjectsSidebar'
 import type { ProjectConversationSummary } from '../model/types'
 import { isFolderMissing, projectLabel } from '../model/projectChoices'
 import { sortConversationSummaries } from '../model/conversationState'
@@ -38,6 +39,22 @@ export function ProjectPage({
     const label = projectLabel(registry, projectPath)
     const missing = isFolderMissing(project)
     const sortedChats = sortConversationSummaries(chats)
+    // More chats than the side panel lists can be searched by title or latest message.
+    const [chatQuery, setChatQuery] = useState('')
+    const query = chatQuery.trim().toLowerCase()
+    const shownChats = query
+        ? sortedChats.filter((chat) => `${chat.title}\n${chat.last_message_preview ?? ''}`.toLowerCase().includes(query))
+        : sortedChats
+    // The gear beside a project opens its page at Settings, below however many chats it has.
+    const settingsHeadingRef = useRef<HTMLHeadingElement>(null)
+    const showSettings = () => {
+        settingsHeadingRef.current?.scrollIntoView?.({ block: 'start' })
+        settingsHeadingRef.current?.focus({ preventScroll: true })
+    }
+    const settingsRequest = useStore((state) => state.projectPageSettingsRequest)
+    useEffect(() => {
+        if (settingsRequest) showSettings()
+    }, [settingsRequest])
 
     if (!project) {
         // Until the registry loads, a restored page has nothing to show yet.
@@ -57,8 +74,18 @@ export function ProjectPage({
                     {project.isDefault ? <span className="text-sm text-muted-foreground">default project</span> : null}
                     <Button
                         type="button"
-                        data-testid="project-page-new-chat"
+                        data-testid="project-page-settings-link"
                         className="ml-auto"
+                        variant="ghost"
+                        size="sm"
+                        onClick={showSettings}
+                    >
+                        <Settings className="size-3.5" />
+                        Settings
+                    </Button>
+                    <Button
+                        type="button"
+                        data-testid="project-page-new-chat"
                         size="sm"
                         disabled={missing}
                         onClick={() => { void onCreateConversationThread(projectPath) }}
@@ -76,13 +103,29 @@ export function ProjectPage({
                 <div className="mx-auto flex max-w-4xl flex-col gap-8 px-6 py-5">
                     <section aria-label="Chats" className="flex flex-col gap-2">
                         <SectionHeading count={chats.length}>Chats</SectionHeading>
-                        {sortedChats.length === 0 ? (
+                        {chats.length > RECENT_CHATS_PER_PROJECT ? (
+                            <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-2.5 text-muted-foreground focus-within:ring-2 focus-within:ring-ring">
+                                <Search aria-hidden="true" className="size-3.5 shrink-0" />
+                                <input
+                                    type="search"
+                                    value={chatQuery}
+                                    onChange={(event) => setChatQuery(event.target.value)}
+                                    placeholder="Search chats"
+                                    aria-label="Search chats by title or latest message"
+                                    data-testid="project-page-chat-search"
+                                    className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+                                />
+                            </label>
+                        ) : null}
+                        {query && shownChats.length === 0 ? (
+                            <p data-testid="project-page-chat-search-empty" className="text-sm text-muted-foreground">No chats match “{chatQuery.trim()}”.</p>
+                        ) : sortedChats.length === 0 ? (
                             <p className="text-sm text-muted-foreground">
                                 {project.isDefault ? 'Chats you start outside a repository live here.' : 'No chats yet.'}
                             </p>
                         ) : (
                             <ul data-testid="project-page-chats" className="-mx-2.5 flex flex-col">
-                                {sortedChats.map((chat) => (
+                                {shownChats.map((chat) => (
                                     <li key={chat.conversation_id} className="flex items-center gap-1 rounded-lg hover:bg-muted">
                                         <button
                                             type="button"
@@ -92,8 +135,11 @@ export function ProjectPage({
                                             className="flex min-w-0 flex-1 flex-col gap-px rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                         >
                                             <span className="truncate text-sm font-medium">{chat.title}</span>
-                                            <span className="truncate text-xs text-muted-foreground">
-                                                {chat.standing_role ? <StandingRoleChip state={chat.standing_role.state} /> : formatConversationAgeShort(chat.updated_at)}
+                                            <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                                                {chat.standing_role ? <StandingRoleChip state={chat.standing_role.state} /> : <span className="shrink-0">{formatConversationAgeShort(chat.updated_at)}</span>}
+                                                {chat.last_message_preview?.trim() ? (
+                                                    <span data-testid="project-page-chat-preview" className="min-w-0 truncate">· {chat.last_message_preview.trim()}</span>
+                                                ) : null}
                                             </span>
                                         </button>
                                         {chat.standing_role ? null : <Button
@@ -114,8 +160,8 @@ export function ProjectPage({
                         )}
                     </section>
 
-                    <section aria-label="Settings" className="flex flex-col gap-4">
-                        <SectionHeading>Settings</SectionHeading>
+                    <section aria-label="Settings" className="flex scroll-mt-5 flex-col gap-4">
+                        <SectionHeading ref={settingsHeadingRef} tabIndex={-1} className="rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">Settings</SectionHeading>
                         <ProjectExecutionSettings key={projectPath} projectPath={projectPath} />
                         <ProjectModelSettingsEditor key={`model:${projectPath}`} projectPath={projectPath} />
                         <Well className="flex flex-col gap-3">

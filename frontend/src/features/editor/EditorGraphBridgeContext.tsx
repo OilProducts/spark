@@ -2,6 +2,7 @@ import { createContext, useContext, useLayoutEffect, useRef, type MutableRefObje
 import type { Dispatch, SetStateAction } from 'react'
 import type { Connection, Edge, Node } from '@xyflow/react'
 import type { CanonicalFlowDefinition } from '@/lib/canonicalFlowModel'
+import type { FlowDefinitionMetadata } from '@/store'
 
 type EditorGraphBridge = {
   getNodes: () => Node[]
@@ -16,10 +17,11 @@ type EditorGraphBridge = {
    */
   connect: (params: (Connection & { data?: Record<string, unknown> }) | Edge) => void
   /**
-   * Called before an inspector edit with the steps and routes it changes, as they are, so Undo can
-   * set their fields back; `key` names the field, and edits to it in a row are one, unless null.
+   * Called before an inspector edit with the steps and routes it changes, or the flow settings, as
+   * they are, so Undo can set them back; `key` names the field, and edits to it in a row are one,
+   * unless null.
    */
-  recordFieldEdit: (key: string | null, previous: { nodes?: Node[]; edges?: Edge[] }) => void
+  recordFieldEdit: (key: string | null, previous: { nodes?: Node[]; edges?: Edge[]; flowMetadata?: FlowDefinitionMetadata }) => void
 }
 
 const EditorGraphBridgeContext = createContext<MutableRefObject<EditorGraphBridge | null> | null>(null)
