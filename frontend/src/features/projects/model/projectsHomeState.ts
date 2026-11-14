@@ -129,6 +129,14 @@ export const EMPTY_PROJECT_GIT_METADATA: ProjectGitMetadata = {
     commit: null,
 }
 
+// Chats this page started, until first opened: the server has nothing of them to load yet.
+const newConversationIds = new Set<string>()
+
+/** Whether this page just started the chat, forgetting it: only its first open has nothing to load. */
+export function takeNewConversation(conversationId: string) {
+    return newConversationIds.delete(conversationId)
+}
+
 export function buildProjectConversationId(projectPath: string) {
     const normalizedProjectKey = projectPath
         .toLowerCase()
@@ -138,7 +146,9 @@ export function buildProjectConversationId(projectPath: string) {
     const randomSuffix = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID().slice(0, 8)
         : Math.random().toString(36).slice(2, 10)
-    return `conversation-${suffix}-${randomSuffix}`
+    const conversationId = `conversation-${suffix}-${randomSuffix}`
+    newConversationIds.add(conversationId)
+    return conversationId
 }
 
 export function asProjectGitMetadataField(value: unknown): string | null {
