@@ -1154,13 +1154,17 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             if (!deleted) return;
             event.preventDefault();
             const { nodes: currentNodes, edges: currentEdges } = canvasGraphRef.current;
-            // Only what still fits: an ID taken meanwhile stays, and a route needs both its steps.
+            // Only what still fits: an ID taken meanwhile stays, and a route goes back only between its
+            // own steps, never onto another step that now holds a deleted one's ID.
             const nodeIds = new Set(currentNodes.map((node) => node.id));
-            const nextNodes = [...currentNodes, ...deleted.nodes.filter((node) => !nodeIds.has(node.id)).map((node) => ({ ...node, selected: false }))];
-            nextNodes.forEach((node) => nodeIds.add(node.id));
+            const deletedIds = new Set(deleted.nodes.map((node) => node.id));
+            const restored = deleted.nodes.filter((node) => !nodeIds.has(node.id));
+            const restoredIds = new Set(restored.map((node) => node.id));
+            const isOwnStep = (id: string) => restoredIds.has(id) || (!deletedIds.has(id) && nodeIds.has(id));
+            const nextNodes = [...currentNodes, ...restored.map((node) => ({ ...node, selected: false }))];
             const edgeIds = new Set(currentEdges.map((edge) => edge.id));
             const nextEdges = [...currentEdges, ...deleted.edges.filter((edge) => (
-                !edgeIds.has(edge.id) && nodeIds.has(edge.source) && nodeIds.has(edge.target)
+                !edgeIds.has(edge.id) && isOwnStep(edge.source) && isOwnStep(edge.target)
             )).map((edge) => ({ ...edge, selected: false }))];
             setNodes(nextNodes);
             setEdges(nextEdges);
@@ -1223,7 +1227,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         const defaultProfile = flowMetadata.llm_profile || uiDefaults.llm_profile || '';
         const defaultProvider = defaultProfile ? '' : (flowMetadata.llm_provider || uiDefaults.llm_provider || '');
         const defaultReasoning = flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || '';
-        const ids = new Set(nodes.map((node) => node.id));
+        // A deleted step that Cmd/Ctrl+Z can still put back keeps its ID.
+        const ids = new Set([...nodes, ...deletedRef.current.flatMap((entry) => entry.nodes)].map((node) => node.id));
         let count = 1;
         while (ids.has(`step_${count}`)) count += 1;
         const newNodeId = `step_${count}`;

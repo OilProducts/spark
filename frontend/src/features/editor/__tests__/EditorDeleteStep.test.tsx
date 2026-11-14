@@ -2,7 +2,7 @@ import { Editor } from '@/features/editor/Editor'
 import { resetFlowSaveBaselines } from '@/lib/flowPersistence'
 import { useStore } from '@/store'
 import { ReactFlowProvider } from '@xyflow/react'
-import { act, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -13,7 +13,7 @@ vi.mock('@/features/editor/services/editorPreview', () => ({
   loadEditorPreview: vi.fn(),
 }))
 
-type SavedFlow = { nodes: Record<string, { routes?: Record<string, { to: string }> }> }
+type SavedFlow = { nodes: Record<string, { label?: string; routes?: Record<string, { to: string }> }> }
 type Save = { project_path: string; flow: SavedFlow }
 type Graph = { nodes: Array<{ id: string; label: string; shape: string }>; edges: Array<{ from: string; to: string; label?: string }> }
 
@@ -111,6 +111,53 @@ describe('Editor step deletion', () => {
     expect(Object.keys(saves[0].flow.nodes).sort()).toEqual(['done', 'e-work-held-1', 'start', 'work'])
     expect(routesTo(saves[0].flow, 'e-work-held-1')).toHaveLength(1)
     expect(canvasNode('e-work-held-1')).not.toBeNull()
+  })
+
+  it('keeps a deleted step recoverable with its routes after Add node, and gives the new step its own ID', async () => {
+    const flow = {
+      schema_version: '2',
+      id: 'flow_a',
+      title: 'Flow A',
+      inputs: [],
+      nodes: {
+        start: { kind: 'start', label: 'Start', config: { kind: 'start' }, routes: { next: { to: 'step_1', description: 'Begin the review.' } } },
+        step_1: {
+          kind: 'agent_task',
+          label: 'Review',
+          config: { kind: 'agent_task', prompt: 'Review the change.' },
+          routes: { approved: { to: 'done', description: 'The change is approved.' } },
+        },
+        done: { kind: 'exit', label: 'Done', config: { kind: 'exit', result: { name: 'completed', outcome: 'success' } } },
+      },
+    }
+    vi.mocked(loadEditorPreview).mockImplementation(async () => ({
+      status: 'ok',
+      graph: { nodes: Object.entries(flow.nodes).map(([id, entry]) => ({ id, label: entry.label, kind: entry.kind })), edges: [], graph_attrs: {} },
+      flow,
+      diagnostics: [],
+      errors: [],
+    }))
+    const user = userEvent.setup()
+    render(<ReactFlowProvider><Editor /></ReactFlowProvider>)
+    await waitFor(() => expect(canvasNode('step_1')).not.toBeNull())
+    await deleteStep(user, 'step_1')
+    await waitFor(() => expect(canvasNode('step_1')).toBeNull())
+
+    await user.click(screen.getByRole('button', { name: 'Add node' }))
+    await user.keyboard('{Meta>}z{/Meta}')
+    await waitFor(() => expect(Object.keys(saves.at(-1)?.flow.nodes ?? {}).sort()).toEqual(['done', 'start', 'step_1', 'step_2']))
+    const saved = saves.at(-1)!.flow
+    expect(saved.nodes.step_1).toMatchObject({
+      label: 'Review',
+      config: { prompt: 'Review the change.' },
+      routes: { approved: { to: 'done', description: 'The change is approved.' } },
+    })
+    expect(saved.nodes.start.routes).toEqual({ next: { to: 'step_1', description: 'Begin the review.' } })
+    expect(saved.nodes.step_2).toMatchObject({ label: 'New step 2' })
+    expect(saved.nodes.step_2.routes ?? {}).toEqual({})
+    expect(routesTo(saved, 'step_2')).toEqual([])
+    expect(canvasNode('step_1')).toHaveTextContent('Review')
+    expect(canvasNode('step_2')).toHaveTextContent('New step 2')
   })
 
   it('does not undo a deletion into the same flow name in another project', async () => {
