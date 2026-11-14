@@ -1,4 +1,4 @@
-import { Editor } from '@/features/editor/Editor'
+import { Editor, viewportShowingNewStep } from '@/features/editor/Editor'
 import { EditorGraphBridgeProvider } from '@/features/editor/EditorGraphBridgeContext'
 import { Sidebar } from '@/features/editor/Sidebar'
 import { resetFlowSaveBaselines } from '@/lib/flowPersistence'
@@ -140,7 +140,7 @@ describe('Editor step deletion', () => {
     expect(canvasNode('e-work-held-1')).not.toBeNull()
   })
 
-  it('keeps a deleted step recoverable with its routes after Add step, and gives the new step its own ID', async () => {
+  it('takes back Add step, then the deletion before it, and keeps the deleted step\'s ID meanwhile', async () => {
     vi.mocked(loadEditorPreview).mockImplementation(previewOf(REVIEW_FLOW))
     const user = userEvent.setup()
     render(<ReactFlowProvider><Editor /></ReactFlowProvider>)
@@ -149,12 +149,17 @@ describe('Editor step deletion', () => {
     await waitFor(() => expect(canvasNode('step_1')).toBeNull())
 
     await user.click(screen.getByRole('button', { name: 'Add step' }))
+    expect(canvasNode('step_2')).toHaveTextContent('New step 2')
+    // The toolbar's Undo says what it takes back, as Cmd/Ctrl+Z does it.
+    await user.click(screen.getByRole('button', { name: 'Undo add step' }))
+    await waitFor(() => expect(canvasNode('step_2')).toBeNull())
+    expect(canvasNode('step_1')).toBeNull()
+    expect(screen.getByTestId('editor-undo')).toHaveAccessibleName('Undo delete')
     await user.keyboard('{Meta>}z{/Meta}')
     await waitFor(() => expect(canvasNode('step_1')).toHaveTextContent('Review'))
-    expect(canvasNode('step_2')).toHaveTextContent('New step 2')
-    // The new step leads nowhere yet, so no save carries it; without it, the restored flow saves.
+    expect(screen.getByTestId('editor-undo')).toBeDisabled()
+    // The new step led nowhere, so no save carried it.
     expect(saves.some((save) => 'step_2' in save.flow.nodes)).toBe(false)
-    await deleteStep(user, 'step_2')
     await waitFor(() => expect(Object.keys(saves.at(-1)?.flow.nodes ?? {}).sort()).toEqual(['done', 'start', 'step_1']))
     const saved = saves.at(-1)!.flow
     expect(saved.nodes.step_1).toMatchObject({
@@ -240,6 +245,9 @@ describe('Editor step deletion', () => {
     await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1.routes).toEqual({ held: { to: 'held', description: 'Held for a person.' } }))
     await user.keyboard('{Meta>}z{/Meta}')
     await waitFor(() => expect(Object.keys(saves.at(-1)?.flow.nodes.step_1.routes ?? {}).sort()).toEqual(['approved', 'held']))
+    // Again, and the move is taken back too.
+    await user.keyboard('{Meta>}z{/Meta}')
+    await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1.routes?.approved).toEqual({ to: 'done', description: 'Continue to Done.' }))
   })
 
   it('does not undo a deletion into the same flow name in another project', async () => {
@@ -264,5 +272,33 @@ describe('Editor step deletion', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)) })
     expect(canvasNode('held')).toBeNull()
     expect(saves).toHaveLength(1)
+  })
+})
+
+describe('the view after Add step', () => {
+  const box = (x: number, y = 0) => ({ x, y, width: 200, height: 80 })
+  const canvas = { width: 1000, height: 600 }
+  const onScreen = (rect: ReturnType<typeof box>, view: { x: number; y: number; zoom: number }) => {
+    const left = view.x + rect.x * view.zoom
+    const top = view.y + rect.y * view.zoom
+    return left >= 0 && top >= 0 && left + rect.width * view.zoom <= canvas.width && top + rect.height * view.zoom <= canvas.height
+  }
+
+  it('shows the whole flow with its new step when it fits, never zooming in', () => {
+    const flow = [box(0), box(280), box(560, 120)]
+    const step = box(840)
+    const view = viewportShowingNewStep(step, flow, canvas, 1)
+    expect(view.zoom).toBeLessThanOrEqual(1)
+    expect([...flow, step].every((rect) => onScreen(rect, view))).toBe(true)
+    expect(viewportShowingNewStep(box(280), [box(0)], canvas, 1).zoom).toBe(1)
+  })
+
+  it('keeps the new step in view beside the flow it can\'t fit, at a zoom that still reads', () => {
+    const flow = Array.from({ length: 12 }, (_, index) => box(index * 280))
+    const step = box(12 * 280)
+    const view = viewportShowingNewStep(step, flow, canvas, 1)
+    expect(view.zoom).toBe(0.6)
+    expect(onScreen(step, view)).toBe(true)
+    expect(onScreen(flow.at(-1)!, view)).toBe(true)
   })
 })

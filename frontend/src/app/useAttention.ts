@@ -7,6 +7,10 @@ import { ATTENTION_CHANGED_EVENT, fetchPendingAttention, type AttentionItem } fr
 import { triggerKey } from '@/lib/api/triggersApi'
 import { flowTitle, formatRunDate, formatRunTime, runTitle } from '@/features/runs/model/runOverviewModel'
 import type { RunRecord } from '@/features/runs/model/shared'
+import { focusRunHeading } from '@/features/runs/components/RunHeaderBar'
+
+/** The open chat's heading, which takes focus when a chat is opened from elsewhere. */
+export const CHAT_HEADING_ID = 'chat-title'
 
 const ATTENTION_POLL_MS = 15_000
 
@@ -123,8 +127,11 @@ export function useAttentionFailed() {
     return useSyncExternalStore(subscribeAttention, () => attentionFailed)
 }
 
-/** Opens a chat in the Chats view; leaving a project page asks first, so a cancelled leave keeps the shown chat. */
-/** Opens a chat; a `draft` replaces its composer text, unsent. */
+/**
+ * Opens a chat in the Chats view and focuses its heading, as the control that opened it goes away
+ * with its view; leaving a project page asks first, so a cancelled leave keeps the shown chat.
+ * A `draft` replaces its composer text, unsent.
+ */
 export function openChat(projectPath: string, conversationId: string, draft?: string) {
     const open = () => {
         revealSelection()
@@ -133,15 +140,18 @@ export function openChat(projectPath: string, conversationId: string, draft?: st
         if (draft !== undefined) useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: draft })
         useStore.getState().setActiveProjectPath(projectPath)
         useStore.getState().setViewMode('home')
+        requestAnimationFrame(() => document.getElementById(CHAT_HEADING_ID)?.focus({ preventScroll: true }))
     }
     if (useStore.getState().projectPagePath) requestNavigation(open)
     else open()
 }
 
+/** Opens a run in Runs; its heading takes focus once the view shows, as the control that opened it goes away. */
 export function openRun(runId: string) {
     revealSelection()
     useStore.getState().setRunsSelectedRunId(runId)
     useStore.getState().setViewMode('runs')
+    requestAnimationFrame(() => focusRunHeading(runId))
 }
 
 /** Opens a trigger in Triggers; a trigger's id only names it within its project. */

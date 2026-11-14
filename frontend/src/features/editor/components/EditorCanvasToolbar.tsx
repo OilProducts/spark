@@ -1,4 +1,4 @@
-import { Box, Boxes, FileCode, LayoutDashboard, Play, RotateCcw, SlidersHorizontal, SquarePlus, Workflow, type LucideIcon } from 'lucide-react'
+import { Box, Boxes, FileCode, LayoutDashboard, Play, RotateCcw, SlidersHorizontal, SquarePlus, Undo2, Workflow, type LucideIcon } from 'lucide-react'
 
 import { SegmentedControl } from '@/components/app/segmented-control'
 import { Button } from '@/components/ui/button'
@@ -24,6 +24,8 @@ type EditorCanvasToolbarProps = {
     onArrange: () => void
     onReset: () => void
     onAddNode: () => void
+    /** Takes back the latest canvas edit, which `label` names; null when there is none. Omitted where the canvas can't be edited. */
+    undo?: { label: string | null; onUndo: () => void }
     /** The project a run starts in unless another is picked. */
     runDefaultProjectPath: string | null
     onRun: (projectPath: string) => void
@@ -32,6 +34,8 @@ type EditorCanvasToolbarProps = {
     /** Shows or hides the flow's settings beside the canvas; `shown` while they are what the inspector shows. */
     flowSettings?: { shown: boolean; onToggle: () => void }
 }
+
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 
 // Below 42rem of toolbar the toggles and actions show only icons (named by aria-label), so the row stays one line beside the flow settings at 1280px.
 const segmentLabel = (Icon: LucideIcon, text: string) => ({
@@ -58,6 +62,7 @@ export function EditorCanvasToolbar({
     onArrange,
     onReset,
     onAddNode,
+    undo,
     runDefaultProjectPath,
     onRun,
     minimap,
@@ -133,6 +138,22 @@ export function EditorCanvasToolbar({
                         >
                             <SlidersHorizontal aria-hidden="true" className="@2xl:hidden" />
                             <span className="hidden @2xl:inline">Flow settings</span>
+                        </Button>
+                    ) : null}
+                    {canEditLayout && undo ? (
+                        // Also Cmd/Ctrl+Z, which a phone has no keys for.
+                        <Button
+                            type="button"
+                            size="icon-sm"
+                            variant="ghost"
+                            data-testid="editor-undo"
+                            aria-label={undo.label ?? 'Undo'}
+                            aria-keyshortcuts="Meta+Z Control+Z"
+                            title={undo.label ? `${undo.label} (${isMac ? '⌘Z' : 'Ctrl+Z'})` : 'Nothing to undo'}
+                            disabled={!undo.label}
+                            onClick={undo.onUndo}
+                        >
+                            <Undo2 aria-hidden="true" />
                         </Button>
                     ) : null}
                     {canEditLayout ? (
