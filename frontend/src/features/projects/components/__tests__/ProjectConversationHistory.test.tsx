@@ -978,6 +978,22 @@ describe('ProjectConversationHistory', () => {
         })
     })
 
+    it('keeps focus on the card when the sent answer replaces the form', async () => {
+        const user = userEvent.setup()
+        const pending = makeRequestUserInputEntry()
+        const { rerender } = renderHistory([pending])
+        await user.click(screen.getByTestId('project-request-user-input-option-path_choice-Inline card'))
+        await user.type(screen.getByTestId('project-request-user-input-field-constraints'), 'Small.')
+        await user.click(screen.getByTestId('project-request-user-input-submit-request-1'))
+
+        rerender(makeHistoryElement([pending], { submittingRequestUserInputIds: { 'request-1': true } }))
+        rerender(makeHistoryElement([makeRequestUserInputEntry({
+            status: 'complete',
+            requestUserInput: { ...pending.requestUserInput, status: 'answered', answers: { path_choice: 'Inline card', constraints: 'Small.' }, submittedAt: '2026-04-17T12:01:00Z' },
+        })]))
+        expect(screen.getByTestId('project-request-user-input-summary-request-user-input-1')).toHaveFocus()
+    })
+
     it('names each answer field by its question and keeps unsent answers when the chat is reopened', async () => {
         const user = userEvent.setup()
         const entry = makeRequestUserInputEntry({ id: 'request-user-input-drafts' })

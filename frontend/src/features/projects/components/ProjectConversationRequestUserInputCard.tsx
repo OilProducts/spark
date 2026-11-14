@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { InlineError } from '@/components/app/inline-error'
 import { statusTextClassName } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
@@ -15,7 +15,7 @@ interface ProjectConversationRequestUserInputCardProps {
     onSubmitRequestUserInput: (requestId: string, answers: Record<string, string>) => void | Promise<void>
 }
 
-const cardClassName = 'w-full max-w-[72ch] rounded-xl border border-border px-4 py-3 text-foreground'
+const cardClassName = 'w-full max-w-[72ch] rounded-xl border border-border px-4 py-3 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
 // Unsent answers outlive the card, so opening another conversation and coming back keeps them.
 // ponytail: module-level like mission replies; lost on reload.
@@ -43,6 +43,8 @@ export function ProjectConversationRequestUserInputCard({
         () => draftAnswersByEntry.get(entry.id) ?? entry.requestUserInput.answers,
     )
     const [validationError, setValidationError] = useState<string | null>(null)
+    const cardRef = useRef<HTMLDivElement>(null)
+    const answeringRef = useRef(false)
     const setDraftAnswers = (update: (current: Record<string, string>) => Record<string, string>) => {
         setDraftAnswersState((current) => {
             const next = update(current)
@@ -62,10 +64,20 @@ export function ProjectConversationRequestUserInputCard({
         }
     }, [entry.id, entry.requestUserInput.status])
 
+    // Sending disables the form and the answer replaces it, so focus would fall to the page:
+    // keep it on this card, which now shows the answer or the error.
+    useEffect(() => {
+        if (isSubmitting || !answeringRef.current) return
+        answeringRef.current = false
+        if (!document.activeElement || document.activeElement === document.body) cardRef.current?.focus()
+    }, [isSubmitting, entry.requestUserInput.status])
+
     if (entry.requestUserInput.status === 'answered') {
         return (
             <div
                 data-testid={`project-request-user-input-summary-${entry.id}`}
+                ref={cardRef}
+                tabIndex={-1}
                 className={cardClassName}
             >
                 <p className="text-xs font-medium text-muted-foreground">
@@ -95,6 +107,8 @@ export function ProjectConversationRequestUserInputCard({
         return (
             <div
                 data-testid={`project-request-user-input-expired-${entry.id}`}
+                ref={cardRef}
+                tabIndex={-1}
                 className={cardClassName}
             >
                 <p className={`text-xs font-medium ${statusTextClassName('destructive')}`}>
@@ -135,12 +149,15 @@ export function ProjectConversationRequestUserInputCard({
             return
         }
         setValidationError(null)
+        answeringRef.current = true
         void onSubmitRequestUserInput(entry.requestUserInput.requestId, normalizedAnswers)
     }
 
     return (
         <div
             data-testid={`project-request-user-input-card-${entry.id}`}
+            ref={cardRef}
+            tabIndex={-1}
             className={cardClassName}
         >
             <p className={`text-xs font-medium ${statusTextClassName('warning')}`}>

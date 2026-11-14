@@ -685,6 +685,13 @@ function DecisionMapEditor({
 }) {
     const id = useId()
     const [draft, setDraft] = useState(() => formatDecisionMap(value))
+    // Undo can change the map from outside; the draft follows it then.
+    const shown = formatDecisionMap(value)
+    const [lastShown, setLastShown] = useState(shown)
+    if (shown !== lastShown) {
+        setLastShown(shown)
+        if (shown !== formatDecisionMap(parseDecisionMap(draft).map)) setDraft(shown)
+    }
     const errors = parseDecisionMap(draft).errors
     const error = errors.length > 0 ? `${label}: ${errors.join(' ')}` : null
     useEffect(() => {

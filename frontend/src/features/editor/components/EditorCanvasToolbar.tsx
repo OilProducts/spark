@@ -150,8 +150,10 @@ export function EditorCanvasToolbar({
                             aria-label={undo.label ?? 'Undo'}
                             aria-keyshortcuts="Meta+Z Control+Z"
                             title={undo.label ? `${undo.label} (${isMac ? '⌘Z' : 'Ctrl+Z'})` : 'Nothing to undo'}
-                            disabled={!undo.label}
-                            onClick={undo.onUndo}
+                            // Not `disabled`: taking back the last edit would drop focus to the page.
+                            aria-disabled={!undo.label || undefined}
+                            className="aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
+                            onClick={undo.label ? undo.onUndo : undefined}
                         >
                             <Undo2 aria-hidden="true" />
                         </Button>

@@ -63,8 +63,7 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const searchQuery = useStore((state) => state.runsListSession.searchQuery ?? '')
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
     return (
-        // The project filter heads the list at full width, where a project's name has room.
-        <div className="flex h-full min-h-0 flex-col gap-2 [&>[data-slot=native-select-wrapper]]:w-full">
+        <div className="flex h-full min-h-0 flex-col gap-2">
         <RunsProjectFilter />
         <RunList
             error={error}
@@ -91,20 +90,24 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
 function RunsProjectFilter() {
     const registry = useStore((state) => state.projectRegistry)
     const projectFilter = useStore((state) => state.runsListSession.projectFilter)
+    // Headed as the Flows and Roles lists are: whose list this is, then the project to change it.
     return (
-        <NativeSelect
-            size="sm"
-            data-testid="runs-project-filter"
-            aria-label="Show runs from project"
-            value={projectFilter ?? ''}
-            onChange={(event) => useStore.getState().updateRunsListSession({ projectFilter: event.target.value || null })}
-            className="truncate bg-background pl-2.5 pr-8"
-        >
-            <NativeSelectOption value="">All projects</NativeSelectOption>
-            {orderProjects(registry).map((project) => (
-                <NativeSelectOption key={project.directoryPath} value={project.directoryPath}>{projectLabel(registry, project.directoryPath)}</NativeSelectOption>
-            ))}
-        </NativeSelect>
+        <label className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground [&>[data-slot=native-select-wrapper]]:min-w-0">
+            <span className="shrink-0">Runs for</span>
+            <NativeSelect
+                size="sm"
+                data-testid="runs-project-filter"
+                aria-label="Show runs from project"
+                value={projectFilter ?? ''}
+                onChange={(event) => useStore.getState().updateRunsListSession({ projectFilter: event.target.value || null })}
+                className="truncate bg-background pl-2.5 pr-8 font-medium text-foreground"
+            >
+                <NativeSelectOption value="">All projects</NativeSelectOption>
+                {orderProjects(registry).map((project) => (
+                    <NativeSelectOption key={project.directoryPath} value={project.directoryPath}>{projectLabel(registry, project.directoryPath)}</NativeSelectOption>
+                ))}
+            </NativeSelect>
+        </label>
     )
 }
 

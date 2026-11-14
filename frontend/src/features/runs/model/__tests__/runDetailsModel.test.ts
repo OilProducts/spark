@@ -15,9 +15,11 @@ describe('runDetailsModel', () => {
       prompt: 'Ship this change?',
       question_type: 'YES_NO',
       options: [],
+      asked_at: '2026-11-14T21:41:19Z',
     })
 
     expect(snapshot).toMatchObject({
+      askedAt: '2026-11-14T21:41:19Z',
       questionId: 'gate-1',
       nodeId: 'human-review',
       questionType: 'YES_NO',

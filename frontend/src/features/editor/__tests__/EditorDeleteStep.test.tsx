@@ -155,9 +155,11 @@ describe('Editor step deletion', () => {
     await waitFor(() => expect(canvasNode('step_2')).toBeNull())
     expect(canvasNode('step_1')).toBeNull()
     expect(screen.getByTestId('editor-undo')).toHaveAccessibleName('Undo delete')
-    await user.keyboard('{Meta>}z{/Meta}')
+    await user.click(screen.getByTestId('editor-undo'))
     await waitFor(() => expect(canvasNode('step_1')).toHaveTextContent('Review'))
-    expect(screen.getByTestId('editor-undo')).toBeDisabled()
+    // Nothing left to take back, and focus stays on the button.
+    expect(screen.getByTestId('editor-undo')).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByTestId('editor-undo')).toHaveFocus()
     // The new step led nowhere, so no save carried it.
     expect(saves.some((save) => 'step_2' in save.flow.nodes)).toBe(false)
     await waitFor(() => expect(Object.keys(saves.at(-1)?.flow.nodes ?? {}).sort()).toEqual(['done', 'start', 'step_1']))
@@ -250,6 +252,34 @@ describe('Editor step deletion', () => {
     await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1.routes?.approved).toEqual({ to: 'done', description: 'Continue to Done.' }))
   })
 
+  it('takes back an inspector edit with Undo, typing in one field as one edit', async () => {
+    const flow = {
+      ...REVIEW_FLOW,
+      nodes: {
+        ...REVIEW_FLOW.nodes,
+        step_1: { ...REVIEW_FLOW.nodes.step_1, kind: 'tool', config: { kind: 'tool', command: 'make test', exit_codes: { '0': 'approved' } } },
+      },
+    }
+    vi.mocked(loadEditorPreview).mockImplementation(previewOf(flow as unknown as typeof REVIEW_FLOW))
+    const user = userEvent.setup()
+    render(<ReactFlowProvider><EditorGraphBridgeProvider><Editor /><Sidebar /></EditorGraphBridgeProvider></ReactFlowProvider>)
+    await waitFor(() => expect(canvasNode('step_1')).not.toBeNull())
+    fireEvent.click(canvasNode('step_1') as HTMLElement)
+
+    await user.type(await screen.findByRole('textbox', { name: 'Label' }), ' Checks')
+    const exitCodes = screen.getByRole('textbox', { name: 'Exit codes' })
+    await user.clear(exitCodes)
+    await user.type(exitCodes, '0 = approved\n1 = failed')
+    await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1).toMatchObject({ label: 'Review Checks' }))
+
+    await user.click(screen.getByRole('button', { name: 'Undo edit' }))
+    expect(exitCodes).toHaveValue('0 = approved')
+    await user.click(screen.getByRole('button', { name: 'Undo edit' }))
+    expect(screen.getByRole('textbox', { name: 'Label' })).toHaveValue('Review')
+    expect(screen.getByTestId('editor-undo')).toHaveAttribute('aria-disabled', 'true')
+    await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1).toMatchObject({ label: 'Review', config: { exit_codes: { '0': 'approved' } } }))
+  })
+
   it('does not undo a deletion into the same flow name in another project', async () => {
     graphs['/project-b'] = {
       nodes: [node('start', 'Start', 'start'), node('review', 'Review'), node('done', 'Done', 'exit')],
@@ -300,5 +330,7 @@ describe('the view after Add step', () => {
     expect(view.zoom).toBe(0.6)
     expect(onScreen(step, view)).toBe(true)
     expect(onScreen(flow.at(-1)!, view)).toBe(true)
+    // Its badges sit above it, below the save status in the canvas's top right corner.
+    expect(view.y + step.y * view.zoom).toBeGreaterThanOrEqual(80)
   })
 })

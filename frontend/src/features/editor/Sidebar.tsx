@@ -167,8 +167,17 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         }
     }
 
+    // Undo sets back what an inspector edit changes.
+    const recordNodeEdit = (nodeId: string, key: string) => editorGraphBridgeRef?.current?.recordFieldEdit(
+        `${nodeId}:${key}`, { nodes: readNodes().filter((node) => node.id === nodeId) },
+    )
+    const recordEdgeEdit = (edgeId: string, key: string, edgeIds = [edgeId]) => editorGraphBridgeRef?.current?.recordFieldEdit(
+        `route:${edgeId}:${key}`, { edges: readEdges().filter((edge) => edgeIds.includes(edge.id)) },
+    )
+
     const updateNodeProperty = (nodeId: string, key: string, value: NodePropertyValue) => {
         if (!activeFlow) return;
+        recordNodeEdit(nodeId, key)
 
         let newNodes: Node[] = [];
         updateNodes((nds) => {
@@ -361,6 +370,9 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
 
     const handleEdgePropertyChange = (key: string, value: string | boolean) => {
         if (!selectedEdgeId || !activeFlow) return;
+        // A new join demotes its fork's old one, which Undo puts back too.
+        const source = readEdges().find((edge) => edge.id === selectedEdgeId)?.source
+        recordEdgeEdit(selectedEdgeId, key, readEdges().filter((edge) => edge.id === selectedEdgeId || (key === 'kind' && edge.source === source)).map((edge) => edge.id))
 
         let newEdges: Edge[] = [];
         updateEdges((eds) => {
@@ -387,10 +399,11 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         }
     };
 
-    const updateSelectedNodeAttrs = (transform: (attrs: Record<string, unknown>) => Record<string, unknown>) => {
+    const updateSelectedNodeAttrs = (key: string, transform: (attrs: Record<string, unknown>) => Record<string, unknown>) => {
         if (!activeFlow || !selectedNodeId) {
             return
         }
+        recordNodeEdit(selectedNodeId, key)
         let newNodes: Node[] = []
         updateNodes((currentNodes) => {
             newNodes = currentNodes.map((node) => {
@@ -408,7 +421,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     }
 
     const handleNodeExtensionValueChange = (key: string, value: string) => {
-        updateSelectedNodeAttrs((attrs) => ({
+        updateSelectedNodeAttrs(key, (attrs) => ({
             ...attrs,
             [key]: value,
         }))
@@ -446,23 +459,24 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     }
 
     const handleNodeExtensionRemove = (key: string) => {
-        updateSelectedNodeAttrs((attrs) => {
+        updateSelectedNodeAttrs(key, (attrs) => {
             delete attrs[key]
             return attrs
         })
     }
 
     const handleNodeExtensionAdd = (key: string, value: string) => {
-        updateSelectedNodeAttrs((attrs) => ({
+        updateSelectedNodeAttrs(key, (attrs) => ({
             ...attrs,
             [key]: value,
         }))
     }
 
-    const updateSelectedEdgeAttrs = (transform: (attrs: Record<string, unknown>) => Record<string, unknown>) => {
+    const updateSelectedEdgeAttrs = (key: string, transform: (attrs: Record<string, unknown>) => Record<string, unknown>) => {
         if (!activeFlow || !selectedEdgeId) {
             return
         }
+        recordEdgeEdit(selectedEdgeId, key)
         let newEdges: Edge[] = []
         updateEdges((currentEdges) => {
             newEdges = currentEdges.map((edge) => {
@@ -484,21 +498,21 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     }
 
     const handleEdgeExtensionValueChange = (key: string, value: string) => {
-        updateSelectedEdgeAttrs((attrs) => ({
+        updateSelectedEdgeAttrs(key, (attrs) => ({
             ...attrs,
             [key]: value,
         }))
     }
 
     const handleEdgeExtensionRemove = (key: string) => {
-        updateSelectedEdgeAttrs((attrs) => {
+        updateSelectedEdgeAttrs(key, (attrs) => {
             delete attrs[key]
             return attrs
         })
     }
 
     const handleEdgeExtensionAdd = (key: string, value: string) => {
-        updateSelectedEdgeAttrs((attrs) => ({
+        updateSelectedEdgeAttrs(key, (attrs) => ({
             ...attrs,
             [key]: value,
         }))

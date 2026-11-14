@@ -121,6 +121,7 @@ describe('timelineModel', () => {
           prompt: 'Provide extra detail',
           questionType: 'FREEFORM',
           options: [],
+          askedAt: '2026-04-06T12:02:00Z',
         },
       ],
     )
@@ -134,9 +135,11 @@ describe('timelineModel', () => {
         { label: 'No', value: 'NO', key: 'N', description: null },
       ],
     })
+    // A question known only from the questions API keeps the time it was asked.
     expect(pendingGates[1]).toMatchObject({
       questionId: 'q-2',
       prompt: 'Provide extra detail',
+      receivedAt: '2026-04-06T12:02:00Z',
     })
 
     const grouped = buildGroupedPendingInterviewGates(pendingGates)

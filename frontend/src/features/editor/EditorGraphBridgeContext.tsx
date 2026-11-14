@@ -15,6 +15,11 @@ type EditorGraphBridge = {
    * Given a route's own ID, it replaces that route where it stands, such as with a new target.
    */
   connect: (params: (Connection & { data?: Record<string, unknown> }) | Edge) => void
+  /**
+   * Called before an inspector edit with the steps and routes it changes, as they are, so Undo can
+   * set their fields back; `key` names the field, and edits to it in a row are one, unless null.
+   */
+  recordFieldEdit: (key: string | null, previous: { nodes?: Node[]; edges?: Edge[] }) => void
 }
 
 const EditorGraphBridgeContext = createContext<MutableRefObject<EditorGraphBridge | null> | null>(null)

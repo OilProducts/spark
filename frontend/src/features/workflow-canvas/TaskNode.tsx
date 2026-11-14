@@ -214,6 +214,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             return
         }
 
+        const bridge = editorGraphBridgeRef?.current
+        bridge?.recordFieldEdit(null, { nodes: bridge.getNodes().filter((node) => node.id === id) })
         let updatedNodes: Node[] = []
         updateNodes((currentNodes) => {
             updatedNodes = currentNodes.map((node) => {

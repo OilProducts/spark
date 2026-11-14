@@ -208,6 +208,8 @@ export interface PendingQuestionSnapshot {
     prompt: string
     questionType: 'MULTIPLE_CHOICE' | 'YES_NO' | 'CONFIRMATION' | 'FREEFORM' | null
     options: PendingQuestionOption[]
+    /** When the question was asked; empty when the API didn't say. */
+    askedAt: string
 }
 
 export interface PendingInterviewGateGroup {

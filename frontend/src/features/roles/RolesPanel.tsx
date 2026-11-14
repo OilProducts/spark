@@ -219,6 +219,16 @@ export function RolesPanel() {
     const item = roles.find((entry) => entry.name === selected) ?? null
     const groups: [string, DefinitionItem[]][] = [['Standing', roles.filter((entry) => entry.standing)], ['Roles', roles.filter((entry) => !entry.standing)]]
     const panel = <div className="flex flex-col gap-3">
+        {/* Roles resolve per project, as flows do, so the list says whose it is in the same place. */}
+        <div className="flex min-w-0 items-center gap-2 px-3 text-sm text-muted-foreground">
+            <span className="shrink-0">Roles for</span>
+            <ProjectPicker heading="Show the roles of" testId="roles-project-picker" defaultProjectPath={project} onPick={(path) => { setProject(path); setSelectedRole(null); setList(null) }}>
+                <Button type="button" variant="outline" size="sm" className="min-w-0 max-w-full" title={project ?? undefined} aria-label={`Roles for project ${project ? projectLabel(registry, project) : '(none chosen)'}; change project`}>
+                    <span className="truncate">{project ? projectLabel(registry, project) : 'Choose a project'}</span>
+                    <ChevronDown aria-hidden="true" className="text-muted-foreground" />
+                </Button>
+            </ProjectPicker>
+        </div>
         {error && <InlineError>{error}</InlineError>}
         {groups.map(([label, grouped]) => grouped.length > 0 && <section key={label} aria-label={label} className="flex flex-col gap-0.5">
             <ListGroupLabel><h3>{label}</h3></ListGroupLabel>
@@ -243,14 +253,10 @@ export function RolesPanel() {
                 {startError(entry) && <InlineError dense>{startError(entry)}</InlineError>}
             </li>)}</ul>
         </section>)}
-        {!project && <p className="px-3 py-1 text-sm text-muted-foreground">Choose a project</p>}
         {project && !list && !error && <p className="px-3 py-1 text-sm text-muted-foreground">Loading…</p>}
     </div>
     return <ViewLayout view="roles" title="Roles" panel={panel} selected={item?.name ?? null} actions={<>
         <Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh roles" title="Refresh roles" onClick={() => setRefreshes((value) => value + 1)}><RefreshCw aria-hidden="true" /></Button>
-        <ProjectPicker heading="Show the roles of" testId="roles-project-picker" defaultProjectPath={project} onPick={(path) => { setProject(path); setSelectedRole(null); setList(null) }}>
-            <Button type="button" variant="outline" size="sm" className="max-w-36" title={project ?? undefined}><span className="truncate">{project ? projectLabel(registry, project) : 'Project'}</span><ChevronDown aria-hidden="true" className="text-muted-foreground" /></Button>
-        </ProjectPicker>
     </>}>
         {project && item
             ? <RoleDetail key={`${project}:${item.name}:${refreshes}`} {...control(item)} startError={startError(item)} />

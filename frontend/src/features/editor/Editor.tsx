@@ -168,6 +168,8 @@ type CanvasEdit =
     | { kind: 'add-step'; nodeId: string }
     /** A route added, or given again by its ID, such as with a new target; `previous` is what it replaced. */
     | { kind: 'route'; edgeId: string; previous: Edge | null }
+    /** An inspector field changed; `nodes` and `edges` are the steps and routes as they were. */
+    | { kind: 'fields'; key: string | null; nodes: Node[]; edges: Edge[] }
 
 // What the Undo button says it takes back.
 const CANVAS_EDIT_UNDO_LABELS = {
@@ -175,11 +177,27 @@ const CANVAS_EDIT_UNDO_LABELS = {
     'add-step': 'Undo add step',
     'route': 'Undo add route',
     'route-change': 'Undo route change',
+    'fields': 'Undo edit',
 } as const
 
 /** The graph with an edit taken back, as far as it still fits what is there now. */
 function undoCanvasEdit(edit: CanvasEdit, { nodes, edges }: { nodes: Node[]; edges: Edge[] }): { nodes: Node[]; edges: Edge[] } {
     const nodeIds = new Set(nodes.map((node) => node.id));
+    if (edit.kind === 'fields') {
+        // Only the fields go back: a step stays where it was since moved.
+        const previousNodes = new Map(edit.nodes.map((node) => [node.id, node]));
+        const previousEdges = new Map(edit.edges.map((edge) => [edge.id, edge]));
+        return {
+            nodes: nodes.map((node) => {
+                const previous = previousNodes.get(node.id);
+                return previous ? { ...node, type: previous.type, style: previous.style, data: previous.data } : node;
+            }),
+            edges: edges.map((edge) => {
+                const previous = previousEdges.get(edge.id);
+                return previous ? { ...edge, data: previous.data, label: previous.label } : edge;
+            }),
+        };
+    }
     if (edit.kind === 'add-step') {
         return {
             nodes: nodes.filter((node) => node.id !== edit.nodeId),
@@ -210,8 +228,10 @@ function undoCanvasEdit(edit: CanvasEdit, { nodes, edges }: { nodes: Node[]; edg
     };
 }
 
-// Padding around the steps a new step is shown with, and the smallest zoom that still reads.
+// Padding around the steps a new step is shown with, and the smallest zoom that still reads. Above
+// them is more: room for the new step's badges below the save status in the canvas's top corner.
 const NEW_STEP_VIEW_PADDING = 48
+const NEW_STEP_VIEW_TOP = 80
 const NEW_STEP_MIN_ZOOM = 0.6
 
 /**
@@ -225,16 +245,16 @@ export function viewportShowingNewStep(step: NodeRect, others: NodeRect[], canva
     const top = Math.min(...rects.map((rect) => rect.y));
     const width = Math.max(...rects.map((rect) => rect.x + rect.width)) - left;
     const height = Math.max(...rects.map((rect) => rect.y + rect.height)) - top;
-    const room = { width: Math.max(1, canvas.width - 2 * NEW_STEP_VIEW_PADDING), height: Math.max(1, canvas.height - 2 * NEW_STEP_VIEW_PADDING) };
+    const room = { width: Math.max(1, canvas.width - 2 * NEW_STEP_VIEW_PADDING), height: Math.max(1, canvas.height - NEW_STEP_VIEW_TOP - NEW_STEP_VIEW_PADDING) };
     const fit = Math.min(room.width / width, room.height / height);
     const nextZoom = Math.min(zoom, Math.max(fit, Math.min(zoom, NEW_STEP_MIN_ZOOM)));
     const centeredX = (canvas.width - width * nextZoom) / 2 - left * nextZoom;
-    const centeredY = (canvas.height - height * nextZoom) / 2 - top * nextZoom;
+    const centeredY = NEW_STEP_VIEW_TOP + (room.height - height * nextZoom) / 2 - top * nextZoom;
     return {
         // Too wide: the new step's right edge at the canvas's, the flow running off to the left.
         x: Math.min(centeredX, canvas.width - NEW_STEP_VIEW_PADDING - (step.x + step.width) * nextZoom),
         // Too tall: the flow's top at the canvas's, where the new step is.
-        y: Math.max(centeredY, NEW_STEP_VIEW_PADDING - top * nextZoom),
+        y: Math.max(centeredY, NEW_STEP_VIEW_TOP - top * nextZoom),
         zoom: nextZoom,
     };
 }
@@ -411,6 +431,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     // The file view edits the files; its canvas only selects nodes.
     const isCanvasReadOnly = isExpandedReadOnlyPreview || editorMode === 'files';
     const connectRef = useRef<(params: Connection | Edge) => void>(() => {});
+    const recordFieldEditRef = useRef<(key: string | null, previous: { nodes?: Node[]; edges?: Edge[] }) => void>(() => {});
     const editorGraphBridge = useMemo(() => ({
         getNodes: () => canvasGraphRef.current.nodes,
         setNodes,
@@ -418,6 +439,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         setEdges,
         getFlow: () => canonicalFlowRef.current,
         connect: (params: Connection | Edge) => connectRef.current(params),
+        recordFieldEdit: (key: string | null, previous: { nodes?: Node[]; edges?: Edge[] }) => recordFieldEditRef.current(key, previous),
     }), [setEdges, setNodes]);
 
     useRegisterEditorGraphBridge(editorGraphBridge);
@@ -1207,10 +1229,10 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         });
     }, [enforceSingleSelectedEdge, expandChildFlows, nodes, scheduleEdgeRouting, scheduleSave, setEdges, setSelectedEdgeId]);
 
-    // The canvas's edits, latest last, for Cmd/Ctrl+Z to take back: a deletion it puts back, a step it
-    // removes, a route it removes or moves back. It belongs to the open flow: the same name in another
-    // project is another flow, so opening either forgets it.
-    // ponytail: the inspector's field edits are not in it; text fields keep their own undo.
+    // The flow's edits, latest last, for Cmd/Ctrl+Z to take back: a deletion it puts back, a step it
+    // removes, a route it removes or moves back, an inspector field it sets back. It belongs to the
+    // open flow: the same name in another project is another flow, so opening either forgets it.
+    // ponytail: flow settings are not in it; text fields keep their own undo for their typing.
     const editsRef = useRef<CanvasEdit[]>([]);
     // The edit Undo takes back next, which names it.
     const [lastEdit, setLastEdit] = useState<CanvasEdit | null>(null);
@@ -1222,6 +1244,14 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         editsRef.current = [];
         setLastEdit(null);
     }, [flowName, activeProjectPath]);
+    // Typing in one field is one edit: the field as it was before the first key.
+    useEffect(() => {
+        recordFieldEditRef.current = (key, previous) => {
+            const last = editsRef.current.at(-1);
+            if (key !== null && last?.kind === 'fields' && last.key === key) return;
+            pushEdit({ kind: 'fields', key, nodes: previous.nodes ?? [], edges: previous.edges ?? [] });
+        };
+    }, [pushEdit]);
 
     // React Flow reports a deletion's nodes and edges in separate changes, each handler seeing the
     // other list from before it; here both come together, so the save drops a step with its routes.
@@ -1246,6 +1276,14 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         const { selectedNodeId, selectedEdgeId } = useStore.getState();
         if (selectedNodeId && !nextNodes.some((node) => node.id === selectedNodeId)) setSelectedNodeId(null);
         if (selectedEdgeId && !nextEdges.some((edge) => edge.id === selectedEdgeId)) setSelectedEdgeId(null);
+        if (edit.kind === 'fields' && edit.nodes.length > 0) {
+            // The inspector's drafts of those steps' fields start again from what came back.
+            const restoredIds = new Set(edit.nodes.map((node) => node.id));
+            useStore.setState((state) => ({
+                editorNodeInspectorSessionsByNodeId: Object.fromEntries(Object.entries(state.editorNodeInspectorSessionsByNodeId)
+                    .filter(([nodeId]) => !restoredIds.has(nodeId))),
+            }));
+        }
         setNodes(nextNodes);
         setEdges(nextEdges);
         scheduleSave({ nodes: nextNodes, edges: nextEdges });

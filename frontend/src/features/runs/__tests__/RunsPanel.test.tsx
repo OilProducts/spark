@@ -1272,7 +1272,7 @@ describe('RunsPanel', () => {
     expect(continueButton).toBeDisabled()
     expect(continueButton).toHaveAttribute('title', 'Pick the step to start from on the graph.')
 
-    fireEvent.click(await screen.findByText('Failed Node'))
+    fireEvent.click(await screen.findByText('Failed Node', { ignore: 'script, style, option' }))
     await waitFor(() => {
       expect(screen.getByTestId('run-continuation-selected-node-copy')).toHaveTextContent('failed_node')
     })

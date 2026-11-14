@@ -4748,7 +4748,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
-    await screen.findByText('Detour')
+    await screen.findByText('Detour', { ignore: 'script, style, option' })
     fireEvent.click(document.querySelector('.react-flow__node[data-id="detour"]') as HTMLElement)
     await user.keyboard('{Backspace}')
 
