@@ -808,6 +808,52 @@ fn a_message_sent_once_the_turn_has_completed_is_refused_at_once() {
         .any(|message| message["method"] == "turn/steer"));
 }
 
+/// A steer stays unread past its 60 s request deadline, so this takes a minute.
+#[cfg(unix)]
+#[test]
+fn a_steer_left_unread_past_its_deadline_is_refused_only_once_it_cannot_be_read() {
+    let lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    // Reads no stdin after turn/start until the `resume` gate opens; a steer
+    // read then completes the turn.
+    let env = fake_codex(temp.path(), "stall-stdin");
+    let pid_file = temp.path().join("app-server.pid");
+    let pid = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_PID_FILE", &pid_file);
+    let turn = spawn_turn(turn_request(temp.path(), "codex-stalled-steer"));
+    wait_for_logged(temp.path(), "turn/start");
+    // The app-server has its environment: the wait below holds up no other test.
+    drop((env, pid, lock));
+
+    let taken = spawn_send_message(temp.path(), "codex-stalled-steer", "note-1");
+    thread::sleep(Duration::from_millis(200));
+    let queued = spawn_send_message(temp.path(), "codex-stalled-steer", "note-2");
+    assert_eq!(taken.recv_timeout(Duration::from_secs(75)), Ok(false));
+    let app_server = fs::read_to_string(&pid_file).expect("pid file");
+    let app_server = rustix::process::Pid::from_raw(app_server.parse().expect("pid")).expect("pid");
+    assert!(
+        rustix::process::test_kill_process(app_server).is_err(),
+        "refused while the app-server could still read the steer"
+    );
+    assert_eq!(queued.recv_timeout(PROMPTLY), Ok(false));
+
+    // Reading resumes, if anything is left to read.
+    fs::write(temp.path().join("resume"), "").expect("resume gate");
+    thread::sleep(Duration::from_millis(300));
+    let error = turn
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect_err("timed-out turn");
+    assert_eq!(
+        error.message,
+        "codex app-server request timed out waiting for response"
+    );
+    assert!(!read_jsonrpc_log(&temp.path().join("codex-rpc.jsonl"))
+        .iter()
+        .any(|message| message["method"] == "turn/steer"));
+}
+
 #[test]
 fn a_sink_that_steers_while_a_full_queue_behind_fails_the_turn_at_once() {
     let _lock = ENV_LOCK

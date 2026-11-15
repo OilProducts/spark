@@ -619,6 +619,7 @@ impl CodexAppServerClient {
             flow_due: None,
             next_question: 0,
             fenced: Vec::new(),
+            stalled: Vec::new(),
             ended: None,
         };
         // Its own process group, so a forced stop also ends the agent's tools.
@@ -1237,6 +1238,8 @@ struct Worker {
     next_question: u64,
     /// Replies queued behind the trace, settled directly once the connection ends.
     fenced: Vec<Weak<Fenced>>,
+    /// Timed-out steers, answered false once the app-server has exited.
+    stalled: Vec<SteerMessage>,
     ended: Option<Ended>,
 }
 
@@ -1262,7 +1265,14 @@ impl Worker {
             tokio::select! {
                 command = commands.recv() => match command {
                     Some((command, _held)) => self.command(&mut io, command).await,
-                    None => return,
+                    None => {
+                        // Dropping a stalled steer answers false: not before the stopped
+                        // app-server has exited (bounded by its termination grace).
+                        if !self.stalled.is_empty() {
+                            let _ = status.wait_for(|status| status.exited.is_some()).await;
+                        }
+                        return;
+                    }
                 },
                 line = stdout.next(), if reading => match line {
                     Some(line) => self.line(&mut io, line.text).await,
@@ -1575,6 +1585,9 @@ impl Worker {
         if status.exited.is_some() {
             self.chat_question = None;
             self.flow_questions.clear();
+            for steer in self.stalled.drain(..) {
+                let _ = steer.accepted.send(false);
+            }
         }
         if status.write_failure.is_some() {
             self.end(
@@ -1600,12 +1613,20 @@ impl Worker {
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
         for id in expired {
-            if let Some(pending) = self.pending.remove(&id) {
-                self.settle(
-                    pending.call,
-                    CodexAppServerError::runtime(REQUEST_TIMED_OUT),
-                )
-                .await;
+            let Some(pending) = self.pending.remove(&id) else {
+                continue;
+            };
+            let error = CodexAppServerError::runtime(REQUEST_TIMED_OUT);
+            match pending.call {
+                // Its line may wait unread in the pipe, or half written, beyond
+                // recall: the app-server is stopped, and the sender hears
+                // false only once it has exited and can read nothing more.
+                Call::Steer(steer) => {
+                    tracing::warn!(error = %error.message, "codex app-server turn/steer failed");
+                    self.stalled.push(steer);
+                    self.end(io, Ended::Failed(error)).await;
+                }
+                call => self.settle(call, error).await,
             }
         }
         if self

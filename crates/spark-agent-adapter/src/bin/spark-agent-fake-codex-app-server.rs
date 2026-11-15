@@ -245,6 +245,9 @@ fn run_default(
                     }
                 } else if mode == "exit-mid-turn" {
                     return;
+                } else if mode == "stall-stdin" {
+                    // Reads nothing more until the `resume` gate opens.
+                    wait_for_gate("resume", GATED_TURN.load(Ordering::SeqCst));
                 } else if mode == "turn-burst" {
                     for _ in 0..300 {
                         write_json(&mut stdout, burst_delta());
@@ -286,7 +289,7 @@ fn run_default(
                 }
             }
             "turn/steer" if mode == "gated-steer-withheld" => {}
-            "turn/steer" if mode == "turn-burst" => {
+            "turn/steer" if mode == "turn-burst" || mode == "stall-stdin" => {
                 write_json(&mut stdout, json!({"id": request_id, "result": {}}));
                 emit_turn_completion(
                     &mut stdout,
