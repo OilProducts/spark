@@ -153,8 +153,10 @@ export function GraphSettings() {
         reasoning_mode: flowMetadata.reasoning_mode || uiDefaults.reasoning_mode || '',
         reasoning_summary: flowMetadata.reasoning_summary || uiDefaults.reasoning_summary || '',
     }
-    // What the last apply did, shown while the flow and its defaults are as they were then.
-    const appliedKey = `${activeFlow}\n${JSON.stringify(stepDefaults)}`
+    // What the last apply did, shown while the flow, its defaults and its agent steps' model settings
+    // are as the apply left them: an Undo or a step's own edit makes it stale.
+    const appliedKey = (nodes: typeof flowNodes) => JSON.stringify([activeFlow, stepDefaults,
+        nodes.filter(isAgentStep).map((node) => [node.id, ...Object.keys(stepDefaults).map((key) => String(node.data?.[key] ?? ''))])])
     const [applied, setApplied] = useState<{ key: string; message: string } | null>(null)
 
     const applyDefaultsToNodes = () => {
@@ -165,14 +167,14 @@ export function GraphSettings() {
         const changing = agentNodes.filter((node) => Object.entries(stepDefaults).some(([key, value]) => String(node.data?.[key] ?? '') !== value))
         const steps = (count: number) => `${count} agent ${count === 1 ? 'step' : 'steps'}`
         if (changing.length === 0) {
-            if (agentNodes.length > 0) setApplied({ key: appliedKey, message: `${agentNodes.length === 1 ? 'Its agent step already uses' : `All ${steps(agentNodes.length)} already use`} these defaults.` })
+            if (agentNodes.length > 0) setApplied({ key: appliedKey(currentNodes), message: `${agentNodes.length === 1 ? 'Its agent step already uses' : `All ${steps(agentNodes.length)} already use`} these defaults.` })
             return
         }
         editorGraphBridgeRef?.current?.recordFieldEdit(null, { nodes: changing })
         const updatedNodes = currentNodes.map((node) => changing.includes(node) ? { ...node, data: { ...node.data, ...stepDefaults } } : node)
         updateNodes(updatedNodes)
         saveNow(updatedNodes)
-        setApplied({ key: appliedKey, message: `Set ${steps(changing.length)} to these defaults.` })
+        setApplied({ key: appliedKey(updatedNodes), message: `Set ${steps(changing.length)} to these defaults.` })
     }
 
     const handleLaunchInputDefinitionsChange = (entries: LaunchInputDefinition[]) => {
@@ -319,7 +321,7 @@ export function GraphSettings() {
                 <GraphLlmDefaultsSection
                     canApplyDefaults={canApplyDefaults}
                     agentStepCount={agentStepCount}
-                    appliedMessage={applied?.key === appliedKey ? applied.message : null}
+                    appliedMessage={applied?.key === appliedKey(flowNodes) ? applied.message : null}
                     flowMetadata={flowMetadata}
                     uiDefaults={uiDefaults}
                     projectPath={null}

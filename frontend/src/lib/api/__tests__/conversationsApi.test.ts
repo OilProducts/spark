@@ -687,7 +687,7 @@ describe('conversation wire envelopes', () => {
     it('parses a summary snapshot and maps its rows to thread-list entries', () => {
         const role = { name: 'coordinator', title: 'Coordinator', state: 'working' }
         const snapshot = parseConversationSummarySnapshotResponse(summarySnapshot([
-            { ...fixture, conversation_handle: 'steady-harbor', last_message_preview: 'Hi.', launched_run_ids: ['run-1'], running: true, needs_attention: true, standing_role: role },
+            { ...fixture, conversation_handle: 'steady-harbor', last_message_preview: 'Hi.', last_message_role: 'assistant', launched_run_ids: ['run-1'], running: true, needs_attention: true, standing_role: role },
         ], { project_path: null }))
         expect(snapshot).toMatchObject({ project_path: null, watermark: '4' })
         const row = snapshot.rows[0]
@@ -701,6 +701,7 @@ describe('conversation wire envelopes', () => {
             updated_at: '2026-04-16T18:00:10Z',
             revision: '4',
             last_message_preview: 'Hi.',
+            last_message_role: 'assistant',
             launched_run_ids: ['run-1'],
             standing_role: role,
             running: true,

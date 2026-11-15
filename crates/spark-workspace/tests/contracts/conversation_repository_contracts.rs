@@ -141,6 +141,7 @@ fn conversation_service_reads_python_state_sidecars_and_truncates_tool_output_fo
         .all(|summary| summary.standing_role.is_none()));
     assert_eq!(summaries[0].conversation_id, "conversation-a");
     assert_eq!(summaries[0].last_message_preview.as_deref(), Some("Done"));
+    assert_eq!(summaries[0].last_message_role.as_deref(), Some("assistant"));
     assert_eq!(summaries[0].launched_run_ids, vec!["run-a".to_string()]);
     assert!(!summaries[0].running);
     let running = summaries
@@ -148,6 +149,9 @@ fn conversation_service_reads_python_state_sidecars_and_truncates_tool_output_fo
         .find(|summary| summary.conversation_id == "conversation-b")
         .expect("streaming conversation listed");
     assert!(running.running);
+    // The reply has no text yet, so the preview is the message the user typed.
+    assert_eq!(running.last_message_preview.as_deref(), Some("Go"));
+    assert_eq!(running.last_message_role.as_deref(), Some("user"));
 }
 
 #[test]

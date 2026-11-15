@@ -612,7 +612,7 @@ export const MessageRow = memo(function MessageRow({
                 {shouldRenderAssistantMarkdown ? (
                     <ProjectConversationMarkdown content={entry.content} enableCodeCopy={enableCopy && entry.status === 'complete'} />
                 ) : entry.role === 'user' && entry.content.trim() ? (
-                    // As typed: every character and line kept, its code and math formatted, flush with the bubble's edges.
+                    // As typed: every character, line and indent kept, its code and math formatted, flush with the bubble's edges.
                     <div className="[&_.conversation-markdown>:first-child]:mt-0 [&_.conversation-markdown>:last-child]:mb-0">
                         <ProjectConversationMarkdown content={entry.content} typed />
                     </div>

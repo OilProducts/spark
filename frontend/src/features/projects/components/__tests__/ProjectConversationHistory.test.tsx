@@ -1098,27 +1098,37 @@ describe('ProjectConversationHistory', () => {
         expect(within(history).getByRole('img', { name: 'Architecture overview' })).toHaveAttribute('loading', 'lazy')
     })
 
-    it('shows user messages as typed, every character and line kept, with code, math and lists formatted', () => {
+    it('shows user messages as typed, every character, line and indent kept, with code and math formatted', () => {
         const typed = [
             'Rename the tests in src/*.ts and lib/*.ts, and __init__.py, to match.',
             '# of failures: 3 &amp; C:\\Users\\_build\\*, see handlers[0](event) and ~/a or ~/b',
             '[note]: keep',
             'It used to pass <br>',
-            '<script>alert(1)</script> and <b>bold?</b>',
+            '<script>alert(1)</script> and <b>bold?</b> or <https://example.com/x>',
             '---',
+            '- one',
+            '> quoted',
+            'Traceback (most recent call last):',
+            '  File "app.py", line 3, in <module>',
+            '    main()',
+            'server:',
+            '  hosts:',
+            '    - a.example',
         ]
         renderHistory([
             makeMessageEntry({
                 role: 'user',
-                content: `${typed.join('\n')}\n\n- one\n- two\n\n\`npm test\` then $$x^2$$\n\`\`\`sh\nnpm test\n\`\`\``,
+                content: `${typed.join('\n')}\n\n    indented first\n  see https://example.com/a  \n    \`npm test\` then $$x^2$$\n\`\`\`sh\nnpm test\n\`\`\``,
             }),
         ])
 
         const history = screen.getByTestId('project-ai-conversation-history-list')
-        expect(history.querySelector('p')?.textContent).toBe(typed.join('\n'))
-        expect(history.querySelectorAll('em, strong, del, h1, h2, hr, a')).toHaveLength(0)
-        expect([...history.querySelectorAll('.conversation-markdown li')].map((item) => item.textContent)).toEqual(['one', 'two'])
-        expect(history.querySelector('p code')).toHaveTextContent('npm test')
+        const [first, second] = history.querySelectorAll('p')
+        expect(first).toHaveTextContent(typed.join('\n'), { normalizeWhitespace: false })
+        expect(history.querySelectorAll('em, strong, del, h1, h2, hr, ul, blockquote, br')).toHaveLength(0)
+        expect(second.textContent?.startsWith('    indented first\n  see https://example.com/a\n    npm test then ')).toBe(true)
+        expect(within(second).getByRole('link', { name: 'https://example.com/a' })).toBeVisible()
+        expect(second.querySelector('code')).toHaveTextContent('npm test')
         expect(history.querySelector('.katex, .math')).not.toBeNull()
         expect(history.querySelector('pre code')).toHaveTextContent('npm test')
         expect(history).not.toHaveTextContent('```')

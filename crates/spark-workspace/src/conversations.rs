@@ -54,6 +54,9 @@ pub struct ConversationSummary {
     pub revision: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message_preview: Option<String>,
+    /// Whose message the preview is: `user` for one typed into the chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_role: Option<String>,
     /// The runs this chat launched, oldest first, from its flow launches.
     pub launched_run_ids: Vec<String>,
     /// Set on a standing role's conversation, which the Threads list pins first.
@@ -4935,6 +4938,7 @@ fn conversation_summary_from_row(
             .as_str()
             .filter(|preview| !preview.is_empty())
             .map(str::to_string),
+        last_message_role: payload["preview_role"].as_str().map(str::to_string),
         launched_run_ids: payload["launched_run_ids"]
             .as_array()
             .into_iter()

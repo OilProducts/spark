@@ -16,19 +16,19 @@ import { sortConversationSummaries } from '../model/conversationState'
 import { useRemoveProject } from '../hooks/useRemoveProject'
 
 /**
- * A chat's latest message as the server sends it, Markdown with its whitespace collapsed, read as
- * plain text: no fence, math, heading, bold or code marks, and a link as its text. A glob's `*` and
- * a name's `__` stay.
+ * A chat's latest message as the server sends it, its whitespace collapsed, read as its chat shows
+ * it: no fence, math or code marks. A reply renders as Markdown, so its heading and bold marks go too
+ * and a link reads as its text; a message the user typed keeps every other character.
  */
-export const plainPreview = (text: string) => text
-    .replace(/(```|~~~)[\w+-]*/g, ' ')
-    .replace(/\$\$/g, ' ')
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/(^|\s)#{1,6}(?=\s)/g, '$1')
-    .replace(/\*\*(\S(?:[^*]*\S)?)\*\*/g, '$1')
-    .replace(/`/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
+export const plainPreview = (text: string, role?: string | null) => {
+    const plain = text.replace(/(```|~~~)[\w+-]*/g, ' ').replace(/\$\$/g, ' ').replace(/`/g, '')
+    return (role === 'user' ? plain : plain
+        .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+        .replace(/(^|\s)#{1,6}(?=\s)/g, '$1')
+        .replace(/\*\*(\S(?:[^*]*\S)?)\*\*/g, '$1'))
+        .replace(/\s+/g, ' ')
+        .trim()
+}
 
 /** One project: its path, all its chats, and its settings. */
 export function ProjectPage({
@@ -58,7 +58,7 @@ export function ProjectPage({
     const [chatQuery, setChatQuery] = useState('')
     const query = chatQuery.trim().toLowerCase()
     const shownChats = query
-        ? sortedChats.filter((chat) => `${chat.title}\n${plainPreview(chat.last_message_preview ?? '')}`.toLowerCase().includes(query))
+        ? sortedChats.filter((chat) => `${chat.title}\n${plainPreview(chat.last_message_preview ?? '', chat.last_message_role)}`.toLowerCase().includes(query))
         : sortedChats
     // The gear beside a project opens its page at Settings, below however many chats it has.
     const settingsHeadingRef = useRef<HTMLHeadingElement>(null)
@@ -152,8 +152,8 @@ export function ProjectPage({
                                             <span className="truncate text-sm font-medium">{chat.title}</span>
                                             <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                                                 {chat.standing_role ? <StandingRoleChip state={chat.standing_role.state} /> : <span className="shrink-0">{formatConversationAgeShort(chat.updated_at)}</span>}
-                                                {plainPreview(chat.last_message_preview ?? '') ? (
-                                                    <span data-testid="project-page-chat-preview" className="min-w-0 truncate">· {plainPreview(chat.last_message_preview ?? '')}</span>
+                                                {plainPreview(chat.last_message_preview ?? '', chat.last_message_role) ? (
+                                                    <span data-testid="project-page-chat-preview" className="min-w-0 truncate">· {plainPreview(chat.last_message_preview ?? '', chat.last_message_role)}</span>
                                                 ) : null}
                                             </span>
                                         </button>

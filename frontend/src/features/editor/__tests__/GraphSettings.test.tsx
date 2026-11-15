@@ -8,7 +8,7 @@ import {
   type CanonicalFlowDefinition,
 } from '@/lib/canonicalFlowModel'
 import { useStore } from '@/store'
-import { ReactFlowProvider } from '@xyflow/react'
+import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
@@ -279,11 +279,11 @@ describe('Graph and settings behavior', () => {
       uiDefaults: { ...useStore.getState().uiDefaults, thinking: workspaceThinking, thinking_budget_tokens: workspaceThinking ? '2048' : '' },
     })
     render(
-      <ReactFlowProvider initialNodes={[{
+      <ReactFlowProvider defaultNodes={[{
         id: 'review', position: { x: 0, y: 0 },
         data: { label: 'Review', kind: 'agent_task', thinking: 'budget', thinking_budget_tokens: '8192' },
       }, { id: 'check', position: { x: 0, y: 50 }, data: { label: 'Check', kind: 'tool', 'tool.command': 'true' } },
-      { id: 'done', position: { x: 0, y: 100 }, data: { label: 'Done', kind: 'exit' } }]} initialEdges={[
+      { id: 'done', position: { x: 0, y: 100 }, data: { label: 'Done', kind: 'exit' } }]} defaultEdges={[
         { id: 'review-check', source: 'review', target: 'check' }, { id: 'check-done', source: 'check', target: 'done' },
       ]}>
         <GraphSettings />
@@ -308,21 +308,29 @@ describe('Graph and settings behavior', () => {
     expect(screen.getByTestId('graph-apply-defaults-status')).toHaveTextContent('Set 1 agent step to these defaults.')
   })
 
-  it('Apply to agent steps says so when its agent steps already use the defaults', async () => {
+  it('Apply to agent steps says so when its agent steps already use the defaults, until a step changes', async () => {
     const user = userEvent.setup()
     useStore.setState({ flowMetadata: { thinking: 'off' } })
+    // As an Undo or the step's own inspector would.
+    function EditReview() {
+      const { setNodes } = useReactFlow()
+      return <button type="button" onClick={() => setNodes((nodes) => nodes.map((node) => node.id === 'review' ? { ...node, data: { ...node.data, thinking: 'adaptive' } } : node))}>Edit review</button>
+    }
     render(
-      <ReactFlowProvider initialNodes={[
+      <ReactFlowProvider defaultNodes={[
         { id: 'review', position: { x: 0, y: 0 }, data: { label: 'Review', kind: 'agent_task', llm_model: 'gpt-5.3', llm_provider: 'openai', reasoning_effort: 'high', thinking: 'off' } },
         { id: 'done', position: { x: 0, y: 100 }, data: { label: 'Done', kind: 'exit' } },
-      ]} initialEdges={[{ id: 'review-done', source: 'review', target: 'done' }]}>
+      ]} defaultEdges={[{ id: 'review-done', source: 'review', target: 'done' }]}>
         <GraphSettings />
+        <EditReview />
       </ReactFlowProvider>,
     )
 
     await user.click(screen.getByRole('button', { name: 'Apply to 1 agent step' }))
     expect(screen.getByTestId('graph-apply-defaults-status')).toHaveTextContent('Its agent step already uses these defaults.')
     expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+    await user.click(screen.getByRole('button', { name: 'Edit review' }))
+    expect(screen.getByTestId('graph-apply-defaults-status')).toBeEmptyDOMElement()
   })
 
   it('surfaces FlowDefinition title and description fields without leaking them into extension attrs', async () => {
