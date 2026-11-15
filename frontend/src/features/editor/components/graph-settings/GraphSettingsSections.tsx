@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 
 import type { ExtensionAttrEntry } from '@/lib/extensionAttrs'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
@@ -25,7 +25,7 @@ export const FLOW_METADATA_HELP: Record<string, string> = {
     inputs: 'Structured launch-time context fields Spark should collect before starting a run.',
     result_node: 'The step whose response Spark shows as the run result.',
     goal: 'Primary stated goal for the flow. Handlers can read it as shared run context.',
-    max_retries: 'Used only when a node omits retry.max_retries. Node retry settings take precedence.',
+    max_retries: 'Used only when a step omits retry.max_retries. Step retry settings take precedence.',
 }
 
 // The flow metadata key the runtime reads to pick the run result's source step.
@@ -292,7 +292,7 @@ export function GraphResultSection({
             />
             <div className="space-y-3">
                 <GraphSettingsField
-                    label="Result node"
+                    label="Result step"
                     htmlFor="graph-attr-spark-result-node"
                     helper={FLOW_METADATA_HELP.result_node}
                 >
@@ -438,6 +438,9 @@ const MODEL_DEFAULT_KEYS = ['llm_provider', 'llm_profile', 'llm_model', 'reasoni
 
 interface GraphLlmDefaultsSectionProps {
     canApplyDefaults: boolean
+    agentStepCount: number
+    /** What the last "Apply to agent steps" did. */
+    appliedMessage: string | null
     flowMetadata: FlowDefinitionMetadata
     uiDefaults: UiDefaults
     projectPath: string | null
@@ -447,12 +450,15 @@ interface GraphLlmDefaultsSectionProps {
 
 export function GraphLlmDefaultsSection({
     canApplyDefaults,
+    agentStepCount,
+    appliedMessage,
     flowMetadata,
     uiDefaults,
     projectPath,
     applyDefaultsToNodes,
     updateFlowMetadata,
 }: GraphLlmDefaultsSectionProps) {
+    const noAgentStepsId = useId()
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
@@ -478,13 +484,14 @@ export function GraphLlmDefaultsSection({
                     <Button
                         type="button"
                         onClick={applyDefaultsToNodes}
-                        disabled={!canApplyDefaults}
+                        disabled={!canApplyDefaults || agentStepCount === 0}
+                        aria-describedby={canApplyDefaults && agentStepCount === 0 ? noAgentStepsId : undefined}
                         variant="outline"
                         size="sm"
                         className="h-8 px-2 text-xs"
-                        title={canApplyDefaults ? 'Apply current flow defaults to every node.' : 'Switch to the editor to apply defaults.'}
+                        title={canApplyDefaults ? 'Set every agent step to these model defaults.' : 'Switch to the editor to apply defaults.'}
                     >
-                        Apply to nodes
+                        {agentStepCount > 0 ? `Apply to ${agentStepCount} agent ${agentStepCount === 1 ? 'step' : 'steps'}` : 'Apply to agent steps'}
                     </Button>
                     {/* Clears the flow's own choice, so it follows the workspace default as that changes. */}
                     <Button
@@ -499,6 +506,10 @@ export function GraphLlmDefaultsSection({
                         Use workspace default
                     </Button>
                 </div>
+                {canApplyDefaults && agentStepCount === 0 ? (
+                    <p id={noAgentStepsId} className="text-xs text-muted-foreground">This flow has no agent steps, the only steps that run a model.</p>
+                ) : null}
+                <p role="status" data-testid="graph-apply-defaults-status" className="text-xs text-muted-foreground empty:hidden">{appliedMessage}</p>
             </div>
         </section>
     )

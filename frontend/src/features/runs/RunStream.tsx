@@ -12,7 +12,7 @@ import {
     loadSelectedRunStatus,
     parseLiveRunTranscriptSegment,
 } from './services/runStreamTransport'
-import { useRunsTransportReconnectSignal } from './services/runsTransportReconnect'
+import { RUNS_TRANSPORT_LOST_EVENT, useRunsTransportReconnectSignal } from './services/runsTransportReconnect'
 import {
     useRunJournalStore,
     type RunJournalStateEntry,
@@ -536,8 +536,16 @@ export function RunStream() {
             reconcileTerminalStatus(run.status)
         }
 
+        // Spark is unreachable: this run's live updates stopped until the stream reconnects and restarts this.
+        const handleTransportLost = () => {
+            if (!isCurrent()) return
+            setSelectedRunStatusSync('degraded', SELECTED_RUN_STATUS_DEGRADED_MESSAGE)
+            patchRunJournal({ liveStatus: 'degraded', liveError: SELECTED_RUN_STATUS_DEGRADED_MESSAGE })
+        }
+
         void startScopedStream()
         void refreshRunTranscript()
+        window.addEventListener(RUNS_TRANSPORT_LOST_EVENT, handleTransportLost)
         window.addEventListener('spark:run-journal-entry', handleLiveRunJournalEntry)
         window.addEventListener('spark:run-segment-upsert', handleRunSegmentUpsert)
         window.addEventListener('spark:run-resync-required', handleRunResyncRequired)
@@ -545,6 +553,7 @@ export function RunStream() {
 
         return () => {
             closed = true
+            window.removeEventListener(RUNS_TRANSPORT_LOST_EVENT, handleTransportLost)
             window.removeEventListener('spark:run-upsert', handleRunUpsert)
             window.removeEventListener('spark:run-journal-entry', handleLiveRunJournalEntry)
             window.removeEventListener('spark:run-segment-upsert', handleRunSegmentUpsert)

@@ -1,4 +1,4 @@
-import { useId } from 'react'
+import { useEffect, useId } from 'react'
 
 import { StatusPill } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
@@ -23,6 +23,17 @@ import { normalizeProjectPath } from '@/lib/projectPaths'
 // status item.
 
 const CANCELING_STATUSES = new Set(['cancel_requested', 'abort_requested'])
+
+// The run whose heading takes focus when it shows: a launched run's detail loads after its launcher closes.
+let headingFocusRunId: string | null = null
+const headingId = (runId: string) => `run-heading-${runId}`
+
+/** Moves focus to a run's heading, now or once the run shows, when the control that had focus goes away. */
+export function focusRunHeading(runId: string) {
+    const heading = document.getElementById(headingId(runId))
+    headingFocusRunId = heading ? null : runId
+    heading?.focus()
+}
 
 export interface RunHeaderBarProps {
     run: RunRecord
@@ -56,6 +67,12 @@ export function RunHeaderBar({
     const inactive = canContinueRun(run.status)
     const retry = canRetryRun(run.status)
     const helpId = useId()
+    useEffect(() => {
+        if (headingFocusRunId !== run.run_id) return
+        headingFocusRunId = null
+        // Unless something else took focus meanwhile.
+        if (!document.activeElement || document.activeElement === document.body) focusRunHeading(run.run_id)
+    }, [run.run_id])
     const showCancel = canCancelRun(run.status) || CANCELING_STATUSES.has(run.status)
     // Every run reads the same: when it started, then how long it ran or has been going.
     const when = formatRunDate(run.started_at, now)
@@ -92,8 +109,10 @@ export function RunHeaderBar({
                 ) : null}
                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                     <h1
+                        id={headingId(run.run_id)}
                         data-testid="run-header-title"
-                        className="min-w-0 truncate text-xl font-semibold tracking-tight text-foreground"
+                        tabIndex={-1}
+                        className="min-w-0 truncate rounded-sm text-xl font-semibold tracking-tight text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         title={`${title} · ${run.run_id}`}
                     >
                         {title}

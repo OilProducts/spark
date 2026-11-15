@@ -7,11 +7,16 @@ import { ATTENTION_CHANGED_EVENT, fetchPendingAttention, type AttentionItem } fr
 import { triggerKey } from '@/lib/api/triggersApi'
 import { flowTitle, formatRunDate, formatRunTime, runTitle } from '@/features/runs/model/runOverviewModel'
 import type { RunRecord } from '@/features/runs/model/shared'
+import { focusRunHeading } from '@/features/runs/components/RunHeaderBar'
+
+/** The open chat's heading, which takes focus when a chat is opened from elsewhere. */
+export const CHAT_HEADING_ID = 'chat-title'
 
 const ATTENTION_POLL_MS = 15_000
 
 export const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
     run_gate: 'Run waiting for input',
+    chat_question: 'Chat waiting for your answer',
     flow_run_request: 'Flow run request',
     proposed_plan: 'Plan pending review',
     mission: 'Mission needs you',
@@ -103,10 +108,12 @@ let stopAttentionPolling = () => {}
 /** Pending attention, polled and refreshed when a run's status changes; null until the first fetch resolves. */
 export function useAttentionItems() {
     const items = useSyncExternalStore(subscribeAttention, () => attentionItems)
-    // A run or mission leaving or reaching a question changes what waits on you; don't wait for the next poll.
+    // A run, mission or chat leaving or reaching a question changes what waits on you; don't wait for the next poll.
     const runStatuses = useStore((state) => [
         ...state.runsListSession.runs.map((run) => `${run.run_id}:${run.status}`),
         ...state.missionBoard.map((mission) => `${mission.id}:${mission.status ?? ''}`),
+        ...Object.values(state.homeConversationCache.summariesByProjectPath).flat()
+            .filter((chat) => chat.needs_attention).map((chat) => chat.conversation_id),
     ].join(','))
     const firstStatuses = useRef(runStatuses)
     useEffect(() => {
@@ -120,8 +127,11 @@ export function useAttentionFailed() {
     return useSyncExternalStore(subscribeAttention, () => attentionFailed)
 }
 
-/** Opens a chat in the Chats view; leaving a project page asks first, so a cancelled leave keeps the shown chat. */
-/** Opens a chat; a `draft` replaces its composer text, unsent. */
+/**
+ * Opens a chat in the Chats view and focuses its heading, as the control that opened it goes away
+ * with its view; leaving a project page asks first, so a cancelled leave keeps the shown chat.
+ * A `draft` replaces its composer text, unsent.
+ */
 export function openChat(projectPath: string, conversationId: string, draft?: string) {
     const open = () => {
         revealSelection()
@@ -130,15 +140,18 @@ export function openChat(projectPath: string, conversationId: string, draft?: st
         if (draft !== undefined) useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: draft })
         useStore.getState().setActiveProjectPath(projectPath)
         useStore.getState().setViewMode('home')
+        requestAnimationFrame(() => document.getElementById(CHAT_HEADING_ID)?.focus({ preventScroll: true }))
     }
     if (useStore.getState().projectPagePath) requestNavigation(open)
     else open()
 }
 
+/** Opens a run in Runs; its heading takes focus once the view shows, as the control that opened it goes away. */
 export function openRun(runId: string) {
     revealSelection()
     useStore.getState().setRunsSelectedRunId(runId)
     useStore.getState().setViewMode('runs')
+    requestAnimationFrame(() => focusRunHeading(runId))
 }
 
 /** Opens a trigger in Triggers; a trigger's id only names it within its project. */

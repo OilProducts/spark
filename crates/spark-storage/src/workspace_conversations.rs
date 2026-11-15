@@ -217,6 +217,19 @@ impl ConversationRepository {
             .read(|read| read.attention_summaries())
     }
 
+    /// The questions a live conversation waits on an answer to, oldest first.
+    pub fn pending_questions(&self, conversation_id: &str) -> Result<Vec<Value>> {
+        self.store.database().read(|read| {
+            crate::conversation::payloads(
+                read.connection(),
+                "SELECT payload FROM segments INDEXED BY segments_status \
+                 WHERE status = 'pending' AND conversation_id = ?1 \
+                 AND kind = 'request_user_input' AND deleted = 0 ORDER BY updated_at",
+                [conversation_id],
+            )
+        })
+    }
+
     /// Live conversations a previous process may have left in flight:
     /// (conversation id, project path).
     pub fn unsettled_conversations(&self) -> Result<Vec<(String, String)>> {

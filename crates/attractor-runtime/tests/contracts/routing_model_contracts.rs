@@ -1269,6 +1269,67 @@ fn markdown_flows_reject_duplicate_decisions_and_old_versions_by_path() {
 }
 
 #[test]
+fn gates_offer_answers_in_authored_order_and_json_saves_keep_it() {
+    struct Asked(Arc<Mutex<Vec<String>>>);
+    impl attractor_runtime::Interviewer for Asked {
+        fn ask(
+            &mut self,
+            question: attractor_runtime::HumanQuestion,
+        ) -> attractor_runtime::HumanAnswer {
+            *self.0.lock().unwrap() = question.options.into_iter().map(|o| o.value).collect();
+            attractor_runtime::HumanAnswer::selected("hold")
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let start = "---\ntype: start\nroutes:\n  next:\n    to: gate\n    description: Enter.\n---\n";
+    let gate = "---\ntype: human_gate\nroutes:\n  ship_it:\n    to: done\n    description: Ship.\n  hold:\n    to: held\n    description: Hold.\n---\n\nShip?\n";
+    let held = "---\ntype: exit\nconfig:\n  result:\n    name: held\n    outcome: failure\n---\n";
+    write_flow(
+        temp.path(),
+        "ship",
+        &[
+            ("flow.md", FLOW_MD),
+            ("start.md", start),
+            ("gate.md", gate),
+            ("done.md", DONE_MD),
+            ("held.md", held),
+        ],
+    );
+    let dir = temp.path().join("flows/ship");
+    let flow = attractor_dsl::read_flow_dir(&dir).unwrap();
+
+    // A run executes its flow snapshot.
+    let snapshot: FlowDefinition = serde_json::from_str(&flow.to_canonical_json_string()).unwrap();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let run = execute(
+        snapshot,
+        RuntimeHandlerRunner::with_interviewer(Asked(asked.clone())),
+        None,
+    );
+    assert_eq!(run.result.context["human.gate.selected"], json!("hold"));
+    assert_eq!(*asked.lock().unwrap(), ["ship_it", "hold"]);
+
+    // A JSON save listing the routes in another order neither rewrites the
+    // untouched file nor reorders an edited one.
+    let mut saved = flow.clone();
+    let gate_node = saved.nodes.get_mut("gate").unwrap();
+    gate_node.routes.sort_keys();
+    let written = attractor_dsl::write_flow_dir(&dir, &saved).unwrap();
+    assert!(!written.contains(&"gate.md".to_string()), "{written:?}");
+    assert_eq!(std::fs::read_to_string(dir.join("gate.md")).unwrap(), gate);
+    let gate_node = saved.nodes.get_mut("gate").unwrap();
+    gate_node.config = Some(attractor_core::NodeConfig::HumanGate {
+        prompt: "Ship now?".to_string(),
+    });
+    attractor_dsl::write_flow_dir(&dir, &saved).unwrap();
+    let reloaded = attractor_dsl::read_flow_dir(&dir).unwrap();
+    assert_eq!(
+        reloaded.nodes["gate"].routes.keys().collect::<Vec<_>>(),
+        ["ship_it", "hold"]
+    );
+}
+
+#[test]
 fn an_invalid_project_override_is_rejected_without_falling_back_to_bundled() {
     let temp = tempfile::tempdir().unwrap();
     let bundled = temp.path().join("bundled");

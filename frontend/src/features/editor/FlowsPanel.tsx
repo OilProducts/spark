@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import { ChevronDown, Plus, RefreshCw } from 'lucide-react'
+import { ChevronDown, Plus, RefreshCw, Search } from 'lucide-react'
 
 import { useStore } from '@/store'
 import { sanitizeFlowId } from '@/lib/canonicalFlowModel'
@@ -260,6 +260,15 @@ export function FlowsPanelList({ catalog }: { catalog: ReturnType<typeof useFlow
         [catalog.flowDefinitions],
     )
     const project = catalog.activeProjectPath
+    const [searchQuery, setSearchQuery] = useState('')
+    const query = searchQuery.trim().toLowerCase()
+    // Every word of the search is in the flow's title, description or name, as Run a flow matches.
+    const shownFlows = query
+        ? catalog.flows.filter((flow) => {
+            const text = `${catalog.flowLabels[flow]?.title ?? ''} ${catalog.flowLabels[flow]?.description ?? ''} ${flow}`.toLowerCase()
+            return query.split(/\s+/).every((word) => text.includes(word))
+        })
+        : catalog.flows
     return (
         <div data-testid="flow-browser-panel" className="space-y-3">
             {/* Flows resolve per project: its own first, then bundled, so the list says whose it is. */}
@@ -285,14 +294,33 @@ export function FlowsPanelList({ catalog }: { catalog: ReturnType<typeof useFlow
                     </InlineError>
                 </div>
             ) : null}
+            {catalog.flows.length > 0 ? (
+                <div className="px-3">
+                    <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-2.5 text-muted-foreground focus-within:ring-2 focus-within:ring-ring">
+                        <Search aria-hidden="true" className="size-3.5 shrink-0" />
+                        <input
+                            type="search"
+                            value={searchQuery}
+                            onChange={(event) => setSearchQuery(event.target.value)}
+                            placeholder="Search flows"
+                            aria-label="Search flows by title, name or description"
+                            data-testid="flow-list-search-input"
+                            className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+                        />
+                    </label>
+                </div>
+            ) : null}
+            {query && shownFlows.length === 0 ? (
+                <p data-testid="flow-list-search-empty" className="px-3 text-xs text-muted-foreground">No flows match the search.</p>
+            ) : null}
             <FlowTree
                 dataTestId="editor-flow-tree"
-                flows={catalog.flows}
+                flows={shownFlows}
                 projectFlows={projectFlows}
                 projectLabel={catalog.activeProjectPath ? projectLabel(registry, catalog.activeProjectPath) : undefined}
                 flowLabels={catalog.flowLabels}
                 selectedFlow={catalog.activeFlow}
-                // Picking the open flow again shows its Flow settings, as clicking empty canvas does.
+                // Picking the open flow again leaves its selected step or route, as clicking empty canvas does.
                 onSelectFlow={(flow) => flow === catalog.activeFlow
                     ? useStore.setState({ selectedNodeId: null, selectedEdgeId: null })
                     : catalog.setActiveFlow(flow)}

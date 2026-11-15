@@ -2,10 +2,11 @@ import { shallow } from 'zustand/shallow'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { fetchRunsListValidated, parseRunRecordPayload } from '@/lib/attractorClient'
+import { UNREACHABLE_MESSAGE } from '@/lib/fetchSpark'
 import { useStore } from '@/store'
 
 import type { RunRecord } from '../model/shared'
-import { useRunsTransportReconnectSignal } from '../services/runsTransportReconnect'
+import { RUNS_TRANSPORT_LOST_EVENT, useRunsTransportReconnectSignal } from '../services/runsTransportReconnect'
 
 const logUnexpectedRunError = (error: unknown) => {
     if (error instanceof Error && error.name === 'ApiHttpError') {
@@ -96,8 +97,10 @@ export function useRunsList({
                 succeeded = true
             } catch (err) {
                 if (activeRequest !== request || request.signal.aborted) return
-                logUnexpectedRunError(err)
-                updateRunsListSession({ error: 'Couldn’t load your runs.', status: 'error' })
+                // An unreachable Spark says so; the list then shows the last runs it knew.
+                const unreachable = err instanceof Error && err.message === UNREACHABLE_MESSAGE
+                if (!unreachable) logUnexpectedRunError(err)
+                updateRunsListSession({ error: unreachable ? UNREACHABLE_MESSAGE : 'Couldn’t load your runs.', status: 'error' })
             } finally {
                 if (activeRequest === request) {
                     activeRequest = null
@@ -114,6 +117,8 @@ export function useRunsList({
 
         window.addEventListener('spark:run-upsert', handleLiveRunUpsert)
         window.addEventListener('spark:runs-overview-resync-required', handleRecovery)
+        // The live stream lost Spark: a refresh finds out whether the list can still be trusted.
+        window.addEventListener(RUNS_TRANSPORT_LOST_EVENT, handleRecovery)
 
         return () => {
             closed = true
@@ -123,6 +128,7 @@ export function useRunsList({
             pendingRefresh = false
             window.removeEventListener('spark:run-upsert', handleLiveRunUpsert)
             window.removeEventListener('spark:runs-overview-resync-required', handleRecovery)
+            window.removeEventListener(RUNS_TRANSPORT_LOST_EVENT, handleRecovery)
         }
     }, [
         manageSync,

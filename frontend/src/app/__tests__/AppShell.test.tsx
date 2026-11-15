@@ -100,6 +100,7 @@ graphAttrs: {},
 graphAttrErrors: {},
 editorSidebarWidth: DEFAULT_EDITOR_SIDEBAR_WIDTH,
 editorMode: 'structured',
+preferredGraphSettingsOpen: false,
 editorGraphSettingsPanelOpenByFlow: {},
 editorShowAdvancedGraphAttrsByFlow: {},
 editorLaunchInputDraftsByFlow: {},
@@ -2449,6 +2450,33 @@ describe('App shell behavior', () => {
     })
   })
 
+  it('on a phone, All flows above the open flow goes back up to the flow list, onto the flow\'s row', async () => {
+    const user = userEvent.setup()
+    setViewportWidth(390)
+    try {
+      installCanvasWorkspaceFetchMock()
+      render(<App />)
+      await user.click(screen.getByTestId('activity-flows'))
+      const flowsView = screen.getByTestId('flows-view')
+      expect(flowsView).toHaveAttribute('data-responsive-layout', 'stacked')
+      // With no flow open there is nothing to go back from.
+      expect(within(flowsView).queryByRole('button', { name: 'All flows' })).not.toBeInTheDocument()
+      const row = within(await screen.findByTestId('editor-flow-tree')).getByRole('button', { name: LINEAR_FLOW_NAME })
+      await user.click(row)
+      const scrolled = vi.spyOn(Element.prototype, 'scrollIntoView')
+      await user.click(await within(flowsView).findByRole('button', { name: 'All flows' }))
+      expect(scrolled.mock.contexts).toContain(within(flowsView).getByTestId('side-panel'))
+      expect(row).toHaveAttribute('aria-current', 'true')
+      expect(row).toHaveFocus()
+
+      // A desktop window shows the list beside the flow: no way back is needed.
+      act(() => setViewportWidth(1366))
+      expect(within(flowsView).queryByRole('button', { name: 'All flows' })).not.toBeInTheDocument()
+    } finally {
+      setViewportWidth(1024)
+    }
+  })
+
   it('lets the operator resize the editor sidebar and keeps the width across tab switches', async () => {
     const user = userEvent.setup()
     setViewportWidth(1366)
@@ -2456,10 +2484,15 @@ describe('App shell behavior', () => {
     render(<App />)
 
     await user.click(screen.getByTestId('activity-flows'))
-    // The inspector column shows once a flow is open.
     await user.click(within(await screen.findByTestId('editor-flow-tree')).getByRole('button', { name: LINEAR_FLOW_NAME }))
-
+    // With the flow's settings closed, selecting a step still opens the inspector on it, and Flow settings turns it to the flow.
+    await waitFor(() => expect(document.querySelector('.react-flow__node[data-id="plan"]')).not.toBeNull())
+    fireEvent.click(document.querySelector('.react-flow__node[data-id="plan"]') as HTMLElement)
     const inspectorPanel = await screen.findByTestId('inspector-panel') as HTMLElement
+    expect(inspectorPanel).toHaveAttribute('data-inspector-active-scope', 'node')
+    await user.click(screen.getByRole('button', { name: 'Flow settings' }))
+    expect(inspectorPanel).toHaveAttribute('data-inspector-active-scope', 'graph')
+    expect(screen.getByRole('button', { name: 'Flow settings' })).toHaveAttribute('aria-pressed', 'true')
     const resizeHandle = screen.getByTestId('editor-sidebar-resize-handle')
     const editorWorkspaceLayout = within(screen.getByTestId('editor-workspace')).getByTestId('view-main').firstElementChild as HTMLDivElement
 
@@ -2689,10 +2722,16 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('app-shell')).toBeVisible()
       expect(screen.getByTestId('activity-bar')).toBeVisible()
-      expect(screen.getByTestId('inspector-panel')).toBeVisible()
       expect(screen.getByTestId('flow-browser-panel')).toBeVisible()
-      expect(screen.getByTestId('graph-inspector-panel')).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Flow settings' })).toHaveAttribute('aria-pressed', 'false')
     })
+    // "Open graph settings panel" is off by default: the flow opens on its canvas alone until its settings are asked for.
+    expect(screen.queryByTestId('inspector-panel')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Flow settings' }))
+    expect(screen.getByTestId('graph-inspector-panel')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Flow settings' })).toHaveAttribute('aria-pressed', 'true')
+    await user.click(screen.getByRole('button', { name: 'Flow settings' }))
+    expect(screen.queryByTestId('inspector-panel')).not.toBeInTheDocument()
   })
 
   it('renders the flow selector as a directory tree and opens nested editor flows', async () => {

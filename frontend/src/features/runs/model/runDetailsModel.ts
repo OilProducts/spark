@@ -128,6 +128,7 @@ const asPendingQuestionSnapshot = (value: unknown): PendingQuestionSnapshot | nu
         prompt,
         questionType,
         options,
+        askedAt: typeof payload.asked_at === 'string' ? payload.asked_at : '',
     }
 }
 

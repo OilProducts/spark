@@ -17,6 +17,7 @@ import type { ModelSettings } from '@/lib/api/settingsApi'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import type { ConversationChatMode } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
+import { CHAT_HEADING_ID } from '@/app/useAttention'
 import { cn } from '@/lib/utils'
 import { formatConversationAgeShort, formatConversationTimestamp } from '../model/projectsHomeState'
 import type { useScrollFollow } from '../hooks/useScrollFollow'
@@ -153,7 +154,7 @@ export function ProjectConversationSurface({
         >
             <header className="flex items-center justify-between gap-x-6 border-b border-border px-6 py-4">
                 <div className="min-w-0 flex-1">
-                    <h1 data-testid="chat-title" title={activeConversationTitle ?? undefined} className="line-clamp-2 break-words text-xl font-semibold text-foreground">
+                    <h1 id={CHAT_HEADING_ID} tabIndex={-1} data-testid="chat-title" title={activeConversationTitle ?? undefined} className="line-clamp-2 break-words rounded-sm text-xl font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                         {activeConversationTitle || (hasOpenChat ? 'Chat' : 'New chat')}
                     </h1>
                     {hasProject ? (

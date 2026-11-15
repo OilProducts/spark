@@ -78,6 +78,8 @@ describe('timelineModel', () => {
     expect(line('StageStarted', {}, { node_id: 'run_tests' })).toBe('Run Test Suite started')
     expect(line('StageTransition', { decision: 'done', target: 'draft_notes' }, { node_id: 'run_tests' }))
       .toBe('Run Test Suite → Draft Notes on done')
+    expect(line('StageTransition', { decision: 'ready_for_review', target: 'draft_notes' }, { node_id: 'run_tests' }))
+      .toBe('Run Test Suite → Draft Notes on ready for review')
     expect(line('CheckpointSaved', { current_node: 'draft_notes' }, { node_id: 'draft_notes' })).toBe('Checkpoint saved at Draft Notes')
     expect(line('InterviewCompleted', { answer: 'ship' }, { node_id: 'draft_notes' })).toBe('Answer for Draft Notes: ship')
     // A child flow's nodes are its own; its parent node is this flow's.
@@ -119,6 +121,7 @@ describe('timelineModel', () => {
           prompt: 'Provide extra detail',
           questionType: 'FREEFORM',
           options: [],
+          askedAt: '2026-04-06T12:02:00Z',
         },
       ],
     )
@@ -132,9 +135,11 @@ describe('timelineModel', () => {
         { label: 'No', value: 'NO', key: 'N', description: null },
       ],
     })
+    // A question known only from the questions API keeps the time it was asked.
     expect(pendingGates[1]).toMatchObject({
       questionId: 'q-2',
       prompt: 'Provide extra detail',
+      receivedAt: '2026-04-06T12:02:00Z',
     })
 
     const grouped = buildGroupedPendingInterviewGates(pendingGates)

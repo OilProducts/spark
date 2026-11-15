@@ -446,6 +446,8 @@ describe('TriggersPanel', () => {
     renderTriggersPanel()
     const name = await screen.findByDisplayValue('Quiet check every 30s')
     const branch = await screen.findByLabelText(/^Branch/)
+    // Nothing to save until something changes.
+    expect(screen.getByTestId('trigger-save-button')).toBeDisabled()
 
     // Enabled, it would start runs without Branch.
     await user.type(name, '!')
@@ -458,6 +460,8 @@ describe('TriggersPanel', () => {
     await user.click(screen.getByTestId('trigger-save-button'))
     await waitFor(() => expect(patches).toHaveLength(1))
     expect(patches[0]).toMatchObject({ enabled: false, action: { flow_name: 'quiet-check', static_context: {} } })
+    expect(await screen.findByRole('status')).toHaveTextContent('Saved.')
+    expect(screen.getByTestId('trigger-save-button')).toBeDisabled()
 
     // Turned back on, it is refused again.
     await user.click(await screen.findByRole('switch', { name: 'Enabled' }))

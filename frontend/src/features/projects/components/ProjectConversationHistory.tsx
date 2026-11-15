@@ -25,6 +25,9 @@ import { statusTextClassName } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ProjectConversationMarkdown } from './ProjectConversationMarkdown'
+import { formatRunDate } from '@/features/runs/model/runOverviewModel'
+
+const formatCardTime = (value: string) => formatRunDate(value, Date.now()) || value
 
 type RequestUserInputEntry = Extract<ConversationTimelineEntry, { kind: 'request_user_input' }>
 type PlanEntry = Extract<ConversationTimelineEntry, { kind: 'plan' }>
@@ -371,6 +374,7 @@ export function ProjectConversationHistory({
     ), [activeConversationId, activeProjectPath])
 
     // The rows only the chat acts on: plan review, flow requests, launches and run recoveries, and questions.
+    // Their times read as the messages' do: "3:52 PM" today, a date before.
     const renderEntry = (entry: ConversationTimelineEntry): ReactNode | undefined => {
         switch (entry.kind) {
         case 'request_user_input':
@@ -378,7 +382,7 @@ export function ProjectConversationHistory({
                 <RequestUserInputRow
                     actionError={requestUserInputActionError}
                     entry={entry}
-                    formatConversationTimestamp={formatConversationTimestamp}
+                    formatConversationTimestamp={formatCardTime}
                     isSubmitting={submittingRequestUserInputIds[entry.requestUserInput.requestId] === true}
                     onSubmitRequestUserInput={onSubmitRequestUserInput}
                 />
@@ -388,7 +392,7 @@ export function ProjectConversationHistory({
             return (
                 <FlowRunRequestRow
                     flowRunRequest={flowRunRequest}
-                    formatConversationTimestamp={formatConversationTimestamp}
+                    formatConversationTimestamp={formatCardTime}
                     isLatestFlowRunRequest={flowRunRequest?.id === latestFlowRunRequestId}
                     onOpenFlowRun={onOpenFlowRun}
                     onReviewFlowRunRequest={onReviewFlowRunRequest}
@@ -401,7 +405,7 @@ export function ProjectConversationHistory({
             return (
                 <FlowLaunchRow
                     flowLaunch={flowLaunch}
-                    formatConversationTimestamp={formatConversationTimestamp}
+                    formatConversationTimestamp={formatCardTime}
                     isLatestFlowLaunch={flowLaunch?.id === latestFlowLaunchId}
                     onOpenFlowRun={onOpenFlowRun}
                 />
@@ -411,7 +415,7 @@ export function ProjectConversationHistory({
             return (
                 <RunRecoveryRow
                     runRecovery={activeRunRecoveriesById.get(entry.artifactId) || null}
-                    formatConversationTimestamp={formatConversationTimestamp}
+                    formatConversationTimestamp={formatCardTime}
                     onOpenFlowRun={onOpenFlowRun}
                 />
             )
@@ -428,7 +432,7 @@ export function ProjectConversationHistory({
             return (
                 <PlanRow
                     entry={entry}
-                    formatConversationTimestamp={formatConversationTimestamp}
+                    formatConversationTimestamp={formatCardTime}
                     onOpenFlowRun={onOpenFlowRun}
                     onPlanReviewNoteChange={onPlanReviewNoteChange}
                     onReviewProposedPlan={onReviewProposedPlan}

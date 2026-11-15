@@ -21,6 +21,7 @@ import { fetchTriggerIssuesValidated, type TriggerIssueResponse } from "@/lib/ap
 import { defaultProjectChoice, isUnregisteredTarget, recentProjectPath } from "@/features/projects/model/projectChoices"
 import { SheetEmpty, ViewLayout } from "@/components/app/view-layout"
 import { InlineError } from "@/components/app/inline-error"
+import { SaveStatus } from "@/features/settings/SaveStatus"
 import { SectionHeading } from "@/components/app/section-heading"
 import { ListGroupLabel, SidePanelRow } from "@/components/app/side-panel-row"
 import { Well } from "@/components/app/well"
@@ -92,6 +93,7 @@ export function TriggersPanel() {
   const {
     pending,
     dirty,
+    saved,
     externalChange,
     discard,
     editTriggerForm,
@@ -292,7 +294,12 @@ export function TriggersPanel() {
                     data-testid="trigger-create-button"
                     size="sm"
                     disabled={pending || isRegenerating || !newTriggerForm.projectPath || newFlowInputs === null}
-                    onClick={() => void onCreateTrigger()}
+                    onClick={() => {
+                      // The new trigger opens; its heading takes focus, so focus isn't lost with the form.
+                      void onCreateTrigger().then((created) => {
+                        if (created) requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid="trigger-detail-heading"]')?.focus())
+                      })
+                    }}
                   >
                     Create trigger
                   </Button>
@@ -322,7 +329,7 @@ export function TriggersPanel() {
               ) : null}
               <CardHeader className="flex flex-row items-start justify-between gap-2 px-0">
                 <div className="min-w-0">
-                  <CardTitle role="heading" aria-level={1} className="truncate text-xl leading-snug font-semibold tracking-tight">{selectedTrigger.name}</CardTitle>
+                  <CardTitle role="heading" aria-level={1} tabIndex={-1} data-testid="trigger-detail-heading" className="truncate rounded-sm text-xl leading-snug font-semibold tracking-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{selectedTrigger.name}</CardTitle>
                   <div className="mt-1 text-sm text-muted-foreground">
                     {selectedTrigger.protected ? 'System trigger' : 'Custom trigger'}
                   </div>
@@ -422,12 +429,13 @@ export function TriggersPanel() {
                     type="button"
                     data-testid="trigger-save-button"
                     size="sm"
-                    disabled={pending || isRegenerating || editFlowInputs === null}
+                    disabled={!dirty || pending || isRegenerating || editFlowInputs === null}
                     onClick={() => void onSaveSelectedTrigger()}
                   >
-                    Save
+                    {pending && dirty ? 'Saving…' : 'Save'}
                   </Button>
                   <Button aria-label="Discard selected trigger changes" type="button" variant="ghost" size="sm" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
+                  <div className="self-center"><SaveStatus message={saved ? 'Saved.' : undefined} dirty={dirty} /></div>
                   {editFlowInputs === null ? <InputsLoading retry={retryEditFlowInputs} /> : null}
                 </div>
               </CardContent>

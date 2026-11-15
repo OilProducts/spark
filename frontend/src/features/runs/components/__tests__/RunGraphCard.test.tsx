@@ -1,6 +1,6 @@
 import { RunGraphCard } from '@/features/runs/components/RunGraphCard'
 import { useStore } from '@/store'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { loadRunGraphPreviewMock } = vi.hoisted(() => ({
@@ -134,6 +134,40 @@ describe('RunGraphCard', () => {
             )
         })
         expect(useStore.getState().runDetailSessionsByRunId[run.run_id]?.expandChildFlows).toBe(true)
+    })
+
+    it('goes to a step chosen by name, listing them in the flow\'s order', async () => {
+        const run = makeRun('run-go-to-step')
+        useStore.getState().setRunsSelectedRunId(run.run_id)
+        loadRunGraphPreviewMock.mockResolvedValue({
+            status: 'ok',
+            graph: {
+                graph_attrs: {},
+                nodes: [
+                    { id: 'apply', label: 'Apply', shape: 'box' },
+                    { id: 'review', label: 'Review', shape: 'box' },
+                    { id: 'start', label: 'Start', shape: 'Mdiamond' },
+                    { id: 'failed', label: 'Failed', kind: 'exit' },
+                ],
+                // An exit the start already reaches still lists after the steps.
+                edges: [{ from: 'start', to: 'failed' }, { from: 'start', to: 'review' }, { from: 'review', to: 'apply' }],
+            },
+            diagnostics: [],
+            errors: [],
+        })
+        act(() => {
+            useStore.getState().updateRunDetailSession(run.run_id, { isGraphCollapsed: false })
+        })
+        render(<RunGraphCard run={run} nodeStatusesById={{}} selectedNodeId={null} onSelectNode={vi.fn()} />)
+
+        await screen.findByTestId('rf__node-review')
+        const goTo = screen.getByRole('combobox', { name: 'Go to step' })
+        expect(within(goTo).getAllByRole('option').map((option) => option.textContent)).toEqual(['Go to step', 'Start', 'Review', 'Apply', 'Failed'])
+        const viewport = () => (document.querySelector('.react-flow__viewport') as HTMLElement).style.transform
+        const before = viewport()
+        fireEvent.change(goTo, { target: { value: 'review' } })
+        await waitFor(() => expect(viewport()).not.toBe(before))
+        expect(goTo).toHaveValue('')
     })
 
     it('keeps the view controls out of the canvas and shows the minimap only when asked', async () => {

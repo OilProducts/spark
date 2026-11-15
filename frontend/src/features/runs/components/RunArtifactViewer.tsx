@@ -10,6 +10,8 @@ interface RunArtifactViewerProps {
     onOpenChange: (open: boolean) => void
     isLoading: boolean
     error: string | null
+    /** Loads the file again after an error; omitted where trying again cannot help. */
+    onRetry?: () => void
     payload: string | null
     downloadHref: string | null
 }
@@ -21,6 +23,7 @@ export function RunArtifactViewer({
     onOpenChange,
     isLoading,
     error,
+    onRetry,
     payload,
     downloadHref,
 }: RunArtifactViewerProps) {
@@ -67,7 +70,14 @@ export function RunArtifactViewer({
                 {isLoading ? (
                     <p data-testid="run-artifact-viewer-loading" className="text-xs text-muted-foreground">Loading…</p>
                 ) : error ? (
-                    <p data-testid="run-artifact-viewer-error" className="text-xs text-destructive">{error}</p>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <p data-testid="run-artifact-viewer-error" role="alert" className="text-xs text-destructive">{error}</p>
+                        {onRetry ? (
+                            <Button data-testid="run-artifact-viewer-retry" type="button" size="xs" variant="outline" onClick={onRetry}>
+                                Try again
+                            </Button>
+                        ) : null}
+                    </div>
                 ) : !payload?.trim() ? (
                     <p data-testid="run-artifact-viewer-empty" className="text-xs text-muted-foreground">This file is empty.</p>
                 ) : formatted ? (

@@ -978,6 +978,37 @@ describe('ProjectConversationHistory', () => {
         })
     })
 
+    it('keeps focus on the card when the sent answer replaces the form', async () => {
+        const user = userEvent.setup()
+        const pending = makeRequestUserInputEntry()
+        const { rerender } = renderHistory([pending])
+        await user.click(screen.getByTestId('project-request-user-input-option-path_choice-Inline card'))
+        await user.type(screen.getByTestId('project-request-user-input-field-constraints'), 'Small.')
+        await user.click(screen.getByTestId('project-request-user-input-submit-request-1'))
+
+        rerender(makeHistoryElement([pending], { submittingRequestUserInputIds: { 'request-1': true } }))
+        rerender(makeHistoryElement([makeRequestUserInputEntry({
+            status: 'complete',
+            requestUserInput: { ...pending.requestUserInput, status: 'answered', answers: { path_choice: 'Inline card', constraints: 'Small.' }, submittedAt: '2026-04-17T12:01:00Z' },
+        })]))
+        expect(screen.getByTestId('project-request-user-input-summary-request-user-input-1')).toHaveFocus()
+    })
+
+    it('names each answer field by its question and keeps unsent answers when the chat is reopened', async () => {
+        const user = userEvent.setup()
+        const entry = makeRequestUserInputEntry({ id: 'request-user-input-drafts' })
+        const { unmount } = renderHistory([entry])
+
+        const choices = screen.getByRole('group', { name: 'Path Which path should I take?' })
+        await user.click(within(choices).getByRole('button', { name: 'Inline card' }))
+        await user.type(screen.getByRole('textbox', { name: 'Constraints What constraints matter?' }), 'Keep it small.')
+        unmount()
+
+        renderHistory([entry])
+        expect(screen.getByRole('button', { name: 'Inline card' })).toHaveAttribute('aria-pressed', 'true')
+        expect(screen.getByRole('textbox', { name: 'Constraints What constraints matter?' })).toHaveValue('Keep it small.')
+    })
+
     it('renders answered request_user_input segments as compact summaries', () => {
         renderHistory([
             makeRequestUserInputEntry({
@@ -1067,17 +1098,40 @@ describe('ProjectConversationHistory', () => {
         expect(within(history).getByRole('img', { name: 'Architecture overview' })).toHaveAttribute('loading', 'lazy')
     })
 
-    it('keeps user messages literal even when they contain markdown syntax', () => {
+    it('shows user messages as typed, every character, line and indent kept, with code and math formatted', () => {
+        const typed = [
+            'Rename the tests in src/*.ts and lib/*.ts, and __init__.py, to match.',
+            '# of failures: 3 &amp; C:\\Users\\_build\\*, see handlers[0](event) and ~/a or ~/b',
+            '[note]: keep',
+            'It used to pass <br>',
+            '<script>alert(1)</script> and <b>bold?</b> or <https://example.com/x>',
+            '---',
+            '- one',
+            '> quoted',
+            'Traceback (most recent call last):',
+            '  File "app.py", line 3, in <module>',
+            '    main()',
+            'server:',
+            '  hosts:',
+            '    - a.example',
+        ]
         renderHistory([
             makeMessageEntry({
                 role: 'user',
-                content: '**literal** [docs](https://example.com/docs)',
+                content: `${typed.join('\n')}\n\n    indented first\n  see https://example.com/a  \n    \`npm test\` then $$x^2$$\n\`\`\`sh\nnpm test\n\`\`\``,
             }),
         ])
 
         const history = screen.getByTestId('project-ai-conversation-history-list')
-        expect(history).toHaveTextContent('**literal** [docs](https://example.com/docs)')
-        expect(within(history).queryByRole('link', { name: 'docs' })).not.toBeInTheDocument()
+        const [first, second] = history.querySelectorAll('p')
+        expect(first).toHaveTextContent(typed.join('\n'), { normalizeWhitespace: false })
+        expect(history.querySelectorAll('em, strong, del, h1, h2, hr, ul, blockquote, br')).toHaveLength(0)
+        expect(second.textContent?.startsWith('    indented first\n  see https://example.com/a\n    npm test then ')).toBe(true)
+        expect(within(second).getByRole('link', { name: 'https://example.com/a' })).toBeVisible()
+        expect(second.querySelector('code')).toHaveTextContent('npm test')
+        expect(history.querySelector('.katex, .math')).not.toBeNull()
+        expect(history.querySelector('pre code')).toHaveTextContent('npm test')
+        expect(history).not.toHaveTextContent('```')
     })
 
     it('hides thinking behind "Show thinking", keeping a live marker, then opens each summary until collapsed', async () => {

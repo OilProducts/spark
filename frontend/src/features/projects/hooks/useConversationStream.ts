@@ -11,7 +11,7 @@ import {
     type ConversationStreamDeltaEventResponse,
 } from '@/lib/workspaceClient'
 import { conversationThinkingKey, useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
-import type { NormalizedConversationRecord } from '../model/projectsHomeState'
+import { takeNewConversation, type NormalizedConversationRecord } from '../model/projectsHomeState'
 
 const LIVE_ENDPOINT = '/workspace/api/live/events'
 
@@ -90,7 +90,10 @@ export function useConversationStream(args: UseConversationStreamArgs) {
             void loadWindow()
         }
 
-        void loadWindow()
+        // A chat started here has no page to fetch yet: the live stream opens it with its window.
+        if (!takeNewConversation(activeConversationId)) {
+            void loadWindow()
+        }
 
         const handleLiveEvent = (event: Event) => {
             const detail = event instanceof CustomEvent ? event.detail : null

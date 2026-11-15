@@ -29,7 +29,6 @@ import {
     classifyRunFailure,
     describeFailure,
     errorVisits,
-    formatRunDate,
     runFailureMessage,
     type RunStatusKind,
 } from '../model/runOverviewModel'
@@ -74,9 +73,15 @@ export function FailureDetail({ className, ...props }: ComponentProps<'span'>) {
 }
 
 /** A clock time or date, with the full timestamp on hover. */
+const FACT_TIME_FORMAT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+const FACT_TIME_YEAR_FORMAT = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+
+/** A run fact's time, with its day, so a start and an end on different days read apart: "Nov 13, 11:02 PM". */
 function RunTime({ timestamp, now }: { timestamp: string | null | undefined; now: number }) {
-    const short = formatRunDate(timestamp, now)
-    return short ? <span title={formatTimestamp(timestamp)}>{short}</span> : <>—</>
+    const time = timestamp ? Date.parse(timestamp) : Number.NaN
+    if (!Number.isFinite(time)) return <>—</>
+    const format = new Date(time).getFullYear() === new Date(now).getFullYear() ? FACT_TIME_FORMAT : FACT_TIME_YEAR_FORMAT
+    return <time dateTime={timestamp ?? undefined} title={formatTimestamp(timestamp)}>{format.format(time)}</time>
 }
 
 // The keys a visit wrote, named without the "context." prefix.
@@ -182,12 +187,14 @@ export function RunStatusItem({
                 ) : null}
             </>
         )
-        // A completed run can reach a failure exit; its result name and evidence say why, above
-        // the result. A success exit's evidence is a run fact.
-        const outcomeReason = run.outcome === 'failure' ? formatOutcomeReason(run) : null
-        // A result that only restates the reason, such as a gate's choice and note, isn't shown twice.
+        // A completed run can reach a failure exit. The flow's own result says why; the route that
+        // led there is a run fact, as for a success exit, and stands in for a result the flow
+        // didn't write. A result that only restates it, such as a gate's choice and note, gives way to it.
+        const reason = run.outcome === 'failure' ? formatOutcomeReason(run) : null
         const resultLines = result?.state === 'ready' ? result.body_markdown.split('\n').map((line) => line.trim()).filter(Boolean) : []
-        const resultRestatesReason = Boolean(outcomeReason && resultLines.length > 0 && resultLines.every((line) => outcomeReason!.includes(line)))
+        const resultRestatesReason = Boolean(reason && resultLines.length > 0 && resultLines.every((line) => reason.includes(line)))
+        const resultSettled = Boolean(resultError) || (result !== null && result.state !== 'pending')
+        const outcomeReason = reason && resultSettled && (resultLines.length === 0 || resultRestatesReason) ? reason : null
         body = (
             <>
                 {outcomeReason ? (
@@ -377,12 +384,12 @@ function RunFacts({ run, now }: { run: RunRecord; now: number }) {
     const tokenBreakdown = (bucket: TokenUsageBucketResponse) => (
         `${formatTokenCount(bucket.total_tokens)} (${formatTokenCount(bucket.input_tokens)} in, ${formatTokenCount(bucket.cached_input_tokens)} cached, ${formatTokenCount(bucket.output_tokens)} out)`
     )
-    const outcome = run.status === 'completed' && run.outcome !== 'failure' && run.outcome_reason_code ? formatOutcomeReason(run) : null
+    const outcome = run.status === 'completed' && run.outcome_reason_code ? formatOutcomeReason(run) : null
     const facts: Array<[id: string, label: string, value: ReactNode]> = [
         ...(outcome ? [['outcome', 'Outcome', outcome] as [string, string, ReactNode]] : []),
         ['model', 'Model', [run.model || 'default', provider, run.reasoning_effort].filter(Boolean).join(' · ')],
         ...(run.execution_profile_id || run.execution_mode
-            ? [['execution', 'Execution', [run.execution_profile_id, run.execution_mode, run.execution_container_image].filter(Boolean).join(' · ')] as [string, string, ReactNode]]
+            ? [['execution', 'Execution', [...new Set([run.execution_profile_id, run.execution_mode, run.execution_container_image].filter(Boolean))].join(' · ')] as [string, string, ReactNode]]
             : []),
         ['tokens', 'Tokens', usage ? tokenBreakdown(usage) : formatTokenCount(run.token_usage)],
         ...Object.entries(usage?.by_model ?? {}).map(([modelId, bucket]) => {

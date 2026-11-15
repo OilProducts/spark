@@ -5,11 +5,18 @@ import {
   saveFlowContent,
   waitForFlowSaves,
 } from '@/lib/flowPersistence'
+import { fetchPreviewValidated } from '@/lib/attractorClient'
 import { resolveSaveRemediation } from '@/lib/saveRemediation'
 import { useStore } from '@/store'
 import { act, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { EditorSaveStatus } from '../components/EditorSaveStatus'
+
+// A save first asks the flow's preview whether the server would take it; here it always would.
+vi.mock('@/lib/attractorClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/attractorClient')>()),
+  fetchPreviewValidated: vi.fn(),
+}))
 
 const DEMO_FLOW = { flow: { schema_version: '2', id: 'demo', nodes: {} } }
 
@@ -29,6 +36,7 @@ describe('Editor save state behavior', () => {
     resetFlowSaveBaselines()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    vi.mocked(fetchPreviewValidated).mockReset().mockResolvedValue({ status: 'ok' })
   })
 
   it('refuses to save a node that declares one decision twice, without a request', async () => {
@@ -54,6 +62,31 @@ describe('Editor save state behavior', () => {
     const state = useStore.getState()
     expect(state.saveErrorKind).toBe('validation_error')
     expect(state.saveErrorMessage).toContain('review.ready')
+  })
+
+  it('refuses to save a flow its preview finds invalid, as one mid-edit is, without a save request', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ status: 'saved' }))
+    vi.stubGlobal('fetch', fetchMock)
+    useStore.setState({ activeProjectPath: '/tmp/project-a' })
+    vi.mocked(fetchPreviewValidated).mockResolvedValueOnce({
+      status: 'validation_error',
+      error: 'flow definition validation failed with 1 error(s)',
+      diagnostics: [{
+        rule_id: 'decision_domain', severity: 'error', message: "step_1.md: agent_task steps need at least one route",
+        node_id: 'step_1', node_label: 'New step',
+      }],
+    })
+
+    expect(await saveFlowContent('demo', DEMO_FLOW)).toBe(false)
+    expect(fetchPreviewValidated).toHaveBeenCalledWith(DEMO_FLOW.flow, undefined, { flowName: 'demo', projectPath: '/tmp/project-a' })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(useStore.getState().saveErrorKind).toBe('validation_error')
+    expect(useStore.getState().saveErrorProblems).toEqual([{ message: 'step_1.md: Agent steps need at least one route.', file: null }])
+
+    // A preview that fails decides nothing: the save goes, and the server decides.
+    vi.mocked(fetchPreviewValidated).mockRejectedValueOnce(new Error('offline'))
+    expect(await saveFlowContent('demo', DEMO_FLOW)).toBe(true)
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 
   it('classifies parse and validation errors with actionable remediation', async () => {
@@ -103,14 +136,14 @@ describe('Editor save state behavior', () => {
   })
 
   it('waits for in-flight saves to settle', async () => {
-    let respond!: (response: Response) => void
+    let respond: ((response: Response) => void) | undefined
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { respond = resolve })))
     void saveFlowContent('demo', DEMO_FLOW)
     let settled = false
     const waited = waitForFlowSaves().then(() => { settled = true })
-    await Promise.resolve()
+    await vi.waitFor(() => expect(respond).toBeDefined())
     expect(settled).toBe(false)
-    respond(new Response(JSON.stringify({ detail: 'disk full' }), { status: 500, headers: { 'Content-Type': 'application/json' } }))
+    respond!(new Response(JSON.stringify({ detail: 'disk full' }), { status: 500, headers: { 'Content-Type': 'application/json' } }))
     await waited
     expect(settled).toBe(true)
     // The server's reason is the message, not only its status code.

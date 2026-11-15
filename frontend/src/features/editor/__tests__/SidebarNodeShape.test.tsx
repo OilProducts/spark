@@ -158,7 +158,7 @@ describe('Sidebar node shape authoring', () => {
         )
 
         expect(screen.queryByTestId('node-shape-type-warning')).not.toBeInTheDocument()
-        expect(screen.getByText('Node kind')).toBeInTheDocument()
+        expect(screen.getByText('Step type')).toBeInTheDocument()
         expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
     })
 
@@ -186,8 +186,17 @@ describe('Sidebar node shape authoring', () => {
             target: { value: 'draft.invalid' },
         })
         expect(screen.getByTestId('node-reads-context-editor-error')).toHaveTextContent(
-            'Context keys must use the context.* namespace: draft.invalid',
+            'Context keys must use the context.* namespace or one Spark supplies, such as parallel.* or internal.*: draft.invalid',
         )
+
+        // What Spark supplies, such as a fan-in's branch results, is a valid read.
+        fireEvent.change(screen.getByTestId('node-reads-context-editor-textarea'), {
+            target: { value: 'parallel.results\ninternal.project_work_dir' },
+        })
+        expect(screen.queryByTestId('node-reads-context-editor-error')).toBeNull()
+        fireEvent.change(screen.getByTestId('node-reads-context-editor-textarea'), {
+            target: { value: 'draft.invalid' },
+        })
 
         fireEvent.click(screen.getByRole('button', { name: 'Show advanced' }))
         expect(screen.getByRole('button', { name: 'Hide advanced' })).toBeVisible()
@@ -201,7 +210,7 @@ describe('Sidebar node shape authoring', () => {
         })
         expect(screen.getByTestId('node-reads-context-editor-textarea')).toHaveValue('draft.invalid')
         expect(screen.getByTestId('node-reads-context-editor-error')).toHaveTextContent(
-            'Context keys must use the context.* namespace: draft.invalid',
+            'Context keys must use the context.* namespace or one Spark supplies, such as parallel.* or internal.*: draft.invalid',
         )
         expect(screen.getByText('Max retries')).toBeVisible()
     })

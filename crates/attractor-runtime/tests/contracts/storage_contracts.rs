@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use attractor_core::{
-    CheckpointState, ExitOutcome, ExitResult, FlowDefinition, FlowNode, FlowRoute, NodeConfig,
-    NodeContracts, NodeKind, RawRuntimeEvent, RunManifest, RunRecord,
+    CheckpointState, ExitOutcome, ExitResult, FlowDefinition, FlowNode, FlowRoute, IndexMap,
+    NodeConfig, NodeContracts, NodeKind, RawRuntimeEvent, RunManifest, RunRecord,
 };
 use attractor_runtime::{
     checkpoint_saved_event, log_event, stage_completed_event, stage_started_event,
@@ -845,7 +845,7 @@ fn result_flow(explicit_result_node: Option<&str>) -> FlowDefinition {
         extensions.insert("spark.result_node".to_string(), json!(node_id));
     }
     let route = |decision: &str, to: &str| {
-        BTreeMap::from([(
+        IndexMap::from([(
             decision.to_string(),
             FlowRoute {
                 to: to.to_string(),

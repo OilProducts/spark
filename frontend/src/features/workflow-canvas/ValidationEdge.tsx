@@ -55,6 +55,8 @@ export const routeLabelScale = (zoom: number) => Math.ceil(Math.min(17, Math.max
 export const MAX_ROUTE_LABEL_SCALE = routeLabelScale(0)
 // Clear space kept between a label and other routes, labels and nodes, so it reads as its own route's.
 const LABEL_CLEARANCE = 6
+// How far a node's port handles reach past its edges.
+const HANDLE_REACH = 5
 
 type LabelSize = { width: number; height: number }
 type LabelAnchor = { x: number; y: number }
@@ -132,10 +134,11 @@ function placeRouteLabels(edges: Edge[], nodes: Node[], scale: number): Map<stri
         const route = edge.hidden ? null : readRenderRoute((edge.data as Record<string, unknown> | undefined)?.[EDGE_RENDER_ROUTE_KEY])
         return route ? [{ id: edge.id, route, label: routeLabels(edges).get(edge.id) ?? '' }] : []
     })
-    // The laid-out size: a run graph's nodes are never measured into its store.
+    // The laid-out size: a run graph's nodes are never measured into its store. Its 9px port
+    // handles sit on its edges, half outside it, and a label must not cover them either.
     const nodeBoxes: LabelBox[] = nodes.flatMap((node) => {
         const rect = readNodeRect(node)
-        return node.hidden ? [] : [{ left: rect.x, right: rect.x + rect.width, top: rect.y, bottom: rect.y + rect.height }]
+        return node.hidden ? [] : [labelBox({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }, rect, HANDLE_REACH)]
     })
     const placed: LabelBox[] = [...nodeBoxes]
     const anchors = new Map<string, LabelAnchor>()

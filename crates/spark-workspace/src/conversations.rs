@@ -54,6 +54,9 @@ pub struct ConversationSummary {
     pub revision: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message_preview: Option<String>,
+    /// Whose message the preview is: `user` for one typed into the chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_role: Option<String>,
     /// The runs this chat launched, oldest first, from its flow launches.
     pub launched_run_ids: Vec<String>,
     /// Set on a standing role's conversation, which the Threads list pins first.
@@ -600,7 +603,8 @@ impl WorkspaceConversationService {
     }
 
     /// Everything currently waiting on a human, across surfaces: runs parked
-    /// at a gate, agent flow-run requests, and proposed plans pending review.
+    /// at a gate, missions, chat questions, agent flow-run requests, and
+    /// proposed plans pending review.
     /// Derived entirely from state the runtime already records.
     pub fn pending_attention(&self) -> WorkspaceResult<Vec<Value>> {
         let mut items = Vec::new();
@@ -672,10 +676,13 @@ impl WorkspaceConversationService {
             self.settings.clone(),
             self.store.clone(),
         );
+        // A mission's conversation asks through its mission.
+        let mut mission_ids = std::collections::HashSet::new();
         for project in
             ProjectRegistry::new(self.settings.data_dir.clone()).list_project_records()?
         {
             for mission in missions.list(&project.project_path).unwrap_or_default() {
+                mission_ids.insert(mission.id.clone());
                 if !mission.fields.archived
                     && mission.status == crate::missions::MissionStatus::NeedsYou
                 {
@@ -707,6 +714,25 @@ impl WorkspaceConversationService {
                 .get("conversation_handle")
                 .cloned()
                 .unwrap_or_default();
+            // A chat whose assistant waits on an answer: one item per question asked.
+            let questions = if mission_ids.contains(&conversation_id) {
+                Vec::new()
+            } else {
+                repository.pending_questions(&conversation_id)?
+            };
+            for segment in questions {
+                let request = &segment["request_user_input"];
+                items.push(json!({
+                    "kind": "chat_question",
+                    "id": request["request_id"],
+                    "title": row.payload.as_ref().map_or(&Value::Null, |payload| &payload["title"]),
+                    "question": request["questions"][0]["question"],
+                    "project_path": project_path,
+                    "conversation_id": conversation_id,
+                    "conversation_handle": handle,
+                    "updated_at": segment["updated_at"],
+                }));
+            }
             for (collection, pending_status, kind) in [
                 ("flow_run_requests", "pending", "flow_run_request"),
                 ("proposed_plans", "pending_review", "proposed_plan"),
@@ -4912,6 +4938,7 @@ fn conversation_summary_from_row(
             .as_str()
             .filter(|preview| !preview.is_empty())
             .map(str::to_string),
+        last_message_role: payload["preview_role"].as_str().map(str::to_string),
         launched_run_ids: payload["launched_run_ids"]
             .as_array()
             .into_iter()
@@ -5033,7 +5060,7 @@ fn derive_conversation_title(turns: Option<&Vec<Value>>) -> String {
                 object
                     .get("content")
                     .and_then(Value::as_str)
-                    .map(|value| truncate_text(value, 64))
+                    .map(spark_storage::conversation::title_from_first_message)
             } else {
                 None
             }

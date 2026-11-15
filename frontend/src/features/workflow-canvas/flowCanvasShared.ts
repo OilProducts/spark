@@ -1,5 +1,5 @@
 import type { Edge, Node } from '@xyflow/react'
-import ELK from 'elkjs/lib/elk.bundled.js'
+import type { ELK } from 'elkjs/lib/elk-api'
 
 import type { FlowDefinitionMetadata, GraphAttrs, UiDefaults } from '@/store'
 import {
@@ -77,7 +77,9 @@ const ELK_OPTIONS = {
     'elk.layered.thoroughness': '30',
 }
 
-const elk = new ELK()
+// ELK is 1.6 MB: it loads with the first layout, not with the app.
+let elk: Promise<ELK> | null = null
+const loadElk = () => (elk ??= import('elkjs/lib/elk.bundled.js').then(({ default: Elk }) => new Elk()))
 
 export type PreviewResponse = WorkflowCanvasPreviewResponse
 
@@ -487,7 +489,7 @@ type ElkLayoutNodeLike = {
 }
 
 async function computeElkLayout(nodes: Node[], edges: Edge[]) {
-    const layout = await elk.layout(buildElkLayoutGraph(nodes, edges))
+    const layout = await (await loadElk()).layout(buildElkLayoutGraph(nodes, edges))
     const layoutMap = new Map(
         ((layout.children ?? []) as Array<ElkLayoutNodeLike & { id?: string }>)
             .filter((child): child is ElkLayoutNodeLike & { id: string } => typeof child.id === 'string')

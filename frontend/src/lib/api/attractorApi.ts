@@ -424,7 +424,26 @@ export function parseFlowPayloadResponse(payload: unknown, endpoint = '/attracto
         name: typeof record.name === 'string' ? record.name : '',
         layer: record.layer === 'org' || record.layer === 'bundled' ? record.layer : undefined,
         files: expectFlowFiles(record.files, endpoint),
-        flow: expectObjectRecord(record.flow, endpoint),
+        flow: inRouteOrder(expectObjectRecord(record.flow, endpoint), asUnknownRecord(record.route_order)),
+    }
+}
+
+// The flow's route maps arrive with their keys sorted, and `order` lists each step's routes as
+// written. Put back in that order, the editor shows, saves and previews them as the author wrote them.
+function inRouteOrder(flow: FlowDefinitionPayload, order: Record<string, unknown> | null): FlowDefinitionPayload {
+    const nodes = asUnknownRecord(flow.nodes)
+    if (!nodes || !order) return flow
+    return {
+        ...flow,
+        nodes: Object.fromEntries(Object.entries(nodes).map(([nodeId, value]) => {
+            const node = asUnknownRecord(value)
+            const routes = asUnknownRecord(node?.routes)
+            const keys = order[nodeId]
+            if (!node || !routes || !Array.isArray(keys)) return [nodeId, value]
+            const rank = (key: string) => (keys.includes(key) ? keys.indexOf(key) : keys.length)
+            const sorted = Object.entries(routes).sort(([left], [right]) => rank(left) - rank(right))
+            return [nodeId, { ...node, routes: Object.fromEntries(sorted) }]
+        })),
     }
 }
 

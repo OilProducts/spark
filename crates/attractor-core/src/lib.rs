@@ -61,6 +61,8 @@ pub use graph::{
     DotValueType, DurationLiteral, EdgeAttribute, EdgeId, EdgeRef, FlowId, FlowName,
     GraphAttribute, GraphId, GraphRef, NodeAttribute, NodeId, NodeRef, RoutingEdge,
 };
+/// Route maps keep their authored order; dependents name the type through this re-export.
+pub use indexmap::IndexMap;
 pub use outcomes::{BranchTerminal, FailureKind, Outcome, OutcomeStatus};
 pub use runtime::{
     ArtifactInfo, CheckpointId, CheckpointState, JournalEntry, JournalSequence, RawRuntimeEvent,

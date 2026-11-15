@@ -7,6 +7,7 @@ import {
     finishedRows,
     finishedSince,
     hasUnread,
+    inProgress,
     lastChat,
     markAttentionSeen,
     markFinishedSeen,
@@ -208,5 +209,13 @@ describe('linking work to where it started', () => {
     it('links a mission to the chat it came from', () => {
         expect(sourceOf({ kind: 'mission', mission: missions[0] }, chats, missions)).toEqual({ kind: 'chat', chat: chats[0] })
         expect(sourceOf({ kind: 'mission', mission: missions[1] }, chats, missions)).toBeNull()
+    })
+})
+
+describe('running now', () => {
+    it('lists a chat with a turn in flight, but not one waiting on your answer', () => {
+        const replying = { ...chat('replying', '2026-10-01T09:00:00Z'), running: true }
+        const asking = { ...chat('asking', '2026-10-01T09:01:00Z'), running: true, needs_attention: true }
+        expect(inProgress([], [], [replying, asking, chat('idle', '2026-10-01T09:02:00Z')]).map((item) => item.id)).toEqual(['replying'])
     })
 })

@@ -8,10 +8,21 @@ import {
 import { getHandlerType, getNodeFieldVisibility } from '@/lib/nodeVisibility'
 import { NodeInspectorPanel } from '@/features/editor/components/NodeInspectorPanel'
 import { applyNodePropertyChangeToData } from '@/features/editor/Sidebar'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resetFlowSaveBaselines, saveFlowContent } from '@/lib/flowPersistence'
 import { useStore } from '@/store'
+import { NODE_CORE_ATTR_KEYS } from '@/lib/canonicalFlowModel'
+import { toExtensionAttrEntries } from '@/lib/extensionAttrs'
+
+vi.mock('@/features/roles/rolesModel', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/features/roles/rolesModel')>(),
+  fetchDefinitions: vi.fn(async () => ({ items: [
+    { kind: 'flow', name: 'review', layer: 'bundled', path: 'flows/review' },
+    { kind: 'role', name: 'author', layer: 'bundled', path: 'roles/author.md', title: 'Author' },
+    { kind: 'role', name: 'adversarial-reviewer', layer: 'project', path: 'roles/adversarial-reviewer.md', title: 'Adversarial reviewer' },
+  ] })),
+}))
 
 vi.mock('@/components/model-chooser/useModelOptions', () => ({
     useModelOptions: () => ({ projectPath: null, payload: { models: [{ provider: 'openai', id: 'gpt-5.5', display: 'gpt-5.5', is_default: false, supported_reasoning_efforts: ['high'] }], providers: { codex: { status: 'available', error: null } } } }),
@@ -105,12 +116,20 @@ describe('Inspector and node authoring behavior', () => {
     render(
       <NodeInspectorPanel
         {...props}
-        selectedNodeFork={{ branches: ['lens_a', 'lens_b'], join: 'fan_in' }}
+        selectedNodeRoutes={[
+          { id: 'e1', name: 'branch', label: '', target: 'Lens A' },
+          { id: 'e2', name: 'join', label: '', target: 'Merge' },
+        ]}
       />,
     )
 
-    expect(screen.getByTestId('parallel-fork-structure')).toHaveTextContent('branches: lens_a, lens_b')
-    expect(screen.getByTestId('parallel-fork-structure')).toHaveTextContent('join: fan_in')
+    const branches = screen.getByRole('region', { name: 'Branches' })
+    expect(within(branches).getByRole('button', { name: 'branch to Lens A' })).toBeVisible()
+    fireEvent.click(within(branches).getByRole('button', { name: 'join to Merge' }))
+    expect(props.onOpenRoute).toHaveBeenCalledWith('e2')
+    // A fork's connections take no decision ID.
+    expect(within(branches).queryByRole('textbox')).not.toBeInTheDocument()
+    expect(within(branches).getByRole('button', { name: 'Add branch' })).toBeDisabled()
     for (const legacy of ['Join Policy', 'K Threshold', 'Quorum Threshold', 'Error Policy']) {
       expect(screen.queryByText(legacy)).not.toBeInTheDocument()
     }
@@ -184,13 +203,11 @@ describe('Inspector and node authoring behavior', () => {
       vi.unstubAllGlobals()
     }
     // Once the invalid drafts are gone, saving proceeds.
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ status: 'saved' }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
-    )
+    const fetchMock = vi.fn(async () => Response.json({ status: 'saved' }))
     vi.stubGlobal('fetch', fetchMock)
     resetFlowSaveBaselines()
     expect(await saveFlowContent('demo', { flow: { schema_version: '2', id: 'demo', nodes: {} } })).toBe(true)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).endsWith('/api/flows'))).toHaveLength(1)
     vi.unstubAllGlobals()
   })
 
@@ -263,7 +280,10 @@ describe('Inspector and node authoring behavior', () => {
         selectedNodeExtensionEntries={[]}
         selectedNodeToolHookPreWarning={null}
         selectedNodeToolHookPostWarning={null}
-        selectedNodeFork={{ branches: [], join: null }}
+        selectedNodeRoutes={[]}
+        routeTargets={[]}
+        onOpenRoute={vi.fn()}
+        onAddRoute={vi.fn()}
         onPropertyChange={onPropertyChange}
         onOpenGraphChildSettings={vi.fn()}
         onReadsContextChange={vi.fn()}
@@ -293,7 +313,7 @@ function panelProps(kind = 'agent_task', data: Record<string, unknown> = {}): Co
     writesContextDraft: '', writesContextError: null,
     showAdvanced: true, nodeFieldDiagnostics: {}, selectedNodeExtensionEntries: [],
     selectedNodeToolHookPreWarning: null, selectedNodeToolHookPostWarning: null,
-    selectedNodeFork: { branches: [], join: null },
+    selectedNodeRoutes: [], routeTargets: [], onOpenRoute: vi.fn(), onAddRoute: vi.fn(),
     onPropertyChange: vi.fn(), onOpenGraphChildSettings: vi.fn(),
     onReadsContextChange: vi.fn(), onWritesContextChange: vi.fn(), onSetShowAdvanced: vi.fn(),
     onNodeExtensionValueChange: vi.fn(), onNodeExtensionRemove: vi.fn(), onNodeExtensionAdd: vi.fn(),
@@ -332,11 +352,11 @@ describe('Accessible node inspector fields', () => {
   ])('edits named %s fields, including advanced settings', (kind, fields) => {
     const props = panelProps(kind)
     const view = render(<NodeInspectorPanel {...props} />)
-    for (const [name, key] of [['Label', 'label'], ...fields]) {
+    for (const [name, key] of [['Label', 'label'], ['Description', 'description'], ...fields]) {
       fireEvent.change(screen.getByRole('textbox', { name, exact: true }), { target: { value: 'edited' } })
       expect(props.onPropertyChange).toHaveBeenCalledWith(key, 'edited')
     }
-    fireEvent.change(screen.getByRole('combobox', { name: 'Node kind' }), { target: { value: 'tool' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Step type' }), { target: { value: 'tool' } })
     expect(props.onPropertyChange).toHaveBeenCalledWith('kind', 'tool')
     if (kind === 'agent_task') {
       fireEvent.click(screen.getByRole('button', { name: /^Model:/ }))
@@ -392,7 +412,7 @@ describe('Accessible node inspector fields', () => {
     expect(screen.queryByText(error.message)).not.toBeInTheDocument()
     rerender(<NodeInspectorPanel {...panelProps('subflow')} selectedNodeId="implement" />)
     expect(screen.queryByRole('textbox', { name: 'Prompt instruction' })).not.toBeInTheDocument()
-    expect(screen.getByRole('textbox', { name: 'Child flow reference' })).toHaveAccessibleDescription(/Subflow nodes use/)
+    expect(screen.getByRole('textbox', { name: 'Child flow reference' })).toHaveAccessibleDescription(/Subflow steps use/)
     expectLabelsAndReferences()
   })
 
@@ -419,7 +439,7 @@ describe('Accessible node inspector fields', () => {
     expect(reads).toHaveValue('bad')
     expect(reads).toHaveAccessibleDescription(/expects to consume.*Invalid context key/)
     expect(reads).toHaveAttribute('aria-invalid', 'true')
-    expect(writes).toHaveAccessibleDescription(/expected to produce.*One context\.\* key per line/)
+    expect(writes).toHaveAccessibleDescription(/expected to produce.*One key per line/)
     expect(writes).not.toHaveAttribute('aria-invalid')
     fireEvent.change(reads, { target: { value: 'context.read' } })
     fireEvent.change(writes, { target: { value: 'context.write' } })
@@ -428,7 +448,7 @@ describe('Accessible node inspector fields', () => {
     const oldErrorId = screen.getByTestId('node-reads-context-editor-error').id
     rerender(<NodeInspectorPanel {...props} readsContextDraft="context.read" writesContextError="Write error" />)
     expect(reads).not.toHaveAttribute('aria-invalid')
-    expect(reads).toHaveAccessibleDescription(/One context\.\* key per line/)
+    expect(reads).toHaveAccessibleDescription(/One key per line/)
     expect(reads.getAttribute('aria-describedby')).not.toContain(oldErrorId)
     expect(document.getElementById(oldErrorId)).toBeNull()
     expect(writes).toHaveAccessibleDescription(/Write error/)
@@ -451,7 +471,9 @@ describe('Accessible node inspector fields', () => {
     await user.tab()
     expect(screen.getByRole('textbox', { name: 'Label', exact: true })).toHaveFocus()
     await user.tab()
-    expect(screen.getByRole('combobox', { name: 'Node kind' })).toHaveFocus()
+    expect(screen.getByRole('textbox', { name: 'Description' })).toHaveFocus()
+    await user.tab()
+    expect(screen.getByRole('combobox', { name: 'Step type' })).toHaveFocus()
     await user.tab()
     expect(screen.getByRole('textbox', { name: 'Reads context' })).toHaveFocus()
     await user.tab()
@@ -484,5 +506,78 @@ describe('Accessible node inspector fields', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     expect(props.onNodeExtensionRemove).toHaveBeenCalledWith('custom')
     expectLabelsAndReferences()
+  })
+
+  it('keeps attributes with their own fields out of the extension rows', () => {
+    expect(toExtensionAttrEntries({
+      role: 'adversarial-reviewer', description: '', thinking: '', 'tool.hooks.pre': './pre.sh', status: 'idle', shape: 'box', x_custom: 'kept',
+    }, NODE_CORE_ATTR_KEYS)).toEqual([{ key: 'x_custom', value: 'kept' }])
+  })
+
+  it('picks an agent step\'s role from the project\'s roles and opens it in Roles', async () => {
+    useStore.setState({ activeProjectPath: '/project', selectedRole: null, viewMode: 'editor' })
+    const props = panelProps('agent_task', { role: 'adversarial-reviewer' })
+    const { rerender } = render(<NodeInspectorPanel {...props} />)
+    const role = screen.getByRole('combobox', { name: 'Role' })
+    await waitFor(() => expect(within(role).getAllByRole('option').map((option) => option.textContent))
+      .toEqual(['None', 'Author', 'Adversarial reviewer']))
+    expect(role).toHaveValue('adversarial-reviewer')
+    fireEvent.change(role, { target: { value: 'author' } })
+    expect(props.onPropertyChange).toHaveBeenCalledWith('role', 'author')
+    fireEvent.change(role, { target: { value: '' } })
+    expect(props.onPropertyChange).toHaveBeenCalledWith('role', '')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open in Roles' }))
+    expect(useStore.getState().selectedRole).toEqual({ projectPath: '/project', name: 'adversarial-reviewer' })
+    expect(useStore.getState().viewMode).toBe('roles')
+
+    // A role the project lacks stays chosen; other kinds have no role.
+    rerender(<NodeInspectorPanel {...panelProps('agent_task', { role: 'retired' })} />)
+    expect(screen.getByRole('combobox', { name: 'Role' })).toHaveValue('retired')
+    expect(screen.getByRole('option', { name: 'retired (not found)' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open in Roles' })).not.toBeInTheDocument()
+    rerender(<NodeInspectorPanel {...panelProps('tool', { role: 'author' })} />)
+    expect(screen.queryByRole('combobox', { name: 'Role' })).not.toBeInTheDocument()
+    expectLabelsAndReferences()
+    useStore.setState({ activeProjectPath: null, viewMode: 'editor' })
+  })
+
+  it('lists a step\'s routes and adds one from the keyboard', async () => {
+    const user = userEvent.setup()
+    const props = panelProps()
+    props.selectedNodeRoutes = [{ id: 'e1', name: 'done', label: 'Done', target: 'Ship' }, { id: 'e2', name: 'ready_for_review', label: '', target: 'Review' }]
+    props.routeTargets = [{ id: 'node', title: 'Implement' }, { id: 'ship', title: 'Ship' }]
+    const { rerender } = render(<NodeInspectorPanel {...props} />)
+    const routes = screen.getByRole('region', { name: 'Routes' })
+    // Named as the canvas names them, with the decision ID the files use beside the name.
+    expect(within(routes).getByRole('button', { name: 'ready for review to Review decision ready_for_review' })).toBeVisible()
+    await user.click(within(routes).getByRole('button', { name: 'Done to Ship decision done' }))
+    expect(props.onOpenRoute).toHaveBeenCalledWith('e1')
+
+    const target = within(routes).getByRole('combobox', { name: 'New route to' })
+    expect(within(target).getAllByRole('option').map((option) => option.textContent))
+      .toEqual(['Choose a step…', 'Implement (this step)', 'Ship'])
+    const add = within(routes).getByRole('button', { name: 'Add route' })
+    expect(add).toBeDisabled()
+    await user.selectOptions(target, 'Ship')
+    const decision = within(routes).getByRole('textbox', { name: 'Decision ID (optional)' })
+    await user.type(decision, 'done')
+    expect(decision).toHaveAccessibleDescription('This step already has a done route.')
+    expect(add).toBeDisabled()
+    await user.clear(decision)
+    await user.type(decision, 'retry')
+    await user.click(add)
+    expect(props.onAddRoute).toHaveBeenCalledWith('ship', 'retry')
+    expect(target).toHaveValue('')
+    expect(target).toHaveFocus()
+    expect(decision).toHaveValue('')
+    expectLabelsAndReferences()
+
+    // A start step has its one `next` route; an exit step has none.
+    rerender(<NodeInspectorPanel {...panelProps('start')} selectedNodeRoutes={props.selectedNodeRoutes} routeTargets={props.routeTargets} />)
+    expect(screen.getByRole('region', { name: 'Routes' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Add route' })).not.toBeInTheDocument()
+    rerender(<NodeInspectorPanel {...panelProps('exit')} />)
+    expect(screen.queryByRole('region', { name: 'Routes' })).not.toBeInTheDocument()
   })
 })

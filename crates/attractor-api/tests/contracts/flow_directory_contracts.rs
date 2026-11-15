@@ -368,6 +368,35 @@ fn editor_sees_the_authored_form_and_launches_execute_the_resolved_form() {
 }
 
 #[test]
+fn editor_gets_each_steps_routes_in_the_order_written() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = project_with_org(temp.path());
+    let dir = spark_common::project::definitions_dir(&project).join("flows/release");
+    fs::create_dir_all(&dir).expect("flow dir");
+    for (name, text) in [
+        ("flow.md", "---\ntype: Flow\nid: release\ntitle: Release\nschema_version: '2'\n---\n"),
+        ("start.md", "---\ntype: start\ntitle: Start\nroutes:\n  next:\n    to: approve\n    description: Begin.\n---\n"),
+        (
+            "approve.md",
+            "---\ntype: human_gate\ntitle: Approve\nroutes:\n  ship:\n    to: shipped\n    description: Ship it.\n  hold:\n    to: held\n    description: Hold it.\n---\n\nShip?\n",
+        ),
+        ("shipped.md", "---\ntype: exit\ntitle: Shipped\nconfig:\n  result:\n    name: completed\n    outcome: success\n---\n"),
+        ("held.md", "---\ntype: exit\ntitle: Held\nconfig:\n  result:\n    name: held\n    outcome: failure\n---\n"),
+    ] {
+        fs::write(dir.join(name), text).expect("flow file");
+    }
+    let service = AttractorApiService::new(settings(temp.path()));
+
+    let loaded = service.get_flow("release", project.to_str());
+    assert_eq!(loaded.status_code, 200, "{}", loaded.body);
+    // The flow's route maps sort their keys; the order written comes beside them.
+    assert_eq!(
+        loaded.body["route_order"],
+        json!({"approve": ["ship", "hold"]})
+    );
+}
+
+#[test]
 fn editor_save_rewrites_only_changed_files_and_deletes_removed_nodes() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

@@ -1,4 +1,4 @@
-import { Box, Boxes, FileCode, LayoutDashboard, Play, RotateCcw, SquarePlus, Workflow, type LucideIcon } from 'lucide-react'
+import { Box, Boxes, FileCode, LayoutDashboard, Play, RotateCcw, SlidersHorizontal, SquarePlus, Undo2, Workflow, type LucideIcon } from 'lucide-react'
 
 import { SegmentedControl } from '@/components/app/segmented-control'
 import { Button } from '@/components/ui/button'
@@ -24,12 +24,18 @@ type EditorCanvasToolbarProps = {
     onArrange: () => void
     onReset: () => void
     onAddNode: () => void
+    /** Takes back the latest canvas edit, which `label` names; null when there is none. Omitted where the canvas can't be edited. */
+    undo?: { label: string | null; onUndo: () => void }
     /** The project a run starts in unless another is picked. */
     runDefaultProjectPath: string | null
     onRun: (projectPath: string) => void
     /** The minimap toggle; omitted where the canvas has no minimap. */
     minimap?: { shown: boolean; onToggle: () => void }
+    /** Shows or hides the flow's settings beside the canvas; `shown` while they are what the inspector shows. */
+    flowSettings?: { shown: boolean; onToggle: () => void }
 }
+
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 
 // Below 42rem of toolbar the toggles and actions show only icons (named by aria-label), so the row stays one line beside the flow settings at 1280px.
 const segmentLabel = (Icon: LucideIcon, text: string) => ({
@@ -56,9 +62,11 @@ export function EditorCanvasToolbar({
     onArrange,
     onReset,
     onAddNode,
+    undo,
     runDefaultProjectPath,
     onRun,
     minimap,
+    flowSettings,
 }: EditorCanvasToolbarProps) {
     const isStructured = mode === 'structured'
     const canEditLayout = isStructured && !childFlowsExpanded
@@ -117,10 +125,43 @@ export function EditorCanvasToolbar({
 
             {isStructured ? (
                 <div role="group" aria-label="Actions" className="ml-auto flex shrink-0 items-center gap-2">
+                    {flowSettings ? (
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            aria-label="Flow settings"
+                            title={flowSettings.shown ? 'Hide flow settings' : 'Show flow settings'}
+                            aria-pressed={flowSettings.shown}
+                            className="aria-pressed:bg-accent aria-pressed:text-foreground"
+                            onClick={flowSettings.onToggle}
+                        >
+                            <SlidersHorizontal aria-hidden="true" className="@2xl:hidden" />
+                            <span className="hidden @2xl:inline">Flow settings</span>
+                        </Button>
+                    ) : null}
+                    {canEditLayout && undo ? (
+                        // Also Cmd/Ctrl+Z, which a phone has no keys for.
+                        <Button
+                            type="button"
+                            size="icon-sm"
+                            variant="ghost"
+                            data-testid="editor-undo"
+                            aria-label={undo.label ?? 'Undo'}
+                            aria-keyshortcuts="Meta+Z Control+Z"
+                            title={undo.label ? `${undo.label} (${isMac ? '⌘Z' : 'Ctrl+Z'})` : 'Nothing to undo'}
+                            // Not `disabled`: taking back the last edit would drop focus to the page.
+                            aria-disabled={!undo.label || undefined}
+                            className="aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
+                            onClick={undo.label ? undo.onUndo : undefined}
+                        >
+                            <Undo2 aria-hidden="true" />
+                        </Button>
+                    ) : null}
                     {canEditLayout ? (
-                        <Button type="button" size="sm" variant="outline" aria-label="Add node" title="Add node" onClick={onAddNode}>
+                        <Button type="button" size="sm" variant="outline" aria-label="Add step" title="Add step" onClick={onAddNode}>
                             <SquarePlus aria-hidden="true" className="@2xl:hidden" />
-                            <span className="hidden @2xl:inline">+ Node</span>
+                            <span className="hidden @2xl:inline">+ Step</span>
                         </Button>
                     ) : null}
                     {/* A disabled button shows no tooltip, so its wrapper says why Run is off. */}

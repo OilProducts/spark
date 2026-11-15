@@ -146,9 +146,9 @@ export function FlowFilesView({ files, drafts, error, loadProblems, initialFile,
 
     const addFile = async () => {
         const answer = await prompt({
-            title: 'New node file',
-            description: 'Each node of the flow is a file named after its ID. The new file routes to the flow’s exit; route to it from another node’s file too, then save.',
-            label: 'Node ID',
+            title: 'New step file',
+            description: 'Each step of the flow is a file named after its ID. The new file routes to the flow’s exit; route to it from another step’s file too, then save.',
+            label: 'Step ID',
             placeholder: 'review',
             confirmLabel: 'Add file',
             requireInput: true,

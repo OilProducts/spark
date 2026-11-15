@@ -128,14 +128,17 @@ export function finishedRows(items: FinishedItem[]): FinishedRow[] {
     return [...ordered.filter((row) => row.latest.mark === 'failed'), ...ordered.filter((row) => row.latest.mark !== 'failed')]
 }
 
-/** Top-level runs and missions still working, and chats with a turn in flight, newest start first. */
+/**
+ * Top-level runs and missions still working, and chats with a turn in flight, newest start first.
+ * A chat waiting on you, such as for an answer, is listed under what needs you instead.
+ */
 export function inProgress(runs: RunRecord[], missions: Mission[], chats: Chat[]) {
     return [
         ...runs.filter((run) => !run.parent_run_id && runMark(run) === 'running')
             .map((run) => ({ kind: 'run' as const, id: run.run_id, run, mark: 'running' as Mark, at: timeOf(run.started_at) })),
         ...missions.filter((mission) => mission.status === 'running')
             .map((mission) => ({ kind: 'mission' as const, id: mission.id, mission, mark: 'running' as Mark, at: timeOf(mission.started_at) || missionAt(mission) })),
-        ...chats.filter((chat) => chat.running)
+        ...chats.filter((chat) => chat.running && !chat.needs_attention)
             .map((chat) => ({ kind: 'chat' as const, id: chat.conversation_id, chat, mark: 'running' as Mark, at: timeOf(chat.updated_at) })),
     ].sort((left, right) => right.at - left.at)
 }

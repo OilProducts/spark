@@ -1,12 +1,15 @@
-const KIND_WORDS: Record<string, string> = { agent_task: 'agent task', human_gate: 'human gate', fan_in: 'fan-in' }
+// As the step inspector names each step type.
+const KIND_WORDS: Record<string, string> = { agent_task: 'agent', human_gate: 'human gate', fan_in: 'fan-in' }
 
 /**
- * A validator message as a sentence: node kinds in words, a capital first
- * letter and a final period. One that starts with a file name ("notify.md: …")
+ * A validator message as a sentence: nodes called steps as everywhere else, node kinds in words,
+ * a capital first letter and a final period. One that starts with a file name ("notify.md: …")
  * keeps it, and a node ID that leads keeps its case.
  */
 export function problemSentence(text: string): string {
-    const worded = text.trim().replace(/\b(agent_task|human_gate|fan_in)\b/g, (kind) => KIND_WORDS[kind] ?? kind)
+    const worded = text.trim()
+        .replace(/\b(agent_task|human_gate|fan_in)\b/g, (kind) => KIND_WORDS[kind] ?? kind)
+        .replace(/(?<!['‘“])\b([Nn])ode(s?)\b(?!['’”])/g, (_, n: string, plural: string) => `${n === 'N' ? 'S' : 's'}tep${plural}`)
     const capitalized = worded.replace(/^((?:\S+\.md: )?)([a-z]+\s)/, (_, file: string, word: string) => `${file}${word.charAt(0).toUpperCase()}${word.slice(1)}`)
     return /[.!?]$/.test(capitalized) ? capitalized : `${capitalized}.`
 }

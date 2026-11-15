@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use attractor_core::{
-    ExitOutcome, ExitResult, FailureKind, FlowDefinition, FlowNode, FlowRoute, LaunchContext,
-    NodeConfig, NodeKind, Outcome, RunRecord,
+    ExitOutcome, ExitResult, FailureKind, FlowDefinition, FlowNode, FlowRoute, IndexMap,
+    LaunchContext, NodeConfig, NodeKind, Outcome, RunRecord,
 };
 use attractor_runtime::{
     prepare_fresh_run, ExecuteRunRequest, ExecutionStart, PipelineExecutor, RunStore,
@@ -50,8 +50,8 @@ fn tool_node(command: &str) -> FlowNode {
     }
 }
 
-fn routes(decision: &str, to: &str) -> BTreeMap<String, FlowRoute> {
-    BTreeMap::from([(
+fn routes(decision: &str, to: &str) -> IndexMap<String, FlowRoute> {
+    IndexMap::from([(
         decision.to_string(),
         FlowRoute {
             to: to.to_string(),

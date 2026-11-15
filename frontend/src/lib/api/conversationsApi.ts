@@ -214,12 +214,16 @@ export interface ConversationSummaryResponse {
     /** The conversation row's revision, a decimal string. */
     revision: string
     last_message_preview?: string | null
+    /** Whose message the preview is: `user` for one typed into the chat, else a reply. */
+    last_message_role?: string | null
     /** The runs this chat launched, oldest first. */
     launched_run_ids?: string[]
     /** Set on a standing role's conversation, pinned first in the Threads list. */
     standing_role?: StandingRoleSummary | null
     /** An assistant turn is pending or streaming. */
     running?: boolean
+    /** Something in the chat waits on you: a question, a flow run request or a plan to review. */
+    needs_attention?: boolean
 }
 
 export interface StandingRoleSummary {
@@ -274,6 +278,7 @@ export interface ConversationRowPayload {
     created_at: string
     updated_at: string
     preview: string | null
+    preview_role: string | null
     running: boolean
     needs_attention: boolean
     launched_run_ids: string[]
@@ -787,6 +792,7 @@ function parseConversationRowPayload(value: unknown, endpoint: string): Conversa
         created_at: asOptionalString(record.created_at) || '',
         updated_at: asOptionalString(record.updated_at) || asOptionalString(record.created_at) || '',
         preview: asOptionalNullableString(record.preview) || null,
+        preview_role: asOptionalNullableString(record.preview_role) ?? null,
         running: record.running === true,
         needs_attention: record.needs_attention === true,
         launched_run_ids: Array.isArray(record.launched_run_ids)
@@ -1028,9 +1034,11 @@ export function conversationSummaryFromRow(
         updated_at: payload.updated_at,
         revision: row.revision,
         last_message_preview: payload.preview || undefined,
+        last_message_role: payload.preview_role,
         launched_run_ids: payload.launched_run_ids,
         standing_role: payload.standing_role ?? null,
         running: payload.running,
+        needs_attention: payload.needs_attention,
     }
 }
 

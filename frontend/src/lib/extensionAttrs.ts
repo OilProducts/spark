@@ -16,13 +16,12 @@ const stringifyExtensionAttrValue = (value: unknown): string => {
 export function toExtensionAttrEntries(
     attrs: Record<string, unknown> | null | undefined,
     coreKeys: Set<string>,
-    excludedKeys?: Set<string>,
 ): ExtensionAttrEntry[] {
     if (!attrs) {
         return []
     }
     return Object.entries(attrs)
-        .filter(([key]) => !coreKeys.has(key) && !excludedKeys?.has(key))
+        .filter(([key]) => !coreKeys.has(key))
         .map(([key, value]) => ({
             key,
             value: stringifyExtensionAttrValue(value),

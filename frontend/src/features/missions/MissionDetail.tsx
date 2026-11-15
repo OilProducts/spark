@@ -37,6 +37,11 @@ const inheritedModel: ModelSettings = { provider: null, llm_profile: null, model
 const menuItem = 'relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50'
 const closedActors: Record<string, string> = { assistant: 'the mission agent', human: 'you' }
 
+// Unsent replies and open budget edits by mission, so opening another mission and coming back keeps them.
+// ponytail: kept for the page's life, not across reloads; move into the store if that's needed.
+const missionDrafts = new Map<string, { reply: string; budget: Budget | null }>()
+const draftOf = (missionId: string) => missionDrafts.get(missionId) ?? { reply: '', budget: null }
+
 function RailSection({ label, children, action }: { label: string; children: ReactNode; action?: ReactNode }) {
     return <section aria-label={label} className="flex flex-col gap-2">
         <SectionHeading action={action}>{label}</SectionHeading>
@@ -60,8 +65,10 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     useEffect(() => { heading.current?.focus({ preventScroll: true }) }, [mission.id, focusRequest])
     const [pending, setPending] = useState(false)
     const [actionError, setActionError] = useState('')
-    const [reply, setReply] = useState('')
-    const [budget, setBudget] = useState<Budget | null>(null)
+    const [reply, setReplyState] = useState(() => draftOf(mission.id).reply)
+    const [budget, setBudgetState] = useState(() => draftOf(mission.id).budget)
+    const setReply = (value: string) => { setReplyState(value); missionDrafts.set(mission.id, { ...draftOf(mission.id), reply: value }) }
+    const setBudget = (value: Budget | null) => { setBudgetState(value); missionDrafts.set(mission.id, { ...draftOf(mission.id), budget: value }) }
     const [model, setModel] = useState<{ revision: string; draft: ModelSettings | null } | null>(null)
     const [objectiveOpen, setObjectiveOpen] = useState(false)
     const [objectiveClipped, setObjectiveClipped] = useState(false)
@@ -175,7 +182,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                 </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
-                {status === 'draft' && <><Button type="button" size="sm" disabled={disabled} onClick={() => void control('start')}>Start</Button>
+                {status === 'draft' && <><Button type="button" size="sm" disabled={disabled} onClick={() => void control('start').then(started => { if (started) heading.current?.focus({ preventScroll: true }) })}>Start</Button>
                     <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={edit}>Edit</Button></>}
                 {(status === 'running' || status === 'needs_you') && <><Button type="button" size="sm" variant="outline" aria-label="Mark mission done" disabled={disabled} onClick={() => void end(false)}>Mark done</Button>
                     <Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => void end(true)}>Cancel mission</Button></>}
@@ -227,7 +234,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                         {question && <Well role="region" aria-label="Waiting on you" className="flex flex-col gap-2">
                             <p className={`text-xs font-medium ${statusTextClassName('warning')}`}>Waiting on you{question.runId && <> · from <RunLink runId={question.runId} className="text-foreground">{runsById.get(question.runId)?.title || flowTitle(question.flowName)}</RunLink></>}</p>
                             <p className="font-medium whitespace-pre-wrap break-words">{question.prompt}</p>
-                            {question.options.length > 0 && <div className="mt-1 flex flex-wrap gap-2">{question.options.map(option => <Button key={option} type="button" size="sm" variant="outline" disabled={disabled} onClick={() => void send(option)}>{option}</Button>)}</div>}
+                            {question.options.length > 0 && <div className="mt-1 flex flex-wrap gap-2">{question.options.map(option => <Button key={option} type="button" size="sm" variant="outline" className="h-auto min-h-8 max-w-full whitespace-normal py-1.5 text-left" disabled={disabled} onClick={() => void send(option)}>{option}</Button>)}</div>}
                         </Well>}
                     </div>
                 </ChatPane>

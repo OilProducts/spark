@@ -45,7 +45,7 @@ export function activityDots(
 ): Partial<Record<ViewMode, ActivityDot>> {
     const waiting = (kinds: AttentionItem['kind'][]) => attention.some((item) => kinds.includes(item.kind))
     return {
-        home: waiting(['flow_run_request', 'proposed_plan']) ? 'waiting' : chatRunning ? 'running' : null,
+        home: waiting(['chat_question', 'flow_run_request', 'proposed_plan']) ? 'waiting' : chatRunning ? 'running' : null,
         missions: waiting(['mission']) || missionStatuses.includes('needs_you')
             ? 'waiting'
             : missionStatuses.includes('running') ? 'running' : null,

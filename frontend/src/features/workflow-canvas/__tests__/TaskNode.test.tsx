@@ -1,5 +1,3 @@
-import userEvent from '@testing-library/user-event'
-import { chooseModel, chooseEffort } from '@/components/model-chooser/__tests__/picker'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { CanvasSessionModeProvider } from '@/features/workflow-canvas/canvasSessionContext'
 import { nodeTypes } from '@/features/workflow-canvas/flowCanvasShared'
@@ -7,7 +5,7 @@ import { TaskNode } from '@/features/workflow-canvas/TaskNode'
 import { getReactFlowNodeTypeForShape } from '@/lib/workflowNodeShape'
 import { useStore } from '@/store'
 import { ReactFlow, ReactFlowProvider, type Edge, type Node, useEdgesState, useNodesState } from '@xyflow/react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -156,115 +154,24 @@ describe('TaskNode', () => {
         expect(screen.getByTestId('workflow-node-frame-house')).toBeInTheDocument()
     })
 
-    it('previews a shape change in the node toolbar and persists it on save', async () => {
+    it('moves to the step settings from the canvas Edit button', () => {
         renderWithFlowProvider(
-            <SingleNodeHarness
-                node={{
-                    id: 'task',
-                    type: 'task',
-                    position: { x: 0, y: 0 },
-                    selected: true,
-                    data: {
-                        label: 'Task',
-                        kind: 'agent_task',
-                        config: { kind: 'agent_task', prompt: 'Implement the feature' },
-                        shape: 'box',
-                        prompt: 'Implement the feature',
-                    },
-                }}
-            />,
+            <>
+                <nav data-testid="inspector-panel"><h2 tabIndex={-1}>Step settings</h2></nav>
+                <SingleNodeHarness
+                    node={{
+                        id: 'task',
+                        type: 'task',
+                        position: { x: 0, y: 0 },
+                        selected: true,
+                        data: { label: 'Task', kind: 'agent_task', config: { kind: 'agent_task' }, shape: 'box' },
+                    }}
+                />
+            </>,
         )
 
-        expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
-
-        fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
-        const toolbar = screen.getByText('Node properties').parentElement?.parentElement
-        const shapeSelect = toolbar?.querySelector('select')
-        expect(shapeSelect).toBeTruthy()
-        fireEvent.change(shapeSelect as HTMLSelectElement, { target: { value: 'house' } })
-
-        expect(screen.getByTestId('workflow-node-frame-house')).toBeInTheDocument()
-
-        fireEvent.click(screen.getByText('Save', { selector: 'button' }))
-
-        await waitFor(() => {
-            expect(screen.getByTestId('workflow-node-frame-house')).toBeInTheDocument()
-        })
-        expect(screen.queryByText('Node properties')).not.toBeInTheDocument()
-    })
-
-    it('shows graph inheritance and saves an atomic model and effort draft in the canvas toolbar', async () => {
-        const user = userEvent.setup()
-        useStore.setState({ activeProjectPath: null, flowMetadata: { llm_provider: 'openai', llm_model: 'graph-model', reasoning_effort: 'high' } })
-        renderWithFlowProvider(<SingleNodeHarness node={{ id: 'task', type: 'task', selected: true,
-            position: { x: 0, y: 0 }, data: { label: 'Task', kind: 'agent_task', shape: 'box', config: { kind: 'agent_task' } } }} />)
-        fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
-        await user.click(screen.getByRole('button', { name: 'Show advanced' }))
-        expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Default: graph-model · High')
-        await chooseModel(user, 'anthropic', 'claude-sonnet-4-6')
-        await chooseEffort(user, 'Low')
-        expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('claude-sonnet-4-6 · Low')
-        await user.click(screen.getByText('Save', { selector: 'button' }))
-        fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
-        expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('claude-sonnet-4-6 · Low')
-    })
-
-    it('does not expose handler type drift warnings in the node toolbar', async () => {
-        renderWithFlowProvider(
-            <SingleNodeHarness
-                node={{
-                    id: 'task',
-                    type: 'task',
-                    position: { x: 0, y: 0 },
-                    selected: true,
-                    data: {
-                        label: 'Task',
-                        kind: 'agent_task',
-                        config: { kind: 'agent_task' },
-                        shape: 'box',
-                    },
-                }}
-            />,
-        )
-
-        fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
-
-        expect(screen.queryByTestId('node-toolbar-shape-type-warning')).not.toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
-    })
-
-    it('edits max parallel for a fork without legacy join or error policies ', () => {
-        renderWithFlowProvider(
-            <SingleNodeHarness
-                node={{
-                    id: 'fan',
-                    type: getReactFlowNodeTypeForShape('component'),
-                    position: { x: 0, y: 0 },
-                    selected: true,
-                    data: {
-                        label: 'Parallel',
-                        kind: 'parallel',
-                        config: { kind: 'parallel', branches: ['a', 'b'], join: 'join' },
-                        shape: 'component',
-                        max_parallel: '3',
-                    },
-                }}
-                edges={[
-                    { id: 'e1', source: 'fan', target: 'a', data: { kind: 'branch' } },
-                    { id: 'e2', source: 'fan', target: 'b', data: { kind: 'branch' } },
-                    { id: 'e3', source: 'fan', target: 'join', data: { kind: 'join' } },
-                ]}
-            />,
-        )
-
-        fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
-
-        for (const legacy of ['Join Policy', 'K Threshold', 'Quorum Threshold', 'Error Policy']) {
-            expect(screen.queryByText(legacy)).not.toBeInTheDocument()
-        }
-        const toolbar = screen.getByText('Node properties').parentElement?.parentElement
-        const maxParallel = Array.from(toolbar?.querySelectorAll('input') ?? []).find((input) => input.value === '3')
-        expect(maxParallel).toBeTruthy()
+        fireEvent.click(screen.getByLabelText('Edit Task in step settings'))
+        expect(screen.getByRole('heading', { name: 'Step settings' })).toHaveFocus()
     })
 
     it('hides editor affordances while expanded child-flow preview mode is active', () => {
@@ -344,6 +251,8 @@ nodeDiagnostics: {
 
         expect(screen.getByTestId('workflow-node-frame-hexagon')).toBeInTheDocument()
         expect(screen.getByText('Needs input')).toBeInTheDocument()
+        // In a run the status takes the kind word's place on the caption line, for screen readers too.
+        expect(screen.getByText('Human gate')).toHaveClass('sr-only')
         expect(screen.queryByText('Human Input Required')).not.toBeInTheDocument()
         expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
         expect(screen.getByTestId('node-diagnostic-badge')).toHaveTextContent('1 warning')

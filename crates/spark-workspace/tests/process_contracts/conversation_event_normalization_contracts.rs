@@ -2145,6 +2145,20 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
         "request_user_input",
     );
     assert_eq!(request_segment["request_user_input"]["status"], "pending");
+    // A chat waiting on an answer waits on you, with what it asks.
+    let chat_questions = || {
+        service
+            .pending_attention()
+            .expect("attention")
+            .into_iter()
+            .filter(|item| item["kind"] == "chat_question")
+            .collect::<Vec<_>>()
+    };
+    let waiting = chat_questions();
+    assert_eq!(waiting.len(), 1, "{waiting:?}");
+    assert_eq!(waiting[0]["conversation_id"], "conversation-input");
+    assert_eq!(waiting[0]["question"], "Approve this change?");
+    assert_eq!(waiting[0]["project_path"], "/projects/input");
 
     let answered_ack = service
         .submit_request_user_input_answer(
@@ -2169,6 +2183,10 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
     assert_eq!(
         request_segment["request_user_input"]["answers"]["decision"],
         "Approve"
+    );
+    assert!(
+        chat_questions().is_empty(),
+        "an answered chat waits on no one"
     );
     let assistant_turn = answered["turns"]
         .as_array()

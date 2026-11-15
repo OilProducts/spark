@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { ChevronDown, ChevronRight, Layers, Search } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -12,6 +12,7 @@ import {
     EmptyHeader,
 } from '@/components/ui/empty'
 import { useStore } from '@/store'
+import { UNREACHABLE_MESSAGE } from '@/lib/fetchSpark'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import type { RunRecord } from '../model/shared'
 import { formatDuration, formatRunStatusLabel, formatTimestamp, isCompletedFailure, runHasEnded, runRecordTone } from '../model/shared'
@@ -89,6 +90,28 @@ export function RunList({
 }: RunListProps) {
     const isNarrowViewport = useNarrowViewport()
     const projectRegistry = useStore((state) => state.projectRegistry)
+    // The list is one Tab stop, as the steps list is: the focused row while focus is in the list,
+    // else the open run's, else the first. Arrows, j/k, Home and End move between its rows and
+    // toggles; Enter or Space opens one, since opening a run loads it and adds a history entry.
+    const listRef = useRef<HTMLDivElement>(null)
+    const keysHintId = useId()
+    const placeTabStop = (focused: EventTarget | null = document.activeElement) => {
+        const items = [...listRef.current?.querySelectorAll('button') ?? []]
+        const stop = items.find((item) => item === focused)
+            ?? items.find((item) => item.getAttribute('aria-current') === 'true')
+            ?? items[0]
+        items.forEach((item) => { item.tabIndex = item === stop ? 0 : -1 })
+    }
+    useLayoutEffect(() => placeTabStop())
+    const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+        if (event.metaKey || event.ctrlKey || event.altKey) return
+        const items = [...event.currentTarget.querySelectorAll('button')]
+        const index = items.indexOf(event.target as HTMLButtonElement)
+        const moves: Record<string, number> = { ArrowDown: index + 1, j: index + 1, ArrowUp: index - 1, k: index - 1, Home: 0, End: items.length - 1 }
+        if (index < 0 || !Object.hasOwn(moves, event.key)) return
+        event.preventDefault()
+        items[moves[event.key]]?.focus()
+    }
     const [ownSearchQuery, setOwnSearchQuery] = useState('')
     const searchQuery = heldSearchQuery ?? ownSearchQuery
     const setSearchQuery = onSearchQueryChange ?? setOwnSearchQuery
@@ -366,6 +389,7 @@ export function RunList({
     return (
         <nav
             data-testid="run-list-panel"
+            aria-label="Runs"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
             className="flex h-full min-h-0 w-full flex-col overflow-hidden"
         >
@@ -411,7 +435,7 @@ export function RunList({
                 {/* With no runs to show, the view's main pane says the load failed. */}
                 {error && runs.length > 0 ? (
                     <InlineError dense data-testid="run-list-error">
-                        Couldn’t refresh your runs; this list may be out of date.
+                        {error === UNREACHABLE_MESSAGE ? 'Couldn’t reach Spark; showing the last known runs.' : 'Couldn’t refresh your runs; this list may be out of date.'}
                         <button type="button" onClick={requestRunsTransportReconnect} className="ml-1 font-medium underline underline-offset-4">Try again</button>
                     </InlineError>
                 ) : null}
@@ -428,9 +452,18 @@ export function RunList({
                 )
             ) : (
                 <div
+                    ref={listRef}
+                    role="group"
+                    aria-label="Run list"
+                    aria-describedby={keysHintId}
                     data-testid="run-list-scroll-region"
+                    data-own-keys="jk"
+                    onKeyDown={onListKeyDown}
+                    onFocus={(event) => placeTabStop(event.target)}
+                    onBlur={(event) => placeTabStop(event.relatedTarget)}
                     className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-4"
                 >
+                    <p id={keysHintId} className="sr-only">Up and down arrows, or J and K, move between runs; Enter opens one.</p>
                     {renderRunGroup('needs-input', 'Needs input', needsInputRuns, 'text-warning')}
                     {renderRunGroup('running', 'Running', runningRuns)}
                     {visibleQueuedLockGroups.map((group) => (

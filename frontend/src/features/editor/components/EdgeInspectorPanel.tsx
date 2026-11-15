@@ -1,7 +1,10 @@
 import { useId, type ReactNode } from 'react'
 import type { Edge } from '@xyflow/react'
+import { Trash2 } from 'lucide-react'
 
 import type { DiagnosticEntry } from '@/store'
+import { EDGE_CORE_ATTR_KEYS } from '@/lib/canonicalFlowModel'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
@@ -19,6 +22,13 @@ interface EdgeInspectorPanelProps {
     selectedEdgeExtensionEntries: ExtensionEntry[]
     edgeFieldDiagnostics: Record<string, DiagnosticEntry[]>
     isForkEdge: boolean
+    /** A step's title, as the canvas shows it. */
+    stepTitle: (nodeId: string) => string
+    /** The steps a route can go to. */
+    targets: { id: string; title: string }[]
+    onOpenStep: (nodeId: string) => void
+    onTargetChange: (target: string) => void
+    onDelete: () => void
     onPropertyChange: (key: string, value: string | boolean) => void
     onExtensionValueChange: (key: string, value: string) => void
     onExtensionRemove: (key: string) => void
@@ -39,6 +49,11 @@ export function EdgeInspectorPanel({
     selectedEdgeExtensionEntries,
     edgeFieldDiagnostics,
     isForkEdge,
+    stepTitle,
+    targets,
+    onOpenStep,
+    onTargetChange,
+    onDelete,
     onPropertyChange,
     onExtensionValueChange,
     onExtensionRemove,
@@ -50,14 +65,37 @@ export function EdgeInspectorPanel({
         <div className="flex-1 overflow-y-auto p-4">
             <InspectorScaffold
                 scopeLabel="Edge"
-                title="Edge settings"
-                entityLabel="Edge"
+                title="Route settings"
+                entityLabel="Route"
                 entityValue={selectedEdge ? `${selectedEdge.source} -> ${selectedEdge.target}` : undefined}
             >
                 {!selectedEdge ? (
-                    <InspectorEmptyState message="Select an edge on the canvas to inspect and edit its properties." />
+                    <InspectorEmptyState message="Select a route on the canvas to inspect and edit it." />
                 ) : (
                     <div data-testid="edge-structured-form" className="space-y-4">
+                        <p className="text-sm text-muted-foreground">
+                            From{' '}
+                            <Button type="button" variant="link" className="inline h-auto whitespace-normal p-0 text-left" onClick={() => onOpenStep(selectedEdge.source)}>
+                                {stepTitle(selectedEdge.source)}
+                            </Button>
+                            {' '}to{' '}
+                            <Button type="button" variant="link" className="inline h-auto whitespace-normal p-0 text-left" onClick={() => onOpenStep(selectedEdge.target)}>
+                                {stepTitle(selectedEdge.target)}
+                            </Button>
+                        </p>
+                        <div className="space-y-1.5">
+                            <Label htmlFor={`${id}-target`}>Goes to</Label>
+                            <NativeSelect id={`${id}-target`} value={selectedEdge.target} onChange={(event) => onTargetChange(event.target.value)}>
+                                {targets.some((step) => step.id === selectedEdge.target) ? null : (
+                                    <option value={selectedEdge.target}>{stepTitle(selectedEdge.target)}</option>
+                                )}
+                                {targets.map((step) => (
+                                    <option key={step.id} value={step.id}>
+                                        {step.id === selectedEdge.source ? `${step.title} (back to this step)` : step.title}
+                                    </option>
+                                ))}
+                            </NativeSelect>
+                        </div>
                         {isForkEdge ? (
                             <div className="space-y-1.5">
                                 <Label htmlFor={`${id}-fork-connection`}>Fork connection</Label>
@@ -112,13 +150,12 @@ export function EdgeInspectorPanel({
                             onValueChange={onExtensionValueChange}
                             onRemove={onExtensionRemove}
                             onAdd={onExtensionAdd}
-                            reservedKeys={new Set([
-                                'kind',
-                                'decision',
-                                'description',
-                                'label',
-                            ])}
+                            reservedKeys={EDGE_CORE_ATTR_KEYS}
                         />
+                        <Button type="button" variant="outline" size="sm" data-testid="edge-delete" className="text-destructive" onClick={onDelete}>
+                            <Trash2 aria-hidden="true" />
+                            {isForkEdge ? 'Delete branch' : 'Delete route'}
+                        </Button>
                     </div>
                 )}
             </InspectorScaffold>

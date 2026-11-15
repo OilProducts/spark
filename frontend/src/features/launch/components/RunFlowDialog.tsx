@@ -5,6 +5,7 @@ import { ArrowLeft, Search } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/lib/utils'
 import { openRun } from '@/app/useAttention'
+import { focusRunHeading } from '@/features/runs/components/RunHeaderBar'
 import { InlineError } from '@/components/app/inline-error'
 import { ListGroupLabel } from '@/components/app/side-panel-row'
 import { Button } from '@/components/ui/button'
@@ -262,6 +263,8 @@ export function RunFlowDialog() {
     const [request, setRequest] = useState<{ projectPath: string | null; flowName: string | null } | null>(null)
     // The dialog opens by event, with no trigger of its own: closing returns focus to what had it.
     const openerRef = useRef<HTMLElement | null>(null)
+    // A launch closes onto its new run, so focus goes to the run's heading instead.
+    const launchedRunRef = useRef<string | null>(null)
 
     useEffect(() => {
         const onOpen = (event: Event) => {
@@ -292,9 +295,14 @@ export function RunFlowDialog() {
                 data-testid="run-flow-dialog"
                 onCloseAutoFocus={(event) => {
                     const opener = openerRef.current
+                    const launchedRunId = launchedRunRef.current
                     openerRef.current = null
-                    // An opener gone with a view change (a run opened from here) leaves focus to the dialog.
-                    if (opener?.isConnected) {
+                    launchedRunRef.current = null
+                    if (launchedRunId) {
+                        event.preventDefault()
+                        focusRunHeading(launchedRunId)
+                    } else if (opener?.isConnected) {
+                        // An opener gone with a view change leaves focus to the dialog.
                         event.preventDefault()
                         opener.focus()
                     }
@@ -323,6 +331,7 @@ export function RunFlowDialog() {
                             onEditFlow={() => editFlow(request.flowName!)}
                             onLaunched={(runId) => {
                                 if (projectPath) void markProjectUsed(projectPath)
+                                launchedRunRef.current = runId
                                 close()
                                 if (runId) openRun(runId)
                                 else useStore.getState().setViewMode('runs')

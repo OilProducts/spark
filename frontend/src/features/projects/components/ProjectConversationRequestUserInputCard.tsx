@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { InlineError } from '@/components/app/inline-error'
 import { statusTextClassName } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
@@ -15,7 +15,11 @@ interface ProjectConversationRequestUserInputCardProps {
     onSubmitRequestUserInput: (requestId: string, answers: Record<string, string>) => void | Promise<void>
 }
 
-const cardClassName = 'w-full max-w-[72ch] rounded-xl border border-border px-4 py-3 text-foreground'
+const cardClassName = 'w-full max-w-[72ch] rounded-xl border border-border px-4 py-3 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring'
+
+// Unsent answers outlive the card, so opening another conversation and coming back keeps them.
+// ponytail: module-level like mission replies; lost on reload.
+const draftAnswersByEntry = new Map<string, Record<string, string>>()
 
 function answeredSummaryValue(
     question: RequestUserInputEntry['requestUserInput']['questions'][number],
@@ -34,18 +38,46 @@ export function ProjectConversationRequestUserInputCard({
     isSubmitting,
     onSubmitRequestUserInput,
 }: ProjectConversationRequestUserInputCardProps) {
-    const [draftAnswers, setDraftAnswers] = useState<Record<string, string>>({})
+    const idPrefix = useId()
+    const [draftAnswers, setDraftAnswersState] = useState<Record<string, string>>(
+        () => draftAnswersByEntry.get(entry.id) ?? entry.requestUserInput.answers,
+    )
     const [validationError, setValidationError] = useState<string | null>(null)
+    const cardRef = useRef<HTMLDivElement>(null)
+    const answeringRef = useRef(false)
+    const setDraftAnswers = (update: (current: Record<string, string>) => Record<string, string>) => {
+        setDraftAnswersState((current) => {
+            const next = update(current)
+            draftAnswersByEntry.set(entry.id, next)
+            return next
+        })
+    }
 
     useEffect(() => {
         setValidationError(null)
-        setDraftAnswers(entry.requestUserInput.answers)
+        setDraftAnswersState(draftAnswersByEntry.get(entry.id) ?? entry.requestUserInput.answers)
     }, [entry.id])
+
+    useEffect(() => {
+        if (entry.requestUserInput.status !== 'pending') {
+            draftAnswersByEntry.delete(entry.id)
+        }
+    }, [entry.id, entry.requestUserInput.status])
+
+    // Sending disables the form and the answer replaces it, so focus would fall to the page:
+    // keep it on this card, which now shows the answer or the error.
+    useEffect(() => {
+        if (isSubmitting || !answeringRef.current) return
+        answeringRef.current = false
+        if (!document.activeElement || document.activeElement === document.body) cardRef.current?.focus()
+    }, [isSubmitting, entry.requestUserInput.status])
 
     if (entry.requestUserInput.status === 'answered') {
         return (
             <div
                 data-testid={`project-request-user-input-summary-${entry.id}`}
+                ref={cardRef}
+                tabIndex={-1}
                 className={cardClassName}
             >
                 <p className="text-xs font-medium text-muted-foreground">
@@ -75,6 +107,8 @@ export function ProjectConversationRequestUserInputCard({
         return (
             <div
                 data-testid={`project-request-user-input-expired-${entry.id}`}
+                ref={cardRef}
+                tabIndex={-1}
                 className={cardClassName}
             >
                 <p className={`text-xs font-medium ${statusTextClassName('destructive')}`}>
@@ -115,12 +149,15 @@ export function ProjectConversationRequestUserInputCard({
             return
         }
         setValidationError(null)
+        answeringRef.current = true
         void onSubmitRequestUserInput(entry.requestUserInput.requestId, normalizedAnswers)
     }
 
     return (
         <div
             data-testid={`project-request-user-input-card-${entry.id}`}
+            ref={cardRef}
+            tabIndex={-1}
             className={cardClassName}
         >
             <p className={`text-xs font-medium ${statusTextClassName('warning')}`}>
@@ -130,19 +167,21 @@ export function ProjectConversationRequestUserInputCard({
                 <InlineError data-testid={`project-request-user-input-error-${entry.id}`} className="mt-2" dense>{validationError ?? actionError}</InlineError>
             ) : null}
             <div className="mt-2 space-y-3">
-                {entry.requestUserInput.questions.map((question) => {
+                {entry.requestUserInput.questions.map((question, index) => {
                     const currentAnswer = draftAnswers[question.id] ?? ''
                     const hasSelectedOption = question.options.some((option) => option.label === currentAnswer)
+                    const headerId = `${idPrefix}-q${index}-header`
+                    const questionId = `${idPrefix}-q${index}-text`
                     return (
                         <div key={question.id} className="space-y-2">
                             <div className="space-y-0.5">
-                                <p className="text-xs font-medium text-muted-foreground">
+                                <p id={headerId} className="text-xs font-medium text-muted-foreground">
                                     {question.header}
                                 </p>
-                                <p className="text-sm text-foreground">{question.question}</p>
+                                <p id={questionId} className="text-sm text-foreground">{question.question}</p>
                             </div>
                             {question.questionType === 'MULTIPLE_CHOICE' && question.options.length > 0 ? (
-                                <div className="flex flex-wrap gap-1.5">
+                                <div role="group" aria-labelledby={`${headerId} ${questionId}`} className="flex flex-wrap gap-1.5">
                                     {question.options.map((option) => {
                                         const isSelected = currentAnswer === option.label
                                         const optionTestId = option.value
@@ -164,7 +203,7 @@ export function ProjectConversationRequestUserInputCard({
                                                 disabled={isSubmitting}
                                                 variant="outline"
                                                 size="xs"
-                                                className={`h-7 ${isSelected ? 'border-primary bg-accent text-accent-foreground' : ''}`}
+                                                className={`h-auto min-h-7 max-w-full shrink py-1 text-left whitespace-normal ${isSelected ? 'border-primary bg-accent text-accent-foreground' : ''}`}
                                             >
                                                 {option.label}
                                             </Button>
@@ -176,6 +215,7 @@ export function ProjectConversationRequestUserInputCard({
                                 <Input
                                     type={question.isSecret ? 'password' : 'text'}
                                     data-testid={`project-request-user-input-field-${question.id}`}
+                                    aria-labelledby={`${headerId} ${questionId}`}
                                     value={hasSelectedOption && question.questionType === 'MULTIPLE_CHOICE' ? '' : currentAnswer}
                                     onChange={(event) => {
                                         setValidationError(null)

@@ -1,5 +1,5 @@
 import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type SetStateAction } from 'react';
 import {
     ReactFlow,
     MiniMap,
@@ -86,6 +86,7 @@ import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button';
 import { useRegisterEditorGraphBridge } from './EditorGraphBridgeContext';
 import { EditorCanvasToolbar } from './components/EditorCanvasToolbar';
+import { selectFlowSettingsOpen } from './GraphSettings';
 import { EditorSaveStatus } from './components/EditorSaveStatus';
 import { flowFileChanges, FlowFilesView, hasFlowFileChanges, ProblemList, type FlowFileDrafts, type FlowFilesError } from './components/FlowFilesView';
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection';
@@ -159,6 +160,111 @@ function buildEdgeIdForConnection(params: Connection | Edge, currentEdges: Edge[
         return params.id
     }
     return `e-${params.source}-${params.target}-${currentEdges.length}`
+}
+
+/** An edit Cmd/Ctrl+Z can take back on the canvas. */
+type CanvasEdit =
+    | { kind: 'delete'; nodes: Node[]; edges: Edge[] }
+    | { kind: 'add-step'; nodeId: string }
+    /** A route added, or given again by its ID, such as with a new target; `previous` is what it replaced. */
+    | { kind: 'route'; edgeId: string; previous: Edge | null }
+    /**
+     * An inspector field changed; `nodes` and `edges` are the steps and routes as they were, and
+     * `flowMetadata` the flow settings, when the edit was to them.
+     */
+    | { kind: 'fields'; key: string | null; nodes: Node[]; edges: Edge[]; flowMetadata?: FlowDefinitionMetadata }
+
+/** What the Undo button says it takes back: a field edit names the step it goes back on, now. */
+function canvasEditUndoLabel(edit: CanvasEdit, nodes: Node[]): string {
+    if (edit.kind === 'delete') return 'Undo delete'
+    if (edit.kind === 'add-step') return 'Undo add step'
+    if (edit.kind === 'route') return edit.previous ? 'Undo route change' : 'Undo add route'
+    if (edit.flowMetadata) return 'Undo flow settings edit'
+    if (edit.nodes.length === 1) {
+        const node = nodes.find((candidate) => candidate.id === edit.nodes[0].id) ?? edit.nodes[0]
+        return `Undo edit to ${String(node.data?.label || node.id)}`
+    }
+    if (edit.nodes.length > 1) return `Undo edit to ${edit.nodes.length} steps`
+    return edit.edges.length > 0 ? 'Undo route edit' : 'Undo edit'
+}
+
+/** The graph with an edit taken back, as far as it still fits what is there now. */
+function undoCanvasEdit(edit: CanvasEdit, { nodes, edges }: { nodes: Node[]; edges: Edge[] }): { nodes: Node[]; edges: Edge[] } {
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    if (edit.kind === 'fields') {
+        // Only the fields go back: a step stays where it was since moved.
+        const previousNodes = new Map(edit.nodes.map((node) => [node.id, node]));
+        const previousEdges = new Map(edit.edges.map((edge) => [edge.id, edge]));
+        return {
+            nodes: nodes.map((node) => {
+                const previous = previousNodes.get(node.id);
+                return previous ? { ...node, type: previous.type, style: previous.style, data: previous.data } : node;
+            }),
+            edges: edges.map((edge) => {
+                const previous = previousEdges.get(edge.id);
+                return previous ? { ...edge, data: previous.data, label: previous.label } : edge;
+            }),
+        };
+    }
+    if (edit.kind === 'add-step') {
+        return {
+            nodes: nodes.filter((node) => node.id !== edit.nodeId),
+            edges: edges.filter((edge) => edge.source !== edit.nodeId && edge.target !== edit.nodeId),
+        };
+    }
+    if (edit.kind === 'route') {
+        const { previous } = edit;
+        if (!previous) return { nodes, edges: edges.filter((edge) => edge.id !== edit.edgeId) };
+        const restored = { ...previous, selected: false };
+        if (edges.some((edge) => edge.id === edit.edgeId)) {
+            return { nodes, edges: edges.map((edge) => (edge.id === edit.edgeId ? restored : edge)) };
+        }
+        return { nodes, edges: nodeIds.has(previous.source) && nodeIds.has(previous.target) ? [...edges, restored] : edges };
+    }
+    // Only what still fits: an ID taken meanwhile stays, and a route goes back only between its
+    // own steps, never onto another step that now holds a deleted one's ID.
+    const deletedIds = new Set(edit.nodes.map((node) => node.id));
+    const restored = edit.nodes.filter((node) => !nodeIds.has(node.id));
+    const restoredIds = new Set(restored.map((node) => node.id));
+    const isOwnStep = (id: string) => restoredIds.has(id) || (!deletedIds.has(id) && nodeIds.has(id));
+    const edgeIds = new Set(edges.map((edge) => edge.id));
+    return {
+        nodes: [...nodes, ...restored.map((node) => ({ ...node, selected: false }))],
+        edges: [...edges, ...edit.edges.filter((edge) => (
+            !edgeIds.has(edge.id) && isOwnStep(edge.source) && isOwnStep(edge.target)
+        )).map((edge) => ({ ...edge, selected: false }))],
+    };
+}
+
+// Padding around the steps a new step is shown with, and the smallest zoom that still reads. Above
+// them is more: room for the new step's badges below the save status in the canvas's top corner.
+const NEW_STEP_VIEW_PADDING = 48
+const NEW_STEP_VIEW_TOP = 80
+const NEW_STEP_MIN_ZOOM = 0.6
+
+/**
+ * The viewport after Add step: the whole flow with its new step when it fits at a zoom that still
+ * reads, never zoomed in past `zoom`; otherwise as much of it as fits, with the new step, which sits
+ * right of the flow level with its top, in view at the right.
+ */
+export function viewportShowingNewStep(step: NodeRect, others: NodeRect[], canvas: { width: number; height: number }, zoom: number) {
+    const rects = [...others, step];
+    const left = Math.min(...rects.map((rect) => rect.x));
+    const top = Math.min(...rects.map((rect) => rect.y));
+    const width = Math.max(...rects.map((rect) => rect.x + rect.width)) - left;
+    const height = Math.max(...rects.map((rect) => rect.y + rect.height)) - top;
+    const room = { width: Math.max(1, canvas.width - 2 * NEW_STEP_VIEW_PADDING), height: Math.max(1, canvas.height - NEW_STEP_VIEW_TOP - NEW_STEP_VIEW_PADDING) };
+    const fit = Math.min(room.width / width, room.height / height);
+    const nextZoom = Math.min(zoom, Math.max(fit, Math.min(zoom, NEW_STEP_MIN_ZOOM)));
+    const centeredX = (canvas.width - width * nextZoom) / 2 - left * nextZoom;
+    const centeredY = NEW_STEP_VIEW_TOP + (room.height - height * nextZoom) / 2 - top * nextZoom;
+    return {
+        // Too wide: the new step's right edge at the canvas's, the flow running off to the left.
+        x: Math.min(centeredX, canvas.width - NEW_STEP_VIEW_PADDING - (step.x + step.width) * nextZoom),
+        // Too tall: the flow's top at the canvas's, where the new step is.
+        y: Math.max(centeredY, NEW_STEP_VIEW_TOP - top * nextZoom),
+        zoom: nextZoom,
+    };
 }
 
 function buildDirtyRect(previousRect: NodeRect | null, nextRect: NodeRect | null): NodeRect | null {
@@ -244,13 +350,15 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         state.activeFlow ? (state.editorExpandChildFlowsByFlow[state.activeFlow] ?? state.preferredExpandChildFlows) : false
     ));
     const setEditorExpandChildFlows = useStore((state) => state.setEditorExpandChildFlows);
+    const flowSettingsShown = useStore((state) => !selectedNodeId && !selectedEdgeId && selectFlowSettingsOpen(state));
+    const setEditorGraphSettingsPanelOpen = useStore((state) => state.setEditorGraphSettingsPanelOpen);
     const hasValidationErrors = useStore((state) => state.hasValidationErrors);
     const saveState = useStore((state) => state.saveState);
     const workingDir = useStore((state) => state.workingDir);
     const activeProjectPath = useStore((state) => state.activeProjectPath);
     const model = useStore((state) => state.model);
     const setViewMode = useStore((state) => state.setViewMode);
-    const { setCenter, getZoom } = useReactFlow();
+    const { setViewport, getZoom } = useReactFlow();
     const [nodes, setNodes] = useNodesState<Node>([]);
     const [edges, setEdges] = useEdgesState<Edge>([]);
     const hydratedRef = useRef(false);
@@ -330,12 +438,27 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const isExpandedReadOnlyPreview = editorMode === 'structured' && expandChildFlows;
     // The file view edits the files; its canvas only selects nodes.
     const isCanvasReadOnly = isExpandedReadOnlyPreview || editorMode === 'files';
+    const connectRef = useRef<(params: Connection | Edge) => void>(() => {});
+    const recordFieldEditRef = useRef<(key: string | null, previous: { nodes?: Node[]; edges?: Edge[]; flowMetadata?: FlowDefinitionMetadata }) => void>(() => {});
+    // The inspector's and canvas nodes' edits apply to the graph at once, so the caller saves what
+    // it set: React may run a state updater only at its next render. A second edit in the same event
+    // builds on the first; React applies each to its own latest state, keeping a pending resize.
     const editorGraphBridge = useMemo(() => ({
         getNodes: () => canvasGraphRef.current.nodes,
-        setNodes,
+        setNodes: (update: SetStateAction<Node[]>) => {
+            const next = typeof update === 'function' ? update(canvasGraphRef.current.nodes) : update;
+            canvasGraphRef.current = { ...canvasGraphRef.current, nodes: next };
+            setNodes(update);
+        },
         getEdges: () => canvasGraphRef.current.edges,
-        setEdges,
+        setEdges: (update: SetStateAction<Edge[]>) => {
+            const next = typeof update === 'function' ? update(canvasGraphRef.current.edges) : update;
+            canvasGraphRef.current = { ...canvasGraphRef.current, edges: next };
+            setEdges(update);
+        },
         getFlow: () => canonicalFlowRef.current,
+        connect: (params: Connection | Edge) => connectRef.current(params),
+        recordFieldEdit: (key: string | null, previous: { nodes?: Node[]; edges?: Edge[]; flowMetadata?: FlowDefinitionMetadata }) => recordFieldEditRef.current(key, previous),
     }), [setEdges, setNodes]);
 
     useRegisterEditorGraphBridge(editorGraphBridge);
@@ -382,6 +505,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     description: `${saveErrorMessage ? `They weren’t saved: ${(saveErrorProblems?.map((problem) => problem.message) ?? flowProblems(saveErrorMessage)).join(' ')} ` : ''}Your unsaved flow edits will be lost.`,
                     confirmLabel: 'Discard and leave',
                     cancelLabel: 'Keep editing',
+                    confirmVariant: 'destructive',
                 })) {
                     proceed();
                 }
@@ -435,7 +559,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 currentFlowName,
                 snapshot?.nodes || [],
                 snapshot?.edges || [],
-                flowMetadata,
+                // The latest: Undo sets flow settings back just before it saves.
+                useStore.getState().flowMetadata,
                 canonicalFlowRef.current,
             ),
         }),
@@ -1125,16 +1250,48 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         });
     }, [enforceSingleSelectedEdge, expandChildFlows, nodes, scheduleEdgeRouting, scheduleSave, setEdges, setSelectedEdgeId]);
 
-    // What the canvas deleted, latest last, for Cmd/Ctrl+Z to put back. It belongs to the open flow:
-    // the same name in another project is another flow, so opening either forgets it.
-    // ponytail: undo covers canvas deletions only; keep a full edit history if other edits need undo.
-    const deletedRef = useRef<Array<{ nodes: Node[]; edges: Edge[] }>>([]);
-    useEffect(() => { deletedRef.current = []; }, [flowName, activeProjectPath]);
+    // The flow's edits, latest last, for Cmd/Ctrl+Z to take back: a deletion it puts back, a step it
+    // removes, a route it removes or moves back, an inspector or flow settings field it sets back. It
+    // belongs to the open flow: the same name in another project is another flow, so opening either
+    // forgets it. Text fields keep their own undo for their typing.
+    const editsRef = useRef<CanvasEdit[]>([]);
+    // The edit Undo takes back next, which names it.
+    const [lastEdit, setLastEdit] = useState<CanvasEdit | null>(null);
+    const pushEdit = useCallback((edit: CanvasEdit) => {
+        editsRef.current.push(edit);
+        setLastEdit(edit);
+    }, []);
+    // What Undo just took back, said a moment below the canvas; the steps it restored glow, as Go to step's does.
+    const [undone, setUndone] = useState<{ text: string; nodeIds: string[] } | null>(null);
+    useEffect(() => {
+        editsRef.current = [];
+        setLastEdit(null);
+        setUndone(null);
+    }, [flowName, activeProjectPath]);
+    useEffect(() => {
+        if (!undone) return;
+        Array.from(canvasPaneRef.current?.querySelectorAll('.react-flow__node') ?? [])
+            .filter((element) => undone.nodeIds.includes(element.getAttribute('data-id') ?? ''))
+            .forEach((element) => element.animate?.(
+                [{ filter: 'drop-shadow(0 0 10px hsl(var(--primary)))' }, { filter: 'none' }],
+                { duration: 1600, easing: 'ease-out' },
+            ));
+        const timer = window.setTimeout(() => setUndone(null), 2500);
+        return () => window.clearTimeout(timer);
+    }, [undone]);
+    // Typing in one field is one edit: the field as it was before the first key.
+    useEffect(() => {
+        recordFieldEditRef.current = (key, previous) => {
+            const last = editsRef.current.at(-1);
+            if (key !== null && last?.kind === 'fields' && last.key === key) return;
+            pushEdit({ kind: 'fields', key, nodes: previous.nodes ?? [], edges: previous.edges ?? [], flowMetadata: previous.flowMetadata });
+        };
+    }, [pushEdit]);
 
     // React Flow reports a deletion's nodes and edges in separate changes, each handler seeing the
     // other list from before it; here both come together, so the save drops a step with its routes.
     const onDelete = useCallback(({ nodes: deletedNodes, edges: deletedEdges }: { nodes: Node[]; edges: Edge[] }) => {
-        deletedRef.current.push({ nodes: deletedNodes, edges: deletedEdges });
+        pushEdit({ kind: 'delete', nodes: deletedNodes, edges: deletedEdges });
         // Apart: a step's ID can be spelled like a route's generated one.
         const nodeIds = new Set(deletedNodes.map((node) => node.id));
         const edgeIds = new Set(deletedEdges.map((edge) => edge.id));
@@ -1142,44 +1299,68 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             nodes: nodes.filter((node) => !nodeIds.has(node.id)),
             edges: edges.filter((edge) => !edgeIds.has(edge.id)),
         });
-    }, [edges, nodes, scheduleSave]);
+    }, [edges, nodes, pushEdit, scheduleSave]);
+
+    /** Takes back the latest canvas edit; false when there is none. */
+    const undoLastEdit = useCallback(() => {
+        const edit = editsRef.current.pop();
+        if (!edit) return false;
+        setLastEdit(editsRef.current.at(-1) ?? null);
+        const { nodes: nextNodes, edges: nextEdges } = undoCanvasEdit(edit, canvasGraphRef.current);
+        // A step or route taken back no longer shows in the inspector.
+        const { selectedNodeId, selectedEdgeId } = useStore.getState();
+        if (selectedNodeId && !nextNodes.some((node) => node.id === selectedNodeId)) setSelectedNodeId(null);
+        if (selectedEdgeId && !nextEdges.some((edge) => edge.id === selectedEdgeId)) setSelectedEdgeId(null);
+        if (edit.kind === 'fields' && edit.flowMetadata) {
+            // Saved below with the graph; a launch input list drafted since shows what came back.
+            const { flowMetadata: current, replaceFlowMetadata } = useStore.getState();
+            replaceFlowMetadata(edit.flowMetadata);
+            if (flowName && current.inputs !== edit.flowMetadata.inputs) {
+                useStore.setState((state) => ({
+                    editorLaunchInputDraftsByFlow: Object.fromEntries(Object.entries(state.editorLaunchInputDraftsByFlow).filter(([flow]) => flow !== flowName)),
+                    editorLaunchInputDraftErrorByFlow: Object.fromEntries(Object.entries(state.editorLaunchInputDraftErrorByFlow).filter(([flow]) => flow !== flowName)),
+                }));
+            }
+        }
+        if (edit.kind === 'fields' && edit.nodes.length > 0) {
+            // The inspector's drafts of those steps' fields start again from what came back.
+            const restoredIds = new Set(edit.nodes.map((node) => node.id));
+            useStore.setState((state) => ({
+                editorNodeInspectorSessionsByNodeId: Object.fromEntries(Object.entries(state.editorNodeInspectorSessionsByNodeId)
+                    .filter(([nodeId]) => !restoredIds.has(nodeId))),
+            }));
+        }
+        setNodes(nextNodes);
+        setEdges(nextEdges);
+        setUndone({
+            text: canvasEditUndoLabel(edit, nextNodes).replace(/^Undo\b/, 'Undid'),
+            nodeIds: edit.kind === 'fields' || edit.kind === 'delete' ? edit.nodes.map((node) => node.id) : [],
+        });
+        scheduleSave({ nodes: nextNodes, edges: nextEdges });
+        scheduleEdgeRouting(nextNodes, nextEdges, { persistAfter: true });
+        return true;
+    }, [flowName, scheduleEdgeRouting, scheduleSave, setEdges, setNodes, setSelectedEdgeId, setSelectedNodeId]);
 
     useEffect(() => {
         if (!isActive || isCanvasReadOnly) return;
-        const undoDelete = (event: KeyboardEvent) => {
+        const undoOnShortcut = (event: KeyboardEvent) => {
             if (event.key.toLowerCase() !== 'z' || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
             // Text fields keep their own undo.
             if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
-            const deleted = deletedRef.current.pop();
-            if (!deleted) return;
-            event.preventDefault();
-            const { nodes: currentNodes, edges: currentEdges } = canvasGraphRef.current;
-            // Only what still fits: an ID taken meanwhile stays, and a route goes back only between its
-            // own steps, never onto another step that now holds a deleted one's ID.
-            const nodeIds = new Set(currentNodes.map((node) => node.id));
-            const deletedIds = new Set(deleted.nodes.map((node) => node.id));
-            const restored = deleted.nodes.filter((node) => !nodeIds.has(node.id));
-            const restoredIds = new Set(restored.map((node) => node.id));
-            const isOwnStep = (id: string) => restoredIds.has(id) || (!deletedIds.has(id) && nodeIds.has(id));
-            const nextNodes = [...currentNodes, ...restored.map((node) => ({ ...node, selected: false }))];
-            const edgeIds = new Set(currentEdges.map((edge) => edge.id));
-            const nextEdges = [...currentEdges, ...deleted.edges.filter((edge) => (
-                !edgeIds.has(edge.id) && isOwnStep(edge.source) && isOwnStep(edge.target)
-            )).map((edge) => ({ ...edge, selected: false }))];
-            setNodes(nextNodes);
-            setEdges(nextEdges);
-            scheduleSave({ nodes: nextNodes, edges: nextEdges });
-            scheduleEdgeRouting(nextNodes, nextEdges, { persistAfter: true });
+            if (undoLastEdit()) event.preventDefault();
         };
-        document.addEventListener('keydown', undoDelete);
-        return () => document.removeEventListener('keydown', undoDelete);
-    }, [isActive, isCanvasReadOnly, scheduleEdgeRouting, scheduleSave, setEdges, setNodes]);
+        document.addEventListener('keydown', undoOnShortcut);
+        return () => document.removeEventListener('keydown', undoOnShortcut);
+    }, [isActive, isCanvasReadOnly, undoLastEdit]);
 
     const onConnect = useCallback(
         (params: Connection | Edge) => {
             if (expandChildFlows) {
                 return
             }
+            // Cmd/Ctrl+Z removes a new route, or moves a route given again by its ID back where it went.
+            const edgeId = buildEdgeIdForConnection(params, canvasGraphRef.current.edges)
+            pushEdit({ kind: 'route', edgeId, previous: canvasGraphRef.current.edges.find((edge) => edge.id === edgeId) ?? null })
             setEdges((currentEdges) => {
                 // A route is named by its decision: show the one it saves under, as the flow does.
                 const isFork = nodes.find((node) => node.id === params.source)?.data?.kind === 'parallel'
@@ -1191,13 +1372,16 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 const description = `Continue to ${String(target?.data?.label || params.target)}.`
                 const nextEdge: Edge = {
                     ...params,
-                    ...(isFork || ('data' in params && params.data?.decision) ? {} : { data: { ...('data' in params ? params.data : {}), decision, description } }),
-                    id: buildEdgeIdForConnection(params, currentEdges),
+                    ...(isFork ? {} : { data: { decision, description, ...('data' in params ? params.data : {}) } }),
+                    id: edgeId,
                     type: EDGE_TYPE,
                     className: EDGE_CLASS,
                     interactionWidth: EDGE_INTERACTION_WIDTH,
                 }
-                const newEdges = [...currentEdges, nextEdge]
+                // A route given again by its ID keeps its place, as the flow keeps its routes in order.
+                const newEdges = currentEdges.some((edge) => edge.id === nextEdge.id)
+                    ? currentEdges.map((edge) => (edge.id === nextEdge.id ? nextEdge : edge))
+                    : [...currentEdges, nextEdge]
                 const edgeIdToLayoutKey = buildEdgeLayoutKeyMap(newEdges)
                 const layoutKey = edgeIdToLayoutKey.get(nextEdge.id)
                 if (layoutKey) {
@@ -1218,17 +1402,15 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 return newEdges;
             });
         },
-        [expandChildFlows, nodes, scheduleEdgeRouting, scheduleSave, setEdges],
+        [expandChildFlows, nodes, pushEdit, scheduleEdgeRouting, scheduleSave, setEdges],
     );
+    // The inspector's route form adds a route through the same path as a drag.
+    useEffect(() => { connectRef.current = onConnect; }, [onConnect]);
 
     const onAddNode = useCallback(() => {
         if (!flowName || expandChildFlows) return;
-        const defaultModel = flowMetadata.llm_model || uiDefaults.llm_model || '';
-        const defaultProfile = flowMetadata.llm_profile || uiDefaults.llm_profile || '';
-        const defaultProvider = defaultProfile ? '' : (flowMetadata.llm_provider || uiDefaults.llm_provider || '');
-        const defaultReasoning = flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || '';
         // A deleted step that Cmd/Ctrl+Z can still put back keeps its ID.
-        const ids = new Set([...nodes, ...deletedRef.current.flatMap((entry) => entry.nodes)].map((node) => node.id));
+        const ids = new Set([...nodes, ...editsRef.current.flatMap((edit) => (edit.kind === 'delete' ? edit.nodes : []))].map((node) => node.id));
         let count = 1;
         while (ids.has(`step_${count}`)) count += 1;
         const newNodeId = `step_${count}`;
@@ -1238,6 +1420,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         const position = rects.length > 0
             ? { x: Math.max(...rects.map((rect) => rect.x + rect.width)) + 80, y: Math.min(...rects.map((rect) => rect.y)) }
             : { x: 0, y: 0 };
+        // No model of its own: the step follows the flow's default, and later changes to it.
         const newNode: Node = {
             id: newNodeId,
             type: getReactFlowNodeTypeForShape(shape),
@@ -1249,13 +1432,10 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                 kind: 'agent_task',
                 shape,
                 status: 'idle',
-                llm_model: defaultModel,
-                llm_provider: defaultProvider,
-                llm_profile: defaultProfile,
-                reasoning_effort: defaultReasoning,
             }
         };
 
+        pushEdit({ kind: 'add-step', nodeId: newNodeId });
         setNodes(nds => {
             // Selected, so the inspector opens on it.
             const newNodes = [...enforceSingleSelectedNode(nds, newNodeId), newNode];
@@ -1265,13 +1445,21 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             })
             return newNodes;
         });
+        // In view with the steps it will connect to, and again once the inspector and Validation panel
+        // that open for the new step have narrowed the canvas, so it never ends up off screen.
         const rect = readNodeRect(newNode);
-        // In the upper third of the canvas, clear of the Validation panel that opens at its bottom
-        // for the new step's missing route.
-        const zoom = getZoom();
-        const lift = (canvasPaneRef.current?.clientHeight ?? 0) / 6 / zoom;
-        void setCenter(rect.x + rect.width / 2, rect.y + rect.height / 2 + lift, { zoom, duration: 200 });
-    }, [edges, enforceSingleSelectedNode, expandChildFlows, flowMetadata, flowName, getZoom, nodes, scheduleEdgeRouting, scheduleSave, setCenter, setNodes, uiDefaults]);
+        const canvas = canvasPaneRef.current;
+        if (!canvas) return;
+        const currentZoom = getZoom();
+        const show = () => {
+            void setViewport(viewportShowingNewStep(rect, rects, { width: canvas.clientWidth, height: canvas.clientHeight }, currentZoom), { duration: 200 });
+        };
+        show();
+        if (typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(show);
+        observer.observe(canvas);
+        window.setTimeout(() => observer.disconnect(), 1000);
+    }, [edges, enforceSingleSelectedNode, expandChildFlows, flowName, getZoom, nodes, pushEdit, scheduleEdgeRouting, scheduleSave, setNodes, setViewport]);
 
     const applyLaidOutGraph = useCallback((layoutGraph: LaidOutFlowGraph) => {
         layoutStateRef.current = layoutGraph.layout
@@ -1612,8 +1800,20 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                         void onResetSavedLayout()
                     }}
                     onAddNode={onAddNode}
+                    undo={isCanvasReadOnly ? undefined : { label: lastEdit ? canvasEditUndoLabel(lastEdit, nodes) : null, onUndo: undoLastEdit }}
                     runDefaultProjectPath={runDefaultProjectPath}
                     minimap={isExpandedReadOnlyPreview ? undefined : { shown: showMinimap, onToggle: () => setShowMinimap((shown) => !shown) }}
+                    // Opening them leaves the selected step, so the inspector shows them.
+                    flowSettings={{
+                        shown: flowSettingsShown,
+                        onToggle: () => {
+                            if (!flowSettingsShown) {
+                                setSelectedNodeId(null);
+                                setSelectedEdgeId(null);
+                            }
+                            setEditorGraphSettingsPanelOpen(flowName, !flowSettingsShown);
+                        },
+                    }}
                     onRun={(projectPath) => {
                         flushPendingSave()
                         setRunProjectPath(projectPath)
@@ -1624,7 +1824,16 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             <div className="flex min-h-0 flex-1 flex-col md:flex-row">
             {/* ponytail: phones get the file view alone in Files mode; its list selects files. A flow
                 that won't open has no canvas, so its files take the whole width and say what to fix. */}
-            <div ref={canvasPaneRef} className={`relative min-h-0 min-w-0 flex-1 ${showFiles ? (canRepairFiles ? 'hidden' : 'hidden md:block') : ''}`}>
+            <div className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${showFiles ? (canRepairFiles ? 'hidden' : 'hidden md:flex') : ''}`}>
+            {/* The canvas, above the Validation panel rather than under it, so no problem hides the graph. */}
+            <div ref={canvasPaneRef} className="relative min-h-0 flex-1">
+                <div role="status" data-testid="editor-undone" className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2">
+                    {undone ? (
+                        <span key={undone.text + undone.nodeIds.join()} className="block whitespace-nowrap rounded-md border bg-background px-2.5 py-1 text-xs font-medium text-foreground shadow-sm animate-in fade-in">
+                            {undone.text}
+                        </span>
+                    ) : null}
+                </div>
                 {
                     loadFailure ? (
                         <SheetEmpty data-testid="editor-flow-load-failed" icon={GitBranch} title={loadFailure.missing ? 'This flow isn’t here' : 'This flow couldn’t be opened'}>
@@ -1678,7 +1887,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                                     type: MarkerType.ArrowClosed,
                                 },
                             }}
-                            elevateEdgesOnSelect
+                            // Not raised when selected: a raised route would draw over the route labels, which
+                            // mask the routes beneath them; a selected route reads by its colour.
                             colorMode="light"
                             onlyRenderVisibleElements={onlyRenderVisibleElements}
                             minZoom={0.1}
@@ -1730,7 +1940,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                                     data-layout-ms={Math.round(lastLayoutMs)}
                                     className="inline-flex items-center rounded-md border border-border/70 bg-background px-3 py-1.5 text-xs text-muted-foreground"
                                 >
-                                    Canvas profile: {performanceProfile} ({nodeCount} nodes). Preview debounce: {previewDebounceMs}ms.
+                                    Canvas profile: {performanceProfile} ({nodeCount} steps). Preview debounce: {previewDebounceMs}ms.
                                     {' '}Optimizations: {optimizationLabel}.
                                 </div>
                             </>
@@ -1742,6 +1952,8 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                         ) : null}
                     </div>
                 )}
+
+            </div>
 
                 {flowOpen && editorMode === 'structured' && <ValidationPanel />}
 

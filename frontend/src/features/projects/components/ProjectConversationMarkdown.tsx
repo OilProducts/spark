@@ -1,19 +1,35 @@
-import { createContext, memo, useContext, useId, useMemo, useState, type ComponentProps } from 'react'
+import { createContext, memo, useContext, useEffect, useId, useMemo, useState, type ComponentProps } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
-import rehypeHighlight from 'rehype-highlight'
 import type { PhrasingContent, Root, RootContent } from 'mdast'
 import type { Root as HastRoot, Element } from 'hast'
 import { isTauri } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { TranscriptCopyButton } from '@/components/app/transcript/TranscriptCopyButton'
 import { MarkdownMermaid } from './MarkdownMermaid'
-import 'katex/dist/katex.min.css'
 import './conversation-markdown.css'
 
 const MarkdownContext = createContext(false)
+
+// Math and code highlighting are a third of the app's script: loaded on their own, as soon as the
+// app starts, so the app shows first; until then math shows as its source and code plain.
+type RichPlugins = NonNullable<ComponentProps<typeof ReactMarkdown>['rehypePlugins']>
+let richPlugins: RichPlugins | null = null
+const richPluginsLoad = Promise.all([import('rehype-katex'), import('rehype-highlight'), import('katex/dist/katex.min.css')])
+    .then(([{ default: rehypeKatex }, { default: rehypeHighlight }]): RichPlugins => (richPlugins = [
+        [rehypeKatex, { trust: false, strict: 'error' }],
+        [rehypeHighlight, { detect: false, ignoreMissing: true }],
+    ]))
+    .catch(() => null)
+
+function useRichPlugins(): RichPlugins {
+    const [plugins, setPlugins] = useState(richPlugins)
+    useEffect(() => {
+        if (!plugins) void richPluginsLoad.then(setPlugins)
+    }, [plugins])
+    return plugins ?? []
+}
 
 function footnoteLabels(prefix: string) {
     return (tree: HastRoot) => {
@@ -143,6 +159,50 @@ function literalNonHtml({ literalHtml = false }: PlainOutput = {}) {
     }
 }
 
+/**
+ * Text a person typed keeps every character they typed: a glob's `*`, a name's `__`, a path's `\`,
+ * an `&amp;`, a `# of`, a `<tag>`, a `- item` or a `> quote` stay as they are, in their line, with
+ * the indentation that starts it. Only code, math, tables and web addresses format.
+ */
+function typedText(this: unknown) {
+    // remark-parse reads the parser's extensions from the processor's data.
+    const data = (this as { data: () => { micromarkExtensions?: object[] } }).data()
+    ;(data.micromarkExtensions ??= []).push({ disable: { null: [
+        'attention', 'strikethrough', 'characterEscape', 'characterReference', 'hardBreakEscape',
+        'headingAtx', 'setextUnderline', 'thematicBreak', 'htmlFlow', 'htmlText', 'autolink', 'list', 'blockQuote', 'codeIndented',
+        'labelStartLink', 'labelStartImage', 'definition', 'gfmFootnoteCall', 'gfmPotentialFootnoteCall', 'gfmFootnoteDefinition',
+    ] } })
+    // The parser drops the whitespace that starts each line of a paragraph; a traceback's or YAML's
+    // indentation carries meaning, so each line gets its own back. Its lines show as `pre-wrap` text.
+    return (tree: Root, file: { value: unknown }) => {
+        const lines = String(file.value).split(/\r\n|\r|\n/)
+        const indent = (line: number) => /^[ \t]*/.exec(lines[line - 1] ?? '')![0]
+        for (const paragraph of tree.children) {
+            if (paragraph.type !== 'paragraph' || !paragraph.position) continue
+            let line = paragraph.position.start.line
+            let lineStart = true
+            paragraph.children = paragraph.children.flatMap((node): PhrasingContent[] => {
+                // Text split around a web address has no position; the rest resyncs, as code or math may span lines.
+                if (node.position) line = node.position.start.line
+                const lead = lineStart ? indent(line) : ''
+                lineStart = node.type === 'break'
+                if (node.type === 'break') {
+                    // Trailing spaces' break ends its line as any line ending does.
+                    line++
+                    return [{ type: 'text', value: `${lead}\n` }]
+                }
+                if (node.type === 'text') {
+                    // A text node per line: HTML conversion trims the whitespace after a line ending inside one.
+                    const parts = node.value.split(/\r\n?|\n/)
+                    return parts.map((part, index) => ({ type: 'text', value: `${index ? indent(++line) : lead}${part}${index < parts.length - 1 ? '\n' : ''}` }))
+                }
+                if (node.position) line = node.position.end.line
+                return lead ? [{ type: 'text', value: lead }, node] : [node]
+            })
+        }
+    }
+}
+
 /** Every line break is kept, as a tool's plain-text output needs: a single newline doesn't join lines. */
 function lineBreaks() {
     return (tree: Root) => {
@@ -224,19 +284,24 @@ interface ProjectConversationMarkdownProps {
     enableCodeCopy?: boolean
     /** Keep single line breaks and show HTML as text, for text that may be plain output rather than Markdown, such as a run's result. */
     keepLineBreaks?: boolean
+    /** Text a person typed, such as their chat message: every character, line and indent they typed shows. */
+    typed?: boolean
 }
 
-function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false, keepLineBreaks = false }: ProjectConversationMarkdownProps) {
+function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false, keepLineBreaks = false, typed = false }: ProjectConversationMarkdownProps) {
     const id = useId()
     const remarkRehypeOptions = useMemo(() => ({ clobberPrefix: `markdown-${id}-`, footnoteLabel: 'Footnotes' }), [id])
+    const rich = useRichPlugins()
     return <MarkdownContext.Provider value={enableCodeCopy}>
-        <div className="conversation-markdown min-w-0">
+        <div className={`conversation-markdown min-w-0${typed ? ' [&_p]:whitespace-pre-wrap' : ''}`}>
             <ReactMarkdown components={markdownComponents} skipHtml
-                remarkPlugins={keepLineBreaks
-                    // Plain output shows every line as written, HTML included.
-                    ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], [safeBreaksAndCode, PLAIN_OUTPUT], [literalNonHtml, PLAIN_OUTPUT], lineBreaks]
-                    : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, literalNonHtml]}
-                rehypePlugins={[[footnoteLabels, `markdown-${id}-`], [rehypeKatex, { trust: false, strict: 'error' }], [rehypeHighlight, { detect: false, ignoreMissing: true }]]}
+                remarkPlugins={typed
+                    ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], typedText, [safeBreaksAndCode, PLAIN_OUTPUT]]
+                    : keepLineBreaks
+                        // Plain output shows every line as written, HTML included.
+                        ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], [safeBreaksAndCode, PLAIN_OUTPUT], [literalNonHtml, PLAIN_OUTPUT], lineBreaks]
+                        : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, literalNonHtml]}
+                rehypePlugins={[[footnoteLabels, `markdown-${id}-`], ...rich]}
                 remarkRehypeOptions={remarkRehypeOptions}
                 urlTransform={(url) => destination(url) === 'unsafe' ? '' : url}
             >{content}</ReactMarkdown>

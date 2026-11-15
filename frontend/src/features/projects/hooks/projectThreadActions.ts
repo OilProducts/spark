@@ -73,6 +73,10 @@ export function useProjectThreadActions({
             updateProjectSessionState(projectPath, { conversationId: null })
             void persistProjectState(projectPath, { active_conversation_id: null, last_accessed_at: new Date().toISOString() })
             useStore.getState().setActiveProjectPath(projectPath)
+            // The new chat's composer takes focus once it shows, so typing starts the chat.
+            requestAnimationFrame(() => {
+                document.querySelector<HTMLElement>('[data-testid="chats-view"] [data-testid="project-ai-conversation-input"]')?.focus()
+            })
         }
         if (useStore.getState().projectPagePath) requestNavigation(open)
         else open()

@@ -1,5 +1,5 @@
 import { useStore, type SaveErrorKind } from '@/store'
-import { saveFlowValidated, type FlowSaveContent } from '@/lib/attractorClient'
+import { fetchPreviewValidated, saveFlowValidated, type FlowSaveContent } from '@/lib/attractorClient'
 import { recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 import { duplicateDecisionsInFlow } from '@/lib/canonicalFlowModel'
 import { flowProblemsFromDetail } from '@/features/editor/model/flowLoadFailure'
@@ -151,6 +151,17 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
     markSaveInFlight()
 
     try {
+        // The server refuses a flow that doesn't validate, as one mid-edit often is (a step just added,
+        // a route not yet wired); its preview answers either way, so the edits wait without a refused
+        // save. A preview that fails says nothing: the save still goes, and the server decides.
+        const preview = 'flow' in content
+            ? await fetchPreviewValidated(content.flow, undefined, { flowName: name, projectPath }).catch(() => null)
+            : null
+        if (preview?.status === 'validation_error') {
+            const problems = flowProblemsFromDetail(preview)
+            markSaveFailure(buildErrorMessage('validation_error', problems?.map((problem) => problem.message).join(' ') ?? preview.error, 422), 'validation_error', problems)
+            return false
+        }
         const response = await saveFlowValidated(name, content, projectPath)
         if (!response.ok) {
             const detail = parseErrorDetail(response.payload)

@@ -35,8 +35,11 @@ export function ContextKeyListEditor({
                     value={value}
                     onChange={(event) => onChange(event.target.value)}
                     rows={4}
-                    className="min-h-24 px-2 py-2 font-mono text-sm"
-                    placeholder="One context.* key per line"
+                    // A key is one line: a long one scrolls rather than breaking mid-word.
+                    wrap="off"
+                    spellCheck={false}
+                    className="min-h-24 overflow-x-auto px-2 py-2 font-mono text-sm"
+                    placeholder={'context.plan\ncontext.summary'}
                 />
             </Field>
             {error ? (
@@ -44,7 +47,7 @@ export function ContextKeyListEditor({
                     {error}
                 </p>
             ) : (
-                <p id={`${id}-help`} className="text-xs text-muted-foreground">One <code>context.*</code> key per line.</p>
+                <p id={`${id}-help`} className="text-xs text-muted-foreground">One key per line.</p>
             )}
         </Well>
     )

@@ -41,7 +41,6 @@ const TIMELINE_EVENT_TYPES: Record<string, TimelineEventCategory> = {
 }
 
 const RETRY_CORRELATION_EVENT_TYPES = new Set(['StageStarted', 'StageFailed', 'StageRetrying', 'StageCompleted'])
-const PENDING_GATE_FALLBACK_RECEIVED_AT = '1970-01-01T00:00:00Z'
 
 const logUnexpectedRunError = (error: unknown) => {
     if (error instanceof ApiHttpError) {
@@ -231,7 +230,8 @@ const timelineSummaryFromEvent = (
             : `${sourcePrefix}${node} completed`
     }
     if (type === 'StageTransition') {
-        const decision = asTrimmedString(payload.decision) ?? 'unknown'
+        // A decision ID reads as the canvas labels its route: `ready_for_review` as "ready for review".
+        const decision = asTrimmedString(payload.decision)?.replace(/_/g, ' ') ?? 'unknown'
         const target = step(asTrimmedString(payload.target), 'unknown')
         const visit = asFiniteNumber(payload.visit)
         return `${sourcePrefix}${node} → ${target} on ${decision}${visit !== null && visit > 1 ? ` (visit ${visit})` : ''}`
@@ -766,7 +766,7 @@ const mergePendingInterviewGatesWithSnapshots = (
             runId: question.runId,
             origin: question.origin,
             sequence: nextSequence,
-            receivedAt: PENDING_GATE_FALLBACK_RECEIVED_AT,
+            receivedAt: question.askedAt,
             nodeId: question.nodeId,
             stageIndex: null,
             sourceScope: 'root',
@@ -853,7 +853,6 @@ export {
     journalEntriesShown,
     journalEntrySummary,
     mergePendingInterviewGatesWithSnapshots,
-    PENDING_GATE_FALLBACK_RECEIVED_AT,
     asFiniteNumber,
     logUnexpectedRunError,
     pendingGateOptionsFromPayload,

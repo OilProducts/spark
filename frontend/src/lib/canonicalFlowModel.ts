@@ -159,6 +159,20 @@ const DEPRECATED_DOT_NODE_KEYS = new Set([
     'type',
     'stack.child_yamlfile',
 ])
+/** Step attrs with a field of their own in the flow or the step inspector; any other is an extension. */
+export const NODE_CORE_ATTR_KEYS = new Set<string>([
+    ...NODE_EXTENSION_CORE_KEYS,
+    ...DEPRECATED_DOT_NODE_KEYS,
+    ...EDITOR_NODE_EXCLUDED_ATTR_KEYS,
+    // The inspector's tool fields, saved as extensions.
+    'tool.hooks.pre',
+    'tool.hooks.post',
+    'tool.artifacts.paths',
+    'tool.artifacts.stdout',
+    'tool.artifacts.stderr',
+])
+/** Route attrs with a field of their own; any other is an extension. */
+export const EDGE_CORE_ATTR_KEYS = new Set<string>([...EDGE_EXTENSION_CORE_KEYS, ...EPHEMERAL_EDGE_ATTR_KEYS])
 
 function isCanonicalAttrValue(value: unknown): value is CanonicalAttrValue {
     if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
@@ -233,11 +247,16 @@ function typedNodeConfig(node: Record<string, unknown> | null): Record<string, u
 }
 
 // Canvas edges are a view of each node's `routes` map plus each fork's
-// structural branch and join connections, in the server's preview order.
-function flowEdgesFromDefinition(flow: CanonicalFlowDefinition): CanonicalFlowEdge[] {
+// structural branch and join connections. The flow's route maps arrive with
+// their keys sorted; the preview's edges keep the author's order, as runs
+// offer the decisions, so the routes follow those.
+function flowEdgesFromDefinition(flow: CanonicalFlowDefinition, previewEdges: Array<Record<string, unknown>>): CanonicalFlowEdge[] {
+    const authored = new Map(previewEdges.map((edge, index) => [`${edge.from ?? edge.source}\n${edge.decision}`, index]))
+    const rank = (source: string, decision: string) => authored.get(`${source}\n${decision}`) ?? previewEdges.length
     return Object.entries(asRecord(flow.nodes) ?? {}).flatMap(([source, nodeValue]) => {
         const node = asRecord(nodeValue)
-        const routeEdges: CanonicalFlowEdge[] = Object.entries(asRecord(node?.routes) ?? {}).flatMap(([decision, routeValue]) => {
+        const routes = Object.entries(asRecord(node?.routes) ?? {}).sort(([left], [right]) => rank(source, left) - rank(source, right))
+        const routeEdges: CanonicalFlowEdge[] = routes.flatMap(([decision, routeValue]) => {
             const route = asRecord(routeValue)
             if (typeof route?.to !== 'string') return []
             return [{
@@ -423,7 +442,7 @@ export function buildCanonicalFlowModelFromPreviewGraph(
         }]
     })
 
-    const edges: CanonicalFlowEdge[] = baseFlow && asRecord(baseFlow.nodes) ? flowEdgesFromDefinition(baseFlow) : graph.edges.flatMap((edgePayload) => {
+    const edges: CanonicalFlowEdge[] = baseFlow && asRecord(baseFlow.nodes) ? flowEdgesFromDefinition(baseFlow, graph.edges) : graph.edges.flatMap((edgePayload) => {
         const source = typeof edgePayload.from === 'string'
             ? edgePayload.from
             : typeof edgePayload.source === 'string'

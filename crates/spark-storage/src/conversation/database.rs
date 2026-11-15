@@ -297,6 +297,8 @@ CREATE TABLE delegations_in (
 "#;
 
 /// Conversation rows carry metadata and summary, never transcript arrays.
+/// `preview_role` is whose message the preview is, the latest with text:
+/// a reply's preview reads as its Markdown renders, a user's as typed.
 macro_rules! conversation_row_select {
     ($filter:literal) => {
         concat!(
@@ -305,6 +307,10 @@ macro_rules! conversation_row_select {
              'handle', handle, 'project_path', project_path, \
              'created_at', created_at, 'updated_at', updated_at, \
              'title', title, 'preview', preview, \
+             'preview_role', (SELECT role FROM turns INDEXED BY turns_page \
+             WHERE conversation_id = conversations.id AND deleted = 0 AND kind = 'message' \
+             AND trim(coalesce(json_extract(payload, '$.content'), ''), char(32, 9, 10, 11, 12, 13)) != '' \
+             ORDER BY position DESC, turn_id DESC LIMIT 1), \
              'running', json(iif(running, 'true', 'false')), \
              'needs_attention', json(iif(needs_attention, 'true', 'false')), \
              'launched_run_ids', json(launched_run_ids), 'metadata', json(metadata)) END \

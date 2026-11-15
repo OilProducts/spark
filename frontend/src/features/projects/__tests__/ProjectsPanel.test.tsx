@@ -1530,6 +1530,21 @@ describe('ProjectsPanel', () => {
       expect(MockEventSource.instances.length).toBeGreaterThan(0)
     })
 
+    // The live stream opens the new chat with its window, as the server does.
+    act(() => {
+      MockEventSource.instances[0]?.onmessage?.({
+        data: liveWindowData(buildPendingSendSnapshot({
+          conversationId: conversationId!,
+          title: 'Keep the streamed thinking visible.',
+          userContent: 'Keep the streamed thinking visible.',
+          createdAt: '2026-03-07T15:31:00Z',
+          updatedAt: '2026-03-07T15:31:01Z',
+        })),
+      } as MessageEvent)
+    })
+    // A chat started here is not asked for before the server has it.
+    expect(vi.mocked(fetch).mock.calls.some(([input, init]) => !init?.method && resolveRequestUrl(input).includes(`/conversations/${conversationId}?`))).toBe(false)
+
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
         data: liveTurnData({
@@ -2284,6 +2299,19 @@ describe('ProjectsPanel', () => {
       expect(MockEventSource.instances.length).toBeGreaterThan(0)
     })
 
+    // The live stream opens the new chat with its window, as the server does.
+    act(() => {
+      MockEventSource.instances[0]?.onmessage?.({
+        data: liveWindowData(buildPendingSendSnapshot({
+          conversationId: conversationId!,
+          title: 'Stream this reply.',
+          userContent: 'Stream this reply.',
+          createdAt: '2026-03-07T15:30:00Z',
+          updatedAt: '2026-03-07T15:30:01Z',
+        })),
+      } as MessageEvent)
+    })
+
     act(() => {
       MockEventSource.instances[0]?.onmessage?.({
         data: liveTurnData({
@@ -2521,6 +2549,20 @@ describe('ProjectsPanel', () => {
 
     await waitFor(() => {
       expect(MockEventSource.instances.length).toBeGreaterThan(0)
+    })
+
+    // The live stream opens the new chat with its window, as the server does.
+    act(() => {
+      MockEventSource.instances[0]?.onmessage?.({
+        data: liveWindowData(buildPendingSendSnapshot({
+          conversationId: conversationId!,
+          title: 'Draft a spec.',
+          userContent: 'Draft a spec.',
+          assistantTurnId: 'turn-assistant-1',
+          createdAt: '2026-03-08T19:10:00Z',
+          updatedAt: '2026-03-08T19:10:01Z',
+        })),
+      } as MessageEvent)
     })
 
     act(() => {
@@ -3365,6 +3407,21 @@ describe('ProjectsPanel', () => {
 
     await waitFor(() => {
       expect(MockEventSource.instances.length).toBeGreaterThan(0)
+    })
+
+    // The live stream opens the new chat with its window, as the server does.
+    act(() => {
+      MockEventSource.instances[0]?.onmessage?.({
+        data: liveWindowData(buildPendingSendSnapshot({
+          conversationId: conversationId!,
+          title: 'Test interleaved streaming.',
+          userContent: 'Test interleaved streaming.',
+          userTurnId: 'turn-user-interleaved',
+          assistantTurnId: 'turn-assistant-interleaved',
+          createdAt: '2026-03-08T20:09:59Z',
+          updatedAt: '2026-03-08T20:10:00Z',
+        })),
+      } as MessageEvent)
     })
 
     act(() => {

@@ -53,10 +53,12 @@ export function FlowTree({
     dataTestId,
 }: FlowTreeProps) {
     const sections = useMemo(() => {
-        const own = flows.filter((flow) => projectFlows?.has(flow))
-        if (own.length === 0) {
+        // The headings follow the project, not the search: a search that hides the project's
+        // flows still lists what's left under "Bundled with Spark".
+        if (!projectFlows?.size) {
             return [{ label: null, tree: buildFlowTree(flows) }]
         }
+        const own = flows.filter((flow) => projectFlows.has(flow))
         return [
             { label: projectLabel ? `${projectLabel}'s flows` : 'This project', tree: buildFlowTree(own) },
             { label: 'Bundled with Spark', tree: buildFlowTree(flows.filter((flow) => !projectFlows?.has(flow))) },
@@ -134,7 +136,10 @@ function FlowTreeNodeRow({
             <Button
                 type="button"
                 aria-label={`${title ? `${title} (${node.path})` : node.path}${error ? ', has errors' : ''}`}
-                title={error ? `${node.path}\n${error}` : node.path}
+                // The row truncates its title and description; the tooltip has them in full.
+                title={[title, node.path, error ?? description].filter(Boolean).join('\n')}
+                aria-current={selectedFlow === node.path ? 'true' : undefined}
+                data-flow-name={node.path}
                 onClick={() => onSelectFlow(node.path)}
                 variant="ghost"
                 className={`h-auto min-h-9 w-full justify-start rounded-md px-3 py-2 pr-8 text-left text-sm transition-colors ${

@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNodes, useReactFlow } from '@xyflow/react'
-import { useStore, type DiagnosticEntry } from '@/store'
+import { useStore, type AppState, type DiagnosticEntry } from '@/store'
 import { buildCanonicalFlowModelFromEditorState, buildFlowDefinitionFromCanonicalFlowModel } from '@/lib/canonicalFlowModel'
 import { resolveGraphFieldDiagnostics } from '@/lib/inspectorFieldDiagnostics'
 import { toExtensionAttrEntries } from '@/lib/extensionAttrs'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
-import { Button } from '@/components/ui/button'
 import { InspectorScaffold } from './components/InspectorScaffold'
 import { normalizeProjectPath } from '@/lib/projectPaths'
+import { getHandlerType } from '@/lib/nodeVisibility'
 import type { TriggerResponse } from '@/lib/api/triggersApi'
 import {
     parseLaunchInputDefinitions,
@@ -27,9 +27,13 @@ import {
 } from './components/graph-settings/GraphSettingsSections'
 import { useEditorGraphBridgeRef } from './EditorGraphBridgeContext'
 
-interface GraphSettingsProps {
-    inline?: boolean
-}
+/**
+ * Whether the open flow shows its Flow settings when nothing is selected: the choice last made for it,
+ * else the "Open graph settings panel" preference.
+ */
+export const selectFlowSettingsOpen = (state: AppState) => (
+    state.activeFlow ? (state.editorGraphSettingsPanelOpenByFlow[state.activeFlow] ?? state.preferredGraphSettingsOpen) : false
+)
 
 /**
  * The triggers that start this flow in this project but leave a required launch input unset,
@@ -49,7 +53,9 @@ function triggersMissingInputs(triggers: TriggerResponse[], flow: string | null,
     })
 }
 
-export function GraphSettings({ inline = false }: GraphSettingsProps) {
+const isAgentStep = (node: { data?: Record<string, unknown> }) => getHandlerType(node.data?.kind as string) === 'codergen'
+
+export function GraphSettings() {
     const activeFlow = useStore((state) => state.activeFlow)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const triggers = useStore((state) => state.triggersSession.triggers)
@@ -57,18 +63,15 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const flowMetadata = useStore((state) => state.flowMetadata)
     const flowMetadataErrors = useStore((state) => state.flowMetadataErrors)
     const flowMetadataUserEditVersion = useStore((state) => state.flowMetadataUserEditVersion)
-    const setFlowMetadata = useStore((state) => state.setFlowMetadata)
-    const updateFlowMetadata = useStore((state) => state.updateFlowMetadata)
+    const storeSetFlowMetadata = useStore((state) => state.setFlowMetadata)
+    const storeUpdateFlowMetadata = useStore((state) => state.updateFlowMetadata)
     const model = useStore((state) => state.model)
     const setModel = useStore((state) => state.setModel)
     const workingDir = useStore((state) => state.workingDir)
     const setWorkingDir = useStore((state) => state.setWorkingDir)
     const viewMode = useStore((state) => state.viewMode)
     const uiDefaults = useStore((state) => state.uiDefaults)
-    const preferredGraphSettingsOpen = useStore((state) => state.preferredGraphSettingsOpen)
     const preferredAdvancedControls = useStore((state) => state.preferredAdvancedControls)
-    const editorGraphSettingsPanelOpenByFlow = useStore((state) => state.editorGraphSettingsPanelOpenByFlow)
-    const setEditorGraphSettingsPanelOpen = useStore((state) => state.setEditorGraphSettingsPanelOpen)
     const editorShowAdvancedFlowMetadataByFlow = useStore((state) => state.editorShowAdvancedFlowMetadataByFlow)
     const setEditorShowAdvancedFlowMetadata = useStore((state) => state.setEditorShowAdvancedFlowMetadata)
     const editorLaunchInputDraftsByFlow = useStore((state) => state.editorLaunchInputDraftsByFlow)
@@ -81,9 +84,22 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const updateNodes = (nextNodes: Parameters<typeof setNodes>[0]) =>
         (editorGraphBridgeRef?.current?.setNodes ?? setNodes)(nextNodes)
     const flowNodes = useNodes()
+    // Each edit first tells Undo the settings as they were; edits to one field in a row are one.
+    const recordFlowEdit = (key: string | null) => editorGraphBridgeRef?.current?.recordFieldEdit(
+        key === null ? null : `flow:${key}`, { flowMetadata: useStore.getState().flowMetadata },
+    )
+    const updateFlowMetadata: typeof storeUpdateFlowMetadata = (key, value) => {
+        if (String(useStore.getState().flowMetadata[key] ?? '') !== value) recordFlowEdit(String(key))
+        storeUpdateFlowMetadata(key, value)
+    }
+    const setFlowMetadata = (metadata: typeof flowMetadata, key: string | null) => {
+        recordFlowEdit(key)
+        storeSetFlowMetadata(metadata)
+    }
     const autosaveScopeRef = useRef<string | null>(null)
     const lastHandledFlowMetadataVersionRef = useRef(flowMetadataUserEditVersion)
     const canApplyDefaults = !!activeFlow && viewMode === 'editor'
+    const agentStepCount = flowNodes.filter(isAgentStep).length
     const graphFieldDiagnostics = useMemo(() => resolveGraphFieldDiagnostics(diagnostics), [diagnostics])
     const flowMetadataExtensionEntries = useMemo(
         () => toExtensionAttrEntries(flowMetadata as Record<string, unknown>, CORE_FLOW_METADATA_KEYS),
@@ -97,7 +113,6 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         [rawLaunchInputsValue],
     )
 
-    const isOpen = activeFlow ? (editorGraphSettingsPanelOpenByFlow[activeFlow] ?? preferredGraphSettingsOpen) : false
     const showAdvancedFlowMetadata = activeFlow
         ? (editorShowAdvancedFlowMetadataByFlow[activeFlow] ?? preferredAdvancedControls)
         : false
@@ -124,37 +139,42 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         }),
     })
 
+    const defaultThinking = flowMetadata.thinking || uiDefaults.thinking || ''
+    const defaultProfile = flowMetadata.llm_profile || uiDefaults.llm_profile || ''
+    const stepDefaults: Record<string, string> = {
+        llm_model: flowMetadata.llm_model || uiDefaults.llm_model || '',
+        llm_provider: defaultProfile ? '' : (flowMetadata.llm_provider || uiDefaults.llm_provider || ''),
+        llm_profile: defaultProfile,
+        reasoning_effort: flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || '',
+        thinking: defaultThinking,
+        thinking_budget_tokens: defaultThinking === 'budget'
+            ? flowMetadata.thinking_budget_tokens || uiDefaults.thinking_budget_tokens || ''
+            : '',
+        reasoning_mode: flowMetadata.reasoning_mode || uiDefaults.reasoning_mode || '',
+        reasoning_summary: flowMetadata.reasoning_summary || uiDefaults.reasoning_summary || '',
+    }
+    // What the last apply did, shown while the flow, its defaults and its agent steps' model settings
+    // are as the apply left them: an Undo or a step's own edit makes it stale.
+    const appliedKey = (nodes: typeof flowNodes) => JSON.stringify([activeFlow, stepDefaults,
+        nodes.filter(isAgentStep).map((node) => [node.id, ...Object.keys(stepDefaults).map((key) => String(node.data?.[key] ?? ''))])])
+    const [applied, setApplied] = useState<{ key: string; message: string } | null>(null)
+
     const applyDefaultsToNodes = () => {
         if (!activeFlow) return
-        const defaultModel = flowMetadata.llm_model || uiDefaults.llm_model || ''
-        const defaultProfile = flowMetadata.llm_profile || uiDefaults.llm_profile || ''
-        const defaultProvider = defaultProfile ? '' : (flowMetadata.llm_provider || uiDefaults.llm_provider || '')
-        const defaultReasoning = flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || ''
-        const defaultThinking = flowMetadata.thinking || uiDefaults.thinking || ''
-
+        // Only agent steps run a model; other kinds would save settings they never use.
         const currentNodes = readNodes()
-        if (currentNodes.length === 0) return
-
-        const updatedNodes = currentNodes.map((node) => ({
-            ...node,
-            data: {
-                ...node.data,
-                llm_model: defaultModel,
-                llm_provider: defaultProvider,
-                llm_profile: defaultProfile,
-                reasoning_effort: defaultReasoning,
-                thinking: defaultThinking,
-                thinking_budget_tokens: defaultThinking === 'budget'
-                    ? flowMetadata.thinking_budget_tokens || uiDefaults.thinking_budget_tokens || ''
-                    : '',
-                reasoning_mode: flowMetadata.reasoning_mode || uiDefaults.reasoning_mode || '',
-                reasoning_summary: flowMetadata.reasoning_summary || uiDefaults.reasoning_summary || '',
-
-            },
-        }))
-
+        const agentNodes = currentNodes.filter(isAgentStep)
+        const changing = agentNodes.filter((node) => Object.entries(stepDefaults).some(([key, value]) => String(node.data?.[key] ?? '') !== value))
+        const steps = (count: number) => `${count} agent ${count === 1 ? 'step' : 'steps'}`
+        if (changing.length === 0) {
+            if (agentNodes.length > 0) setApplied({ key: appliedKey(currentNodes), message: `${agentNodes.length === 1 ? 'Its agent step already uses' : `All ${steps(agentNodes.length)} already use`} these defaults.` })
+            return
+        }
+        editorGraphBridgeRef?.current?.recordFieldEdit(null, { nodes: changing })
+        const updatedNodes = currentNodes.map((node) => changing.includes(node) ? { ...node, data: { ...node.data, ...stepDefaults } } : node)
         updateNodes(updatedNodes)
         saveNow(updatedNodes)
+        setApplied({ key: appliedKey(updatedNodes), message: `Set ${steps(changing.length)} to these defaults.` })
     }
 
     const handleLaunchInputDefinitionsChange = (entries: LaunchInputDefinition[]) => {
@@ -232,23 +252,23 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         setFlowMetadata({
             ...flowMetadata,
             [key]: value,
-        })
+        }, key)
     }
 
     const handleFlowMetadataExtensionRemove = (key: string) => {
         const nextFlowMetadata = { ...flowMetadata } as Record<string, unknown>
         delete nextFlowMetadata[key]
-        setFlowMetadata(nextFlowMetadata)
+        setFlowMetadata(nextFlowMetadata, null)
     }
 
     const handleFlowMetadataExtensionAdd = (key: string, value: string) => {
         setFlowMetadata({
             ...flowMetadata,
             [key]: value,
-        })
+        }, null)
     }
 
-    const inspectorContent = (
+    return (
         <InspectorScaffold
             scopeLabel="Graph"
             title="Flow settings"
@@ -300,6 +320,8 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                 />
                 <GraphLlmDefaultsSection
                     canApplyDefaults={canApplyDefaults}
+                    agentStepCount={agentStepCount}
+                    appliedMessage={applied?.key === appliedKey(flowNodes) ? applied.message : null}
                     flowMetadata={flowMetadata}
                     uiDefaults={uiDefaults}
                     projectPath={null}
@@ -308,32 +330,5 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                 />
             </div>
         </InspectorScaffold>
-    )
-
-    if (inline) {
-        return inspectorContent
-    }
-
-    return (
-        <div className="absolute right-4 top-4 z-20 flex flex-col items-end">
-            <Button
-                onClick={() => {
-                    if (!activeFlow) {
-                        return
-                    }
-                    setEditorGraphSettingsPanelOpen(activeFlow, !isOpen)
-                }}
-                variant="outline"
-                size="sm"
-                className="bg-background"
-            >
-                Graph settings
-            </Button>
-            {isOpen && (
-                <div className="mt-2 w-80 max-h-[calc(100vh-6rem)] overflow-y-auto rounded-md border border-border bg-card p-4 shadow-lg">
-                    {inspectorContent}
-                </div>
-            )}
-        </div>
     )
 }

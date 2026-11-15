@@ -105,7 +105,7 @@ export function ViewLayout({
                 data-testid="side-panel"
                 data-hidden={hidden ? 'true' : undefined}
                 aria-label={`${title} panel`}
-                className={cn('flex shrink-0 flex-col', !isNarrowViewport && (hidden ? 'w-12 items-center' : 'w-60 xl:w-70'))}
+                className={cn('flex shrink-0 flex-col', !isNarrowViewport && (hidden ? 'w-12 items-center' : 'w-60 xl:w-80'))}
             >
                 {hidden ? (
                     <Button

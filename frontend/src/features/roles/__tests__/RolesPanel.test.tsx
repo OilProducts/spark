@@ -184,7 +184,7 @@ it('a start that finishes after a project switch opens its own chat and leaves t
     await screen.findByRole('region', { name: 'Standing' })
     fireEvent.click(screen.getByRole('button', { name: 'Start Watcher' }))
     await waitFor(() => expect(starts).toHaveLength(1))
-    fireEvent.keyDown(screen.getByRole('button', { name: 'project' }), { key: 'Enter' })
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Roles for project project; change project' }), { key: 'Enter' })
     fireEvent.click(screen.getAllByTestId('project-picker-item').find((item) => item.dataset.projectPath === '/other')!)
     await screen.findByText('Other watcher')
     // The other project's role of the same name is not the one starting.

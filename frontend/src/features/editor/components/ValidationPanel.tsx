@@ -40,7 +40,8 @@ export function ValidationPanel() {
     const { getNode, getEdges, setCenter, setNodes, setEdges } = useReactFlow();
     const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
     const [sortMode, setSortMode] = useState<SortMode>('severity');
-    const [collapsed, setCollapsed] = useState(false);
+    // A phone's canvas is short: there the list starts folded, its counts still showing.
+    const [collapsed, setCollapsed] = useState(isNarrowViewport);
 
     if (viewMode !== 'editor' || diagnostics.length === 0) {
         return null;
@@ -158,32 +159,35 @@ export function ValidationPanel() {
         focusCanvasEntity('[data-testid="inspector-panel"]');
     };
 
+    // Docked under the canvas, which shrinks to make room, so a problem never hides the steps
+    // and routes it is about.
     return (
-        <div
+        <section
             data-testid="validation-panel"
+            aria-label="Validation"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={`absolute z-20 rounded-md border border-border bg-card p-3 shadow-lg ${
-                isNarrowViewport ? 'bottom-2 left-2 right-2 w-auto' : 'bottom-4 left-4 w-80'
-            }`}
+            className="shrink-0 border-t border-border bg-card px-3 py-2"
         >
-            <button
-                type="button"
-                data-testid="validation-panel-toggle"
-                aria-expanded={!collapsed}
-                onClick={() => setCollapsed((value) => !value)}
-                className="flex w-full items-center justify-between gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
-            >
-                <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-                    {collapsed ? <ChevronRight aria-hidden="true" className="size-4" /> : <ChevronDown aria-hidden="true" className="size-4" />}
-                    Validation
-                </span>
-                <span className={`text-xs font-medium ${hasValidationErrors ? 'text-destructive' : 'text-warning'}`}>{counts}</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <button
+                    type="button"
+                    data-testid="validation-panel-toggle"
+                    aria-expanded={!collapsed}
+                    onClick={() => setCollapsed((value) => !value)}
+                    className="flex items-center gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+                >
+                    <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                        {collapsed ? <ChevronRight aria-hidden="true" className="size-4" /> : <ChevronDown aria-hidden="true" className="size-4" />}
+                        Validation
+                    </span>
+                    <span className={`text-xs font-medium ${hasValidationErrors ? 'text-destructive' : 'text-warning'}`}>{counts}</span>
+                </button>
+                {hasValidationErrors ? (
+                    <p className="text-xs text-muted-foreground">Fix the errors to save and run this flow.</p>
+                ) : null}
+            </div>
             {collapsed ? null : <>
-            {hasValidationErrors ? (
-                <p className="mt-1 text-xs text-muted-foreground">Fix the errors to save and run this flow.</p>
-            ) : null}
-            <div className="mt-2 flex items-center justify-between gap-2">
+            <div className="mt-2 flex flex-wrap items-center gap-2">
                 <NativeSelect
                     data-testid="validation-sort-select"
                     aria-label="Sort"
@@ -196,22 +200,21 @@ export function ValidationPanel() {
                     <option value="line">Sort: line</option>
                     <option value="rule">Sort: problem type</option>
                 </NativeSelect>
+                <SegmentedControl
+                    aria-label="Severity"
+                    options={(['all', 'error', 'warning', 'info'] as SeverityFilter[]).map((filterValue) => ({
+                        key: filterValue,
+                        label: <span className="capitalize">{filterValue}</span>,
+                        pressed: severityFilter === filterValue,
+                        onPress: () => setSeverityFilter(filterValue),
+                        'data-testid': filterTestIds[filterValue],
+                    }))}
+                />
                 <div data-testid="validation-visible-count" className="text-xs text-muted-foreground">
                     {sortedDiagnostics.length} visible
                 </div>
             </div>
-            <SegmentedControl
-                aria-label="Severity"
-                className="mt-2"
-                options={(['all', 'error', 'warning', 'info'] as SeverityFilter[]).map((filterValue) => ({
-                    key: filterValue,
-                    label: <span className="capitalize">{filterValue}</span>,
-                    pressed: severityFilter === filterValue,
-                    onPress: () => setSeverityFilter(filterValue),
-                    'data-testid': filterTestIds[filterValue],
-                }))}
-            />
-            <div className="mt-2 max-h-44 space-y-2 overflow-y-auto pr-1">
+            <div className="mt-2 max-h-36 space-y-1.5 overflow-y-auto pr-1">
                 {sortedDiagnostics.map((diag, index) => (
                     <Button
                         key={`${diag.rule_id}-${index}`}
@@ -277,6 +280,6 @@ export function ValidationPanel() {
                 )}
             </div>
             </>}
-        </div>
+        </section>
     );
 }

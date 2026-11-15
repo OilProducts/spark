@@ -279,7 +279,7 @@ describe('Editor flow loading behavior', () => {
       ).toBe(true)
     })
 
-    expect(screen.getByRole('button', { name: 'Add node' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add step' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Expanded' }))
 
@@ -290,7 +290,7 @@ describe('Editor flow loading behavior', () => {
       ).toBe(true)
     })
     await screen.findByText('Read-only preview. Switch to Parent to edit.')
-    expect(screen.queryByRole('button', { name: 'Add node' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add step' })).not.toBeInTheDocument()
     expect(useStore.getState().editorExpandChildFlowsByFlow['flow-a.dot']).toBe(true)
 
     act(() => {
@@ -310,7 +310,7 @@ describe('Editor flow loading behavior', () => {
         screen.queryByText('Read-only preview. Switch to Parent to edit.'),
       ).not.toBeInTheDocument()
     })
-    expect(screen.getByRole('button', { name: 'Add node' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add step' })).toBeInTheDocument()
     expect(useStore.getState().editorExpandChildFlowsByFlow['flow-a.dot']).toBe(true)
     expect(useStore.getState().editorExpandChildFlowsByFlow['flow-b.dot']).toBe(false)
 
@@ -325,7 +325,7 @@ describe('Editor flow loading behavior', () => {
       ).toBe(true)
     })
     await screen.findByText('Read-only preview. Switch to Parent to edit.')
-    expect(screen.queryByRole('button', { name: 'Add node' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add step' })).not.toBeInTheDocument()
   })
 })
 
@@ -568,8 +568,8 @@ describe('Editor file view', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       detail: {
         status: 'validation_error',
-        error: 'flow definition validation failed with 1 error(s): node_1.md: agent_task nodes need at least one route',
-        diagnostics: [{ message: 'node_1.md: agent_task nodes need at least one route', file: 'node_1.md' }],
+        error: 'flow definition validation failed with 1 error(s): node_1.md: agent_task steps need at least one route',
+        diagnostics: [{ message: 'node_1.md: agent_task steps need at least one route', file: 'node_1.md' }],
       },
     }), { status: 422 })))
     renderEditor()
@@ -579,7 +579,7 @@ describe('Editor file view', () => {
     await user.click(screen.getByTestId('flow-files-save'))
 
     const error = await screen.findByTestId('flow-files-error')
-    expect(error).toHaveTextContent('node_1.md: Agent task nodes need at least one route.')
+    expect(error).toHaveTextContent('node_1.md: Agent steps need at least one route.')
     await user.click(screen.getByRole('button', { name: 'flow.md' }))
     await user.click(screen.getByRole('button', { name: 'Open node_1.md' }))
     expect(screen.getByTestId('flow-file-editor')).toHaveAccessibleName('node_1.md')
@@ -609,7 +609,7 @@ describe('Editor file view', () => {
 
     const failed = await screen.findByTestId('editor-flow-load-failed')
     expect(failed).toHaveTextContent('it has 2 problems')
-    expect(failed).toHaveTextContent('Flow has no start node.')
+    expect(failed).toHaveTextContent('Flow has no start step.')
     await user.click(await screen.findByRole('button', { name: 'Open node_1.md' }))
     expect(await screen.findByTestId('flow-file-editor')).toHaveAccessibleName('node_1.md')
     // The step goes by its title, not its ID.

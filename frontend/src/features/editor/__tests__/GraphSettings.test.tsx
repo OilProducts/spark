@@ -8,7 +8,7 @@ import {
   type CanonicalFlowDefinition,
 } from '@/lib/canonicalFlowModel'
 import { useStore } from '@/store'
-import { ReactFlowProvider } from '@xyflow/react'
+import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
@@ -239,11 +239,13 @@ describe('Graph and settings behavior', () => {
 
   it('validates typed FlowDefinition defaults and exposes only extension metadata in advanced settings', async () => {
     const user = userEvent.setup()
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     expect(screen.getByTestId('graph-structured-form')).toBeVisible()
     expect(screen.getByTestId('flow-metadata-help')).toHaveTextContent('Leave blank to omit the field from the flow.')
-    expect(screen.getByRole('button', { name: 'Apply to nodes' })).toBeEnabled()
+    // With no agent step, there is nothing to apply the defaults to, and it says so.
+    expect(screen.getByRole('button', { name: 'Apply to agent steps' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Apply to agent steps' })).toHaveAccessibleDescription('This flow has no agent steps, the only steps that run a model.')
     await openPicker(user)
     expect(screen.getByRole('button', { name: 'XHigh' })).toBeVisible()
     await user.keyboard('{Escape}')
@@ -268,7 +270,7 @@ describe('Graph and settings behavior', () => {
     { graphThinking: '', workspaceThinking: 'budget', graphBudget: '', expectedThinking: 'budget', expectedBudget: 2048 },
     { graphThinking: 'budget', workspaceThinking: 'budget', graphBudget: '', expectedThinking: 'budget', expectedBudget: 2048 },
     { graphThinking: 'budget', workspaceThinking: 'budget', graphBudget: '4096', expectedThinking: 'budget', expectedBudget: 4096 },
-  ])('Apply to nodes resolves thinking and budget: $graphThinking / $workspaceThinking / $graphBudget', async ({
+  ])('Apply to agent steps resolves thinking and budget: $graphThinking / $workspaceThinking / $graphBudget', async ({
     graphThinking, workspaceThinking, graphBudget, expectedThinking, expectedBudget,
   }) => {
     const user = userEvent.setup()
@@ -277,27 +279,58 @@ describe('Graph and settings behavior', () => {
       uiDefaults: { ...useStore.getState().uiDefaults, thinking: workspaceThinking, thinking_budget_tokens: workspaceThinking ? '2048' : '' },
     })
     render(
-      <ReactFlowProvider initialNodes={[{
+      <ReactFlowProvider defaultNodes={[{
         id: 'review', position: { x: 0, y: 0 },
-        data: { label: 'Review', thinking: 'budget', thinking_budget_tokens: '8192' },
-      }]}>
-        <GraphSettings inline />
+        data: { label: 'Review', kind: 'agent_task', thinking: 'budget', thinking_budget_tokens: '8192' },
+      }, { id: 'check', position: { x: 0, y: 50 }, data: { label: 'Check', kind: 'tool', 'tool.command': 'true' } },
+      { id: 'done', position: { x: 0, y: 100 }, data: { label: 'Done', kind: 'exit' } }]} defaultEdges={[
+        { id: 'review-check', source: 'review', target: 'check' }, { id: 'check-done', source: 'check', target: 'done' },
+      ]}>
+        <GraphSettings />
       </ReactFlowProvider>,
     )
 
-    await user.click(screen.getByRole('button', { name: 'Apply to nodes' }))
+    await user.click(screen.getByRole('button', { name: 'Apply to 1 agent step' }))
 
     await waitFor(() => {
       const request = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST')
       expect(request).toBeDefined()
       const { flow } = JSON.parse(String(request![1]?.body))
-      expect(Object.keys(flow.nodes)).toEqual(['review'])
+      expect(Object.keys(flow.nodes)).toEqual(['review', 'check', 'done'])
+      // Only agent steps run a model.
+      expect(JSON.stringify(flow.nodes.check)).not.toMatch(/llm_|reasoning|thinking/)
       const review = JSON.stringify(flow.nodes.review)
       if (expectedThinking) expect(review).toContain(`"thinking":"${expectedThinking}"`)
       else expect(review).not.toContain('"thinking"')
       if (expectedBudget === null) expect(review).not.toContain('"thinking_budget_tokens"')
       else expect(review).toContain(`"thinking_budget_tokens":${expectedBudget}`)
     })
+    expect(screen.getByTestId('graph-apply-defaults-status')).toHaveTextContent('Set 1 agent step to these defaults.')
+  })
+
+  it('Apply to agent steps says so when its agent steps already use the defaults, until a step changes', async () => {
+    const user = userEvent.setup()
+    useStore.setState({ flowMetadata: { thinking: 'off' } })
+    // As an Undo or the step's own inspector would.
+    function EditReview() {
+      const { setNodes } = useReactFlow()
+      return <button type="button" onClick={() => setNodes((nodes) => nodes.map((node) => node.id === 'review' ? { ...node, data: { ...node.data, thinking: 'adaptive' } } : node))}>Edit review</button>
+    }
+    render(
+      <ReactFlowProvider defaultNodes={[
+        { id: 'review', position: { x: 0, y: 0 }, data: { label: 'Review', kind: 'agent_task', llm_model: 'gpt-5.3', llm_provider: 'openai', reasoning_effort: 'high', thinking: 'off' } },
+        { id: 'done', position: { x: 0, y: 100 }, data: { label: 'Done', kind: 'exit' } },
+      ]} defaultEdges={[{ id: 'review-done', source: 'review', target: 'done' }]}>
+        <GraphSettings />
+        <EditReview />
+      </ReactFlowProvider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Apply to 1 agent step' }))
+    expect(screen.getByTestId('graph-apply-defaults-status')).toHaveTextContent('Its agent step already uses these defaults.')
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+    await user.click(screen.getByRole('button', { name: 'Edit review' }))
+    expect(screen.getByTestId('graph-apply-defaults-status')).toBeEmptyDOMElement()
   })
 
   it('surfaces FlowDefinition title and description fields without leaking them into extension attrs', async () => {
@@ -306,7 +339,7 @@ describe('Graph and settings behavior', () => {
       useStore.getState().setFlowMetadata({ custom_attr: 'keep me' } as Record<string, string>)
     })
 
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     // Typed key by key: spaces must survive between keystrokes.
     await user.type(screen.getByLabelText('Title'), ' Implement from plan file ')
@@ -339,7 +372,7 @@ describe('Graph and settings behavior', () => {
       triggersSession: { ...state.triggersSession, triggers: [trigger('nightly', {}), trigger('weekly', { 'context.request.version': '2.0.0' })] },
       flowMetadata: { inputs: JSON.stringify([{ key: 'context.request.version', label: 'Release version', type: 'string', description: '', required: true }]) },
     }))
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     const gaps = await screen.findByTestId('graph-launch-inputs-trigger-gaps')
     expect(gaps).toHaveTextContent('A trigger doesn’t set a required input, so a run it starts fails:Trigger nightly needs Release version')
@@ -350,7 +383,7 @@ describe('Graph and settings behavior', () => {
 
   it('persists launch input declarations as FlowDefinition inputs', async () => {
     const user = userEvent.setup()
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     expect(screen.getByTestId('graph-launch-inputs-editor')).toBeVisible()
     await user.click(screen.getByTestId('graph-launch-input-add'))
@@ -384,7 +417,7 @@ describe('Graph and settings behavior', () => {
 
   it('authors FlowDefinition defaults without DOT defaults or subgraph payloads', async () => {
     const user = userEvent.setup()
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     expect(screen.queryByTestId('graph-scoped-defaults-section')).not.toBeInTheDocument()
     expect(screen.queryByTestId('graph-subgraph-add')).not.toBeInTheDocument()
@@ -437,14 +470,9 @@ describe('Graph and settings behavior', () => {
     expect(review).not.toContain('"type"')
   })
 
-  it('preserves panel state, advanced toggle, and invalid launch-input drafts across remounts', async () => {
+  it('preserves the advanced toggle and invalid launch-input drafts across remounts', async () => {
     const user = userEvent.setup()
     const firstRender = wrapWithFlowProvider(<GraphSettings />)
-
-    await user.click(screen.getByRole('button', { name: 'Graph settings' }))
-    await waitFor(() => {
-      expect(screen.getByTestId('graph-structured-form')).toBeVisible()
-    })
 
     await user.click(screen.getByTestId('graph-launch-input-add'))
     fireEvent.change(screen.getByTestId('graph-launch-input-label-0'), {
@@ -473,7 +501,7 @@ describe('Graph and settings behavior', () => {
 
   it('edits the execution lock key as FlowDefinition execution_lock', async () => {
     const user = userEvent.setup()
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     await user.type(screen.getByLabelText('One at a time (lock name)'), 'integration')
     expect(useStore.getState().flowMetadata.execution_lock).toBe('integration')
@@ -493,7 +521,7 @@ describe('Graph and settings behavior', () => {
 
   it('does not autosave when graph attrs are replaced from hydrated state', async () => {
     const fetchMock = vi.mocked(fetch)
-    wrapWithFlowProvider(<GraphSettings inline />)
+    wrapWithFlowProvider(<GraphSettings />)
 
     const saveRequestsBefore = fetchMock.mock.calls.filter(([, init]) => (init?.method ?? 'GET') === 'POST').length
 
