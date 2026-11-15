@@ -768,6 +768,47 @@ fn a_sink_can_steer_the_turn_it_is_receiving() {
 }
 
 #[test]
+fn a_message_sent_once_the_turn_has_completed_is_refused_at_once() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "default");
+    let path = temp.path().to_string_lossy().into_owned();
+    let (accepted, accepted_receiver) = mpsc::channel();
+    let request = turn_request(temp.path(), "codex-sink-after-completion");
+    let (turn_sender, turn) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = turn_sender.send(CodexAppServerBackend::new().run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |event| {
+                if event.kind == TurnStreamEventKind::TurnCompleted {
+                    let _ = accepted.send(CodexAppServerBackend::new().send_message(
+                        &path,
+                        "codex-sink-after-completion",
+                        "note-1",
+                        "Too late.",
+                    ));
+                }
+            })),
+        ));
+    });
+
+    // Whether it lands before or after the worker takes the result, the
+    // completed turn answers it rather than the 61 s facade wait.
+    assert_eq!(accepted_receiver.recv_timeout(PROMPTLY), Ok(false));
+    let output = turn
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect("completed turn");
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Ack"));
+    assert!(delivered_ids(&output).is_empty());
+    assert!(!read_jsonrpc_log(&temp.path().join("codex-rpc.jsonl"))
+        .iter()
+        .any(|message| message["method"] == "turn/steer"));
+}
+
+#[test]
 fn a_sink_that_steers_while_a_full_queue_behind_fails_the_turn_at_once() {
     let _lock = ENV_LOCK
         .lock()

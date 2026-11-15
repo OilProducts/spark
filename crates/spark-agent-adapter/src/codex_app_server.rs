@@ -274,6 +274,8 @@ impl CodexAppServerBackend {
                             details: error.details,
                         },
                     );
+                    // No turn will take a message the sink may send.
+                    stop.close();
                     if let Some(sink) = event_sink.as_ref() {
                         for event in &output.events {
                             sink(event.clone());
@@ -1768,9 +1770,12 @@ impl Worker {
                             .await;
                     }
                     let turn = self.turn.take().expect("turn");
-                    // Its questions end with it.
+                    // Its questions end with it, and so do its live messages,
+                    // before its sink takes the rest: one it never took was
+                    // not delivered, and a sink may be waiting on one.
                     self.chat_question = None;
                     self.flow_questions.clear();
+                    self.controls.close();
                     let (messages, result) = (turn.messages, turn.result.expect("result"));
                     self.deliver(move |failure| {
                         let _ = messages.send(TurnMessage::Done(failure.map_or(result, Err)));
