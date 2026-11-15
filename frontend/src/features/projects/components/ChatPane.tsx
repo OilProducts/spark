@@ -136,7 +136,7 @@ export function ChatPane({ follow, scrolls, hasContent, children, notice, compos
                             />
                             <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2 pl-3.5 pr-2">
                                 {composer.footer}
-                                <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                                <div className="ml-auto flex min-w-0 items-center justify-end gap-2">
                                     {attachments ? (
                                         <>
                                             <input

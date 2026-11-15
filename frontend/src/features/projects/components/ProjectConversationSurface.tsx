@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Check, ChevronDown, Folder, Hash } from 'lucide-react'
+import { Check, ChevronDown, Hash } from 'lucide-react'
 import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { ClaudeCodeReconnect } from '@/features/settings/ClaudeCodeConnectionSettings'
@@ -68,7 +68,6 @@ interface ProjectConversationSurfaceProps {
     onChatComposerSubmit: () => void
     onChatDraftChange: (value: string) => void
     modelSettingsSource?: 'workspace' | 'project' | 'role' | 'conversation'
-    onUseModelDefaults?: () => void
 }
 
 // Where the chat's model comes from, named on the model button, and where to change it.
@@ -142,7 +141,6 @@ export function ProjectConversationSurface({
     onChatComposerSubmit,
     onChatDraftChange,
     modelSettingsSource,
-    onUseModelDefaults,
 }: ProjectConversationSurfaceProps) {
     const controlsDisabled = !activeProjectPath || isChatInputDisabled
     const hasProject = Boolean(activeProjectPath && activeProjectLabel)
@@ -158,7 +156,7 @@ export function ProjectConversationSurface({
                         {activeConversationTitle || (hasOpenChat ? 'Chat' : 'New chat')}
                     </h1>
                     {hasProject ? (
-                        <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
+                        <p data-testid="chat-project" className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
                             {hasOpenChat ? (
                                 <button
                                     type="button"
@@ -247,35 +245,27 @@ export function ProjectConversationSurface({
                                 isUploadBlocking,
                                 disabled: controlsDisabled,
                             } : undefined,
-                            footer: (
-                                <>
-                                    <p data-testid="chat-composer-project" className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                                        <Folder aria-hidden="true" className="size-3.5 shrink-0" />
-                                        <span className="truncate">Runs and missions started here go to <span className="text-foreground">{activeProjectLabel}</span></span>
-                                    </p>
-                                    <ContextMeter usage={contextUsage} />
-                                </>
-                            ),
+                            footer: <ContextMeter usage={contextUsage} />,
                             controls: (
                                 <>
                                     {onStopTurn ? <Button type="button" variant="outline" size="sm" onClick={onStopTurn} data-testid="project-chat-stop">Stop</Button> : null}
-                                    {modelSettingsSource === 'conversation' && onUseModelDefaults ? (
-                                        <Button type="button" size="sm" variant="ghost" disabled={controlsDisabled} onClick={onUseModelDefaults}>Use defaults</Button>
-                                    ) : null}
                                     {activeChatMode ? (
-                                        <NativeSelect
-                                            data-testid="project-active-chat-mode-badge"
-                                            aria-label="Mode"
-                                            size="sm"
-                                            value={activeChatMode}
-                                            // Same guard as the /plan command: no switching mid-turn or before the model list is ready.
-                                            disabled={controlsDisabled || isChatSendDisabled || !onChatModeChange}
-                                            onChange={(event) => onChatModeChange?.(event.target.value === 'plan' ? 'plan' : 'chat')}
-                                            className="rounded-lg"
-                                        >
-                                            <NativeSelectOption value="chat">Chat mode</NativeSelectOption>
-                                            <NativeSelectOption value="plan">Plan mode</NativeSelectOption>
-                                        </NativeSelect>
+                                        // Full width on a phone: the model name shortens instead.
+                                        <div className="shrink-0">
+                                            <NativeSelect
+                                                data-testid="project-active-chat-mode-badge"
+                                                aria-label="Mode"
+                                                size="sm"
+                                                value={activeChatMode}
+                                                // Same guard as the /plan command: no switching mid-turn or before the model list is ready.
+                                                disabled={controlsDisabled || isChatSendDisabled || !onChatModeChange}
+                                                onChange={(event) => onChatModeChange?.(event.target.value === 'plan' ? 'plan' : 'chat')}
+                                                className="rounded-lg"
+                                            >
+                                                <NativeSelectOption value="chat">Chat</NativeSelectOption>
+                                                <NativeSelectOption value="plan">Plan</NativeSelectOption>
+                                            </NativeSelect>
+                                        </div>
                                     ) : null}
                                     {/* One label for the model: the button names it and, when inherited, where from. */}
                                     <ModelChooser inherited={inheritedModelSettings} value={modelSettings} onChange={onModelSettingsChange}

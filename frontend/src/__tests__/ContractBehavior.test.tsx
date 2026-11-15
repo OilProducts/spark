@@ -2166,7 +2166,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     await user.click(await within(beta).findByRole('button', { name: 'Open thread Beta thread' }))
 
     await waitFor(() => {
-      expect(screen.getByTestId('chat-composer-project')).toHaveTextContent('project-beta')
+      expect(screen.getByTestId('chat-project')).toHaveTextContent('project-beta')
     })
     expect(screen.getByText('Alpha thread')).toBeVisible()
 

@@ -877,7 +877,7 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(useStore.getState().activeProjectPath).toBe('/tmp/project-shell')
     })
-    expect(screen.getByTestId('chat-composer-project')).toHaveTextContent('project-shell')
+    expect(screen.getByTestId('chat-project')).toHaveTextContent('project-shell')
     expect(screen.getAllByTestId('chats-project-group').map((group) => group.dataset.projectPath)).toContain('/tmp/project-shell')
   })
 
@@ -1081,7 +1081,7 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(useStore.getState().activeProjectPath).toBe('/tmp/project-two')
     })
-    expect(screen.getByTestId('chat-composer-project')).toHaveTextContent('project-two')
+    expect(screen.getByTestId('chat-project')).toHaveTextContent('project-two')
     expect(screen.getByText('Thread one')).toBeVisible()
 
     await user.click(screen.getByTestId('activity-triggers'))

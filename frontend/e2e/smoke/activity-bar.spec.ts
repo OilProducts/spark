@@ -124,7 +124,7 @@ test('every activity-bar view opens its panel with items from more than one proj
     }
 })
 
-test('a new chat in a project opens empty there and its composer names it', async ({ page }, testInfo) => {
+test('a new chat in a project opens empty there and its header names it', async ({ page }, testInfo) => {
     const { alpha } = await seedProjects(page, testInfo)
     await page.goto('/')
     await page.getByTestId('activity-chats').click()
@@ -134,7 +134,7 @@ test('a new chat in a project opens empty there and its composer names it', asyn
     // It opens empty, as a chat in an empty project does; nothing is saved until its first message.
     await expect(page.getByText('New chat in alpha-project')).toBeVisible()
     await expect(alphaGroup.getByTestId('chats-chat-row')).toHaveCount(0)
-    await expect(page.getByTestId('chat-composer-project')).toHaveText('Runs and missions started here go to alpha-project')
+    await expect(page.getByTestId('chat-project')).toContainText('alpha-project')
     await expect(page.getByTestId('new-chat-project-button')).toHaveText(/^in\s*alpha-project$/)
 
     // "+ New" asks which project, Home first then recent projects.
@@ -163,7 +163,7 @@ test('a project prompt scrolls on a short narrow viewport, so the last project c
         const last = picker.locator('[data-testid="project-picker-item"]:not([data-disabled])').last()
         const lastPath = await last.getAttribute('data-project-path')
         await last.click()
-        await expect(page.getByTestId('chat-composer-project')).toContainText(lastPath!.split('/').pop()!)
+        await expect(page.getByTestId('chat-project')).toContainText(lastPath!.split('/').pop()!)
     } finally {
         for (const project of extras) {
             await page.request.delete(`/workspace/api/projects?project_path=${encodeURIComponent(project)}`).catch(() => undefined)
@@ -242,7 +242,7 @@ test('a chat keeps its unsent draft across its project page, and a cancelled lea
     expect(await betaActiveChat()).toBe(betaBefore)
     await openChat(alpha, alphaChat)
     await page.getByRole('button', { name: 'Discard and leave', exact: true }).click()
-    await expect(page.getByTestId('chat-composer-project')).toContainText('alpha-project')
+    await expect(page.getByTestId('chat-project')).toContainText('alpha-project')
     await expect(composer).toHaveValue('alpha draft')
     expect(await betaActiveChat()).toBe(betaBefore)
 })
@@ -256,7 +256,7 @@ test('a new mission and a flow run ask which project, suggesting the last used a
         // Opening a chat in beta makes it the chat you came from.
         await group(page, beta).hover()
         await group(page, beta).getByTestId('chats-project-new-chat').click()
-        await expect(page.getByTestId('chat-composer-project')).toContainText('beta-project')
+        await expect(page.getByTestId('chat-project')).toContainText('beta-project')
 
         await page.getByTestId('activity-missions').click()
         await page.getByRole('button', { name: 'New mission' }).click()
@@ -293,7 +293,7 @@ test('a new mission and a flow run ask which project, suggesting the last used a
 
         // Coming from beta's chat, a run suggests beta.
         await page.getByTestId('activity-chats').click()
-        await expect(page.getByTestId('chat-composer-project')).toContainText('beta-project')
+        await expect(page.getByTestId('chat-project')).toContainText('beta-project')
         await page.getByTestId('activity-flows').click()
         await page.getByTestId('editor-run-button').click()
         await expect(runPicker.getByTestId('project-picker-item').first()).toHaveAttribute('data-project-path', beta)

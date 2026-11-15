@@ -432,7 +432,7 @@ for (const transition of ['switch', 'chat']) {
         await navigate()
         await page.getByRole('button', { name: 'Discard and leave', exact: true }).click()
         if (transition === 'switch') await expect(page.getByTestId('project-page-path')).toHaveText(projects[1])
-        else await expect(page.getByTestId('chat-composer-project')).toContainText('project-two')
+        else await expect(page.getByTestId('chat-project')).toContainText('project-two')
         await expect(page.getByText('unsaved-project-model')).toHaveCount(0)
         expect((await read()).models.stored).toBeNull()
     })
@@ -660,7 +660,7 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     })
     await page.goto('/')
     await openChat(page, project, createdRow.payload.title)
-    await expect(page.getByTestId('chat-composer-project')).toContainText('chat-model-project')
+    await expect(page.getByTestId('chat-project')).toContainText('chat-model-project')
     await expect(page.getByRole('button', { name: /^Model:/ })).toBeDisabled()
     hydrate()
     await expect(page.getByRole('button', { name: /^Model:/ })).toBeEnabled()
@@ -695,7 +695,9 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     expect(requests[0].expected_revision).toBe(settingsRevisionOf(createdRow))
     expect(statuses).toEqual([200])
     await expect.poll(async () => (await read())?.settings?.models.stored?.model).toBe('my-model')
-    await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
+    // The chat now has its own model, which the picker's Use default would drop.
+    await expect(model).toHaveAttribute('title', 'Chosen for this chat with the model picker.')
+    await expect(model).toBeEnabled()
 
     await chooseModel(page, 'anthropic', 'claude-opus-4-6')
     await customModel(page, 'final-model')
@@ -704,7 +706,8 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     await release()
     await expect.poll(() => requests.length).toBe(3)
     await release()
-    await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
+    await expect(model).toHaveAttribute('title', 'Chosen for this chat with the model picker.')
+    await expect(model).toBeEnabled()
     const final = { provider: 'anthropic', llm_profile: null, model: 'final-model', reasoning_effort: 'high' }
     await expect.poll(async () => (await read())?.settings?.models.stored).toMatchObject(final)
     expect(statuses).toEqual([200, 200, 200])

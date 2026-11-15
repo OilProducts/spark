@@ -133,9 +133,9 @@ export async function registerProjectForSmokeTest(page: Page, projectPath: strin
   await page.getByTestId('activity-chats').click()
   await page.getByTestId('add-project-button').click()
   await page.getByTestId('project-browser-select-button').click()
-  // A new project joins the Chats panel, and the composer says chats go to it.
+  // A new project joins the Chats panel, and the chat's header names it.
   await expect(chatsProjectGroup(page, projectPath)).toBeVisible()
-  await expect(page.getByTestId('chat-composer-project')).toContainText(path.basename(projectPath) || projectPath)
+  await expect(page.getByTestId('chat-project')).toContainText(path.basename(projectPath) || projectPath)
 }
 
 /** Opens the editor's Run, which asks which project; picks `projectPath`. */

@@ -469,7 +469,7 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     expect(screen.getByTestId('project-thread-new-button')).toBeVisible()
-    expect(screen.getByTestId('chat-composer-project')).toHaveTextContent('Runs and missions started here go to quick-switch-project')
+    expect(screen.getByTestId('chat-project')).toHaveTextContent('quick-switch-project')
     // Before the first message, the chat's project can still change.
     expect(screen.getByTestId('new-chat-project-button')).toHaveTextContent(/^in\s*quick-switch-project$/)
     expect(screen.getByTestId('new-chat-project-button')).toHaveAccessibleName('New chat in quick-switch-project; change project')
@@ -5545,7 +5545,8 @@ describe('ProjectsPanel', () => {
     await chooseModel(user, 'Claude Code', 'claude-opus-4-6')
     await waitFor(() => expect(requests).toHaveLength(3))
     expect(requests[2]).toMatchObject({model_settings:{provider:'claude-code',llm_profile:null,model:'claude-opus-4-6',reasoning_effort:'high'}})
-    await user.click(await screen.findByRole('button', {name:'Use defaults'}))
+    await openPicker(user)
+    await user.click(screen.getByRole('button', {name:/^Use default ·/}))
     await waitFor(() => expect(requests).toHaveLength(4))
     expect(requests[3]).toHaveProperty('model_settings', null)
     await screen.findByRole('button', { name: /Model: Default: model-one/ })

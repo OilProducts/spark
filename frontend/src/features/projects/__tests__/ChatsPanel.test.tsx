@@ -156,7 +156,7 @@ it('opens a new chat in the project whose "+" was used, saving nothing until its
     expect(useStore.getState().activeProjectPath).toBe('/work/busy')
     expect(useStore.getState().projectSessionsByPath['/work/busy']?.conversationId ?? null).toBeNull()
     expect(screen.getByText('New chat in busy')).toBeVisible()
-    expect(screen.getByTestId('chat-composer-project')).toHaveTextContent('Runs and missions started here go to busy')
+    expect(screen.getByTestId('chat-project')).toHaveTextContent('busy')
     // Its list loading later doesn't open its newest chat over the new one.
     await waitFor(() => expect(within(group('/work/busy')).getAllByTestId('chats-chat-row')).toHaveLength(5))
     expect(useStore.getState().projectSessionsByPath['/work/busy']?.conversationId ?? null).toBeNull()

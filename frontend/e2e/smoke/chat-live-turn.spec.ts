@@ -81,7 +81,7 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     const otherGroup = page.locator(`[data-testid="chats-project-group"][data-project-path="${otherProject}"]`)
     await otherGroup.hover()
     await otherGroup.getByTestId('chats-project-new-chat').click()
-    await expect(page.getByTestId('chat-composer-project')).toContainText('live-turn-other')
+    await expect(page.getByTestId('chat-project')).toContainText('live-turn-other')
     await page.waitForTimeout(3_000)
     await expect(page.getByTestId('activity-chats-dot')).toHaveAttribute('data-dot', 'running')
     await page.getByTestId('activity-runs').click()
@@ -161,7 +161,7 @@ test('a rejected chat send leaves the Chats dot clear', async ({ page }) => {
     const registryLoaded = page.waitForResponse((response) => response.request().method() === 'GET' && response.url().endsWith('/workspace/api/projects'))
     releaseRegistry()
     await registryLoaded
-    await expect(page.getByTestId('chat-composer-project')).toContainText('rejected-send')
+    await expect(page.getByTestId('chat-project')).toContainText('rejected-send')
     await expect(input).toHaveValue('This send fails.')
     await page.getByTestId('project-ai-conversation-send-button').click()
     await expect(page.getByTestId('project-panel-error')).toBeVisible()

@@ -305,11 +305,6 @@ export function useProjectsHomeController() {
         }
     }, [activeProjectPath, applyConversationBatch, ensureConversationId, setPanelError, currentModelSettings])
 
-    const onUseModelDefaults = () => {
-        if (!activeProjectPath || !activeConversationId || pendingChatSettings) return
-        void persistChatSettings(null)
-    }
-
     const {
         onCreateConversationThread,
         onDeleteConversationThread,
@@ -514,7 +509,6 @@ export function useProjectsHomeController() {
             onChatComposerSubmit,
             onChatDraftChange: setChatDraft,
             modelSettingsSource: activeConversationRecord?.model_settings_view?.source,
-            onUseModelDefaults,
         },
     }
 }
