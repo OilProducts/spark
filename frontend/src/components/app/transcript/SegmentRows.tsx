@@ -611,6 +611,11 @@ export const MessageRow = memo(function MessageRow({
                 <span className="sr-only">{entry.role === 'user' ? 'You' : entry.presentation === 'thinking' ? 'Thinking' : 'Spark'}: </span>
                 {shouldRenderAssistantMarkdown ? (
                     <ProjectConversationMarkdown content={entry.content} enableCodeCopy={enableCopy && entry.status === 'complete'} />
+                ) : entry.role === 'user' && entry.content.trim() ? (
+                    // As typed: every line kept, its code and math formatted, flush with the bubble's edges.
+                    <div className="[&_.conversation-markdown>:first-child]:mt-0 [&_.conversation-markdown>:last-child]:mb-0">
+                        <ProjectConversationMarkdown content={entry.content} keepLineBreaks />
+                    </div>
                 ) : literalContent ? (
                     <p
                         className={`whitespace-pre-wrap text-sm leading-6 [overflow-wrap:anywhere] ${

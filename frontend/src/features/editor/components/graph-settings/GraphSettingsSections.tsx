@@ -482,9 +482,9 @@ export function GraphLlmDefaultsSection({
                         variant="outline"
                         size="sm"
                         className="h-8 px-2 text-xs"
-                        title={canApplyDefaults ? 'Apply current flow defaults to every step.' : 'Switch to the editor to apply defaults.'}
+                        title={canApplyDefaults ? 'Set every agent step to these model defaults.' : 'Switch to the editor to apply defaults.'}
                     >
-                        Apply to steps
+                        Apply to agent steps
                     </Button>
                     {/* Clears the flow's own choice, so it follows the workspace default as that changes. */}
                     <Button

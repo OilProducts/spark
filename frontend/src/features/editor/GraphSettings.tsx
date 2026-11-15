@@ -7,6 +7,7 @@ import { toExtensionAttrEntries } from '@/lib/extensionAttrs'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { InspectorScaffold } from './components/InspectorScaffold'
 import { normalizeProjectPath } from '@/lib/projectPaths'
+import { getHandlerType } from '@/lib/nodeVisibility'
 import type { TriggerResponse } from '@/lib/api/triggersApi'
 import {
     parseLaunchInputDefinitions,
@@ -143,11 +144,13 @@ export function GraphSettings() {
         const defaultReasoning = flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || ''
         const defaultThinking = flowMetadata.thinking || uiDefaults.thinking || ''
 
+        // Only agent steps run a model; other kinds would save settings they never use.
         const currentNodes = readNodes()
-        if (currentNodes.length === 0) return
-        editorGraphBridgeRef?.current?.recordFieldEdit(null, { nodes: currentNodes })
+        const agentNodes = currentNodes.filter((node) => getHandlerType(node.data?.kind as string) === 'codergen')
+        if (agentNodes.length === 0) return
+        editorGraphBridgeRef?.current?.recordFieldEdit(null, { nodes: agentNodes })
 
-        const updatedNodes = currentNodes.map((node) => ({
+        const updatedNodes = currentNodes.map((node) => !agentNodes.includes(node) ? node : ({
             ...node,
             data: {
                 ...node.data,

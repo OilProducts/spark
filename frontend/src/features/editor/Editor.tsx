@@ -1260,10 +1260,24 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         editsRef.current.push(edit);
         setLastEdit(edit);
     }, []);
+    // What Undo just took back, said a moment below the canvas; the steps it restored glow, as Go to step's does.
+    const [undone, setUndone] = useState<{ text: string; nodeIds: string[] } | null>(null);
     useEffect(() => {
         editsRef.current = [];
         setLastEdit(null);
+        setUndone(null);
     }, [flowName, activeProjectPath]);
+    useEffect(() => {
+        if (!undone) return;
+        Array.from(canvasPaneRef.current?.querySelectorAll('.react-flow__node') ?? [])
+            .filter((element) => undone.nodeIds.includes(element.getAttribute('data-id') ?? ''))
+            .forEach((element) => element.animate?.(
+                [{ filter: 'drop-shadow(0 0 10px hsl(var(--primary)))' }, { filter: 'none' }],
+                { duration: 1600, easing: 'ease-out' },
+            ));
+        const timer = window.setTimeout(() => setUndone(null), 2500);
+        return () => window.clearTimeout(timer);
+    }, [undone]);
     // Typing in one field is one edit: the field as it was before the first key.
     useEffect(() => {
         recordFieldEditRef.current = (key, previous) => {
@@ -1317,6 +1331,10 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         }
         setNodes(nextNodes);
         setEdges(nextEdges);
+        setUndone({
+            text: canvasEditUndoLabel(edit, nextNodes).replace(/^Undo\b/, 'Undid'),
+            nodeIds: edit.kind === 'fields' || edit.kind === 'delete' ? edit.nodes.map((node) => node.id) : [],
+        });
         scheduleSave({ nodes: nextNodes, edges: nextEdges });
         scheduleEdgeRouting(nextNodes, nextEdges, { persistAfter: true });
         return true;
@@ -1808,6 +1826,13 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
             <div className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${showFiles ? (canRepairFiles ? 'hidden' : 'hidden md:flex') : ''}`}>
             {/* The canvas, above the Validation panel rather than under it, so no problem hides the graph. */}
             <div ref={canvasPaneRef} className="relative min-h-0 flex-1">
+                <div role="status" data-testid="editor-undone" className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2">
+                    {undone ? (
+                        <span key={undone.text + undone.nodeIds.join()} className="block whitespace-nowrap rounded-md border bg-background px-2.5 py-1 text-xs font-medium text-foreground shadow-sm animate-in fade-in">
+                            {undone.text}
+                        </span>
+                    ) : null}
+                </div>
                 {
                     loadFailure ? (
                         <SheetEmpty data-testid="editor-flow-load-failed" icon={GitBranch} title={loadFailure.missing ? 'This flow isn’t here' : 'This flow couldn’t be opened'}>

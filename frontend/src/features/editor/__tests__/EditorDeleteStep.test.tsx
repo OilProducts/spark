@@ -297,9 +297,12 @@ describe('Editor step deletion', () => {
 
     await user.click(screen.getByRole('button', { name: 'Undo flow settings edit' }))
     expect(flowDescription).toHaveValue('')
+    // Said on screen too, as the step it goes back on may not be in view.
+    expect(screen.getByTestId('editor-undone')).toHaveTextContent('Undid flow settings edit')
     await waitFor(() => expect(saves.at(-1)?.flow).not.toHaveProperty('description', 'Review a change, then ship it.'))
     expect(saves.at(-1)?.flow.nodes.step_1).toMatchObject({ label: 'Review Changes' })
     await user.click(screen.getByRole('button', { name: 'Undo edit to Review Changes' }))
+    expect(screen.getByTestId('editor-undone')).toHaveTextContent('Undid edit to Review')
     await waitFor(() => expect(saves.at(-1)?.flow.nodes.step_1).toMatchObject({ label: 'Review' }))
   })
 

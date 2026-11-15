@@ -1315,7 +1315,7 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('graph-extension-attr-new-key')).toBeVisible()
     expect(screen.getByTestId('graph-extension-attr-new-value')).toBeVisible()
     expect(screen.getByRole('button', { name: /^Model:/ })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Apply to steps' }).className).toContain('focus-visible')
+    expect(screen.getByRole('button', { name: 'Apply to agent steps' }).className).toContain('focus-visible')
     expect(screen.getByRole('button', { name: 'Use workspace default' }).className).toContain('focus-visible')
 
     cleanup()
@@ -4587,8 +4587,12 @@ useStore.getState().setRunsSelectedRunId(runId);
         flowRequestCount += 1
         return jsonResponse({ files: [{ name: 'flow.md', content: '---\nid: contract_behavior\n---\n' }], flow: { id: 'contract_behavior' } })
       }
+      // A just-added step leads nowhere, which the server refuses.
       if (url.endsWith('/attractor/preview')) {
-        return jsonResponse(previewPayload)
+        return jsonResponse(String(init?.body).includes('"step_1"') ? {
+          status: 'validation_error',
+          diagnostics: [{ rule_id: 'decision_domain', severity: 'error', message: 'step_1.md: agent_task steps need at least one route', node_id: 'step_1', node_label: 'New step' }],
+        } : previewPayload)
       }
       if (url.endsWith('/attractor/api/flows') && init?.method === 'POST') {
         saveRequestCount += 1
@@ -4609,8 +4613,8 @@ useStore.getState().setRunsSelectedRunId(runId);
     await waitFor(() => expect(nodeCount()).toBe(loadedNodes + 1))
 
     await user.click(screen.getByRole('button', { name: 'Files' }))
-    // A new step leads nowhere, so its flow is refused without a request.
-    await waitFor(() => expect(useStore.getState().saveErrorMessage).toContain('“New step” needs a route to another step.'))
+    // A new step leads nowhere: its preview says so, and no save is sent for the server to refuse.
+    await waitFor(() => expect(useStore.getState().saveErrorMessage).toContain('Agent steps need at least one route.'))
     expect(saveRequestCount).toBe(0)
 
     expect(screen.queryByTestId('flow-files-view')).not.toBeInTheDocument()

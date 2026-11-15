@@ -1098,17 +1098,18 @@ describe('ProjectConversationHistory', () => {
         expect(within(history).getByRole('img', { name: 'Architecture overview' })).toHaveAttribute('loading', 'lazy')
     })
 
-    it('keeps user messages literal even when they contain markdown syntax', () => {
+    it('shows user messages as their Markdown reads, each typed line kept and HTML as text', () => {
         renderHistory([
             makeMessageEntry({
                 role: 'user',
-                content: '**literal** [docs](https://example.com/docs)',
+                content: 'Why does this fail?\nIt used to pass <br>\n```sh\nnpm test\n```',
             }),
         ])
 
         const history = screen.getByTestId('project-ai-conversation-history-list')
-        expect(history).toHaveTextContent('**literal** [docs](https://example.com/docs)')
-        expect(within(history).queryByRole('link', { name: 'docs' })).not.toBeInTheDocument()
+        expect(history.querySelector('pre code')).toHaveTextContent('npm test')
+        expect(history.querySelector('p')?.textContent).toBe('Why does this fail?\nIt used to pass <br>')
+        expect(history).not.toHaveTextContent('```')
     })
 
     it('hides thinking behind "Show thinking", keeping a live marker, then opens each summary until collapsed', async () => {

@@ -1,5 +1,5 @@
 import { useStore, type SaveErrorKind } from '@/store'
-import { saveFlowValidated, type FlowSaveContent } from '@/lib/attractorClient'
+import { fetchPreviewValidated, saveFlowValidated, type FlowSaveContent } from '@/lib/attractorClient'
 import { recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 import { duplicateDecisionsInFlow } from '@/lib/canonicalFlowModel'
 import { flowProblemsFromDetail } from '@/features/editor/model/flowLoadFailure'
@@ -98,16 +98,6 @@ export function setInvalidDraft(id: string, message: string | null) {
     }
 }
 
-/** The steps, by title, with no way out: neither an exit, nor a fork (it has branches), nor with a route. */
-function stepsWithoutRoutes(flow: unknown): string[] {
-    const nodes = (flow as { nodes?: Record<string, { kind?: unknown; label?: unknown; routes?: object } | null> } | null)?.nodes ?? {}
-    return Object.entries(nodes).flatMap(([id, node]) => (
-        node?.kind === 'exit' || node?.kind === 'parallel' || Object.keys(node?.routes ?? {}).length > 0
-            ? []
-            : [typeof node?.label === 'string' && node.label.trim() ? node.label.trim() : id]
-    ))
-}
-
 // The last save sent for each flow. A flow's saves go one at a time, in order: two requests in
 // flight together could land out of order and leave older content on disk.
 const lastSaveByScope = new Map<string, Promise<boolean>>()
@@ -154,14 +144,6 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
         )
         return false
     }
-    // The server refuses a flow with a step that leads nowhere, as a just-added step does: say so without asking it.
-    // ponytail: mirrors only this server rule; its other refusals still come back as a 422.
-    const deadEnds = stepsWithoutRoutes('flow' in content ? content.flow : null)
-    if (deadEnds.length > 0) {
-        const problems = deadEnds.map((step) => ({ message: `“${step}” needs a route to another step.`, file: null }))
-        markSaveFailure(buildErrorMessage('validation_error', problems.map((problem) => problem.message).join(' '), 422), 'validation_error', problems)
-        return false
-    }
     lastSaveRequest = { name, content, projectPath }
     recordFlowLoadDebug('save:request', name, {
         contentLength: serialized.length,
@@ -169,6 +151,17 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
     markSaveInFlight()
 
     try {
+        // The server refuses a flow that doesn't validate, as one mid-edit often is (a step just added,
+        // a route not yet wired); its preview answers either way, so the edits wait without a refused
+        // save. A preview that fails says nothing: the save still goes, and the server decides.
+        const preview = 'flow' in content
+            ? await fetchPreviewValidated(content.flow, undefined, { flowName: name, projectPath }).catch(() => null)
+            : null
+        if (preview?.status === 'validation_error') {
+            const problems = flowProblemsFromDetail(preview)
+            markSaveFailure(buildErrorMessage('validation_error', problems?.map((problem) => problem.message).join(' ') ?? preview.error, 422), 'validation_error', problems)
+            return false
+        }
         const response = await saveFlowValidated(name, content, projectPath)
         if (!response.ok) {
             const detail = parseErrorDetail(response.payload)

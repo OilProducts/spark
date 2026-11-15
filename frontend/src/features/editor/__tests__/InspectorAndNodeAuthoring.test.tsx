@@ -203,13 +203,11 @@ describe('Inspector and node authoring behavior', () => {
       vi.unstubAllGlobals()
     }
     // Once the invalid drafts are gone, saving proceeds.
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ status: 'saved' }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
-    )
+    const fetchMock = vi.fn(async () => Response.json({ status: 'saved' }))
     vi.stubGlobal('fetch', fetchMock)
     resetFlowSaveBaselines()
     expect(await saveFlowContent('demo', { flow: { schema_version: '2', id: 'demo', nodes: {} } })).toBe(true)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).endsWith('/api/flows'))).toHaveLength(1)
     vi.unstubAllGlobals()
   })
 

@@ -243,7 +243,7 @@ describe('Graph and settings behavior', () => {
 
     expect(screen.getByTestId('graph-structured-form')).toBeVisible()
     expect(screen.getByTestId('flow-metadata-help')).toHaveTextContent('Leave blank to omit the field from the flow.')
-    expect(screen.getByRole('button', { name: 'Apply to steps' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Apply to agent steps' })).toBeEnabled()
     await openPicker(user)
     expect(screen.getByRole('button', { name: 'XHigh' })).toBeVisible()
     await user.keyboard('{Escape}')
@@ -268,7 +268,7 @@ describe('Graph and settings behavior', () => {
     { graphThinking: '', workspaceThinking: 'budget', graphBudget: '', expectedThinking: 'budget', expectedBudget: 2048 },
     { graphThinking: 'budget', workspaceThinking: 'budget', graphBudget: '', expectedThinking: 'budget', expectedBudget: 2048 },
     { graphThinking: 'budget', workspaceThinking: 'budget', graphBudget: '4096', expectedThinking: 'budget', expectedBudget: 4096 },
-  ])('Apply to steps resolves thinking and budget: $graphThinking / $workspaceThinking / $graphBudget', async ({
+  ])('Apply to agent steps resolves thinking and budget: $graphThinking / $workspaceThinking / $graphBudget', async ({
     graphThinking, workspaceThinking, graphBudget, expectedThinking, expectedBudget,
   }) => {
     const user = userEvent.setup()
@@ -279,19 +279,24 @@ describe('Graph and settings behavior', () => {
     render(
       <ReactFlowProvider initialNodes={[{
         id: 'review', position: { x: 0, y: 0 },
-        data: { label: 'Review', thinking: 'budget', thinking_budget_tokens: '8192' },
-      }, { id: 'done', position: { x: 0, y: 100 }, data: { label: 'Done', kind: 'exit' } }]} initialEdges={[{ id: 'review-done', source: 'review', target: 'done' }]}>
+        data: { label: 'Review', kind: 'agent_task', thinking: 'budget', thinking_budget_tokens: '8192' },
+      }, { id: 'check', position: { x: 0, y: 50 }, data: { label: 'Check', kind: 'tool', 'tool.command': 'true' } },
+      { id: 'done', position: { x: 0, y: 100 }, data: { label: 'Done', kind: 'exit' } }]} initialEdges={[
+        { id: 'review-check', source: 'review', target: 'check' }, { id: 'check-done', source: 'check', target: 'done' },
+      ]}>
         <GraphSettings />
       </ReactFlowProvider>,
     )
 
-    await user.click(screen.getByRole('button', { name: 'Apply to steps' }))
+    await user.click(screen.getByRole('button', { name: 'Apply to agent steps' }))
 
     await waitFor(() => {
       const request = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST')
       expect(request).toBeDefined()
       const { flow } = JSON.parse(String(request![1]?.body))
-      expect(Object.keys(flow.nodes)).toEqual(['review', 'done'])
+      expect(Object.keys(flow.nodes)).toEqual(['review', 'check', 'done'])
+      // Only agent steps run a model.
+      expect(JSON.stringify(flow.nodes.check)).not.toMatch(/llm_|reasoning|thinking/)
       const review = JSON.stringify(flow.nodes.review)
       if (expectedThinking) expect(review).toContain(`"thinking":"${expectedThinking}"`)
       else expect(review).not.toContain('"thinking"')

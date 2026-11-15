@@ -15,6 +15,19 @@ import { isFolderMissing, projectLabel } from '../model/projectChoices'
 import { sortConversationSummaries } from '../model/conversationState'
 import { useRemoveProject } from '../hooks/useRemoveProject'
 
+/**
+ * A chat's latest message as the server sends it, Markdown with its whitespace collapsed, read as
+ * plain text: no fence, math, heading, emphasis or code marks, and a link as its text.
+ */
+export const plainPreview = (text: string) => text
+    .replace(/(```|~~~)[\w+-]*/g, ' ')
+    .replace(/\$\$/g, ' ')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(^|\s)#{1,6}(?=\s)/g, '$1')
+    .replace(/\*\*|__|`/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
 /** One project: its path, all its chats, and its settings. */
 export function ProjectPage({
     projectPath,
@@ -43,7 +56,7 @@ export function ProjectPage({
     const [chatQuery, setChatQuery] = useState('')
     const query = chatQuery.trim().toLowerCase()
     const shownChats = query
-        ? sortedChats.filter((chat) => `${chat.title}\n${chat.last_message_preview ?? ''}`.toLowerCase().includes(query))
+        ? sortedChats.filter((chat) => `${chat.title}\n${plainPreview(chat.last_message_preview ?? '')}`.toLowerCase().includes(query))
         : sortedChats
     // The gear beside a project opens its page at Settings, below however many chats it has.
     const settingsHeadingRef = useRef<HTMLHeadingElement>(null)
@@ -137,8 +150,8 @@ export function ProjectPage({
                                             <span className="truncate text-sm font-medium">{chat.title}</span>
                                             <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                                                 {chat.standing_role ? <StandingRoleChip state={chat.standing_role.state} /> : <span className="shrink-0">{formatConversationAgeShort(chat.updated_at)}</span>}
-                                                {chat.last_message_preview?.trim() ? (
-                                                    <span data-testid="project-page-chat-preview" className="min-w-0 truncate">· {chat.last_message_preview.trim()}</span>
+                                                {plainPreview(chat.last_message_preview ?? '') ? (
+                                                    <span data-testid="project-page-chat-preview" className="min-w-0 truncate">· {plainPreview(chat.last_message_preview ?? '')}</span>
                                                 ) : null}
                                             </span>
                                         </button>
