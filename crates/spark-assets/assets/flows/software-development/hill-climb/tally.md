@@ -26,7 +26,7 @@ contracts:
 routes:
   climb:
     to: climb
-    description: Some judge scored below the target or did not score, and rounds remain.
+    description: Some judge scored below the target, and rounds remain.
   exhausted:
     to: cleanup
     description: The last allowed round ended without every judge reaching the target.
@@ -36,8 +36,8 @@ routes:
 ---
 
 ```sh
-# A judge passes only when it completed and scored a number at or above the
-# target; any other judge keeps the climb going.
+# A judge passes only when it scored a number at or above the target; any
+# other judge keeps the climb going.
 set -eu
 command -v jq >/dev/null 2>&1 || { echo "tally: jq is required" >&2; exit 1; }
 commit=$(git -C "$SPARK_WORKSPACE_PATH" rev-parse HEAD)

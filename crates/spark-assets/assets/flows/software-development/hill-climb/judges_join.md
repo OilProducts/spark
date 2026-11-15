@@ -6,5 +6,5 @@ runtime:
 routes:
   next:
     to: tally
-    description: Every judge has settled; tally the scores, counting any judge that did not score as not passing.
+    description: Every judge has scored; tally the scores.
 ---
