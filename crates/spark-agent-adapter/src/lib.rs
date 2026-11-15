@@ -23,6 +23,7 @@ pub mod profiles;
 pub mod project_docs;
 pub mod session;
 pub mod status_envelope;
+mod stdio_transport;
 pub mod subagents;
 pub mod tools;
 pub mod truncation;

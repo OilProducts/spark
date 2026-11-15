@@ -15,6 +15,7 @@ spark-storage = { path = "../spark-storage" }
 unified-llm-adapter = { path = "../unified-llm-adapter" }
 jsonschema = { version = "0.46", default-features = false }
 base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 glob = "0.3"
 regex = "1.10"
 rustix = { version = "1.1.4", features = ["process"] }
@@ -23,6 +24,8 @@ serde_json = "1.0"
 tempfile = "3.10"
 thiserror = "1.0"
 time = { version = "0.3", features = ["formatting", "parsing", "serde", "serde-well-known"] }
+tokio = { version = "1", features = ["rt", "net", "process", "io-util", "sync", "time", "macros"] }
+tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["serde", "v4"] }
 

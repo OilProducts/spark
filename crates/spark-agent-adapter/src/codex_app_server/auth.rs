@@ -1,6 +1,6 @@
 //! Managed Codex login. Spark never reads or writes OAuth tokens.
 
-use super::{CodexAppServerClient, CodexAppServerError};
+use super::{CodexAppServerClient, CodexAppServerError, Ended};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::agent_settings::NativeAgentSettings;
@@ -137,7 +137,8 @@ impl CodexConnection {
             None,
             Some(native),
             Default::default(),
-            Default::default(),
+            None,
+            None,
         )?;
         match client.read_account(true) {
             Err(error) if requires_login(&error.message) => Ok(
@@ -176,7 +177,8 @@ impl CodexConnection {
             None,
             Some(native),
             Default::default(),
-            Default::default(),
+            None,
+            None,
         )?;
         let result = client.account_request(
             "account/login/start",
@@ -313,7 +315,16 @@ impl CodexAppServerClient {
                     .into(),
                 )));
             }
-            if let Some(message) = self.next_message(Duration::from_millis(100))? {
+            let message = match self.next_message(Duration::from_millis(100)) {
+                Ok(message) => message,
+                Err(Ended::Failed(error)) => return Err(error),
+                Err(_) => {
+                    return Err(CodexAppServerError::runtime(
+                        "Codex exited before sign-in completed. Please connect again.",
+                    ))
+                }
+            };
+            if let Some(message) = message {
                 if message.get("method").and_then(Value::as_str) != Some("account/login/completed")
                     || message.pointer("/params/loginId").and_then(Value::as_str) != Some(login_id)
                 {
@@ -329,16 +340,6 @@ impl CodexAppServerClient {
                         .unwrap_or("Codex sign-in failed. Please try again.")
                         .to_string(),
                 )));
-            }
-            if self
-                .child
-                .try_wait()
-                .map_err(|error| CodexAppServerError::runtime(error.to_string()))?
-                .is_some()
-            {
-                return Err(CodexAppServerError::runtime(
-                    "Codex exited before sign-in completed. Please connect again.",
-                ));
             }
         }
     }

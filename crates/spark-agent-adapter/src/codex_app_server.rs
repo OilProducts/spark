@@ -2,14 +2,15 @@ use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::time::Duration;
+
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::Notify;
+use tokio::time::Instant;
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -23,6 +24,10 @@ use unified_llm_adapter::Usage;
 use crate::agent::{
     AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
     AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
+};
+use crate::stdio_transport::{
+    self, sleep_until, Blocking, Budget, Connection, End, Endpoints, Held, Outgoing, Refused,
+    Status, Stop, LIMITS, PENDING_LIMIT,
 };
 
 pub mod auth;
@@ -54,7 +59,6 @@ const COLLABORATION_MODE_DEFAULT: &str = "default";
 const COLLABORATION_MODE_PLAN: &str = "plan";
 /// Reasoning summary level sent when a turn does not choose one.
 const DEFAULT_REASONING_SUMMARY: &str = "detailed";
-const STDERR_DIAGNOSTIC_MAX_LINES: usize = 50;
 
 pub fn configure_codex_spark_home(path: impl Into<PathBuf>) -> Result<(), String> {
     let path = path.into();
@@ -205,7 +209,7 @@ impl CodexAppServerBackend {
             })
             .flatten();
         // Registered before the handshake so a stop also ends a stuck `initialize`.
-        let (stop, inbox) = TurnStop::new();
+        let stop = TurnStop::new();
         interrupt_registry().lock().unwrap().insert(
             (
                 request.project_path.clone(),
@@ -218,11 +222,11 @@ impl CodexAppServerBackend {
             trace_path,
             native,
             crate::agent::agent_turn_env(&request.metadata),
-            Some((Arc::clone(&stop), inbox)),
+            Some(Arc::clone(&stop)),
+            clarification_handler,
         )
         // Startup can fail before a client exists to close the turn.
         .inspect_err(|_| stop.close())?;
-        client.clarification_handler = clarification_handler;
         client.developer_instructions = metadata_string(
             &request.metadata,
             &[crate::agent::AGENT_INSTRUCTIONS_METADATA_KEY],
@@ -329,15 +333,25 @@ impl CodexAppServerBackend {
         let Some(stop) = stop else {
             return false;
         };
+        // Refused before it is queued: longer than one line, or no room.
+        if message.len() > LIMITS.frame_bytes {
+            return false;
+        }
+        let Some(held) = stop.steer_budget.try_admit(message.len()) else {
+            return false;
+        };
         let (sender, receiver) = std::sync::mpsc::channel();
         match stop.messages.lock().unwrap().as_mut() {
-            Some(messages) => {
-                messages.push((message_id.to_string(), message.to_string(), sender));
-            }
+            Some(messages) => messages.push_back(SteerMessage {
+                id: message_id.to_string(),
+                text: message.to_string(),
+                accepted: sender,
+                _held: held,
+            }),
             // The turn has ended and takes no more messages.
             None => return false,
         }
-        stop.wake();
+        stop.wake.notify_one();
         // The turn loop answers once turn/steer returns; a turn that ends
         // first answers false.
         match receiver.recv_timeout(REQUEST_TIMEOUT + Duration::from_secs(1)) {
@@ -349,7 +363,8 @@ impl CodexAppServerBackend {
                 // mid turn/steer, which its own request timeout bounds.
                 let mut messages = stop.messages.lock().unwrap();
                 if let Some(messages) = messages.as_mut() {
-                    if let Some(index) = messages.iter().position(|(id, ..)| id == message_id) {
+                    if let Some(index) = messages.iter().position(|queued| queued.id == message_id)
+                    {
                         messages.remove(index);
                         return false;
                     }
@@ -362,20 +377,19 @@ impl CodexAppServerBackend {
 
     /// Asks the conversation's running turn, if any, to stop.
     pub fn interrupt(&self, project_path: &str, conversation_id: &str) -> bool {
-        Self::signal(project_path, conversation_id, |stop| &stop.interrupt)
+        Self::signal(project_path, conversation_id, |stop| {
+            stop.interrupt.store(true, Ordering::SeqCst);
+            stop.wake.notify_one();
+        })
     }
 
     /// Ends the conversation's running turn and kills its app-server, for a
     /// turn that did not stop after its interrupt.
     pub fn terminate(&self, project_path: &str, conversation_id: &str) -> bool {
-        Self::signal(project_path, conversation_id, |stop| &stop.terminate)
+        Self::signal(project_path, conversation_id, TurnStop::terminate)
     }
 
-    fn signal(
-        project_path: &str,
-        conversation_id: &str,
-        flag: impl Fn(&TurnStop) -> &AtomicBool,
-    ) -> bool {
+    fn signal(project_path: &str, conversation_id: &str, act: impl Fn(&TurnStop)) -> bool {
         let stop = {
             let mut registry = interrupt_registry().lock().unwrap();
             registry.retain(|_, stop| stop.strong_count() > 0);
@@ -384,8 +398,7 @@ impl CodexAppServerBackend {
                 .and_then(Weak::upgrade)
         };
         stop.is_some_and(|stop| {
-            flag(&stop).store(true, Ordering::SeqCst);
-            stop.wake();
+            act(&stop);
             true
         })
     }
@@ -500,28 +513,21 @@ fn thread_resume_failure_output(
     }
 }
 
+/// A synchronous handle on one app-server. Its connection's worker owns the
+/// JSON-RPC state and keeps servicing the app-server between calls.
 pub struct CodexAppServerClient {
-    child: Child,
-    stdin: mpsc::Sender<String>,
-    inbox: Receiver<Inbox>,
-    /// Set once stdout ends: `Some(None)` at EOF, else the read error.
-    stdout_end: Option<Option<String>>,
-    /// A control wake an RPC wait received, left for the turn loop to act on.
-    woken: bool,
-    next_request_id: u64,
-    pending_messages: VecDeque<Value>,
-    pending_responses: BTreeMap<String, VecDeque<Value>>,
-    clarification_handler: Option<crate::codergen::ClarificationHandler>,
+    /// Declared before `connection`: the worker runs until this closes, and
+    /// dropping the connection waits for the worker.
+    commands: UnboundedSender<(Command, Held)>,
+    command_budget: Budget,
+    controls: Arc<TurnStop>,
+    /// Flow questions go to a clarification handler instead of a person.
+    clarifies: bool,
     /// Pinned system instructions sent as `developerInstructions` on
     /// `thread/start` and `thread/resume`.
     developer_instructions: Option<String>,
-    workflow_questions: Vec<(Value, crate::codergen::ClarificationPoll)>,
-    /// Set by `CodexAppServerBackend::interrupt` and `terminate`.
-    stop: Arc<TurnStop>,
-    pending_request_user_input: Option<PendingRequestUserInputResponse>,
-    trace_sink: Option<CodexJsonrpcTraceSink>,
     executable: PathBuf,
-    stderr_lines: Arc<Mutex<VecDeque<String>>>,
+    connection: Connection,
 }
 
 impl CodexAppServerClient {
@@ -533,7 +539,7 @@ impl CodexAppServerClient {
         working_dir: PathBuf,
         trace_path: Option<PathBuf>,
     ) -> Result<Self, CodexAppServerError> {
-        Self::connect_with_settings(working_dir, trace_path, None, BTreeMap::new(), None)
+        Self::connect_with_settings(working_dir, trace_path, None, BTreeMap::new(), None, None)
     }
 
     /// `controls` are a registered turn's; a standalone client gets its own.
@@ -543,9 +549,10 @@ impl CodexAppServerClient {
         trace_path: Option<PathBuf>,
         native: Option<&spark_common::agent_settings::NativeAgentSettings>,
         turn_env: BTreeMap<String, String>,
-        controls: Option<(Arc<TurnStop>, Receiver<Inbox>)>,
+        controls: Option<Arc<TurnStop>>,
+        clarification_handler: Option<crate::codergen::ClarificationHandler>,
     ) -> Result<Self, CodexAppServerError> {
-        let (stop, inbox) = controls.unwrap_or_else(TurnStop::new);
+        let controls = controls.unwrap_or_else(TurnStop::new);
         if !working_dir.exists() {
             return Err(CodexAppServerError::configuration(format!(
                 "codex app-server working directory is unavailable in the runtime: {}",
@@ -556,7 +563,7 @@ impl CodexAppServerClient {
             .and_then(|config| config.codex_binary.as_ref())
             .map(PathBuf::from)
             .unwrap_or_else(codex_executable);
-        let mut command = Command::new(&executable);
+        let mut command = std::process::Command::new(&executable);
         command
             // Models that return raw reasoning stream it as item/reasoning/textDelta.
             .arg("-c")
@@ -564,87 +571,68 @@ impl CodexAppServerClient {
             .arg("app-server")
             .current_dir(&working_dir)
             .envs(build_codex_runtime_environment_with_settings(native)?)
-            .envs(turn_env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        // Its own process group, so a forced stop also ends the agent's tools.
-        crate::local_environment::configure_process_group(&mut command);
-        let mut child =
-            crate::local_environment::spawn_process_group(command).map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    CodexAppServerError::configuration(format!(
-                        "codex app-server executable not found: {}",
-                        executable.display()
-                    ))
-                } else {
-                    CodexAppServerError::runtime(format!(
-                        "codex app-server launch failed for {}: {error}",
-                        executable.display()
-                    ))
-                }
-            })?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| CodexAppServerError::runtime("codex app-server did not expose stdin"))?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            CodexAppServerError::runtime("codex app-server did not expose stdout")
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            CodexAppServerError::runtime("codex app-server did not expose stderr")
-        })?;
-        // Lines in order, then exactly one end. ponytail: the end is how a
-        // turn sees its app-server exit, so an exited app-server whose stdout
-        // a descendant still holds open goes unseen while a pending question
-        // suspends idle expiry. codex-cli 0.162.1 gives commands their own
-        // pipes; add a `Child::wait` waiter if that changes.
-        let stdout_inbox = stop.inbox.clone();
-        thread::spawn(move || {
-            let mut lines = BufReader::new(stdout).lines();
-            let end = loop {
-                match lines.next() {
-                    Some(Ok(line)) => {
-                        if stdout_inbox.send(Inbox::Line(line)).is_err() {
-                            return;
-                        }
-                    }
-                    Some(Err(error)) => break Some(error.to_string()),
-                    None => break None,
-                }
-            };
-            let _ = stdout_inbox.send(Inbox::End(end));
-        });
-        let stderr_lines = Arc::new(Mutex::new(VecDeque::new()));
-        let stderr_sink = Arc::clone(&stderr_lines);
-        thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                if let Ok(mut lines) = stderr_sink.lock() {
-                    if lines.len() == STDERR_DIAGNOSTIC_MAX_LINES {
-                        lines.pop_front();
-                    }
-                    lines.push_back(line);
-                }
+            .envs(turn_env);
+        let launch_failed = |error: std::io::Error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                CodexAppServerError::configuration(format!(
+                    "codex app-server executable not found: {}",
+                    executable.display()
+                ))
+            } else {
+                CodexAppServerError::runtime(format!(
+                    "codex app-server launch failed for {}: {error}",
+                    executable.display()
+                ))
             }
-        });
+        };
+        let (completions, completed) = unbounded_channel();
+        let clarifies = clarification_handler.is_some();
+        let clarification = match clarification_handler {
+            Some(handler) => Some((handler, Blocking::spawn(&LIMITS).map_err(launch_failed)?)),
+            None => None,
+        };
+        let trace = match trace_path {
+            Some(path) => Some(Trace {
+                sink: CodexJsonrpcTraceSink::new(path),
+                work: Blocking::spawn(&LIMITS).map_err(launch_failed)?,
+                failure: Arc::default(),
+                completions: completions.clone(),
+            }),
+            None => None,
+        };
+        let (commands, received) = unbounded_channel();
+        let worker = Worker {
+            controls: Arc::clone(&controls),
+            clarification,
+            trace,
+            completions,
+            next_id: 0,
+            pending: BTreeMap::new(),
+            backlog: VecDeque::new(),
+            backlog_budget: Budget::new(&LIMITS),
+            sink_budget: Budget::new(&LIMITS),
+            turn: None,
+            waiter: None,
+            chat_question: None,
+            flow_questions: Vec::new(),
+            flow_due: None,
+            next_question: 0,
+            ended: None,
+        };
+        // Its own process group, so a forced stop also ends the agent's tools.
+        let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
+            worker.run(endpoints, received, completed)
+        })
+        .map_err(launch_failed)?;
+        controls.attach(connection.stop_handle());
         let mut client = Self {
-            child,
-            stdin: crate::agent::stdin_writer(stdin),
-            inbox,
-            stdout_end: None,
-            woken: false,
-            next_request_id: 0,
-            pending_messages: VecDeque::new(),
-            pending_responses: BTreeMap::new(),
-            clarification_handler: None,
+            commands,
+            command_budget: Budget::new(&LIMITS),
+            controls,
+            clarifies,
             developer_instructions: None,
-            workflow_questions: Vec::new(),
-            stop,
-            pending_request_user_input: None,
-            trace_sink: trace_path.map(CodexJsonrpcTraceSink::new),
             executable,
-            stderr_lines,
+            connection,
         };
         let response = client
             .send_request(
@@ -661,7 +649,7 @@ impl CodexAppServerClient {
             );
         }
         client
-            .send_json(&json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}))
+            .notify("initialized")
             .map_err(|error| client.with_diagnostics(error))?;
         Ok(client)
     }
@@ -681,7 +669,7 @@ impl CodexAppServerClient {
         if let Some(model) = model.and_then(non_empty) {
             params["model"] = json!(model);
         }
-        if self.clarification_handler.is_some() {
+        if self.clarifies {
             params["config"] = json!({"features.default_mode_request_user_input": true});
         }
         if let Some(instructions) = &self.developer_instructions {
@@ -751,12 +739,7 @@ impl CodexAppServerClient {
     }
 
     fn with_diagnostics(&self, mut error: CodexAppServerError) -> CodexAppServerError {
-        let stderr = self
-            .stderr_lines
-            .lock()
-            .ok()
-            .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
-            .filter(|value| !value.trim().is_empty());
+        let stderr = Some(self.connection.stderr()).filter(|value| !value.trim().is_empty());
         let cause = error.details.take();
         error.details = Some(json!({
             "cause": cause,
@@ -881,19 +864,30 @@ impl CodexAppServerClient {
                 observer();
             }
         }
-        let response = self.send_request("turn/start", Some(params))?;
-        if response.get("error").is_some() {
-            return Err(rpc_error("codex app-server turn/start failed", &response));
+        let (messages, received) = mpsc::channel();
+        let bytes = json_len(&params);
+        self.submit(
+            Command::Turn {
+                thread_id: thread_id.to_string(),
+                params,
+                sink: event_sink.is_some(),
+                messages,
+            },
+            bytes,
+        )?;
+        // This thread is the sink's, so the sink has seen every event before
+        // the turn returns, and the worker never waits on a callback.
+        for message in received {
+            match message {
+                TurnMessage::Event(event, _held) => {
+                    if let Some(sink) = event_sink.as_ref() {
+                        sink(event);
+                    }
+                }
+                TurnMessage::Done(result) => return result,
+            }
         }
-        let turn_id = response
-            .pointer("/result/turn/id")
-            .and_then(Value::as_str)
-            .and_then(non_empty)
-            .map(str::to_string)
-            .ok_or_else(|| {
-                CodexAppServerError::runtime("codex app-server did not return a turn id")
-            })?;
-        self.consume_turn_stream(thread_id, &turn_id, event_sink)
+        Err(connection_lost())
     }
 
     pub fn steer_turn(
@@ -921,185 +915,254 @@ impl CodexAppServerClient {
         method: &str,
         params: Option<Value>,
     ) -> Result<Value, CodexAppServerError> {
-        self.next_request_id = self.next_request_id.saturating_add(1);
-        let request_id = self.next_request_id;
-        let mut payload = json!({"jsonrpc": "2.0", "id": request_id, "method": method});
-        if let Some(params) = params {
-            payload["params"] = params;
-        }
-        self.send_json(&payload)?;
-        self.wait_for_response(request_id, REQUEST_TIMEOUT)
+        let (reply, response) = mpsc::channel();
+        let bytes = params.as_ref().map_or(0, json_len);
+        self.submit(
+            Command::Request {
+                method: method.to_string(),
+                params,
+                reply,
+            },
+            bytes,
+        )?;
+        response.recv().map_err(|_| connection_lost())?
     }
 
-    fn consume_turn_stream(
-        &mut self,
-        thread_id: &str,
-        expected_turn_id: &str,
-        event_sink: Option<AgentTurnEventSink>,
-    ) -> Result<CodexAppServerTurnResult, CodexAppServerError> {
-        let mut state = CodexAppServerTurnState::default();
-        let mut events = Vec::new();
-        // Renewed only by provider output; suspended while a question waits
-        // on a person, with a full window again once none does.
-        let mut idle_deadline = Some(Instant::now() + TURN_IDLE_TIMEOUT);
-        let mut flow_check_due = None;
-        let mut stopping = false;
-        loop {
-            self.check_terminated()?;
-            self.steer_messages(
-                thread_id,
-                expected_turn_id,
-                stopping,
-                event_sink.as_ref(),
-                &mut events,
-            );
-            if !stopping && self.stop.interrupt.load(Ordering::SeqCst) {
-                stopping = true;
-                let response = self.send_request(
-                    "turn/interrupt",
-                    Some(json!({"threadId": thread_id, "turnId": expected_turn_id})),
-                )?;
-                if response.get("error").is_some() {
-                    tracing::warn!(%response, "codex app-server turn/interrupt failed");
-                }
-            }
-            if let Some(pending) = self.pending_request_user_input.as_ref() {
-                if stopping {
-                    // A stopped turn leaves its question unanswered; dropping unregisters it.
-                    self.pending_request_user_input = None;
-                } else if let Some(answers) = pending.pending.take_answers() {
-                    let id = pending.jsonrpc_request_id.clone();
-                    self.pending_request_user_input = None;
-                    self.send_json(&json!({"jsonrpc": "2.0", "id": id, "result": request_user_input_response_payload(&answers)}))?;
-                }
-            }
-            // ponytail: a flow question's answer and its run's status live in
-            // the run record and journal, which another process writes, so
-            // they are checked every 100 ms while one is pending, on their own
-            // schedule that output cannot delay. Removing this needs
-            // cross-process notification.
-            if !self.workflow_questions.is_empty()
-                && flow_check_due.is_none_or(|due| Instant::now() >= due)
-            {
-                let mut index = 0;
-                while index < self.workflow_questions.len() {
-                    let answers = (self.workflow_questions[index].1)()
-                        .map_err(CodexAppServerError::runtime)?;
-                    if let Some(answers) = answers {
-                        let (id, _poll) = self.workflow_questions.remove(index);
-                        self.send_json(&json!({"jsonrpc": "2.0", "id": id, "result": request_user_input_response_payload(&answers)}))?;
-                    } else {
-                        index += 1;
-                    }
-                }
-                flow_check_due = Some(Instant::now() + Duration::from_millis(100));
-            }
-            if self.workflow_questions.is_empty() {
-                flow_check_due = None;
-            }
-            if self.pending_request_user_input.is_some() || !self.workflow_questions.is_empty() {
-                idle_deadline = None;
-            } else if idle_deadline.is_none() {
-                idle_deadline = Some(Instant::now() + TURN_IDLE_TIMEOUT);
-            }
-            if idle_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                return Err(CodexAppServerError::runtime(
-                    "codex app-server turn timed out waiting for activity",
-                ));
-            }
-            let deadline = idle_deadline.into_iter().chain(flow_check_due).min();
-            let message = match self.pending_messages.pop_front() {
-                Some(message) => message,
-                // A control that woke an RPC wait is acted on before blocking.
-                None if std::mem::take(&mut self.woken) => continue,
-                None => match self.receive(deadline)? {
-                    // A deadline passed or a control changed: recheck them all.
-                    None | Some(Inbox::Wake) => continue,
-                    Some(Inbox::End(read_error)) => {
-                        return Err(stream_end_error(
-                            read_error,
-                            "codex app-server exited before turn completion",
-                        ))
-                    }
-                    Some(Inbox::Line(line)) => {
-                        if let Some(message) = parse_jsonrpc_line(&line) {
-                            self.route_incoming_message(message)?;
-                        }
-                        // Replies and malformed lines are not provider activity.
-                        let Some(message) = self.pending_messages.pop_front() else {
-                            continue;
-                        };
-                        message
-                    }
-                },
-            };
-            if idle_deadline.is_some() {
-                idle_deadline = Some(Instant::now() + TURN_IDLE_TIMEOUT);
-            }
-            let extracted_turn_id = extract_turn_id(&message);
-            if extracted_turn_id
-                .as_deref()
-                .is_some_and(|turn_id| turn_id != expected_turn_id)
-            {
-                continue;
-            }
-            let mut normalized = process_codex_app_server_message(&message, &mut state);
-            for event in &mut normalized {
-                if event.source.app_thread_id.is_none() {
-                    event.source.app_thread_id = Some(thread_id.to_string());
-                }
-                if event.source.app_turn_id.is_none() {
-                    event.source.app_turn_id = Some(expected_turn_id.to_string());
-                }
-            }
-            let completed = normalized
-                .iter()
-                .any(|event| event.kind == TurnStreamEventKind::TurnCompleted)
-                && extracted_turn_id.as_deref() == Some(expected_turn_id);
-            // A turn stopped on request ends normally with what it had said.
-            if completed && stopping && state.turn_status.as_deref() == Some("interrupted") {
-                state.turn_error = None;
-                state.last_error = None;
-                let (source, text) =
-                    crate::events::latest_assistant_text(&events).unwrap_or_default();
-                let item_id = source.item_id;
-                let text = non_empty(&text).unwrap_or("Stopped.").to_string();
-                state.final_agent_message = Some(text.clone());
-                let index = normalized
-                    .iter()
-                    .position(|event| event.kind == TurnStreamEventKind::TurnCompleted)
-                    .unwrap();
-                normalized[index].error = None;
-                let mut answer = event(TurnStreamEventKind::ContentCompleted, "turn_interrupted")
-                    .channel(TurnStreamChannel::Assistant)
-                    .content(Some(text))
-                    .item_id(item_id.or_else(|| Some(format!("{expected_turn_id}-stopped"))))
-                    .phase(Some("final_answer".to_string()))
-                    .build();
-                answer.source.app_thread_id = Some(thread_id.to_string());
-                answer.source.app_turn_id = Some(expected_turn_id.to_string());
-                normalized.insert(index, answer);
-            }
-            if let Some(sink) = event_sink.as_ref() {
-                for event in &normalized {
-                    sink(event.clone());
-                }
-            }
-            // Thinking progress is live-only: it is never part of the turn's record.
-            events.extend(
-                normalized
-                    .into_iter()
-                    .filter(|event| event.thinking_state().is_none()),
-            );
-            if completed {
-                break;
-            }
+    fn notify(&mut self, method: &str) -> Result<(), CodexAppServerError> {
+        let (reply, written) = mpsc::channel();
+        self.submit(
+            Command::Notify {
+                method: method.to_string(),
+                reply,
+            },
+            0,
+        )?;
+        written.recv().map_err(|_| connection_lost())?
+    }
+
+    /// The next notification, or a server request as one, if one arrives
+    /// within `wait`; why not once the connection has ended and none is left.
+    fn next_message(&mut self, wait: Duration) -> Result<Option<Value>, Ended> {
+        let (reply, next) = mpsc::channel();
+        self.submit(Command::Next { wait, reply }, 0)
+            .map_err(Ended::Failed)?;
+        next.recv().map_err(|_| Ended::Failed(connection_lost()))?
+    }
+
+    /// Hands the worker a command, unless its queue is full.
+    fn submit(&self, command: Command, bytes: usize) -> Result<(), CodexAppServerError> {
+        let held = self
+            .command_budget
+            .try_admit(bytes)
+            .ok_or_else(|| overloaded("its command queue"))?;
+        self.commands
+            .send((command, held))
+            .map_err(|_| connection_lost())
+    }
+}
+
+impl Drop for CodexAppServerClient {
+    fn drop(&mut self) {
+        // Takes no more messages. The connection, dropped after the command
+        // sender, kills a still-live app-server at once.
+        self.controls.close();
+    }
+}
+
+/// Settles one facade call.
+type Reply<T> = mpsc::Sender<Result<T, CodexAppServerError>>;
+
+/// What a client asks of its worker.
+enum Command {
+    Request {
+        method: String,
+        params: Option<Value>,
+        reply: Reply<Value>,
+    },
+    /// A notification, settled once admitted for writing.
+    Notify { method: String, reply: Reply<()> },
+    /// Starts a turn and streams it back.
+    Turn {
+        thread_id: String,
+        params: Value,
+        sink: bool,
+        messages: mpsc::Sender<TurnMessage>,
+    },
+    Next {
+        wait: Duration,
+        reply: mpsc::Sender<Result<Option<Value>, Ended>>,
+    },
+}
+
+/// What a turn hands its caller, in order: events for the sink, then its
+/// result. An event counts against the sink queue until handled.
+enum TurnMessage {
+    Event(TurnStreamEvent, Held),
+    Done(Result<CodexAppServerTurnResult, CodexAppServerError>),
+}
+
+/// Why a connection ended. The first cause wins.
+#[derive(Clone, Debug)]
+enum Ended {
+    /// Stdout ended: `None` once the app-server exited, else the read failure.
+    Stdout(Option<String>),
+    Terminated,
+    Failed(CodexAppServerError),
+}
+
+impl Ended {
+    /// The error for a caller; `exited` says what an exit cut short.
+    fn error(&self, exited: &str) -> CodexAppServerError {
+        match self {
+            Self::Stdout(read_error) => stream_end_error(read_error.clone(), exited),
+            Self::Terminated => CodexAppServerError::runtime(
+                "codex app-server was terminated after its turn did not stop",
+            ),
+            Self::Failed(error) => error.clone(),
         }
-        if state
-            .turn_status
-            .as_deref()
-            .is_some_and(|status| status != "completed" && !(stopping && status == "interrupted"))
-        {
+    }
+}
+
+const REQUEST_EXITED: &str = "codex app-server exited unexpectedly";
+const TURN_EXITED: &str = "codex app-server exited before turn completion";
+const REQUEST_TIMED_OUT: &str = "codex app-server request timed out waiting for response";
+/// How often a flow question's answer is looked for.
+const FLOW_POLL: Duration = Duration::from_millis(100);
+
+fn connection_lost() -> CodexAppServerError {
+    CodexAppServerError::runtime("codex app-server connection worker stopped")
+}
+
+fn overloaded(queue: &str) -> CodexAppServerError {
+    CodexAppServerError::runtime(format!("codex app-server overloaded: {queue} is full"))
+}
+
+/// Serialized size, for queue accounting.
+fn json_len(value: &impl Serialize) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
+}
+
+/// Writes the JSON-RPC trace in order on its own thread. Replies pass
+/// through it, so a caller hears back only once every line traced before
+/// its reply is written, or of the failure that stopped the trace.
+struct Trace {
+    sink: CodexJsonrpcTraceSink,
+    work: Blocking,
+    failure: Arc<Mutex<Option<CodexAppServerError>>>,
+    completions: UnboundedSender<Completion>,
+}
+
+impl Trace {
+    async fn line(&self, direction: &'static str, line: String) {
+        let (sink, failure, completions) = (
+            self.sink.clone(),
+            Arc::clone(&self.failure),
+            self.completions.clone(),
+        );
+        let _ = self
+            .work
+            .run(line.len(), move || {
+                let mut failure = failure.lock().unwrap_or_else(PoisonError::into_inner);
+                if failure.is_none() {
+                    if let Err(error) = sink.append(direction, &line) {
+                        *failure = Some(error.clone());
+                        let _ = completions.send(Completion::TraceFailed(error));
+                    }
+                }
+            })
+            .await;
+    }
+}
+
+/// Blocking work finished off the runtime.
+enum Completion {
+    /// The clarification handler took a flow question.
+    Asked {
+        key: u64,
+        poll: Result<crate::codergen::ClarificationPoll, String>,
+    },
+    Polled {
+        key: u64,
+        poll: crate::codergen::ClarificationPoll,
+        answers: Result<Option<BTreeMap<String, String>>, String>,
+    },
+    TraceFailed(CodexAppServerError),
+}
+
+struct Pending {
+    deadline: Instant,
+    call: Call,
+}
+
+/// Who waits on a request's response.
+enum Call {
+    Facade(Reply<Value>),
+    TurnStart,
+    Steer(SteerMessage),
+    Interrupt,
+}
+
+struct FlowQuestion {
+    key: u64,
+    request_id: Value,
+    /// `None` until the handler returns, and while a poll runs.
+    poll: Option<crate::codergen::ClarificationPoll>,
+}
+
+struct Turn {
+    thread_id: String,
+    /// Known once turn/start answers.
+    turn_id: Option<String>,
+    state: CodexAppServerTurnState,
+    /// The turn's record: every event but thinking progress.
+    events: Vec<TurnStreamEvent>,
+    messages: mpsc::Sender<TurnMessage>,
+    sink: bool,
+    /// Sequenced events waiting for room in the sink queue, with their sizes.
+    outbox: VecDeque<(TurnStreamEvent, usize)>,
+    /// Renewed only by provider output; suspended while a question waits on
+    /// a person, with a full window again once none does.
+    idle_deadline: Option<Instant>,
+    stopping: bool,
+    /// A turn/steer is outstanding: output read meanwhile waits behind it.
+    steering: bool,
+    /// Set once the turn has ended; sent once the sink has the events before it.
+    result: Option<Result<CodexAppServerTurnResult, CodexAppServerError>>,
+}
+
+impl Turn {
+    fn sequence(&mut self, event: TurnStreamEvent) {
+        if self.sink {
+            let size = json_len(&event);
+            self.outbox.push_back((event.clone(), size));
+        }
+        // Thinking progress is live-only: it is never part of the turn's record.
+        if event.thinking_state().is_none() {
+            self.events.push(event);
+        }
+    }
+
+    fn finish(&mut self, result: Result<CodexAppServerTurnResult, CodexAppServerError>) {
+        self.result.get_or_insert(result);
+    }
+
+    fn outcome(&mut self) -> Result<CodexAppServerTurnResult, CodexAppServerError> {
+        let state = std::mem::take(&mut self.state);
+        if state.turn_status.as_deref().is_some_and(|status| {
+            status != "completed" && !(self.stopping && status == "interrupted")
+        }) {
             return Err(CodexAppServerError::runtime(
                 state
                     .turn_error
@@ -1111,260 +1174,858 @@ impl CodexAppServerClient {
             return Err(CodexAppServerError::runtime(error));
         }
         Ok(CodexAppServerTurnResult {
-            thread_id: thread_id.to_string(),
-            turn_id: expected_turn_id.to_string(),
+            thread_id: self.thread_id.clone(),
+            turn_id: self.turn_id.clone().unwrap_or_default(),
             state,
-            events,
+            events: std::mem::take(&mut self.events),
             raw_log_lines: Vec::new(),
         })
     }
+}
 
-    /// Sends each message from `send_message` through turn/steer and tells
-    /// its sender whether the app-server accepted it. An accepted message is
-    /// reported before any output read after it. A stopping turn takes none.
-    fn steer_messages(
-        &mut self,
-        thread_id: &str,
-        turn_id: &str,
-        stopping: bool,
-        event_sink: Option<&AgentTurnEventSink>,
-        events: &mut Vec<TurnStreamEvent>,
+/// The app-server's JSON-RPC state, owned by its connection's worker: the
+/// sole reader of its output and writer of its input, which also keeps
+/// deadlines and controls between facade calls.
+struct Worker {
+    controls: Arc<TurnStop>,
+    clarification: Option<(crate::codergen::ClarificationHandler, Blocking)>,
+    trace: Option<Trace>,
+    completions: UnboundedSender<Completion>,
+    next_id: u64,
+    pending: BTreeMap<u64, Pending>,
+    /// Notifications no turn or caller has taken yet: read before a turn
+    /// starts, while a steer is outstanding, or between calls.
+    backlog: VecDeque<(Value, Held)>,
+    backlog_budget: Budget,
+    sink_budget: Budget,
+    turn: Option<Turn>,
+    waiter: Option<(Instant, mpsc::Sender<Result<Option<Value>, Ended>>)>,
+    chat_question: Option<PendingRequestUserInputResponse>,
+    flow_questions: Vec<FlowQuestion>,
+    flow_due: Option<Instant>,
+    next_question: u64,
+    ended: Option<Ended>,
+}
+
+impl Worker {
+    /// Runs until the client is gone.
+    async fn run(
+        mut self,
+        endpoints: Endpoints,
+        mut commands: UnboundedReceiver<(Command, Held)>,
+        mut completed: UnboundedReceiver<Completion>,
     ) {
-        let messages = self
-            .stop
-            .messages
-            .lock()
-            .unwrap()
-            .as_mut()
-            .map(std::mem::take)
-            .unwrap_or_default();
-        for (message_id, text, accepted) in messages {
-            if stopping {
-                let _ = accepted.send(false);
-                continue;
-            }
-            if let Err(error) = self.steer_turn(thread_id, turn_id, &text) {
-                tracing::warn!(error = %error.message, "codex app-server turn/steer failed");
-                let _ = accepted.send(false);
-                continue;
-            }
-            let delivered = TurnStreamEvent {
-                kind: TurnStreamEventKind::Other("user_message_delivered".to_string()),
-                channel: None,
-                source: TurnStreamSource {
-                    backend: Some(CODEX_APP_SERVER_BACKEND.to_string()),
-                    app_thread_id: Some(thread_id.to_string()),
-                    app_turn_id: Some(turn_id.to_string()),
-                    item_id: Some(message_id),
-                    raw_kind: Some("turn_steer".to_string()),
-                    ..TurnStreamSource::default()
-                },
-                content_delta: None,
-                message: Some(text),
-                tool_call: None,
-                request_user_input: None,
-                token_usage: None,
-                error: None,
-                error_code: None,
-                details: None,
-                phase: None,
-                status: Some("delivered".to_string()),
-            };
-            if let Some(sink) = event_sink {
-                sink(delivered.clone());
-            }
-            events.push(delivered);
-            let _ = accepted.send(true);
-        }
-    }
-
-    fn wait_for_response(
-        &mut self,
-        target_id: u64,
-        timeout: Duration,
-    ) -> Result<Value, CodexAppServerError> {
-        let deadline = Instant::now() + timeout;
-        let target_key = target_id.to_string();
+        let Endpoints {
+            mut stdout,
+            stdin,
+            mut status,
+            stop,
+        } = endpoints;
+        let mut io = Io { stdin, stop };
         loop {
-            if let Some(response) = self.pop_pending_response(&target_key) {
-                return Ok(response);
+            let deadline = self.next_deadline();
+            // A sequenced event waiting for room holds up further output.
+            let blocked = self
+                .turn
+                .as_ref()
+                .and_then(|turn| turn.outbox.front())
+                .map(|(_, size)| *size);
+            let reading = self.ended.is_none() && blocked.is_none();
+            let sink_budget = self.sink_budget.clone();
+            let wake = Arc::clone(&self.controls.wake);
+            tokio::select! {
+                command = commands.recv() => match command {
+                    Some((command, _held)) => self.command(&mut io, command).await,
+                    None => return,
+                },
+                line = stdout.next(), if reading => match line {
+                    Some(line) => self.line(&mut io, line.text).await,
+                    None => {
+                        let read_error = match stdout.end() {
+                            Some(End::Failed(error)) => Some(error.clone()),
+                            _ => None,
+                        };
+                        self.end(&io, Ended::Stdout(read_error)).await;
+                    }
+                },
+                held = sink_budget.admit(blocked.unwrap_or(0)), if blocked.is_some() => match held {
+                    Ok(held) => self.hand_over(held),
+                    Err(_) => {
+                        if let Some(turn) = self.turn.as_mut() {
+                            turn.outbox.clear();
+                            turn.result = Some(Err(overloaded("its event queue")));
+                        }
+                        self.end(&io, Ended::Failed(overloaded("its event queue"))).await;
+                    }
+                },
+                Some(completion) = completed.recv() => self.completion(&mut io, completion).await,
+                () = wake.notified() => {}
+                () = sleep_until(deadline) => {}
+                Ok(()) = status.changed() => {
+                    let status = status.borrow_and_update().clone();
+                    self.status(&io, status).await;
+                }
             }
-            self.check_terminated()?;
-            // Checked before each receive, so steady output cannot extend it.
-            let event = if Instant::now() < deadline {
-                self.receive(Some(deadline))?
-            } else {
-                None
-            };
-            let line = match event {
-                None => {
-                    return Err(CodexAppServerError::runtime(
-                        "codex app-server request timed out waiting for response",
-                    ))
-                }
-                // Only forced termination, checked above, acts mid request;
-                // the turn loop takes up any other control afterwards.
-                Some(Inbox::Wake) => {
-                    self.woken = true;
-                    continue;
-                }
-                Some(Inbox::End(read_error)) => {
-                    return Err(stream_end_error(
-                        read_error,
-                        "codex app-server exited unexpectedly",
-                    ))
-                }
-                Some(Inbox::Line(line)) => line,
-            };
-            let Some(message) = parse_jsonrpc_line(&line) else {
-                continue;
-            };
-            if message.get("id").and_then(id_key).as_deref() == Some(target_key.as_str()) {
-                return Ok(message);
-            }
-            self.route_incoming_message(message)?;
+            self.advance(&mut io).await;
         }
     }
 
-    fn check_terminated(&mut self) -> Result<(), CodexAppServerError> {
-        if !self.stop.terminate.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-        let pid = self.child.id();
-        crate::local_environment::terminate_process_group(pid, Some(&mut self.child));
-        Err(CodexAppServerError::runtime(
-            "codex app-server was terminated after its turn did not stop",
-        ))
+    fn next_deadline(&self) -> Option<Instant> {
+        let idle = self
+            .turn
+            .as_ref()
+            .filter(|turn| turn.result.is_none())
+            .and_then(|turn| turn.idle_deadline);
+        let flow = self.flow_due.filter(|_| !self.flow_questions.is_empty());
+        self.pending
+            .values()
+            .map(|pending| pending.deadline)
+            .chain(idle)
+            .chain(flow)
+            .chain(self.waiter.as_ref().map(|(deadline, _)| *deadline))
+            .min()
     }
 
-    /// The next notification, or a server request as one, if a line brings
-    /// one within `wait`.
-    fn next_message(&mut self, wait: Duration) -> Result<Option<Value>, CodexAppServerError> {
-        if self.pending_messages.is_empty() {
-            if let Some(Inbox::Line(line)) = self.receive(Some(Instant::now() + wait))? {
-                if let Some(message) = parse_jsonrpc_line(&line) {
-                    self.route_incoming_message(message)?;
+    async fn command(&mut self, io: &mut Io, command: Command) {
+        match command {
+            Command::Request {
+                method,
+                params,
+                reply,
+            } => match &self.ended {
+                Some(ended) => {
+                    let error = ended.error(REQUEST_EXITED);
+                    self.reply(reply, Err(error)).await;
+                }
+                None => self.request(io, &method, params, Call::Facade(reply)).await,
+            },
+            Command::Notify { method, reply } => {
+                let result = match &self.ended {
+                    Some(ended) => Err(ended.error(REQUEST_EXITED)),
+                    None => {
+                        self.write(
+                            io,
+                            json!({"jsonrpc": "2.0", "method": method, "params": {}}),
+                        )
+                        .await
+                    }
+                };
+                self.reply(reply, result).await;
+            }
+            Command::Turn {
+                thread_id,
+                params,
+                sink,
+                messages,
+            } => {
+                let result = self
+                    .ended
+                    .as_ref()
+                    .map(|ended| Err(ended.error(TURN_EXITED)));
+                self.turn = Some(Turn {
+                    thread_id,
+                    turn_id: None,
+                    state: CodexAppServerTurnState::default(),
+                    events: Vec::new(),
+                    messages,
+                    sink,
+                    outbox: VecDeque::new(),
+                    idle_deadline: None,
+                    stopping: false,
+                    steering: false,
+                    result,
+                });
+                if self.ended.is_none() {
+                    self.request(io, "turn/start", Some(params), Call::TurnStart)
+                        .await;
                 }
             }
+            Command::Next { wait, reply } => {
+                self.waiter = Some((Instant::now() + wait, reply));
+            }
         }
-        Ok(self.pending_messages.pop_front())
     }
 
-    fn route_incoming_message(&mut self, message: Value) -> Result<(), CodexAppServerError> {
+    async fn line(&mut self, io: &mut Io, text: String) {
+        if let Some(trace) = &self.trace {
+            trace.line("incoming", text.clone()).await;
+        }
+        let bytes = text.len();
+        // Malformed lines are skipped.
+        let Some(message) = parse_jsonrpc_line(&text) else {
+            return;
+        };
+        drop(text);
         if message.get("id").is_some() && message.get("method").is_some() {
-            let notification = self.handle_server_request(message)?;
-            self.pending_messages.push_back(notification);
+            let notification = self.server_request(io, message).await;
+            self.notification(io, notification, bytes).await;
         } else if message.get("id").is_some() {
-            self.queue_pending_response(message);
+            self.response(message).await;
         } else if message.get("method").is_some() {
-            self.pending_messages.push_back(message);
+            self.notification(io, message, bytes).await;
         }
-        Ok(())
     }
 
-    fn handle_server_request(&mut self, message: Value) -> Result<Value, CodexAppServerError> {
+    async fn notification(&mut self, io: &Io, message: Value, bytes: usize) {
+        match self.backlog_budget.try_admit(bytes) {
+            Some(held) => self.backlog.push_back((message, held)),
+            None => {
+                self.end(io, Ended::Failed(overloaded("its notification queue")))
+                    .await
+            }
+        }
+    }
+
+    /// Answers what can be answered now, and returns the request shaped as a
+    /// notification for the turn's events.
+    async fn server_request(&mut self, io: &mut Io, message: Value) -> Value {
         let request_id = message.get("id").cloned().unwrap_or(Value::Null);
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
-        let result = if matches!(
-            method,
-            "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
-        ) {
-            json!({"decision": "acceptForSession"})
-        } else if method == "item/tool/requestUserInput" {
-            if let Some(handler) = self.clarification_handler.as_ref() {
-                let mut params = message.get("params").cloned().unwrap_or_else(|| json!({}));
-                params["agent_request_id"] = request_id.clone();
-                let poll = handler(params).map_err(CodexAppServerError::runtime)?;
-                self.workflow_questions.push((request_id.clone(), poll));
-            } else {
-                self.pending_request_user_input = Some(register_request_user_input_response(
-                    &message,
-                    self.stop.inbox.clone(),
-                ));
+        match method {
+            "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+                self.respond(
+                    io,
+                    json!({"jsonrpc": "2.0", "id": request_id, "result": {"decision": "acceptForSession"}}),
+                )
+                .await
             }
-            Value::Null
-        } else {
-            Value::Null
-        };
-        if method == "item/tool/requestUserInput" {
-            // The response is sent after the request card has been emitted to the UI and
-            // a user answer is submitted through the workspace route.
-        } else if result.is_null() {
-            self.send_json(&json!({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {"code": -32000, "message": format!("Unsupported request: {method}")},
-            }))?;
-        } else {
-            self.send_json(&json!({"jsonrpc": "2.0", "id": request_id, "result": result}))?;
+            // Answered once a person, through the workspace route, or the
+            // flow's run record has an answer.
+            "item/tool/requestUserInput" => self.ask(io, &message).await,
+            _ => {
+                self.respond(
+                    io,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {"code": -32000, "message": format!("Unsupported request: {method}")},
+                    }),
+                )
+                .await
+            }
         }
-        Ok(json!({
+        json!({
             "jsonrpc": message.get("jsonrpc").cloned().unwrap_or_else(|| json!("2.0")),
             "method": method,
             "params": message.get("params").cloned().unwrap_or_else(|| json!({})),
-        }))
+        })
     }
 
-    fn send_json(&mut self, payload: &Value) -> Result<(), CodexAppServerError> {
-        let line = serde_json::to_string(payload).map_err(|error| {
+    async fn ask(&mut self, io: &Io, message: &Value) {
+        if self.clarification.is_none() {
+            self.chat_question = Some(register_request_user_input_response(
+                message,
+                Arc::clone(&self.controls.wake),
+            ));
+            return;
+        }
+        if self.flow_questions.len() >= PENDING_LIMIT {
+            return self
+                .end(io, Ended::Failed(overloaded("its question list")))
+                .await;
+        }
+        let request_id = message.get("id").cloned().unwrap_or(Value::Null);
+        let mut params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+        params["agent_request_id"] = request_id.clone();
+        self.next_question += 1;
+        let key = self.next_question;
+        self.flow_questions.push(FlowQuestion {
+            key,
+            request_id,
+            poll: None,
+        });
+        let Some((handler, work)) = &self.clarification else {
+            return;
+        };
+        let (handler, completions) = (Arc::clone(handler), self.completions.clone());
+        let _ = work
+            .run(json_len(&params), move || {
+                let poll = handler(params);
+                let _ = completions.send(Completion::Asked { key, poll });
+            })
+            .await;
+    }
+
+    async fn response(&mut self, message: Value) {
+        let id = message
+            .get("id")
+            .and_then(id_key)
+            .and_then(|key| key.parse::<u64>().ok());
+        let Some(pending) = id.and_then(|id| self.pending.remove(&id)) else {
+            tracing::debug!(id = ?message.get("id"), "codex app-server sent an unexpected response");
+            return;
+        };
+        match pending.call {
+            Call::Facade(reply) => self.reply(reply, Ok(message)).await,
+            Call::TurnStart => {
+                let Some(turn) = self.turn.as_mut() else {
+                    return;
+                };
+                if message.get("error").is_some() {
+                    return turn.finish(Err(rpc_error(
+                        "codex app-server turn/start failed",
+                        &message,
+                    )));
+                }
+                match message
+                    .pointer("/result/turn/id")
+                    .and_then(Value::as_str)
+                    .and_then(non_empty)
+                {
+                    Some(turn_id) => {
+                        turn.turn_id = Some(turn_id.to_string());
+                        turn.idle_deadline = Some(Instant::now() + TURN_IDLE_TIMEOUT);
+                    }
+                    None => turn.finish(Err(CodexAppServerError::runtime(
+                        "codex app-server did not return a turn id",
+                    ))),
+                }
+            }
+            Call::Steer(steer) => {
+                let accepted = message.get("error").is_none();
+                if !accepted {
+                    let error = rpc_error("codex app-server turn/steer failed", &message);
+                    tracing::warn!(error = %error.message, "codex app-server turn/steer failed");
+                }
+                if let Some(turn) = self.turn.as_mut() {
+                    turn.steering = false;
+                    if accepted {
+                        let delivered = delivered_event(turn, steer.id, steer.text);
+                        turn.sequence(delivered);
+                    }
+                }
+                // Once sequenced; never waiting on the sink, which may be the caller.
+                let _ = steer.accepted.send(accepted);
+            }
+            Call::Interrupt => {
+                if message.get("error").is_some() {
+                    tracing::warn!(%message, "codex app-server turn/interrupt failed");
+                }
+            }
+        }
+    }
+
+    async fn completion(&mut self, io: &mut Io, completion: Completion) {
+        match completion {
+            Completion::Asked { key, poll } => {
+                // A question that expired meanwhile stays expired.
+                let Some(question) = self.flow_questions.iter_mut().find(|q| q.key == key) else {
+                    return;
+                };
+                match poll {
+                    Ok(poll) => {
+                        question.poll = Some(poll);
+                        self.flow_due.get_or_insert_with(Instant::now);
+                    }
+                    Err(error) => {
+                        self.end(io, Ended::Failed(CodexAppServerError::runtime(error)))
+                            .await
+                    }
+                }
+            }
+            Completion::Polled { key, poll, answers } => {
+                let Some(index) = self.flow_questions.iter().position(|q| q.key == key) else {
+                    return;
+                };
+                match answers {
+                    Ok(Some(answers)) => {
+                        let question = self.flow_questions.remove(index);
+                        self.respond(
+                            io,
+                            json!({"jsonrpc": "2.0", "id": question.request_id, "result": request_user_input_response_payload(&answers)}),
+                        )
+                        .await;
+                    }
+                    Ok(None) => self.flow_questions[index].poll = Some(poll),
+                    Err(error) => {
+                        self.end(io, Ended::Failed(CodexAppServerError::runtime(error)))
+                            .await
+                    }
+                }
+            }
+            Completion::TraceFailed(error) => self.end(io, Ended::Failed(error)).await,
+        }
+    }
+
+    async fn status(&mut self, io: &Io, status: Status) {
+        // Process death expires questions at once, though a descendant may
+        // hold stdout open; a late answer cannot revive them.
+        if status.exited.is_some() {
+            self.chat_question = None;
+            self.flow_questions.clear();
+        }
+        if status.write_failure.is_some() {
+            self.end(
+                io,
+                Ended::Failed(CodexAppServerError::runtime(
+                    "codex app-server stdin write failed",
+                )),
+            )
+            .await;
+        }
+    }
+
+    /// Rechecks every control and deadline; wakes carry no state.
+    async fn advance(&mut self, io: &mut Io) {
+        if self.controls.terminate.load(Ordering::SeqCst) {
+            self.end(io, Ended::Terminated).await;
+        }
+        let now = Instant::now();
+        let expired = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| pending.deadline <= now)
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in expired {
+            if let Some(pending) = self.pending.remove(&id) {
+                self.settle(
+                    pending.call,
+                    CodexAppServerError::runtime(REQUEST_TIMED_OUT),
+                )
+                .await;
+            }
+        }
+        if self
+            .waiter
+            .as_ref()
+            .is_some_and(|(deadline, _)| *deadline <= now)
+        {
+            if let Some((_, reply)) = self.waiter.take() {
+                self.deliver(move |failure| {
+                    let _ = reply.send(failure.map_or(Ok(None), |error| Err(Ended::Failed(error))));
+                })
+                .await;
+            }
+        }
+        if self.ended.is_none() {
+            self.control_turn(io, now).await;
+            self.answer_chat_question(io).await;
+            self.poll_flow_questions(now).await;
+            self.take_steers(io).await;
+        }
+        self.pump().await;
+    }
+
+    async fn control_turn(&mut self, io: &mut Io, now: Instant) {
+        let Some(turn) = self.turn.as_mut().filter(|turn| turn.result.is_none()) else {
+            return;
+        };
+        let Some(turn_id) = turn.turn_id.clone() else {
+            return;
+        };
+        if !turn.stopping && self.controls.interrupt.load(Ordering::SeqCst) {
+            turn.stopping = true;
+            let params = json!({"threadId": turn.thread_id, "turnId": turn_id});
+            self.request(io, "turn/interrupt", Some(params), Call::Interrupt)
+                .await;
+        }
+        let asking = self.chat_question.is_some() || !self.flow_questions.is_empty();
+        let Some(turn) = self.turn.as_mut().filter(|turn| turn.result.is_none()) else {
+            return;
+        };
+        if turn.stopping {
+            // A stopped turn leaves its question unanswered and takes no messages.
+            self.chat_question = None;
+            let messages = self
+                .controls
+                .messages
+                .lock()
+                .unwrap()
+                .as_mut()
+                .map(std::mem::take)
+                .unwrap_or_default();
+            for message in messages {
+                let _ = message.accepted.send(false);
+            }
+        }
+        if asking {
+            turn.idle_deadline = None;
+        } else if turn.idle_deadline.is_none() {
+            turn.idle_deadline = Some(now + TURN_IDLE_TIMEOUT);
+        }
+        if turn.idle_deadline.is_some_and(|deadline| now >= deadline) {
+            turn.finish(Err(CodexAppServerError::runtime(
+                "codex app-server turn timed out waiting for activity",
+            )));
+        }
+    }
+
+    async fn answer_chat_question(&mut self, io: &mut Io) {
+        let Some(question) = self.chat_question.as_ref() else {
+            return;
+        };
+        let Some(answers) = question.pending.take_answers() else {
+            return;
+        };
+        let id = question.jsonrpc_request_id.clone();
+        self.chat_question = None;
+        self.respond(
+            io,
+            json!({"jsonrpc": "2.0", "id": id, "result": request_user_input_response_payload(&answers)}),
+        )
+        .await;
+    }
+
+    /// ponytail: a flow question's answer and its run's status live in the
+    /// run record and journal, which another process writes, so they are
+    /// polled every 100 ms while one is pending, on their own schedule that
+    /// output cannot delay. Removing this needs cross-process notification.
+    async fn poll_flow_questions(&mut self, now: Instant) {
+        if self.flow_questions.is_empty() {
+            self.flow_due = None;
+            return;
+        }
+        if self.flow_due.is_some_and(|due| now < due) {
+            return;
+        }
+        // Not accumulated: a question whose poll still runs skips this round.
+        self.flow_due = Some(now + FLOW_POLL);
+        let Some((_, work)) = &self.clarification else {
+            return;
+        };
+        for question in &mut self.flow_questions {
+            let Some(mut poll) = question.poll.take() else {
+                continue;
+            };
+            let (key, completions) = (question.key, self.completions.clone());
+            let _ = work
+                .run(0, move || {
+                    let answers = poll();
+                    let _ = completions.send(Completion::Polled { key, poll, answers });
+                })
+                .await;
+        }
+    }
+
+    /// Sends queued messages through turn/steer one at a time, while the
+    /// turn runs and its sink keeps up.
+    async fn take_steers(&mut self, io: &mut Io) {
+        loop {
+            let Some(turn) = self.turn.as_mut() else {
+                return;
+            };
+            if turn.result.is_some() || turn.stopping || turn.steering || !turn.outbox.is_empty() {
+                return;
+            }
+            let Some(turn_id) = turn.turn_id.clone() else {
+                return;
+            };
+            let Some(message) = self
+                .controls
+                .messages
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(VecDeque::pop_front)
+            else {
+                return;
+            };
+            turn.steering = true;
+            let params = json!({
+                "threadId": turn.thread_id,
+                "expectedTurnId": turn_id,
+                "input": [{"type": "text", "text": message.text}],
+            });
+            // A message that could not be written settled false; take the next.
+            self.request(io, "turn/steer", Some(params), Call::Steer(message))
+                .await;
+        }
+    }
+
+    /// Hands sequenced events to the turn's caller as room allows, then its
+    /// result; feeds notifications to the turn or a waiting caller.
+    async fn pump(&mut self) {
+        loop {
+            if let Some(turn) = self.turn.as_mut() {
+                while let Some((_, size)) = turn.outbox.front() {
+                    let Some(held) = self.sink_budget.try_admit(*size) else {
+                        return;
+                    };
+                    let (event, _) = turn.outbox.pop_front().expect("front event");
+                    let _ = turn.messages.send(TurnMessage::Event(event, held));
+                }
+                if turn.result.is_some() {
+                    let turn = self.turn.take().expect("turn");
+                    // Its questions end with it.
+                    self.chat_question = None;
+                    self.flow_questions.clear();
+                    let (messages, result) = (turn.messages, turn.result.expect("result"));
+                    self.deliver(move |failure| {
+                        let _ = messages.send(TurnMessage::Done(failure.map_or(result, Err)));
+                    })
+                    .await;
+                    continue;
+                }
+                if turn.turn_id.is_none() || turn.steering {
+                    return;
+                }
+                let Some((message, _held)) = self.backlog.pop_front() else {
+                    return;
+                };
+                self.turn_message(message);
+                continue;
+            }
+            let Some((deadline, reply)) = self.waiter.take() else {
+                return;
+            };
+            let next = match (self.backlog.pop_front(), &self.ended) {
+                (Some((message, _held)), _) => Ok(Some(message)),
+                (None, Some(ended)) => Err(ended.clone()),
+                (None, None) => {
+                    self.waiter = Some((deadline, reply));
+                    return;
+                }
+            };
+            self.deliver(move |failure| {
+                let _ = reply.send(failure.map_or(next, |error| Err(Ended::Failed(error))));
+            })
+            .await;
+        }
+    }
+
+    fn turn_message(&mut self, message: Value) {
+        let Some(turn) = self.turn.as_mut() else {
+            return;
+        };
+        let Some(expected_turn_id) = turn.turn_id.clone() else {
+            return;
+        };
+        if turn.idle_deadline.is_some() {
+            turn.idle_deadline = Some(Instant::now() + TURN_IDLE_TIMEOUT);
+        }
+        let extracted_turn_id = extract_turn_id(&message);
+        if extracted_turn_id
+            .as_deref()
+            .is_some_and(|turn_id| turn_id != expected_turn_id)
+        {
+            return;
+        }
+        let mut normalized = process_codex_app_server_message(&message, &mut turn.state);
+        for event in &mut normalized {
+            if event.source.app_thread_id.is_none() {
+                event.source.app_thread_id = Some(turn.thread_id.clone());
+            }
+            if event.source.app_turn_id.is_none() {
+                event.source.app_turn_id = Some(expected_turn_id.clone());
+            }
+        }
+        let completed = normalized
+            .iter()
+            .any(|event| event.kind == TurnStreamEventKind::TurnCompleted)
+            && extracted_turn_id.as_deref() == Some(expected_turn_id.as_str());
+        // A turn stopped on request ends normally with what it had said.
+        if completed && turn.stopping && turn.state.turn_status.as_deref() == Some("interrupted") {
+            turn.state.turn_error = None;
+            turn.state.last_error = None;
+            let (source, text) =
+                crate::events::latest_assistant_text(&turn.events).unwrap_or_default();
+            let item_id = source.item_id;
+            let text = non_empty(&text).unwrap_or("Stopped.").to_string();
+            turn.state.final_agent_message = Some(text.clone());
+            let index = normalized
+                .iter()
+                .position(|event| event.kind == TurnStreamEventKind::TurnCompleted)
+                .unwrap();
+            normalized[index].error = None;
+            let mut answer = event(TurnStreamEventKind::ContentCompleted, "turn_interrupted")
+                .channel(TurnStreamChannel::Assistant)
+                .content(Some(text))
+                .item_id(item_id.or_else(|| Some(format!("{expected_turn_id}-stopped"))))
+                .phase(Some("final_answer".to_string()))
+                .build();
+            answer.source.app_thread_id = Some(turn.thread_id.clone());
+            answer.source.app_turn_id = Some(expected_turn_id.clone());
+            normalized.insert(index, answer);
+        }
+        for event in normalized {
+            turn.sequence(event);
+        }
+        if completed {
+            let result = turn.outcome();
+            turn.finish(result);
+        }
+    }
+
+    fn hand_over(&mut self, held: Held) {
+        if let Some(turn) = self.turn.as_mut() {
+            if let Some((event, _)) = turn.outbox.pop_front() {
+                let _ = turn.messages.send(TurnMessage::Event(event, held));
+            }
+        }
+    }
+
+    /// Writes a request and registers who waits on its response.
+    async fn request(&mut self, io: &mut Io, method: &str, params: Option<Value>, call: Call) {
+        if self.pending.len() >= PENDING_LIMIT {
+            let error = overloaded("its pending request list");
+            self.end(io, Ended::Failed(error.clone())).await;
+            return self.settle(call, error).await;
+        }
+        self.next_id += 1;
+        let id = self.next_id;
+        let mut payload = json!({"jsonrpc": "2.0", "id": id, "method": method});
+        if let Some(params) = params {
+            payload["params"] = params;
+        }
+        match self.write(io, payload).await {
+            // The deadline starts once the request is taken, writer progress included.
+            Ok(()) => {
+                self.pending.insert(
+                    id,
+                    Pending {
+                        deadline: Instant::now() + REQUEST_TIMEOUT,
+                        call,
+                    },
+                );
+            }
+            Err(error) => self.settle(call, error).await,
+        }
+    }
+
+    /// Answers a server request; failing to is fatal.
+    async fn respond(&mut self, io: &mut Io, payload: Value) {
+        if let Err(error) = self.write(io, payload).await {
+            self.end(io, Ended::Failed(error)).await;
+        }
+    }
+
+    async fn write(&mut self, io: &Io, payload: Value) -> Result<(), CodexAppServerError> {
+        let line = serde_json::to_string(&payload).map_err(|error| {
             CodexAppServerError::runtime(format!("codex app-server request encode failed: {error}"))
         })?;
-        self.append_trace_line("outgoing", &line)?;
-        self.stdin
-            .send(line)
-            .map_err(|_| CodexAppServerError::runtime("codex app-server stdin write failed"))
-    }
-
-    /// The next inbox event, waiting until `deadline` (or for as long as it
-    /// takes); `None` once the deadline passes. After stdout ends, every call
-    /// reports that end again.
-    fn receive(&mut self, deadline: Option<Instant>) -> Result<Option<Inbox>, CodexAppServerError> {
-        if let Some(read_error) = &self.stdout_end {
-            return Ok(Some(Inbox::End(read_error.clone())));
-        }
-        let received = match deadline {
-            Some(deadline) => self
-                .inbox
-                .recv_timeout(deadline.saturating_duration_since(Instant::now())),
-            None => self.inbox.recv().map_err(RecvTimeoutError::from),
+        let traced = self.trace.is_some().then(|| line.clone());
+        let refused = match io.stdin.send(line) {
+            Ok(_written) => {
+                if let (Some(trace), Some(line)) = (&self.trace, traced) {
+                    trace.line("outgoing", line).await;
+                }
+                return Ok(());
+            }
+            Err(refused) => refused,
         };
-        let event = match received {
-            Ok(event) => event,
-            Err(RecvTimeoutError::Timeout) => return Ok(None),
-            // Not expected: this client's own `TurnStop` keeps a sender.
-            Err(RecvTimeoutError::Disconnected) => Inbox::End(None),
+        let error = match refused {
+            Refused::TooLarge => {
+                // Nothing was written, so the connection goes on.
+                return Err(CodexAppServerError::runtime(format!(
+                    "codex app-server message exceeds the {} MiB line limit",
+                    LIMITS.frame_bytes >> 20
+                )));
+            }
+            Refused::Full => overloaded("its stdin queue"),
+            Refused::Closed => CodexAppServerError::runtime("codex app-server stdin write failed"),
         };
-        match &event {
-            Inbox::Line(line) => self.append_trace_line("incoming", line)?,
-            Inbox::End(read_error) => self.stdout_end = Some(read_error.clone()),
-            Inbox::Wake => {}
-        }
-        Ok(Some(event))
+        self.end(io, Ended::Failed(error.clone())).await;
+        Err(error)
     }
 
-    fn append_trace_line(&self, direction: &str, line: &str) -> Result<(), CodexAppServerError> {
-        if let Some(sink) = self.trace_sink.as_ref() {
-            sink.append(direction, line)?;
+    /// Settles a request that will get no response.
+    async fn settle(&mut self, call: Call, error: CodexAppServerError) {
+        match call {
+            Call::Facade(reply) => self.reply(reply, Err(error)).await,
+            Call::TurnStart | Call::Interrupt => {
+                if let Some(turn) = self.turn.as_mut() {
+                    turn.finish(Err(error));
+                }
+            }
+            Call::Steer(steer) => {
+                tracing::warn!(error = %error.message, "codex app-server turn/steer failed");
+                if let Some(turn) = self.turn.as_mut() {
+                    turn.steering = false;
+                }
+                let _ = steer.accepted.send(false);
+            }
         }
-        Ok(())
     }
 
-    fn pop_pending_response(&mut self, id: &str) -> Option<Value> {
-        let responses = self.pending_responses.get_mut(id)?;
-        let response = responses.pop_front();
-        if responses.is_empty() {
-            self.pending_responses.remove(id);
+    /// The one terminal transition: takes no more work, expires questions,
+    /// settles every waiting caller once and stops the app-server.
+    async fn end(&mut self, io: &Io, cause: Ended) {
+        if self.ended.is_some() {
+            return;
         }
-        response
+        // A forced stop kills the app-server, so whatever followed is that stop.
+        let cause = if self.controls.terminate.load(Ordering::SeqCst) {
+            Ended::Terminated
+        } else {
+            cause
+        };
+        self.ended = Some(cause.clone());
+        io.stop.stop();
+        self.controls.close();
+        self.chat_question = None;
+        self.flow_questions.clear();
+        for (_, pending) in std::mem::take(&mut self.pending) {
+            self.settle(pending.call, cause.error(REQUEST_EXITED)).await;
+        }
+        // A turn that already ended keeps its result.
+        if let Some(turn) = self.turn.as_mut() {
+            if !matches!(turn.result, Some(Ok(_))) {
+                turn.outbox.clear();
+            }
+            turn.finish(Err(cause.error(TURN_EXITED)));
+        }
     }
 
-    fn queue_pending_response(&mut self, message: Value) {
-        if let Some(key) = message.get("id").and_then(id_key) {
-            self.pending_responses
-                .entry(key)
-                .or_default()
-                .push_back(message);
-        }
+    async fn reply<T: Send + 'static>(
+        &self,
+        reply: Reply<T>,
+        result: Result<T, CodexAppServerError>,
+    ) {
+        self.deliver(move |failure| {
+            let _ = reply.send(failure.map_or(result, Err));
+        })
+        .await;
+    }
+
+    /// Runs `deliver` once every trace line before it is written, with the
+    /// trace's failure if it has failed.
+    async fn deliver(&self, deliver: impl FnOnce(Option<CodexAppServerError>) + Send + 'static) {
+        let Some(trace) = &self.trace else {
+            return deliver(None);
+        };
+        let failure = Arc::clone(&trace.failure);
+        let _ = trace
+            .work
+            .run(0, move || {
+                let failure = failure
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                deliver(failure);
+            })
+            .await;
+    }
+}
+
+/// The worker's ends of the app-server's stdin and stop.
+struct Io {
+    stdin: Outgoing,
+    stop: Stop,
+}
+
+fn delivered_event(turn: &Turn, message_id: String, text: String) -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::Other("user_message_delivered".to_string()),
+        channel: None,
+        source: TurnStreamSource {
+            backend: Some(CODEX_APP_SERVER_BACKEND.to_string()),
+            app_thread_id: Some(turn.thread_id.clone()),
+            app_turn_id: turn.turn_id.clone(),
+            item_id: Some(message_id),
+            raw_kind: Some("turn_steer".to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: None,
+        message: Some(text),
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: None,
+        phase: None,
+        status: Some("delivered".to_string()),
     }
 }
 
@@ -1387,8 +2048,8 @@ struct PendingRequestUserInput {
     app_turn_id: Option<String>,
     aliases: Vec<String>,
     state: Mutex<PendingRequestUserInputState>,
-    /// The asking client's inbox, woken once an answer is stored.
-    inbox: mpsc::Sender<Inbox>,
+    /// The asking client's worker, woken once an answer is stored.
+    wake: Arc<Notify>,
 }
 
 #[derive(Debug, Default)]
@@ -1405,46 +2066,59 @@ impl PendingRequestUserInput {
         if let Ok(mut state) = self.state.lock() {
             state.answers = Some(answers);
         }
-        let _ = self.inbox.send(Inbox::Wake);
+        self.wake.notify_one();
     }
 }
 
-/// What a client waits on: stdout's lines in order and then its end, and
-/// wakes sent after a control changes. A wake carries no state; it only makes
-/// the client recheck, so an extra one is harmless.
-#[derive(Debug)]
-enum Inbox {
-    Line(String),
-    /// Stdout ended: `None` at EOF, else the read error.
-    End(Option<String>),
-    Wake,
+/// A queued turn/steer message, holding its share of the steer queue.
+struct SteerMessage {
+    id: String,
+    text: String,
+    accepted: mpsc::Sender<bool>,
+    _held: Held,
 }
 
-#[derive(Debug)]
+/// A turn's controls, shared with `CodexAppServerBackend`'s live calls.
 struct TurnStop {
     interrupt: AtomicBool,
     terminate: AtomicBool,
-    /// Messages for turn/steer, each with where to report acceptance.
-    /// `(message_id, message, accepted)`. `None` once the turn has ended.
-    messages: Mutex<Option<Vec<(String, String, std::sync::mpsc::Sender<bool>)>>>,
-    inbox: mpsc::Sender<Inbox>,
+    /// Messages for turn/steer. `None` once the turn has ended.
+    messages: Mutex<Option<VecDeque<SteerMessage>>>,
+    steer_budget: Budget,
+    /// Makes the worker recheck these controls; carries no state.
+    wake: Arc<Notify>,
+    /// Kills the app-server directly, past its worker and queues.
+    connection: Mutex<Option<Stop>>,
 }
 
 impl TurnStop {
-    fn new() -> (Arc<Self>, Receiver<Inbox>) {
-        let (inbox, receiver) = mpsc::channel();
-        let stop = Self {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
             interrupt: AtomicBool::new(false),
             terminate: AtomicBool::new(false),
-            messages: Mutex::new(Some(Vec::new())),
-            inbox,
-        };
-        (Arc::new(stop), receiver)
+            messages: Mutex::new(Some(VecDeque::new())),
+            steer_budget: Budget::new(&LIMITS),
+            wake: Arc::new(Notify::new()),
+            connection: Mutex::new(None),
+        })
     }
 
-    /// Sent after a change is published and its lock released.
-    fn wake(&self) {
-        let _ = self.inbox.send(Inbox::Wake);
+    fn attach(&self, stop: Stop) {
+        let mut connection = self.connection.lock().unwrap();
+        if self.terminate.load(Ordering::SeqCst) {
+            stop.stop();
+        }
+        *connection = Some(stop);
+    }
+
+    fn terminate(&self) {
+        let connection = self.connection.lock().unwrap();
+        self.terminate.store(true, Ordering::SeqCst);
+        if let Some(stop) = connection.as_ref() {
+            stop.stop();
+        }
+        drop(connection);
+        self.wake.notify_one();
     }
 
     /// Takes no more messages; one the turn never took was not delivered.
@@ -1454,8 +2128,8 @@ impl TurnStop {
             .lock()
             .ok()
             .and_then(|mut messages| messages.take());
-        for (.., accepted) in untaken.unwrap_or_default() {
-            let _ = accepted.send(false);
+        for message in untaken.unwrap_or_default() {
+            let _ = message.accepted.send(false);
         }
     }
 }
@@ -1474,7 +2148,7 @@ fn request_user_input_registry() -> &'static Mutex<BTreeMap<String, Arc<PendingR
 
 fn register_request_user_input_response(
     message: &Value,
-    inbox: mpsc::Sender<Inbox>,
+    wake: Arc<Notify>,
 ) -> PendingRequestUserInputResponse {
     let params = message
         .get("params")
@@ -1500,7 +2174,7 @@ fn register_request_user_input_response(
         app_turn_id,
         aliases,
         state: Mutex::new(PendingRequestUserInputState::default()),
-        inbox,
+        wake,
     });
     if let Ok(mut registry) = request_user_input_registry().lock() {
         for key in request_user_input_registry_keys(&pending) {
@@ -1796,18 +2470,6 @@ struct CodexJsonrpcTraceLine<'a> {
     timestamp: String,
     direction: &'a str,
     line: &'a str,
-}
-
-impl Drop for CodexAppServerClient {
-    fn drop(&mut self) {
-        self.stop.close();
-        self.workflow_questions.clear();
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let pid = self.child.id();
-            crate::local_environment::terminate_process_group(pid, Some(&mut self.child));
-        }
-        let _ = self.child.wait();
-    }
 }
 
 pub fn parse_jsonrpc_line(line: &str) -> Option<Value> {
@@ -2391,6 +3053,7 @@ pub fn list_available_codex_models_with_settings(
         None,
         native,
         BTreeMap::new(),
+        None,
         None,
     )
     .map_err(log_model_discovery_error)?;
