@@ -243,7 +243,9 @@ describe('Graph and settings behavior', () => {
 
     expect(screen.getByTestId('graph-structured-form')).toBeVisible()
     expect(screen.getByTestId('flow-metadata-help')).toHaveTextContent('Leave blank to omit the field from the flow.')
-    expect(screen.getByRole('button', { name: 'Apply to agent steps' })).toBeEnabled()
+    // With no agent step, there is nothing to apply the defaults to, and it says so.
+    expect(screen.getByRole('button', { name: 'Apply to agent steps' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Apply to agent steps' })).toHaveAccessibleDescription('This flow has no agent steps, the only steps that run a model.')
     await openPicker(user)
     expect(screen.getByRole('button', { name: 'XHigh' })).toBeVisible()
     await user.keyboard('{Escape}')
@@ -288,7 +290,7 @@ describe('Graph and settings behavior', () => {
       </ReactFlowProvider>,
     )
 
-    await user.click(screen.getByRole('button', { name: 'Apply to agent steps' }))
+    await user.click(screen.getByRole('button', { name: 'Apply to 1 agent step' }))
 
     await waitFor(() => {
       const request = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST')
@@ -303,6 +305,24 @@ describe('Graph and settings behavior', () => {
       if (expectedBudget === null) expect(review).not.toContain('"thinking_budget_tokens"')
       else expect(review).toContain(`"thinking_budget_tokens":${expectedBudget}`)
     })
+    expect(screen.getByTestId('graph-apply-defaults-status')).toHaveTextContent('Set 1 agent step to these defaults.')
+  })
+
+  it('Apply to agent steps says so when its agent steps already use the defaults', async () => {
+    const user = userEvent.setup()
+    useStore.setState({ flowMetadata: { thinking: 'off' } })
+    render(
+      <ReactFlowProvider initialNodes={[
+        { id: 'review', position: { x: 0, y: 0 }, data: { label: 'Review', kind: 'agent_task', llm_model: 'gpt-5.3', llm_provider: 'openai', reasoning_effort: 'high', thinking: 'off' } },
+        { id: 'done', position: { x: 0, y: 100 }, data: { label: 'Done', kind: 'exit' } },
+      ]} initialEdges={[{ id: 'review-done', source: 'review', target: 'done' }]}>
+        <GraphSettings />
+      </ReactFlowProvider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Apply to 1 agent step' }))
+    expect(screen.getByTestId('graph-apply-defaults-status')).toHaveTextContent('Its agent step already uses these defaults.')
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 
   it('surfaces FlowDefinition title and description fields without leaking them into extension attrs', async () => {

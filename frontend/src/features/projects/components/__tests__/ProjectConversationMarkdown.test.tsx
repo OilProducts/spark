@@ -249,7 +249,7 @@ describe('shared Markdown', () => {
         expect(screen.getByRole('heading', { name: 'Full body' })).toBeVisible()
         expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument()
         rerender(<MessageRow entry={{ id: 'user', role: 'user', content: '**typed**', status: 'complete', timestamp: '' }} formatConversationTimestamp={() => ''} />)
-        expect(screen.getByText('typed').tagName).toBe('STRONG')
+        expect(screen.getByText('**typed**').tagName).toBe('P')
         rerender(<ToolCallRow entry={{ id: 'tool', timestamp: '', toolCall: { id: 'tool', kind: 'dynamic_tool', status: 'completed', title: 'Tool', output: '**raw**', filePaths: [] } }} isExpanded onToggleToolCallExpanded={() => {}} />)
         expect(screen.getByText('**raw**', { selector: 'pre' })).toBeVisible()
     })

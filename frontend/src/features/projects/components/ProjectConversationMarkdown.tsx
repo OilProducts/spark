@@ -159,6 +159,21 @@ function literalNonHtml({ literalHtml = false }: PlainOutput = {}) {
     }
 }
 
+/**
+ * Text a person typed keeps every character they typed: a glob's `*`, a name's `__`, a path's `\`,
+ * an `&amp;`, a `# of` or a `<tag>` stay as they are, in their line. Only code, math, lists, quotes,
+ * tables and web addresses format.
+ */
+function typedText(this: unknown) {
+    // remark-parse reads the parser's extensions from the processor's data.
+    const data = (this as { data: () => { micromarkExtensions?: object[] } }).data()
+    ;(data.micromarkExtensions ??= []).push({ disable: { null: [
+        'attention', 'strikethrough', 'characterEscape', 'characterReference', 'hardBreakEscape',
+        'headingAtx', 'setextUnderline', 'thematicBreak', 'htmlFlow', 'htmlText',
+        'labelStartLink', 'labelStartImage', 'definition', 'gfmFootnoteCall', 'gfmPotentialFootnoteCall', 'gfmFootnoteDefinition',
+    ] } })
+}
+
 /** Every line break is kept, as a tool's plain-text output needs: a single newline doesn't join lines. */
 function lineBreaks() {
     return (tree: Root) => {
@@ -240,18 +255,20 @@ interface ProjectConversationMarkdownProps {
     enableCodeCopy?: boolean
     /** Keep single line breaks and show HTML as text, for text that may be plain output rather than Markdown, such as a run's result. */
     keepLineBreaks?: boolean
+    /** Text a person typed, such as their chat message: as `keepLineBreaks`, and every character they typed shows. */
+    typed?: boolean
 }
 
-function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false, keepLineBreaks = false }: ProjectConversationMarkdownProps) {
+function ProjectConversationMarkdownComponent({ content, enableCodeCopy = false, keepLineBreaks = false, typed = false }: ProjectConversationMarkdownProps) {
     const id = useId()
     const remarkRehypeOptions = useMemo(() => ({ clobberPrefix: `markdown-${id}-`, footnoteLabel: 'Footnotes' }), [id])
     const rich = useRichPlugins()
     return <MarkdownContext.Provider value={enableCodeCopy}>
         <div className="conversation-markdown min-w-0">
             <ReactMarkdown components={markdownComponents} skipHtml
-                remarkPlugins={keepLineBreaks
+                remarkPlugins={keepLineBreaks || typed
                     // Plain output shows every line as written, HTML included.
-                    ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], [safeBreaksAndCode, PLAIN_OUTPUT], [literalNonHtml, PLAIN_OUTPUT], lineBreaks]
+                    ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], ...(typed ? [typedText] : []), [safeBreaksAndCode, PLAIN_OUTPUT], [literalNonHtml, PLAIN_OUTPUT], lineBreaks]
                     : [remarkGfm, [remarkMath, { singleDollarTextMath: false }], safeBreaksAndCode, literalNonHtml]}
                 rehypePlugins={[[footnoteLabels, `markdown-${id}-`], ...rich]}
                 remarkRehypeOptions={remarkRehypeOptions}

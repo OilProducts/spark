@@ -39,7 +39,7 @@ export function ContextKeyListEditor({
                     wrap="off"
                     spellCheck={false}
                     className="min-h-24 overflow-x-auto px-2 py-2 font-mono text-sm"
-                    placeholder="One key per line"
+                    placeholder={'context.plan\ncontext.summary'}
                 />
             </Field>
             {error ? (

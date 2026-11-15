@@ -1098,17 +1098,29 @@ describe('ProjectConversationHistory', () => {
         expect(within(history).getByRole('img', { name: 'Architecture overview' })).toHaveAttribute('loading', 'lazy')
     })
 
-    it('shows user messages as their Markdown reads, each typed line kept and HTML as text', () => {
+    it('shows user messages as typed, every character and line kept, with code, math and lists formatted', () => {
+        const typed = [
+            'Rename the tests in src/*.ts and lib/*.ts, and __init__.py, to match.',
+            '# of failures: 3 &amp; C:\\Users\\_build\\*, see handlers[0](event) and ~/a or ~/b',
+            '[note]: keep',
+            'It used to pass <br>',
+            '<script>alert(1)</script> and <b>bold?</b>',
+            '---',
+        ]
         renderHistory([
             makeMessageEntry({
                 role: 'user',
-                content: 'Why does this fail?\nIt used to pass <br>\n```sh\nnpm test\n```',
+                content: `${typed.join('\n')}\n\n- one\n- two\n\n\`npm test\` then $$x^2$$\n\`\`\`sh\nnpm test\n\`\`\``,
             }),
         ])
 
         const history = screen.getByTestId('project-ai-conversation-history-list')
+        expect(history.querySelector('p')?.textContent).toBe(typed.join('\n'))
+        expect(history.querySelectorAll('em, strong, del, h1, h2, hr, a')).toHaveLength(0)
+        expect([...history.querySelectorAll('.conversation-markdown li')].map((item) => item.textContent)).toEqual(['one', 'two'])
+        expect(history.querySelector('p code')).toHaveTextContent('npm test')
+        expect(history.querySelector('.katex, .math')).not.toBeNull()
         expect(history.querySelector('pre code')).toHaveTextContent('npm test')
-        expect(history.querySelector('p')?.textContent).toBe('Why does this fail?\nIt used to pass <br>')
         expect(history).not.toHaveTextContent('```')
     })
 

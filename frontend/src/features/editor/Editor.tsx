@@ -505,6 +505,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     description: `${saveErrorMessage ? `They weren’t saved: ${(saveErrorProblems?.map((problem) => problem.message) ?? flowProblems(saveErrorMessage)).join(' ')} ` : ''}Your unsaved flow edits will be lost.`,
                     confirmLabel: 'Discard and leave',
                     cancelLabel: 'Keep editing',
+                    confirmVariant: 'destructive',
                 })) {
                     proceed();
                 }

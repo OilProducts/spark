@@ -17,14 +17,16 @@ import { useRemoveProject } from '../hooks/useRemoveProject'
 
 /**
  * A chat's latest message as the server sends it, Markdown with its whitespace collapsed, read as
- * plain text: no fence, math, heading, emphasis or code marks, and a link as its text.
+ * plain text: no fence, math, heading, bold or code marks, and a link as its text. A glob's `*` and
+ * a name's `__` stay.
  */
 export const plainPreview = (text: string) => text
     .replace(/(```|~~~)[\w+-]*/g, ' ')
     .replace(/\$\$/g, ' ')
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/(^|\s)#{1,6}(?=\s)/g, '$1')
-    .replace(/\*\*|__|`/g, '')
+    .replace(/\*\*(\S(?:[^*]*\S)?)\*\*/g, '$1')
+    .replace(/`/g, '')
     .replace(/\s+/g, ' ')
     .trim()
 

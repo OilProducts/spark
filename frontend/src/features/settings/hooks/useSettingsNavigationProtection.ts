@@ -16,7 +16,7 @@ export function useSettingsNavigationProtection(dirty: boolean, pending = false,
             transitions.push((event as CustomEvent<{ proceed: () => void }>).detail.proceed)
             if (confirming) return
             confirming = true
-            void confirm({ title: `Discard unsaved ${subject}?`, description: `Your unsaved ${subject} will be lost.`, confirmLabel: 'Discard and leave', cancelLabel: 'Keep editing' })
+            void confirm({ title: `Discard unsaved ${subject}?`, description: `Your unsaved ${subject} will be lost.`, confirmLabel: 'Discard and leave', cancelLabel: 'Keep editing', confirmVariant: 'destructive' })
                 .then((accepted) => { if (accepted) transitions.forEach((proceed) => proceed()) })
                 .finally(() => { confirming = false; transitions = [] })
         }

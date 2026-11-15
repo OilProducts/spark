@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNodes, useReactFlow } from '@xyflow/react'
 import { useStore, type AppState, type DiagnosticEntry } from '@/store'
 import { buildCanonicalFlowModelFromEditorState, buildFlowDefinitionFromCanonicalFlowModel } from '@/lib/canonicalFlowModel'
@@ -53,6 +53,8 @@ function triggersMissingInputs(triggers: TriggerResponse[], flow: string | null,
     })
 }
 
+const isAgentStep = (node: { data?: Record<string, unknown> }) => getHandlerType(node.data?.kind as string) === 'codergen'
+
 export function GraphSettings() {
     const activeFlow = useStore((state) => state.activeFlow)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
@@ -97,6 +99,7 @@ export function GraphSettings() {
     const autosaveScopeRef = useRef<string | null>(null)
     const lastHandledFlowMetadataVersionRef = useRef(flowMetadataUserEditVersion)
     const canApplyDefaults = !!activeFlow && viewMode === 'editor'
+    const agentStepCount = flowNodes.filter(isAgentStep).length
     const graphFieldDiagnostics = useMemo(() => resolveGraphFieldDiagnostics(diagnostics), [diagnostics])
     const flowMetadataExtensionEntries = useMemo(
         () => toExtensionAttrEntries(flowMetadata as Record<string, unknown>, CORE_FLOW_METADATA_KEYS),
@@ -136,40 +139,40 @@ export function GraphSettings() {
         }),
     })
 
+    const defaultThinking = flowMetadata.thinking || uiDefaults.thinking || ''
+    const defaultProfile = flowMetadata.llm_profile || uiDefaults.llm_profile || ''
+    const stepDefaults: Record<string, string> = {
+        llm_model: flowMetadata.llm_model || uiDefaults.llm_model || '',
+        llm_provider: defaultProfile ? '' : (flowMetadata.llm_provider || uiDefaults.llm_provider || ''),
+        llm_profile: defaultProfile,
+        reasoning_effort: flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || '',
+        thinking: defaultThinking,
+        thinking_budget_tokens: defaultThinking === 'budget'
+            ? flowMetadata.thinking_budget_tokens || uiDefaults.thinking_budget_tokens || ''
+            : '',
+        reasoning_mode: flowMetadata.reasoning_mode || uiDefaults.reasoning_mode || '',
+        reasoning_summary: flowMetadata.reasoning_summary || uiDefaults.reasoning_summary || '',
+    }
+    // What the last apply did, shown while the flow and its defaults are as they were then.
+    const appliedKey = `${activeFlow}\n${JSON.stringify(stepDefaults)}`
+    const [applied, setApplied] = useState<{ key: string; message: string } | null>(null)
+
     const applyDefaultsToNodes = () => {
         if (!activeFlow) return
-        const defaultModel = flowMetadata.llm_model || uiDefaults.llm_model || ''
-        const defaultProfile = flowMetadata.llm_profile || uiDefaults.llm_profile || ''
-        const defaultProvider = defaultProfile ? '' : (flowMetadata.llm_provider || uiDefaults.llm_provider || '')
-        const defaultReasoning = flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || ''
-        const defaultThinking = flowMetadata.thinking || uiDefaults.thinking || ''
-
         // Only agent steps run a model; other kinds would save settings they never use.
         const currentNodes = readNodes()
-        const agentNodes = currentNodes.filter((node) => getHandlerType(node.data?.kind as string) === 'codergen')
-        if (agentNodes.length === 0) return
-        editorGraphBridgeRef?.current?.recordFieldEdit(null, { nodes: agentNodes })
-
-        const updatedNodes = currentNodes.map((node) => !agentNodes.includes(node) ? node : ({
-            ...node,
-            data: {
-                ...node.data,
-                llm_model: defaultModel,
-                llm_provider: defaultProvider,
-                llm_profile: defaultProfile,
-                reasoning_effort: defaultReasoning,
-                thinking: defaultThinking,
-                thinking_budget_tokens: defaultThinking === 'budget'
-                    ? flowMetadata.thinking_budget_tokens || uiDefaults.thinking_budget_tokens || ''
-                    : '',
-                reasoning_mode: flowMetadata.reasoning_mode || uiDefaults.reasoning_mode || '',
-                reasoning_summary: flowMetadata.reasoning_summary || uiDefaults.reasoning_summary || '',
-
-            },
-        }))
-
+        const agentNodes = currentNodes.filter(isAgentStep)
+        const changing = agentNodes.filter((node) => Object.entries(stepDefaults).some(([key, value]) => String(node.data?.[key] ?? '') !== value))
+        const steps = (count: number) => `${count} agent ${count === 1 ? 'step' : 'steps'}`
+        if (changing.length === 0) {
+            if (agentNodes.length > 0) setApplied({ key: appliedKey, message: `${agentNodes.length === 1 ? 'Its agent step already uses' : `All ${steps(agentNodes.length)} already use`} these defaults.` })
+            return
+        }
+        editorGraphBridgeRef?.current?.recordFieldEdit(null, { nodes: changing })
+        const updatedNodes = currentNodes.map((node) => changing.includes(node) ? { ...node, data: { ...node.data, ...stepDefaults } } : node)
         updateNodes(updatedNodes)
         saveNow(updatedNodes)
+        setApplied({ key: appliedKey, message: `Set ${steps(changing.length)} to these defaults.` })
     }
 
     const handleLaunchInputDefinitionsChange = (entries: LaunchInputDefinition[]) => {
@@ -315,6 +318,8 @@ export function GraphSettings() {
                 />
                 <GraphLlmDefaultsSection
                     canApplyDefaults={canApplyDefaults}
+                    agentStepCount={agentStepCount}
+                    appliedMessage={applied?.key === appliedKey ? applied.message : null}
                     flowMetadata={flowMetadata}
                     uiDefaults={uiDefaults}
                     projectPath={null}

@@ -23,7 +23,7 @@ const chatsByProject: Record<string, ReturnType<typeof summary>[]> = {
     [HOME]: [summary(HOME, 'home-1', '2026-09-01T00:00:00Z')],
     '/work/busy': Array.from({ length: 7 }, (_, index) => summary('/work/busy', `busy-${index}`, `2026-09-1${index}T00:00:00Z`)).reverse()
         // The latest message is Markdown, its whitespace collapsed.
-        .map((chat, index) => index === 0 ? { ...chat, last_message_preview: '## Fix Run **this**: ```sh npm test ``` then $$x^2$$ and see [the docs](https://example.com).' } : chat),
+        .map((chat, index) => index === 0 ? { ...chat, last_message_preview: '## Fix Run **this**: ```sh npm test ``` then $$x^2$$ and see [the docs](https://example.com) for __init__.py and src/**/*.ts.' } : chat),
     '/work/gone': [],
 }
 let settingsWrites: { url: string; body: Record<string, unknown> }[]
@@ -120,7 +120,7 @@ it('shows a project\'s recent chats with a "more" link to its project page', asy
     const page = screen.getByTestId('project-page')
     expect(within(page).getByTestId('project-page-path')).toHaveTextContent('/work/busy')
     expect(within(page).getAllByTestId('project-page-chat')).toHaveLength(7)
-    expect(within(page).getAllByTestId('project-page-chat-preview')[0]).toHaveTextContent(/^· Fix Run this: npm test then x\^2 and see the docs\.$/)
+    expect(within(page).getAllByTestId('project-page-chat-preview')[0]).toHaveTextContent(/^· Fix Run this: npm test then x\^2 and see the docs for __init__\.py and src\/\*\*\/\*\.ts\.$/)
     expect(within(page).getByTestId('project-settings-dialog')).toBeInTheDocument()
     expect(within(page).getByRole('heading', { name: 'Project model defaults' })).toBeInTheDocument()
     expect(within(page).getByTestId('project-page-remove')).toBeEnabled()
@@ -132,6 +132,9 @@ it('shows a project\'s recent chats with a "more" link to its project page', asy
     await user.type(within(page).getByRole('searchbox', { name: 'Search chats by title or latest message' }), 'x')
     expect(within(page).queryByTestId('project-page-chat')).not.toBeInTheDocument()
     expect(within(page).getByTestId('project-page-chat-search-empty')).toHaveTextContent('No chats match “busy-3x”.')
+    await user.clear(within(page).getByRole('searchbox', { name: 'Search chats by title or latest message' }))
+    await user.type(within(page).getByRole('searchbox', { name: 'Search chats by title or latest message' }), '__init__')
+    expect(within(page).getAllByTestId('project-page-chat').map((chat) => chat.textContent)).toEqual([expect.stringContaining('Chat busy-6')])
 })
 
 it('marks a project whose folder is missing and offers no new chat there', () => {
