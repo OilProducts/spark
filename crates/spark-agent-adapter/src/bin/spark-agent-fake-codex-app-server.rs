@@ -89,6 +89,16 @@ fn run_default(
         match method {
             // Never answered, like a wedged app-server.
             "initialize" if mode == "initialize-silent" => {}
+            // More output than any of Spark's queues holds, before the reply.
+            "initialize" if mode == "initialize-burst" => {
+                for _ in 0..300 {
+                    write_json(&mut stdout, burst_delta());
+                }
+                write_json(
+                    &mut stdout,
+                    json!({"id": request_id, "result": {"userAgent": "fake"}}),
+                );
+            }
             "initialize" if mode == "initialize-error" => write_json(
                 &mut stdout,
                 json!({"id": request_id, "error": {"code": -32000, "message": "initialize failed"}}),
@@ -217,17 +227,28 @@ fn run_default(
                     );
                     awaiting_request_user_input_response = true;
                     if mode == "question-then-orphan" {
-                        std::process::Command::new(env::current_exe().expect("current exe"))
-                            .env("SPARK_FAKE_CODEX_APP_SERVER_MODE", "hold-stdout")
-                            .env_remove("SPARK_FAKE_CODEX_APP_SERVER_PID_FILE")
-                            .spawn()
-                            .expect("spawn descendant");
+                        let descendant =
+                            std::process::Command::new(env::current_exe().expect("current exe"))
+                                .env("SPARK_FAKE_CODEX_APP_SERVER_MODE", "hold-stdout")
+                                .env_remove("SPARK_FAKE_CODEX_APP_SERVER_PID_FILE")
+                                .spawn()
+                                .expect("spawn descendant");
+                        if let Some(pid_file) =
+                            env::var_os("SPARK_FAKE_CODEX_APP_SERVER_DESCENDANT_PID_FILE")
+                        {
+                            fs::write(pid_file, descendant.id().to_string())
+                                .expect("write descendant pid file");
+                        }
                     }
                     if mode == "question-then-exit" || mode == "question-then-orphan" {
                         return;
                     }
                 } else if mode == "exit-mid-turn" {
                     return;
+                } else if mode == "turn-burst" {
+                    for _ in 0..300 {
+                        write_json(&mut stdout, burst_delta());
+                    }
                 } else if mode == "invalid-utf8" {
                     stdout
                         .write_all(b"\xff\xfe\n")
@@ -265,6 +286,17 @@ fn run_default(
                 }
             }
             "turn/steer" if mode == "gated-steer-withheld" => {}
+            "turn/steer" if mode == "turn-burst" => {
+                write_json(&mut stdout, json!({"id": request_id, "result": {}}));
+                emit_turn_completion(
+                    &mut stdout,
+                    "thread-test",
+                    "turn-test",
+                    "msg-test",
+                    "Ack",
+                    false,
+                );
+            }
             "turn/steer" if mode == "gated" => write_json(
                 &mut stdout,
                 json!({"id": request_id, "result": {"turnId": "turn-test"}}),
@@ -316,6 +348,10 @@ fn run_default(
             ),
         }
     }
+}
+
+fn burst_delta() -> Value {
+    json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-test", "turnId": "turn-test", "itemId": "msg-burst", "delta": "x"}})
 }
 
 fn emit_tool_notifications(stdout: &mut impl Write) {

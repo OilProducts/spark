@@ -610,13 +610,13 @@ impl CodexAppServerClient {
             pending: BTreeMap::new(),
             backlog: VecDeque::new(),
             backlog_budget: Budget::new(&LIMITS),
-            sink_budget: Budget::new(&LIMITS),
             turn: None,
             waiter: None,
             chat_question: None,
             flow_questions: Vec::new(),
             flow_due: None,
             next_question: 0,
+            fenced: Vec::new(),
             ended: None,
         };
         // Its own process group, so a forced stop also ends the agent's tools.
@@ -1065,26 +1065,46 @@ struct Trace {
 }
 
 impl Trace {
-    async fn line(&self, direction: &'static str, line: String) {
+    /// Queues `line`; a full queue fails the trace, and so the connection.
+    fn line(&self, direction: &'static str, line: String) -> Result<(), CodexAppServerError> {
         let (sink, failure, completions) = (
             self.sink.clone(),
             Arc::clone(&self.failure),
             self.completions.clone(),
         );
-        let _ = self
-            .work
+        self.work
             .run(line.len(), move || {
-                let mut failure = failure.lock().unwrap_or_else(PoisonError::into_inner);
-                if failure.is_none() {
-                    if let Err(error) = sink.append(direction, &line) {
-                        *failure = Some(error.clone());
-                        let _ = completions.send(Completion::TraceFailed(error));
-                    }
+                if lock(&failure).is_some() {
+                    return;
+                }
+                // Unlocked meanwhile: the worker reads it while storage blocks.
+                if let Err(error) = sink.append(direction, &line) {
+                    lock(&failure).get_or_insert(error.clone());
+                    let _ = completions.send(Completion::TraceFailed(error));
                 }
             })
-            .await;
+            .map_err(|_| self.overflowed())
+    }
+
+    /// Later lines are dropped, not written out of order.
+    fn overflowed(&self) -> CodexAppServerError {
+        let error = overloaded("its trace queue");
+        lock(&self.failure).get_or_insert(error.clone());
+        error
+    }
+
+    fn failure(&self) -> Option<CodexAppServerError> {
+        lock(&self.failure).clone()
     }
 }
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A reply waiting behind the trace, taken by whichever runs it first: the
+/// trace thread, or the connection's end.
+type Fenced = Mutex<Option<Box<dyn FnOnce(Option<CodexAppServerError>) + Send>>>;
 
 /// Blocking work finished off the runtime.
 enum Completion {
@@ -1129,9 +1149,10 @@ struct Turn {
     /// The turn's record: every event but thinking progress.
     events: Vec<TurnStreamEvent>,
     messages: mpsc::Sender<TurnMessage>,
-    sink: bool,
-    /// Sequenced events waiting for room in the sink queue, with their sizes.
-    outbox: VecDeque<(TurnStreamEvent, usize)>,
+    /// The sink's queue, if the caller has a sink.
+    sink: Option<Budget>,
+    /// The sink fell a full queue behind: it gets no more events.
+    overflowed: bool,
     /// Renewed only by provider output; suspended while a question waits on
     /// a person, with a full window again once none does.
     idle_deadline: Option<Instant>,
@@ -1143,10 +1164,19 @@ struct Turn {
 }
 
 impl Turn {
+    /// Hands `event` to the sink, never waiting on it: a sink a full queue
+    /// behind fails the turn instead.
     fn sequence(&mut self, event: TurnStreamEvent) {
-        if self.sink {
-            let size = json_len(&event);
-            self.outbox.push_back((event.clone(), size));
+        if let Some(sink) = self.sink.as_ref().filter(|_| !self.overflowed) {
+            match sink.try_admit(json_len(&event)) {
+                Some(held) => {
+                    let _ = self.messages.send(TurnMessage::Event(event.clone(), held));
+                }
+                None => {
+                    self.overflowed = true;
+                    self.result = Some(Err(overloaded("its event queue")));
+                }
+            }
         }
         // Thinking progress is live-only: it is never part of the turn's record.
         if event.thinking_state().is_none() {
@@ -1197,13 +1227,14 @@ struct Worker {
     /// starts, while a steer is outstanding, or between calls.
     backlog: VecDeque<(Value, Held)>,
     backlog_budget: Budget,
-    sink_budget: Budget,
     turn: Option<Turn>,
     waiter: Option<(Instant, mpsc::Sender<Result<Option<Value>, Ended>>)>,
     chat_question: Option<PendingRequestUserInputResponse>,
     flow_questions: Vec<FlowQuestion>,
     flow_due: Option<Instant>,
     next_question: u64,
+    /// Replies queued behind the trace, settled directly once the connection ends.
+    fenced: Vec<Weak<Fenced>>,
     ended: Option<Ended>,
 }
 
@@ -1224,14 +1255,7 @@ impl Worker {
         let mut io = Io { stdin, stop };
         loop {
             let deadline = self.next_deadline();
-            // A sequenced event waiting for room holds up further output.
-            let blocked = self
-                .turn
-                .as_ref()
-                .and_then(|turn| turn.outbox.front())
-                .map(|(_, size)| *size);
-            let reading = self.ended.is_none() && blocked.is_none();
-            let sink_budget = self.sink_budget.clone();
+            let reading = self.ended.is_none();
             let wake = Arc::clone(&self.controls.wake);
             tokio::select! {
                 command = commands.recv() => match command {
@@ -1246,16 +1270,6 @@ impl Worker {
                             _ => None,
                         };
                         self.end(&io, Ended::Stdout(read_error)).await;
-                    }
-                },
-                held = sink_budget.admit(blocked.unwrap_or(0)), if blocked.is_some() => match held {
-                    Ok(held) => self.hand_over(held),
-                    Err(_) => {
-                        if let Some(turn) = self.turn.as_mut() {
-                            turn.outbox.clear();
-                            turn.result = Some(Err(overloaded("its event queue")));
-                        }
-                        self.end(&io, Ended::Failed(overloaded("its event queue"))).await;
                     }
                 },
                 Some(completion) = completed.recv() => self.completion(&mut io, completion).await,
@@ -1328,8 +1342,8 @@ impl Worker {
                     state: CodexAppServerTurnState::default(),
                     events: Vec::new(),
                     messages,
-                    sink,
-                    outbox: VecDeque::new(),
+                    sink: sink.then(|| Budget::new(&LIMITS)),
+                    overflowed: false,
                     idle_deadline: None,
                     stopping: false,
                     steering: false,
@@ -1347,8 +1361,12 @@ impl Worker {
     }
 
     async fn line(&mut self, io: &mut Io, text: String) {
-        if let Some(trace) = &self.trace {
-            trace.line("incoming", text.clone()).await;
+        if let Some(Err(error)) = self
+            .trace
+            .as_ref()
+            .map(|trace| trace.line("incoming", text.clone()))
+        {
+            return self.end(io, Ended::Failed(error)).await;
         }
         let bytes = text.len();
         // Malformed lines are skipped.
@@ -1438,12 +1456,14 @@ impl Worker {
             return;
         };
         let (handler, completions) = (Arc::clone(handler), self.completions.clone());
-        let _ = work
-            .run(json_len(&params), move || {
-                let poll = handler(params);
-                let _ = completions.send(Completion::Asked { key, poll });
-            })
-            .await;
+        let queued = work.run(json_len(&params), move || {
+            let poll = handler(params);
+            let _ = completions.send(Completion::Asked { key, poll });
+        });
+        if queued.is_err() {
+            self.end(io, Ended::Failed(overloaded("its clarification queue")))
+                .await;
+        }
     }
 
     async fn response(&mut self, message: Value) {
@@ -1592,19 +1612,16 @@ impl Worker {
             .is_some_and(|(deadline, _)| *deadline <= now)
         {
             if let Some((_, reply)) = self.waiter.take() {
-                self.deliver(move |failure| {
-                    let _ = reply.send(failure.map_or(Ok(None), |error| Err(Ended::Failed(error))));
-                })
-                .await;
+                let _ = reply.send(Ok(None));
             }
         }
         if self.ended.is_none() {
             self.control_turn(io, now).await;
             self.answer_chat_question(io).await;
-            self.poll_flow_questions(now).await;
+            self.poll_flow_questions(io, now).await;
             self.take_steers(io).await;
         }
-        self.pump().await;
+        self.pump(io).await;
     }
 
     async fn control_turn(&mut self, io: &mut Io, now: Instant) {
@@ -1671,7 +1688,7 @@ impl Worker {
     /// run record and journal, which another process writes, so they are
     /// polled every 100 ms while one is pending, on their own schedule that
     /// output cannot delay. Removing this needs cross-process notification.
-    async fn poll_flow_questions(&mut self, now: Instant) {
+    async fn poll_flow_questions(&mut self, io: &Io, now: Instant) {
         if self.flow_questions.is_empty() {
             self.flow_due = None;
             return;
@@ -1684,28 +1701,34 @@ impl Worker {
         let Some((_, work)) = &self.clarification else {
             return;
         };
+        let mut queued = Ok(());
         for question in &mut self.flow_questions {
             let Some(mut poll) = question.poll.take() else {
                 continue;
             };
             let (key, completions) = (question.key, self.completions.clone());
-            let _ = work
-                .run(0, move || {
-                    let answers = poll();
-                    let _ = completions.send(Completion::Polled { key, poll, answers });
-                })
+            queued = work.run(0, move || {
+                let answers = poll();
+                let _ = completions.send(Completion::Polled { key, poll, answers });
+            });
+            if queued.is_err() {
+                break;
+            }
+        }
+        if queued.is_err() {
+            self.end(io, Ended::Failed(overloaded("its clarification queue")))
                 .await;
         }
     }
 
-    /// Sends queued messages through turn/steer one at a time, while the
-    /// turn runs and its sink keeps up.
+    /// Sends queued messages through turn/steer one at a time while the turn
+    /// runs, however far behind its sink is.
     async fn take_steers(&mut self, io: &mut Io) {
         loop {
             let Some(turn) = self.turn.as_mut() else {
                 return;
             };
-            if turn.result.is_some() || turn.stopping || turn.steering || !turn.outbox.is_empty() {
+            if turn.result.is_some() || turn.stopping || turn.steering {
                 return;
             }
             let Some(turn_id) = turn.turn_id.clone() else {
@@ -1733,19 +1756,17 @@ impl Worker {
         }
     }
 
-    /// Hands sequenced events to the turn's caller as room allows, then its
-    /// result; feeds notifications to the turn or a waiting caller.
-    async fn pump(&mut self) {
+    /// Hands the turn's caller its result once it has one; feeds
+    /// notifications to the turn or a waiting caller.
+    async fn pump(&mut self, io: &Io) {
         loop {
             if let Some(turn) = self.turn.as_mut() {
-                while let Some((_, size)) = turn.outbox.front() {
-                    let Some(held) = self.sink_budget.try_admit(*size) else {
-                        return;
-                    };
-                    let (event, _) = turn.outbox.pop_front().expect("front event");
-                    let _ = turn.messages.send(TurnMessage::Event(event, held));
-                }
                 if turn.result.is_some() {
+                    // Settles any control its sink may be waiting on.
+                    if turn.overflowed {
+                        self.end(io, Ended::Failed(overloaded("its event queue")))
+                            .await;
+                    }
                     let turn = self.turn.take().expect("turn");
                     // Its questions end with it.
                     self.chat_question = None;
@@ -1753,8 +1774,7 @@ impl Worker {
                     let (messages, result) = (turn.messages, turn.result.expect("result"));
                     self.deliver(move |failure| {
                         let _ = messages.send(TurnMessage::Done(failure.map_or(result, Err)));
-                    })
-                    .await;
+                    });
                     continue;
                 }
                 if turn.turn_id.is_none() || turn.steering {
@@ -1779,8 +1799,7 @@ impl Worker {
             };
             self.deliver(move |failure| {
                 let _ = reply.send(failure.map_or(next, |error| Err(Ended::Failed(error))));
-            })
-            .await;
+            });
         }
     }
 
@@ -1847,14 +1866,6 @@ impl Worker {
         }
     }
 
-    fn hand_over(&mut self, held: Held) {
-        if let Some(turn) = self.turn.as_mut() {
-            if let Some((event, _)) = turn.outbox.pop_front() {
-                let _ = turn.messages.send(TurnMessage::Event(event, held));
-            }
-        }
-    }
-
     /// Writes a request and registers who waits on its response.
     async fn request(&mut self, io: &mut Io, method: &str, params: Option<Value>, call: Call) {
         if self.pending.len() >= PENDING_LIMIT {
@@ -1897,10 +1908,14 @@ impl Worker {
         let traced = self.trace.is_some().then(|| line.clone());
         let refused = match io.stdin.send(line) {
             Ok(_written) => {
-                if let (Some(trace), Some(line)) = (&self.trace, traced) {
-                    trace.line("outgoing", line).await;
-                }
-                return Ok(());
+                let Some((trace, line)) = self.trace.as_ref().zip(traced) else {
+                    return Ok(());
+                };
+                let Err(error) = trace.line("outgoing", line) else {
+                    return Ok(());
+                };
+                self.end(io, Ended::Failed(error.clone())).await;
+                return Err(error);
             }
             Err(refused) => refused,
         };
@@ -1922,7 +1937,10 @@ impl Worker {
     /// Settles a request that will get no response.
     async fn settle(&mut self, call: Call, error: CodexAppServerError) {
         match call {
-            Call::Facade(reply) => self.reply(reply, Err(error)).await,
+            // Not behind the trace: storage cannot hold up a timeout or an end.
+            Call::Facade(reply) => {
+                let _ = reply.send(Err(error));
+            }
             Call::TurnStart | Call::Interrupt => {
                 if let Some(turn) = self.turn.as_mut() {
                     turn.finish(Err(error));
@@ -1953,6 +1971,13 @@ impl Worker {
         self.ended = Some(cause.clone());
         io.stop.stop();
         self.controls.close();
+        let failure = self.trace.as_ref().and_then(Trace::failure);
+        for fenced in std::mem::take(&mut self.fenced) {
+            let deliver = fenced.upgrade().and_then(|fenced| lock(&fenced).take());
+            if let Some(deliver) = deliver {
+                deliver(failure.clone());
+            }
+        }
         self.chat_question = None;
         self.flow_questions.clear();
         for (_, pending) in std::mem::take(&mut self.pending) {
@@ -1960,41 +1985,56 @@ impl Worker {
         }
         // A turn that already ended keeps its result.
         if let Some(turn) = self.turn.as_mut() {
-            if !matches!(turn.result, Some(Ok(_))) {
-                turn.outbox.clear();
-            }
             turn.finish(Err(cause.error(TURN_EXITED)));
         }
     }
 
     async fn reply<T: Send + 'static>(
-        &self,
+        &mut self,
         reply: Reply<T>,
         result: Result<T, CodexAppServerError>,
     ) {
         self.deliver(move |failure| {
             let _ = reply.send(failure.map_or(result, Err));
-        })
-        .await;
+        });
     }
 
     /// Runs `deliver` once every trace line before it is written, with the
-    /// trace's failure if it has failed.
-    async fn deliver(&self, deliver: impl FnOnce(Option<CodexAppServerError>) + Send + 'static) {
+    /// trace's failure if it has failed; at once if the connection has
+    /// ended, or ends, first, so blocked storage holds up no ended caller.
+    fn deliver(&mut self, deliver: impl FnOnce(Option<CodexAppServerError>) + Send + 'static) {
         let Some(trace) = &self.trace else {
             return deliver(None);
         };
-        let failure = Arc::clone(&trace.failure);
-        let _ = trace
-            .work
-            .run(0, move || {
-                let failure = failure
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone();
+        if self.ended.is_some() {
+            return deliver(trace.failure());
+        }
+        let fenced: Arc<Fenced> = Arc::new(Mutex::new(Some(Box::new(deliver))));
+        let (queued, failure) = (Arc::clone(&fenced), Arc::clone(&trace.failure));
+        let accepted = trace.work.run(0, move || {
+            let failure = lock(&failure).clone();
+            let deliver = lock(&queued).take();
+            if let Some(deliver) = deliver {
                 deliver(failure);
-            })
-            .await;
+            }
+        });
+        match accepted {
+            Ok(()) => {
+                self.fenced.retain(|fenced| fenced.strong_count() > 0);
+                self.fenced.push(Arc::downgrade(&fenced));
+            }
+            // The trace has failed, and its completion ends the connection.
+            Err(_) => {
+                let error = trace.overflowed();
+                let _ = self
+                    .completions
+                    .send(Completion::TraceFailed(error.clone()));
+                let deliver = lock(&fenced).take();
+                if let Some(deliver) = deliver {
+                    deliver(Some(error));
+                }
+            }
+        }
     }
 }
 

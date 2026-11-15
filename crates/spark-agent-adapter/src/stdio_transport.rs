@@ -83,6 +83,10 @@ pub(crate) struct Held {
 #[derive(Debug)]
 pub(crate) struct Oversized;
 
+/// A queue with no room for an item now.
+#[derive(Debug)]
+pub(crate) struct Full;
+
 impl Budget {
     pub(crate) fn new(limits: &Limits) -> Self {
         Self {
@@ -493,27 +497,43 @@ where
 
 /// Owns the child until it has exited and been reaped: polls it every 20 ms,
 /// and terminates its group on a stop, or once every stop handle is gone.
+/// A child that exits by itself may leave descendants holding its pipes;
+/// the stop that follows ends them.
 fn supervise(
     mut child: Child,
     stops: &std::sync::mpsc::Receiver<()>,
     status: &watch::Sender<Status>,
 ) {
-    let exited = loop {
+    let publish = |exited: io::Result<ExitStatus>| {
+        status.send_modify(|status| {
+            status.exited = Some(exited.map_err(|error| error.to_string()));
+        });
+    };
+    loop {
         let stop = !matches!(
             stops.recv_timeout(SUPERVISOR_POLL),
             Err(RecvTimeoutError::Timeout)
         );
         match child.try_wait() {
-            Ok(Some(exit)) => break Ok(exit),
+            Ok(Some(exit)) => {
+                publish(Ok(exit));
+                if !stop {
+                    let _ = stops.recv();
+                }
+                // ponytail: the reaped child's id still names its group while
+                // a descendant lives; once none does, a new group leader that
+                // reused the id would get this signal, as with
+                // LocalExecutionEnvironment::cleanup. Reap at teardown if that matters.
+                return terminate_process_group(child.id(), None);
+            }
             Ok(None) if !stop => continue,
             // A stop, or a child it can no longer poll.
             _ => {
                 terminate_process_group(child.id(), Some(&mut child));
-                break child.wait();
+                return publish(child.wait());
             }
         }
-    };
-    status.send_modify(|status| status.exited = Some(exited.map_err(|error| error.to_string())));
+    }
 }
 
 async fn write_lines(
@@ -630,13 +650,14 @@ impl Blocking {
         })
     }
 
-    /// Queues `job` behind earlier jobs once there is room.
-    pub(crate) async fn run(
+    /// Queues `job` behind earlier jobs, or refuses it at once while the
+    /// queue is full: the caller never waits on a blocked job.
+    pub(crate) fn run(
         &self,
         bytes: usize,
         job: impl FnOnce() + Send + 'static,
-    ) -> Result<(), Oversized> {
-        let held = self.budget.admit(bytes).await?;
+    ) -> Result<(), Full> {
+        let held = self.budget.try_admit(bytes).ok_or(Full)?;
         let _ = self.jobs.send((Box::new(job), held));
         Ok(())
     }
@@ -966,29 +987,46 @@ mod tests {
     }
 
     #[test]
-    fn blocking_work_runs_in_order_off_the_runtime() {
-        let blocking = Blocking::spawn(&LIMITS).expect("blocking thread");
-        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    fn blocking_work_runs_in_order_off_the_caller_and_refuses_when_full() {
+        let blocking = Blocking::spawn(&Limits {
+            queue_entries: 3,
+            ..LIMITS
+        })
+        .expect("blocking thread");
         let (done, finished) = std_mpsc::channel();
-        let runtime_thread = thread::current().id();
-        runtime.block_on(async {
-            for index in 0..3 {
-                let done = done.clone();
-                blocking
-                    .run(0, move || {
-                        done.send((index, thread::current().id())).unwrap();
-                    })
-                    .await
-                    .unwrap();
-            }
-        });
-        let ran = (0..3)
+        let (release, released) = std_mpsc::channel::<()>();
+        let caller = thread::current().id();
+        blocking
+            .run(0, move || {
+                let _ = released.recv();
+            })
+            .unwrap();
+        for index in 0..2 {
+            let done = done.clone();
+            blocking
+                .run(0, move || {
+                    done.send((index, thread::current().id())).unwrap();
+                })
+                .unwrap();
+        }
+        // A blocked job and two behind it fill the queue: more is refused,
+        // not waited for.
+        assert!(blocking.run(0, || {}).is_err());
+        assert!(blocking.run(LIMITS.queue_bytes + 1, || {}).is_err());
+
+        drop(release);
+        let ran = (0..2)
             .map(|_| finished.recv_timeout(PROMPTLY).expect("ran"))
             .collect::<Vec<_>>();
         assert_eq!(
             ran.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
-            [0, 1, 2]
+            [0, 1]
         );
-        assert!(ran.iter().all(|(_, thread)| *thread != runtime_thread));
+        assert!(ran.iter().all(|(_, thread)| *thread != caller));
+        let done = done.clone();
+        blocking
+            .run(0, move || done.send((2, caller)).unwrap())
+            .unwrap();
+        assert_eq!(finished.recv_timeout(PROMPTLY).expect("ran").0, 2);
     }
 }
