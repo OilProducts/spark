@@ -472,6 +472,7 @@ fn chat_models_report_codex_discovery_failure_without_synthesizing_models() {
     let temp = tempfile::tempdir().expect("tempdir");
     let response = spark_workspace::models::chat_models_with_codex_result(
         &settings(temp.path()),
+        temp.path(),
         Err("Codex model discovery failed: app-server exited".to_string()),
     )
     .expect("model response");
@@ -494,6 +495,7 @@ fn chat_models_preserve_a_successful_empty_codex_model_list() {
     let temp = tempfile::tempdir().expect("tempdir");
     let response = spark_workspace::models::chat_models_with_codex_result(
         &settings(temp.path()),
+        temp.path(),
         Ok(Vec::new()),
     )
     .expect("model response");
@@ -568,7 +570,8 @@ reasoning_efforts = ["low"]
     )
     .unwrap();
     let response =
-        spark_workspace::models::chat_models_with_codex_result(&settings, Ok(vec![])).unwrap();
+        spark_workspace::models::chat_models_with_codex_result(&settings, temp.path(), Ok(vec![]))
+            .unwrap();
     let models = response["models"].as_array().unwrap();
     for (profile, levels) in [
         ("local", vec!["minimal", "high"]),
@@ -686,8 +689,12 @@ fn chat_models_discovery_uses_resolved_configuration_and_invalidates_cache() {
                 .contains(&format!("x-api-key: {secret}\r\n")));
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
         });
-        let response =
-            spark_workspace::models::chat_models_with_codex_result(&settings, Ok(vec![])).unwrap();
+        let response = spark_workspace::models::chat_models_with_codex_result(
+            &settings,
+            temp.path(),
+            Ok(vec![]),
+        )
+        .unwrap();
         server.join().unwrap();
         let models: Vec<_> = response["models"]
             .as_array()
@@ -702,7 +709,12 @@ fn chat_models_discovery_uses_resolved_configuration_and_invalidates_cache() {
         assert!(!response.to_string().contains(secret));
         // The endpoint is now closed: repeated discovery must use the cached live metadata.
         assert_eq!(
-            spark_workspace::models::chat_models_with_codex_result(&settings, Ok(vec![])).unwrap(),
+            spark_workspace::models::chat_models_with_codex_result(
+                &settings,
+                temp.path(),
+                Ok(vec![])
+            )
+            .unwrap(),
             response
         );
     }

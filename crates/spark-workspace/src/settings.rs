@@ -727,6 +727,7 @@ pub fn conversation_model_settings(
                 thinking_budget_tokens: None,
                 reasoning_mode: None,
                 reasoning_summary: None,
+                session_config: Default::default(),
             }
         } else {
             defaults.clone()

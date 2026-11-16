@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { Node } from '@xyflow/react'
 
 import { ModelChooser } from '@/components/model-chooser/ModelChooser'
+import { parseSessionConfig, sessionConfigText } from '@/lib/llmSuggestions'
 import { Well } from '@/components/app/well'
 import type { DiagnosticEntry } from '@/store'
 import { Button } from '@/components/ui/button'
@@ -637,7 +638,7 @@ export function NodeInspectorPanel({
                                         value={{ provider: (selectedNode?.data?.llm_provider as string) || null,
                                             llm_profile: (selectedNode?.data?.llm_profile as string) || null,
                                             model: (selectedNode?.data?.llm_model as string) || null,
-                                            reasoning_effort: (selectedNode?.data?.reasoning_effort as string) || null, thinking: (selectedNode?.data?.thinking as string) || null, thinking_budget_tokens: Number(selectedNode?.data?.thinking_budget_tokens) || null, reasoning_mode: (selectedNode?.data?.reasoning_mode as string) || null, reasoning_summary: (selectedNode?.data?.reasoning_summary as string) || null }}
+                                            reasoning_effort: (selectedNode?.data?.reasoning_effort as string) || null, thinking: (selectedNode?.data?.thinking as string) || null, thinking_budget_tokens: Number(selectedNode?.data?.thinking_budget_tokens) || null, reasoning_mode: (selectedNode?.data?.reasoning_mode as string) || null, reasoning_summary: (selectedNode?.data?.reasoning_summary as string) || null, session_config: parseSessionConfig(selectedNode?.data?.session_config) }}
                                         onChange={(value) => {
                                             onPropertyChange('llm_provider', value.provider || '')
                                             onPropertyChange('llm_profile', value.llm_profile || '')
@@ -647,6 +648,7 @@ export function NodeInspectorPanel({
                         onPropertyChange('thinking_budget_tokens', value.thinking_budget_tokens == null ? '' : String(value.thinking_budget_tokens))
                         onPropertyChange('reasoning_mode', value.reasoning_mode == null ? '' : String(value.reasoning_mode))
                         onPropertyChange('reasoning_summary', value.reasoning_summary == null ? '' : String(value.reasoning_summary))
+                        onPropertyChange('session_config', sessionConfigText(value.session_config))
 
                                         }} />
                                 ) : null}

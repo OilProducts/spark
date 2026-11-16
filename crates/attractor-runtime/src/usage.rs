@@ -62,6 +62,7 @@ impl TokenUsageBucket {
             "cached_input_tokens",
             "cachedInputTokens",
             "cache_read_tokens",
+            "cachedReadTokens",
         ])
         .min(input_tokens);
         let output_tokens = read(&["output_tokens", "outputTokens"]);
@@ -104,6 +105,8 @@ fn value_as_u64(value: &Value) -> Option<u64> {
 pub struct TokenUsageBreakdown {
     pub totals: TokenUsageBucket,
     pub by_model: BTreeMap<String, TokenUsageBucket>,
+    /// Harness prompts that reported no usage, so the totals are partial.
+    pub requests_without_usage: u64,
 }
 
 /// Incremental run-usage projection. Completed requests are durable totals;
@@ -156,7 +159,7 @@ impl RunUsageAccumulator {
                 }
             } else if REQUEST_COMPLETED_EVENT_TYPES.contains(&event_type) {
                 self.in_flight.remove(node_id);
-                self.add_completed(payload);
+                self.add_completed(payload, event_type == HARNESS_REQUEST_COMPLETED);
             }
         }
     }
@@ -184,7 +187,7 @@ impl RunUsageAccumulator {
             }
             return;
         }
-        let (payload, node_id, completed) = match entry.raw_type.as_str() {
+        let (payload, node_id, harness) = match entry.raw_type.as_str() {
             "CodergenAdapter" => {
                 let event_type = entry
                     .payload
@@ -207,7 +210,11 @@ impl RunUsageAccumulator {
                 if !REQUEST_COMPLETED_EVENT_TYPES.contains(&event_type) {
                     return;
                 }
-                (entry.payload.get("payload"), node_id, true)
+                (
+                    entry.payload.get("payload"),
+                    node_id,
+                    event_type == HARNESS_REQUEST_COMPLETED,
+                )
             }
             "LLMRequestCompleted" => (
                 entry.payload.get("payload"),
@@ -216,22 +223,44 @@ impl RunUsageAccumulator {
                     .get("node_id")
                     .and_then(Value::as_str)
                     .unwrap_or_default(),
-                true,
+                false,
             ),
             _ => return,
         };
-        if completed {
-            self.in_flight.remove(node_id);
-        }
-        self.add_completed(payload);
+        self.in_flight.remove(node_id);
+        self.add_completed(payload, harness);
     }
 
-    fn add_completed(&mut self, payload: Option<&Value>) {
-        for (model, bucket) in usage_from_payload(payload, &self.fallback_model) {
+    fn add_completed(&mut self, payload: Option<&Value>, harness: bool) {
+        let usage = if harness {
+            harness_usage(payload)
+        } else {
+            usage_from_payload(payload, &self.fallback_model)
+        };
+        if harness && usage.is_empty() {
+            self.completed.requests_without_usage += 1;
+        }
+        for (model, bucket) in usage {
             self.completed.add_for_model(&model, &bucket);
             self.completed_has_usage = true;
         }
     }
+}
+
+/// One harness prompt's own usage, when the harness reported it, under the
+/// harness and the model chosen for it, if any. Never the run's model, and
+/// never a catalog price: a harness's model IDs are its own.
+fn harness_usage(payload: Option<&Value>) -> Vec<(String, TokenUsageBucket)> {
+    let provider = payload
+        .and_then(|payload| payload["provider"].as_str())
+        .unwrap_or("harness");
+    usage_from_payload(payload, "")
+        .into_iter()
+        .map(|(model, bucket)| match model.as_str() {
+            "" => (provider.to_string(), bucket),
+            model => (format!("{provider}/{model}"), bucket),
+        })
+        .collect()
 }
 
 /// A payload's usage per model: the backend's own `token_usage.by_model`
@@ -294,6 +323,10 @@ impl TokenUsageBreakdown {
                 .map(|(model, bucket)| (model.clone(), bucket.to_value()))
                 .collect(),
         );
+        if self.requests_without_usage > 0 {
+            payload["coverage"] = json!("partial");
+            payload["requests_without_usage"] = json!(self.requests_without_usage);
+        }
         payload
     }
 }
@@ -405,11 +438,14 @@ pub fn estimate_model_cost(breakdown: &TokenUsageBreakdown) -> Option<Value> {
     }))
 }
 
+/// One per ACP harness prompt, primary or repair, from any harness.
+const HARNESS_REQUEST_COMPLETED: &str = "agent_harness_request_completed";
 const REQUEST_COMPLETED_EVENT_TYPES: &[&str] = &[
     "rust_llm_adapter_request_completed",
     "rust_agent_adapter_request_completed",
     "codex_app_server_request_completed",
     "claude_code_request_completed",
+    HARNESS_REQUEST_COMPLETED,
 ];
 const SESSION_EVENT_TYPES: &[&str] = &[
     "rust_agent_session_event",

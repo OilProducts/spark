@@ -40,7 +40,7 @@ const resolveRequestUrl = (input: RequestInfo | URL): string => {
 }
 
 const availableCodexModelsResponse = () => new Response(JSON.stringify({
-  providers: { codex: { status: 'available', error: null } },
+  providers: { codex: { status: 'available', error: null, label: 'Codex' }, 'claude-code': { status: 'available', error: null, label: 'Claude Code' } },
   models: [{
     provider: 'codex',
     id: 'gpt-5.4',
@@ -835,6 +835,10 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.endsWith('/settings') && init?.method === 'PUT') {
+          sendRequests.push(url)
+          return new Response(JSON.stringify(conversationMutationAck(conversationFixture(activeSnapshot([])))), { status: 200 })
+        }
         if (url.endsWith('/interrupt') && init?.method === 'POST') {
           sendRequests.push(url)
           expect(JSON.parse(String(init.body))).toEqual({ project_path: '/tmp/chat-project' })
@@ -914,6 +918,9 @@ describe('ProjectsPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('message-delivery')).toHaveTextContent('Queued · starts when the current turn ends')
     })
+    // The model stays editable during work; the running turn keeps what it started with.
+    await chooseModel(user, 'Codex', 'GPT-5.4')
+    await waitFor(() => expect(sendRequests).toContain('/workspace/api/conversations/conversation-active-turn/settings'))
     await user.click(screen.getByTestId('project-chat-stop'))
     await waitFor(() => expect(sendRequests).toContain('/workspace/api/conversations/conversation-active-turn/interrupt'))
   })
@@ -5511,7 +5518,7 @@ describe('ProjectsPanel', () => {
       const url = resolveRequestUrl(input)
       let response: unknown = {}
       if (url.includes('/llm-profiles')) response = { profiles: [{id:'team', provider:'openai_compatible', models:['model-one','model-two'], reasoning_efforts:['high'], default_model:'model-one', configured:false}, {id:'manual',provider:'openai_compatible',models:['manual-model'],configured:false}] }
-      else if (url.includes('/projects/chat-models')) response = { providers:{codex:{status:'unavailable',error:null}, 'claude-code':{status:'available',error:null}}, models:[{provider:'claude-code',id:'claude-opus-4-6',supported_reasoning_efforts:[]}] }
+      else if (url.includes('/projects/chat-models')) response = { providers:{codex:{status:'unavailable',error:null,label:'Codex'}, 'claude-code':{status:'available',error:null,label:'Claude Code'}}, models:[{provider:'claude-code',id:'claude-opus-4-6',supported_reasoning_efforts:[]}] }
       else if (url.includes('/projects/metadata')) response = {branch:'main',commit:'abc123'}
       else if (url.includes('/projects/conversations')) response = summarySnapshot([snapshot()], { project_path: projectPathParam(url) })
       else if (url.includes('/conversations/profile-thread')) {
@@ -5697,6 +5704,7 @@ describe('ProjectsPanel', () => {
               codex: {
                 status: 'unavailable',
                 error: 'Codex model discovery failed: app-server exited',
+                label: 'Codex',
               },
             },
             models: [],

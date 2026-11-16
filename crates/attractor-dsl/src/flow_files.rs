@@ -532,7 +532,18 @@ pub fn merge_execution(
         (None, role) => return role,
         (Some(node), Some(role)) => (node, role),
     };
+    // Controls belong to a harness: a node that picks another selection drops the role's.
+    let switched = node.llm_profile.is_some()
+        || node
+            .llm_provider
+            .as_ref()
+            .is_some_and(|provider| Some(provider) != role.llm_provider.as_ref());
     Some(ExecutionConfig {
+        session_config: if node.session_config.is_empty() && !switched {
+            role.session_config
+        } else {
+            node.session_config
+        },
         llm_provider: node.llm_provider.or(role.llm_provider),
         llm_profile: node.llm_profile.or(role.llm_profile),
         llm_model: node.llm_model.or(role.llm_model),

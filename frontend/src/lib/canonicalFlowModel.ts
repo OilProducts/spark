@@ -2,6 +2,7 @@ import type { Edge, Node } from '@xyflow/react'
 
 import type { FlowDefinitionMetadata } from '@/store'
 import { EDGE_RENDER_ROUTE_KEY } from './flowLayoutConstants.js'
+import { parseSessionConfig, sessionConfigText } from './llmSuggestions'
 
 export type CanonicalAttrValue =
     | string
@@ -80,7 +81,7 @@ const FLOW_METADATA_CORE_KEYS = new Set([
     'thinking_budget_tokens',
     'reasoning_mode',
     'reasoning_summary',
-
+    'session_config',
 ])
 const NODE_EXTENSION_CORE_KEYS = new Set([
     'kind',
@@ -114,6 +115,7 @@ const NODE_EXTENSION_CORE_KEYS = new Set([
     'thinking_budget_tokens',
     'reasoning_mode',
     'reasoning_summary',
+    'session_config',
     // Flattened runtime/manager/contracts/parallel fields, serialized back into their typed sections.
     'session',
     'class',
@@ -345,6 +347,7 @@ function enrichNodeAttrsFromTypedPayload(
                 attrs[key] = execution[key]
             }
         })
+        if (asRecord(execution.session_config)) attrs.session_config = sessionConfigText(execution.session_config as Record<string, string>)
     }
     const retry = asRecord(attrs.retry)
     if (retry) {
@@ -416,6 +419,7 @@ function flowMetadataFromFlow(flow: CanonicalFlowDefinition | null, graphMetadat
         if (defaults.thinking_budget_tokens != null) metadata.thinking_budget_tokens = String(defaults.thinking_budget_tokens)
         if (defaults.reasoning_mode != null) metadata.reasoning_mode = String(defaults.reasoning_mode)
         if (defaults.reasoning_summary != null) metadata.reasoning_summary = String(defaults.reasoning_summary)
+        if (asRecord(defaults.session_config)) metadata.session_config = sessionConfigText(defaults.session_config as Record<string, string>)
 
     }
     DEPRECATED_DOT_METADATA_KEYS.forEach((key) => {
@@ -743,6 +747,7 @@ function flowDefaultsFromAttrs(attrs: CanonicalAttrMap, baseDefaults?: Record<st
         thinking_budget_tokens: 'thinking_budget_tokens' in attrs ? attrs.thinking_budget_tokens == null || attrs.thinking_budget_tokens === '' ? undefined : Number(attrs.thinking_budget_tokens) : baseDefaults?.thinking_budget_tokens,
         reasoning_mode: 'reasoning_mode' in attrs ? readStringAttr(attrs, 'reasoning_mode') || undefined : baseDefaults?.reasoning_mode,
         reasoning_summary: 'reasoning_summary' in attrs ? readStringAttr(attrs, 'reasoning_summary') || undefined : baseDefaults?.reasoning_summary,
+        session_config: 'session_config' in attrs ? parseSessionConfig(attrs.session_config) : baseDefaults?.session_config,
 
     })
 }
@@ -766,6 +771,7 @@ function executionFromAttrs(attrs: CanonicalAttrMap, baseExecution?: Record<stri
         thinking_budget_tokens: 'thinking_budget_tokens' in attrs ? attrs.thinking_budget_tokens == null || attrs.thinking_budget_tokens === '' ? undefined : Number(attrs.thinking_budget_tokens) : baseExecution?.thinking_budget_tokens,
         reasoning_mode: 'reasoning_mode' in attrs ? readStringAttr(attrs, 'reasoning_mode') || undefined : baseExecution?.reasoning_mode,
         reasoning_summary: 'reasoning_summary' in attrs ? readStringAttr(attrs, 'reasoning_summary') || undefined : baseExecution?.reasoning_summary,
+        session_config: 'session_config' in attrs ? parseSessionConfig(attrs.session_config) : baseExecution?.session_config,
 
     })
 }

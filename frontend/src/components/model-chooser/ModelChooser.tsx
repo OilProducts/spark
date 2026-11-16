@@ -4,8 +4,10 @@ import { ChevronDown } from 'lucide-react'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { useModelOptions } from './useModelOptions'
+import { NativeSelect, NativeSelectOptGroup, NativeSelectOption } from '@/components/ui/native-select'
+import { refreshModelOptions, useModelOptions } from './useModelOptions'
 import { useLlmProfiles } from '@/lib/useLlmProfiles'
+import { effortNames, providerLabel as labelOf, sessionControls, type SessionControlValue } from '@/lib/llmSuggestions'
 import type { ModelSettings } from '@/lib/api/settingsApi'
 
 interface ModelChooserProps {
@@ -21,13 +23,14 @@ interface ModelChooserProps {
     defaultPrefix?: string
     /** Says where the model comes from and where to change it. */
     title?: string
+    /** Offers an ACP harness's session controls; off where they would not be saved. */
+    sessionControls?: boolean
 }
 
 const effortLabel = (effort: string) => effort === 'xhigh' ? 'XHigh' : effort.charAt(0).toUpperCase() + effort.slice(1)
-const providerLabel = (provider: string) => provider === 'codex' ? 'Codex' : provider === 'claude-code' ? 'Claude Code' : provider
 const empty: ModelSettings = { provider: null, llm_profile: null, model: null, reasoning_effort: null }
 
-export function ModelChooser({ value, inherited, onChange, projectPath, inheritLabel, layout = 'fields', disabled = false, invalidModel = false, defaultPrefix = 'Default', title }: ModelChooserProps) {
+export function ModelChooser({ value, inherited, onChange, projectPath, inheritLabel, layout = 'fields', disabled = false, invalidModel = false, defaultPrefix = 'Default', title, sessionControls: withControls = true }: ModelChooserProps) {
     const id = useId()
     const profiles = useLlmProfiles()
     const discovery = useModelOptions(projectPath)
@@ -36,6 +39,8 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const [budgetInput, setBudgetInput] = useState<string | null>(null)
     const [active, setActive] = useState(-1)
     const input = useRef<HTMLInputElement>(null)
+    const statuses = discovery?.payload?.providers
+    const providerLabel = (provider: string) => labelOf(provider, statuses)
     const unavailable = (provider: string) => !!discovery && (discovery.failed || discovery.payload?.providers[provider]?.status === 'unavailable')
     const metadata = (provider: string | null, model: string | null) => !unavailable(provider || '')
         ? discovery?.payload?.models.find(entry => entry.provider === provider && !entry.llm_profile && (model ? entry.id === model : entry.is_default)) : undefined
@@ -85,23 +90,55 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const effortSelection = highlighted ? resolve({ ...highlighted, reasoning_effort: null }) : resolved
     const supported = effortSelection.efforts
     const allEfforts = [...new Set([...supported, ...(supported.length && value.reasoning_effort ? [value.reasoning_effort] : [])])]
+    // Session controls are a harness's own, so another provider starts without them. Another model
+    // keeps only the native controls it offers: the rest would stay saved, hidden, and fail its turns.
+    const select = (selection: { provider: string | null; llm_profile: string | null; model: string | null }) => {
+        const same = selection.provider === value.provider && selection.llm_profile === value.llm_profile && (selection.model || null) === value.model
+        const meta = resolve({ ...empty, ...selection }).meta
+        const keep = (current: string | null | undefined, offered?: string[]) => same || current == null || offered?.includes(current) ? current : null
+        const thinking = keep(value.thinking, meta?.supported_thinking)
+        return { ...value,
+            provider: selection.provider, llm_profile: selection.llm_profile, model: selection.model || null,
+            thinking, thinking_budget_tokens: thinking === value.thinking ? value.thinking_budget_tokens : null,
+            reasoning_mode: keep(value.reasoning_mode, meta?.supported_reasoning_modes),
+            reasoning_summary: keep(value.reasoning_summary, meta?.supported_reasoning_summaries),
+            session_config: selection.provider === value.provider ? value.session_config : undefined }
+    }
     const commit = (choice: typeof choices[number], close: boolean) => {
         setBudgetInput(null)
-        onChange({ ...value, provider: choice.provider, llm_profile: choice.llm_profile, model: choice.model, reasoning_effort: value.reasoning_effort })
+        onChange({ ...select(choice), reasoning_effort: value.reasoning_effort })
         if (close) setOpen(false)
     }
+    const chosen = (choice: typeof choices[number]) => (value.model ?? '') === choice.model && value.provider === choice.provider && value.llm_profile === choice.llm_profile
+    const effortStatus = statuses?.[(highlighted ? highlighted.provider : effective.provider) ?? '']
+    const names = effortNames(effortStatus)
+    const effortName = (effort: string) => names[effort] ?? effortLabel(effort)
+    const harness = withControls && value.provider ? statuses?.[value.provider] : undefined
+    const offered = sessionControls(harness)
+    // A saved control the harness no longer offers stays visible: its turn fails until it is cleared.
+    const controls = [...offered, ...Object.keys(harness ? value.session_config ?? {} : {})
+        .filter(control => !offered.some(entry => entry.id === control)).map(control => ({ id: control, name: control, description: undefined, values: [] }))]
+    const modes = harness && !harness.config_options?.length ? harness.modes?.availableModes ?? [] : []
+    const setControl = (id: string, selected: string) => {
+        const { [id]: _, ...rest } = value.session_config ?? {}
+        onChange({ ...value, session_config: selected ? { ...rest, [id]: selected } : rest })
+    }
+    const valuesOf = (values: SessionControlValue[]) => [...new Set(values.map(entry => entry.group))].map(group => {
+        const entries = values.filter(entry => entry.group === group).map(entry => <NativeSelectOption key={entry.value} value={entry.value}>{entry.name}</NativeSelectOption>)
+        return group ? <NativeSelectOptGroup key={group} label={group}>{entries}</NativeSelectOptGroup> : entries
+    })
     const option = (choice: typeof choices[number], index: number) => <button key={`${choice.groupIndex}:${choice.model}`} type="button"
         id={`${id}-option-${index}`} role="option" tabIndex={-1} aria-label={choice.label} aria-description={choice.isDefault ? 'Provider default' : undefined}
-        aria-selected={value.model === choice.model && value.provider === choice.provider && value.llm_profile === choice.llm_profile}
+        aria-selected={chosen(choice)}
         className={`flex w-full items-center justify-between rounded px-2 py-2 text-left text-sm break-words ${active === index ? 'bg-accent text-accent-foreground' : 'hover:bg-accent'} aria-selected:font-semibold`}
         onClick={() => { setActive(-1); commit(choice, false); input.current?.focus({ preventScroll: true }) }}>
         <span>{choice.label}{choice.isDefault && <span className="ml-2 text-xs text-muted-foreground"> Default</span>}</span>
-        {value.model === choice.model && value.provider === choice.provider && value.llm_profile === choice.llm_profile && <span aria-hidden="true">✓</span>}
+        {chosen(choice) && <span aria-hidden="true">✓</span>}
     </button>
 
     return <Field className={layout === 'compact' ? 'min-w-0 w-auto max-w-full' : 'w-full'}>
         {layout === 'fields' && <FieldLabel htmlFor={id}>Model</FieldLabel>}
-        <Popover.Root open={open && !disabled} onOpenChange={next => { setOpen(next); setSearch(''); setActive(-1) }}>
+        <Popover.Root open={open && !disabled} onOpenChange={next => { setOpen(next); setSearch(''); setActive(-1); if (next) refreshModelOptions(projectPath) }}>
             <Popover.Trigger asChild>
                 <Button id={id} type="button" variant="outline" disabled={disabled} title={title} aria-label={`Model: ${value.model ? describe(resolved) : `${defaultPrefix}: ${describe(resolved)}`}`}
                     aria-invalid={invalidModel} aria-describedby={note}
@@ -136,7 +173,11 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                         if (!entries.length && (group.profile || !unavailable(group.provider))) return null
                         return <div key={`${group.provider}:${group.profile}`} role="group" aria-label={`${providerLabel(group.provider)}${group.profile ? ` / ${group.label}` : ''}`}>
                             <div className="px-2 pt-3 pb-1 text-xs font-medium text-muted-foreground">{providerLabel(group.provider)}{group.profile ? ` / ${group.label}` : ''}
-                                {!group.profile && unavailable(group.provider) && <span role="status" className="block">Model discovery unavailable. {discovery?.payload?.providers[group.provider]?.error}</span>}
+                                {!group.profile && unavailable(group.provider) && <span role="status" className="block">{statuses?.[group.provider]?.setup_status === 'unauthenticated' ? 'Authentication required. ' : ''}Model discovery unavailable. {statuses?.[group.provider]?.error}</span>}
+                                {!group.profile && !unavailable(group.provider) && (['chat', 'flow'] as const).map(use => {
+                                    const eligibility = statuses?.[group.provider]?.[use]
+                                    return eligibility && eligibility.state !== 'supported' && <span key={use} className="block">{use === 'chat' ? 'Chat' : 'Flows'} unavailable: {eligibility.reason}</span>
+                                })}
                             </div>
                             {entries.map(choice => option(choice, choices.indexOf(choice)))}
                         </div>
@@ -148,10 +189,9 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                     {effortSelection.unverified && <span className="w-full text-xs text-muted-foreground">Provider levels; unverified for this model.</span>}
                     {[null, ...allEfforts].map(effort => <Button key={effort ?? 'default'} type="button" size="sm" variant="ghost" disabled={effortLocked} className="aria-pressed:bg-accent aria-pressed:text-accent-foreground" aria-pressed={value.reasoning_effort === effort}
                         onClick={() => {
-                            const selection = highlighted ?? value
-                            onChange({ ...value, provider: selection.provider, llm_profile: selection.llm_profile, model: selection.model, reasoning_effort: effort })
+                            onChange({ ...select(highlighted ?? value), reasoning_effort: effort })
                             setOpen(false)
-                        }}>{effort ? `${effortLabel(effort)}${supported.includes(effort) ? '' : ' (custom)'}` : 'Default'}</Button>)}
+                        }}>{effort ? `${effortName(effort)}${supported.includes(effort) ? '' : ' (custom)'}` : 'Default'}</Button>)}
                 </div>
                 {([
                     ['thinking', 'Thinking', effortSelection.meta?.supported_thinking],
@@ -162,9 +202,8 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                     {(field === 'reasoning_mode' ? options : [null, ...options]).map(option => <Button key={option ?? 'default'} type="button" size="sm" variant="ghost"
                         disabled={effortLocked} aria-pressed={(value[field] ?? (field === 'reasoning_mode' ? 'standard' : null)) === option}
                         onClick={() => {
-                            const selection = highlighted ?? value
                             setBudgetInput(null)
-                            onChange({ ...value, provider: selection.provider, llm_profile: selection.llm_profile, model: selection.model,
+                            onChange({ ...select(highlighted ?? value),
                                 [field]: option,
                                 ...(field === 'thinking' ? { thinking_budget_tokens: option === 'budget' ? value.thinking_budget_tokens ?? 1024 : null } : {}) })
                         }}>{option ? effortLabel(option) : 'Default'}</Button>)}
@@ -172,6 +211,18 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                         disabled={effortLocked} value={budgetInput ?? value.thinking_budget_tokens ?? 1024} onBlur={() => setBudgetInput(null)}
                         onChange={event => { setBudgetInput(event.target.value); const tokens = event.target.valueAsNumber; if (Number.isInteger(tokens) && tokens >= 1024) onChange({ ...value, thinking_budget_tokens: tokens }) }} />}
                 </div> : null)}
+                {(controls.length > 0 || modes.length > 0) && <div role="group" aria-label="Session controls" className="mt-2 grid shrink-0 gap-2 border-t pt-2">
+                    <span className="text-xs text-muted-foreground">Session controls · changes apply from the next turn</span>
+                    {controls.map(control => <label key={control.id} className="grid gap-1 text-xs" title={control.description}>
+                        {control.name}
+                        <NativeSelect size="sm" aria-label={control.name} value={value.session_config?.[control.id] ?? ''} onChange={event => setControl(control.id, event.target.value)}>
+                            <NativeSelectOption value="">Harness default</NativeSelectOption>
+                            {valuesOf(control.values)}
+                            {(saved => saved && !control.values.some(entry => entry.value === saved) && <NativeSelectOption value={saved}>{saved} (not offered now)</NativeSelectOption>)(value.session_config?.[control.id])}
+                        </NativeSelect>
+                    </label>)}
+                    {modes.length > 0 && <p className="text-xs text-muted-foreground">Harness modes, set by the harness: {modes.map(mode => mode.name).join(', ')}</p>}
+                </div>}
             </Popover.Content></Popover.Portal>
         </Popover.Root>
         {invalidModel && <p id={`${id}-error`} role="alert">Choose a compatible model for this provider or profile.</p>}

@@ -172,11 +172,13 @@ export interface ModelSettings {
     thinking_budget_tokens?: number | null
     reasoning_mode?: string | null
     reasoning_summary?: string | null
+    /** Exact ACP session control selections by config ID, for the `acp:<id>` provider. */
+    session_config?: Record<string, string>
 }
 
 // A cleared picker group uses the API's reset representation.
 export function modelSettingsForApi(value: ModelSettings | null | undefined) {
-    return value && Object.values(value).every(field => field === null) ? null : value
+    return value && Object.values(value).every(field => field == null || (typeof field === 'object' && !Object.keys(field).length)) ? null : value
 }
 
 export interface ModelSettingsView {
@@ -199,7 +201,11 @@ export function parseModelSettingsView(payload: unknown, endpoint: string, secti
         const field = (key: string) => fields[key] == null ? null : expectString(fields[key], endpoint, key)
         const budget = fields.thinking_budget_tokens
         if (budget != null && (typeof budget !== 'number' || !Number.isInteger(budget) || budget < 1024)) throw new ApiSchemaError(endpoint, 'Invalid thinking_budget_tokens.')
-        const result = { provider: field('provider'), llm_profile: field('llm_profile'), model: field('model'), reasoning_effort: field('reasoning_effort'), thinking: field('thinking'), thinking_budget_tokens: budget == null ? null : budget as number, reasoning_mode: field('reasoning_mode'), reasoning_summary: field('reasoning_summary') }
+        const result: ModelSettings = { provider: field('provider'), llm_profile: field('llm_profile'), model: field('model'), reasoning_effort: field('reasoning_effort'), thinking: field('thinking'), thinking_budget_tokens: budget == null ? null : budget as number, reasoning_mode: field('reasoning_mode'), reasoning_summary: field('reasoning_summary') }
+        if (fields.session_config != null) {
+            result.session_config = Object.fromEntries(Object.entries(expectObjectRecord(fields.session_config, endpoint))
+                .map(([id, value]) => [id, expectString(value, endpoint, 'session_config')]))
+        }
         return result
     }
     const scope = record.scope

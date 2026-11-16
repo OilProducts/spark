@@ -128,6 +128,8 @@ describe('attractorApi parsing', () => {
 
         expect(parseRunRecordPayload(run)).toEqual(parseRunsListResponse({ runs: [run] }).runs[0])
         expect(parseRunRecordPayload({ run_id: 'missing-status' })).toBeNull()
+        const partial = { ...run.token_usage_breakdown, coverage: 'partial', requests_without_usage: 2 }
+        expect(parseRunRecordPayload({ ...run, token_usage_breakdown: partial })?.token_usage_breakdown).toEqual(partial)
     })
 })
 

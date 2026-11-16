@@ -2484,6 +2484,28 @@ describe('RunsPanel', () => {
     expect(modelRows[0]).toHaveTextContent('24 (15 in, 3 cached, 9 out)')
     expect(modelRows[1]).toHaveTextContent('gpt-5.3-codex-spark')
     expect(modelRows[1]).toHaveTextContent('12 (8 in, 0 cached, 4 out) · unpriced')
+
+    // Requests that reported no usage keep every total from reading as complete.
+    act(() => {
+      latestSourceMatching('/workspace/api/live/events')?.emit({
+        type: 'run.upsert',
+        resource: { kind: 'runs_overview', id: null },
+        payload: {
+          run: {
+            ...selectedRun,
+            token_usage: 36,
+            token_usage_breakdown: {
+              input_tokens: 23, cached_input_tokens: 3, output_tokens: 13, total_tokens: 36, by_model: {},
+              coverage: 'partial', requests_without_usage: 2,
+            },
+          },
+        },
+      })
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('run-header-facts')).toHaveTextContent('36 tokens (partial)')
+    })
+    expect(screen.getByTestId('run-fact-tokens')).toHaveTextContent('36 (23 in, 3 cached, 13 out) · partial: 2 requests reported no usage')
   })
 
   it('keeps selected-run detail fetches scoped to run id changes instead of same-run stream updates', async () => {

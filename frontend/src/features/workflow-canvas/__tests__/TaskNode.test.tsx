@@ -10,6 +10,7 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/components/model-chooser/useModelOptions', () => ({
+    refreshModelOptions: () => {},
     useModelOptions: () => ({ projectPath: null, payload: { models: [{ provider: 'anthropic', id: 'claude-sonnet-4-6', display: 'claude-sonnet-4-6', is_default: false, supported_reasoning_efforts: ['low', 'high'] }], providers: { codex: { status: 'available', error: null } } } }),
 }))
 

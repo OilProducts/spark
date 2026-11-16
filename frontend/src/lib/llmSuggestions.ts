@@ -1,3 +1,5 @@
+import type { ProjectChatModelProviderStatusResponse } from '@/lib/api/projectsApi'
+
 export type LlmProviderKey = 'codex' | 'claude-code' | 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'litellm' | 'openai_compatible'
 
 export const LLM_PROVIDER_OPTIONS: LlmProviderKey[] = ['codex', 'claude-code', 'openai', 'anthropic', 'gemini', 'openrouter', 'litellm', 'openai_compatible']
@@ -55,14 +57,73 @@ export function getModelSuggestions(provider?: string, profiles: LlmProfileMetad
         return [...profile.models]
     }
     const normalized = (provider || '').trim().toLowerCase() as LlmProviderKey
-    if (normalized && LLM_MODELS_BY_PROVIDER[normalized]) {
-        return LLM_MODELS_BY_PROVIDER[normalized]
+    if (!normalized) {
+        return Array.from(new Set(Object.values(LLM_MODELS_BY_PROVIDER).flat()))
     }
-    return Array.from(new Set(Object.values(LLM_MODELS_BY_PROVIDER).flat()))
+    // A discovered provider, such as an ACP harness, lists only what it reports.
+    return LLM_MODELS_BY_PROVIDER[normalized] ?? []
 }
 
-export function getLlmSelectionOptions(profiles: LlmProfileMetadata[] = []): string[] {
-    return [...LLM_PROVIDER_OPTIONS, ...profiles.map((profile) => profile.id)]
+/** The built-in providers, then discovered ones such as ACP harnesses, then profiles. */
+export function getLlmSelectionOptions(profiles: LlmProfileMetadata[] = [], discovered: string[] = []): string[] {
+    return [...new Set([...LLM_PROVIDER_OPTIONS, ...discovered]), ...profiles.map((profile) => profile.id)]
+}
+
+/** A provider's name as discovery reports it, else its selector. */
+export function providerLabel(provider: string, statuses?: Record<string, ProjectChatModelProviderStatusResponse>): string {
+    return statuses?.[provider]?.label || provider
+}
+
+export interface SessionControlValue {
+    value: string
+    name: string
+    group?: string
+}
+
+export interface SessionControl {
+    id: string
+    name: string
+    description?: string
+    values: SessionControlValue[]
+}
+
+type RawOption = Record<string, unknown>
+const record = (value: unknown): RawOption | null => value && typeof value === 'object' && !Array.isArray(value) ? value as RawOption : null
+const text = (value: unknown) => typeof value === 'string' ? value : undefined
+const selectOf = (options: RawOption[], category: string) => options.find((option) => option.category === category && option.type === 'select')
+
+/** A select option's values in order, with grouped values flattened under their group's name. */
+function selectValues(option: RawOption): SessionControlValue[] {
+    return (Array.isArray(option.options) ? option.options : []).map(record).flatMap((entry): SessionControlValue[] => {
+        if (!entry) return []
+        if (Array.isArray(entry.options)) {
+            return entry.options.map(record).flatMap((value) => value && text(value.value) ? [{ value: text(value.value)!, name: text(value.name) || text(value.value)!, group: text(entry.name) || text(entry.group) }] : [])
+        }
+        return text(entry.value) ? [{ value: text(entry.value)!, name: text(entry.name) || text(entry.value)! }] : []
+    })
+}
+
+/**
+ * A harness's editable session controls, by exact config ID: its select options
+ * other than the model and thought-level selectors, which map to Spark's model
+ * and effort. Boolean and unknown option types keep the harness default.
+ */
+export function sessionControls(status?: ProjectChatModelProviderStatusResponse): SessionControl[] {
+    const options = (status?.config_options ?? []).map(record).filter((option): option is RawOption => !!option)
+    const mapped = [selectOf(options, 'model'), selectOf(options, 'thought_level')]
+    return options.flatMap((option) => option.type !== 'select' || mapped.includes(option) || !text(option.id) ? [] : [{
+        id: text(option.id)!,
+        name: text(option.name) || text(option.id)!,
+        description: text(option.description),
+        values: selectValues(option),
+    }])
+}
+
+/** The harness's own names for its thought-level value IDs. */
+export function effortNames(status?: ProjectChatModelProviderStatusResponse): Record<string, string> {
+    const options = (status?.config_options ?? []).map(record).filter((option): option is RawOption => !!option)
+    const option = selectOf(options, 'thought_level')
+    return Object.fromEntries((option ? selectValues(option) : []).map((value) => [value.value, value.name]))
 }
 
 export function splitLlmSelection(value: string, profiles: LlmProfileMetadata[]): { llm_provider: string; llm_profile: string } {
@@ -84,3 +145,16 @@ export function isModelSelectionValid(provider: string, model: string | null, pr
     return profile ? (model ? profile.models.includes(model) : !!profile.default_model)
         : !['openrouter', 'litellm', 'openai_compatible'].includes(provider) || !!model
 }
+
+/** Session controls as a flow stores them in its editor: a JSON object of config IDs to value IDs. */
+export function parseSessionConfig(text: unknown): Record<string, string> | undefined {
+    try {
+        const value: unknown = typeof text === 'string' && text ? JSON.parse(text) : undefined
+        return value && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every(entry => typeof entry === 'string')
+            ? value as Record<string, string> : undefined
+    } catch {
+        return undefined
+    }
+}
+
+export const sessionConfigText = (config?: Record<string, string> | null) => config && Object.keys(config).length ? JSON.stringify(config) : ''

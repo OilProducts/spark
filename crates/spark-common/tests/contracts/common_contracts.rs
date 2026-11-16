@@ -548,6 +548,16 @@ fn acp_selectors_own_their_namespace_and_normalize_native_aliases() {
     assert!(selection(Some("acp:Bad"), None).validate().is_err());
     assert!(selection(None, Some("ACP:agent")).validate().is_err());
     assert!(selection(None, Some("team-profile")).validate().is_ok());
+    // Session controls belong to the ACP harness they were chosen for.
+    let controls = |provider: &str, id: &str, value: &str| ModelSettings {
+        session_config: [(id.to_string(), value.to_string())].into(),
+        ..selection(Some(provider), None)
+    };
+    assert!(controls("acp:agent", "Mode/ID", "Auto Edit")
+        .validate()
+        .is_ok());
+    assert!(controls("codex", "mode", "auto").validate().is_err());
+    assert!(controls("acp:agent", "mode", " ").validate().is_err());
 
     assert!(acp_config(json!({"Bad": {"name": "x", "executable": "x"}})).is_err());
     assert!(acp_config(json!({"ok": {"name": "x", "executable": "x", "shell": true}})).is_err());

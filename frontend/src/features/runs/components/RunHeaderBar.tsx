@@ -81,7 +81,7 @@ export function RunHeaderBar({
     const facts = [
         when,
         formatDuration(run.started_at, run.ended_at, run.status, now),
-        ...(typeof tokens === 'number' ? [`${formatCompactCount(tokens)} tokens`] : []),
+        ...(typeof tokens === 'number' ? [`${formatCompactCount(tokens)} tokens${run.token_usage_breakdown?.coverage === 'partial' ? ' (partial)' : ''}`] : []),
         ...(commit ? [commit.slice(0, 7)] : []),
     ].filter((fact) => fact && fact !== '—')
     // The title is the one the run list shows. The flow's own title joins the breadcrumb

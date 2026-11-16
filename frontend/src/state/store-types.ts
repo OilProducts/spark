@@ -66,7 +66,8 @@ export interface FlowDefinitionMetadata {
     thinking_budget_tokens?: string
     reasoning_mode?: string
     reasoning_summary?: string
-
+    /** An ACP harness's session controls for `llm_provider`, as a JSON object. */
+    session_config?: string
 }
 
 export type GraphAttrs = FlowDefinitionMetadata

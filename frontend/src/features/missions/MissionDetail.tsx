@@ -288,7 +288,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                             </form>
                             : <p className="text-xs">{modelLabel}</p>}
                     </RailSection>
-                    {tokens !== null && <RailSection label="Spent"><p className="text-xs">{formatCompactCount(tokens)} tokens across runs</p></RailSection>}
+                    {tokens !== null && <RailSection label="Spent"><p className="text-xs">{formatCompactCount(tokens)} tokens across runs{runs.some(run => run.partialTokens) ? ' (partial)' : ''}</p></RailSection>}
                     {triggerError && <InlineError>{triggerError}</InlineError>}
                     {triggers.length > 0 && <RailSection label="Triggers"><ul aria-label="Targeting triggers">{triggers.map(trigger => <li key={triggerKey(trigger)}><button type="button" className="text-left text-xs text-primary hover:underline" onClick={() => { useStore.getState().updateTriggersSession({ selectedTriggerId: triggerKey(trigger) }); useStore.getState().setViewMode('triggers') }}>{trigger.name} · {trigger.source_type} · {trigger.enabled ? 'Enabled' : 'Disabled'}</button></li>)}</ul></RailSection>}
                 </Well>

@@ -51,9 +51,54 @@ export interface ProjectChatModelsResponse {
     }
 }
 
+export interface ProjectChatModelCapability {
+    state: 'supported' | 'unsupported' | 'unverified'
+    reason: string
+}
+
 export interface ProjectChatModelProviderStatusResponse {
     status: 'available' | 'unavailable'
     error: string | null
+    /** The provider's display name; for an ACP harness, its registration's. */
+    label?: string
+    /** For an ACP harness: whether discovery could set it up. */
+    setup_status?: 'ready' | 'unreachable' | 'unauthenticated'
+    capabilities?: Record<string, ProjectChatModelCapability>
+    chat?: ProjectChatModelCapability
+    flow?: ProjectChatModelCapability
+    /** The harness's session config options exactly as it reported them. */
+    config_options?: Record<string, unknown>[]
+    /** Legacy session modes, only when the harness reports no config options. */
+    modes?: { currentModeId?: string; availableModes?: { id: string; name: string; description?: string | null }[] }
+}
+
+function parseCapability(value: unknown, endpoint: string): ProjectChatModelCapability {
+    const entry = expectObjectRecord(value, endpoint)
+    if (entry.state !== 'supported' && entry.state !== 'unsupported' && entry.state !== 'unverified') {
+        throw new ApiSchemaError(endpoint, 'Expected capability state to be supported, unsupported or unverified.')
+    }
+    return { state: entry.state, reason: expectString(entry.reason, endpoint, 'reason') }
+}
+
+/** The status's additive fields, each only when present. */
+function parseProviderDetails(entry: Record<string, unknown>, endpoint: string): Partial<ProjectChatModelProviderStatusResponse> {
+    const setup = entry.setup_status
+    if (setup !== undefined && setup !== 'ready' && setup !== 'unreachable' && setup !== 'unauthenticated') {
+        throw new ApiSchemaError(endpoint, 'Expected setup_status to be ready, unreachable or unauthenticated.')
+    }
+    if (entry.config_options !== undefined && !Array.isArray(entry.config_options)) {
+        throw new ApiSchemaError(endpoint, 'Expected config_options to be an array.')
+    }
+    return {
+        ...(typeof entry.label === 'string' ? { label: entry.label } : {}),
+        ...(setup ? { setup_status: setup } : {}),
+        ...(entry.capabilities !== undefined ? { capabilities: Object.fromEntries(Object.entries(expectObjectRecord(entry.capabilities, endpoint))
+            .map(([name, capability]) => [name, parseCapability(capability, endpoint)])) } : {}),
+        ...(entry.chat !== undefined ? { chat: parseCapability(entry.chat, endpoint) } : {}),
+        ...(entry.flow !== undefined ? { flow: parseCapability(entry.flow, endpoint) } : {}),
+        ...(Array.isArray(entry.config_options) ? { config_options: entry.config_options.map((option) => expectObjectRecord(option, endpoint)) } : {}),
+        ...(entry.modes != null ? { modes: expectObjectRecord(entry.modes, endpoint) as ProjectChatModelProviderStatusResponse['modes'] } : {}),
+    }
 }
 
 export interface ProjectDeleteResponse {
@@ -240,7 +285,7 @@ export function parseProjectChatModelsResponse(
         if (entry.error !== null && typeof entry.error !== 'string') {
             throw new ApiSchemaError(endpoint, 'Expected provider error to be a string or null.')
         }
-        return [provider, { status: entry.status, error: entry.error }]
+        return [provider, { status: entry.status, error: entry.error, ...parseProviderDetails(entry, endpoint) }]
     })) as ProjectChatModelsResponse['providers']
     return {
         ...(record.provider_reasoning_efforts && typeof record.provider_reasoning_efforts === 'object' ? {

@@ -1946,6 +1946,17 @@ fn run_on_acp(
     attractor_runtime::PipelineExecutionResult,
     Vec<serde_json::Value>,
 ) {
+    run_flow_on_acp(temp, session_flow(nodes), script)
+}
+
+fn run_flow_on_acp(
+    temp: &std::path::Path,
+    flow: FlowDefinition,
+    script: serde_json::Value,
+) -> (
+    attractor_runtime::PipelineExecutionResult,
+    Vec<serde_json::Value>,
+) {
     let log = temp.join("acp.log");
     let mut script = script;
     script["log"] = json!(log);
@@ -1957,7 +1968,7 @@ fn run_on_acp(
         .execute(attractor_runtime::ExecuteRunRequest {
             store: attractor_runtime::RunStore::for_runs_dir(temp.join("runs")),
             record: attractor_core::RunRecord::new("run-acp", temp.to_string_lossy()),
-            flow: session_flow(nodes),
+            flow,
             flow_definition_json: None,
             launch_context: attractor_core::LaunchContext::empty(),
             runtime_context: ContextMap::from([(
@@ -2012,6 +2023,72 @@ fn acp_nodes_never_resend_a_submitted_prompt_and_refuse_reasoning_controls() {
     assert_eq!(result.status, "failed");
     assert!(
         result.failure_reason.contains("thinking"),
+        "{}",
+        result.failure_reason
+    );
+    assert_eq!(acp_launches(&log), 0);
+}
+
+#[test]
+fn acp_flow_session_controls_reach_the_resolved_harness_exactly_or_fail_before_prompting() {
+    let script = json!({
+        "config_options": [{"id": "Mode/ID", "name": "Approval", "type": "select", "currentValue": "ask",
+            "options": [{"value": "ask", "name": "Ask"}, {"value": "Auto/Edit", "name": "Auto edit"}]}],
+        "answers": [r#"{"decision": "done"}"#],
+    });
+    let nodes = json!({"start": start_to("task"), "done": exit_node(),
+        "task": acp_task(None, "Ship it.", "done")});
+    let chosen = |log: &[serde_json::Value]| {
+        log.iter()
+            .filter(|entry| entry["received"]["method"] == "session/set_config_option")
+            .map(|entry| {
+                let params = &entry["received"]["params"];
+                (params["configId"].clone(), params["value"].clone())
+            })
+            .collect::<Vec<_>>()
+    };
+    let exact = vec![(json!("Mode/ID"), json!("Auto/Edit"))];
+
+    // A node's own controls reach the harness it resolves, IDs exactly.
+    let temp = tempdir().unwrap();
+    let mut own = nodes.clone();
+    own["task"]["execution"]["session_config"] = json!({"Mode/ID": "Auto/Edit"});
+    let (result, log) = run_on_acp(temp.path(), own.clone(), script.clone());
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(chosen(&log), exact);
+
+    // The flow default's apply on the flow's default harness.
+    let temp = tempdir().unwrap();
+    let mut flow = session_flow(nodes.clone());
+    flow.defaults.llm_provider = Some("acp:fake".into());
+    flow.defaults.session_config = BTreeMap::from([("Mode/ID".into(), "Auto/Edit".into())]);
+    let (result, log) = run_flow_on_acp(temp.path(), flow, script.clone());
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    assert_eq!(chosen(&log), exact);
+
+    // A value the harness no longer offers fails before the prompt.
+    let temp = tempdir().unwrap();
+    own["task"]["execution"]["session_config"] = json!({"Mode/ID": "gone"});
+    let (result, log) = run_on_acp(temp.path(), own.clone(), script.clone());
+    assert_eq!(result.status, "failed");
+    assert!(
+        result
+            .failure_reason
+            .contains(r#"does not offer the value "gone""#),
+        "{}",
+        result.failure_reason
+    );
+    assert!(acp_prompts(&log).is_empty());
+
+    // Controls on a node that resolves no ACP harness fail before any launch.
+    let temp = tempdir().unwrap();
+    own["task"]["execution"]["llm_provider"] = json!("openai");
+    let (result, log) = run_on_acp(temp.path(), own, script);
+    assert_eq!(result.status, "failed");
+    assert!(
+        result
+            .failure_reason
+            .contains("applies only to an ACP harness"),
         "{}",
         result.failure_reason
     );

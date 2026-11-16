@@ -1,4 +1,6 @@
-use spark_common::agent_settings::NativeAgentSettings;
+use spark_agent_adapter::acp::{self, AcpDiscovery};
+use spark_common::agent_settings::{NativeAgentSettings, SessionConfig};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -13,6 +15,10 @@ static PROVIDER_MODELS_CACHE: Mutex<
 type NativeModelCache = Vec<(NativeAgentSettings, Result<Vec<ChatModelMetadata>, String>)>;
 static CODEX_MODELS_CACHE: Mutex<NativeModelCache> = Mutex::new(Vec::new());
 static CLAUDE_CODE_MODELS_CACHE: Mutex<NativeModelCache> = Mutex::new(Vec::new());
+/// ACP discoveries by work area, harness ID, launch generation and
+/// implementation version.
+type AcpDiscoveryKey = (PathBuf, String, String, &'static str);
+static ACP_DISCOVERY_CACHE: Mutex<Vec<(AcpDiscoveryKey, AcpDiscovery)>> = Mutex::new(Vec::new());
 
 pub fn invalidate_model_discovery(section: &str) {
     match section {
@@ -31,6 +37,10 @@ pub fn invalidate_model_discovery(section: &str) {
                 .unwrap_or_else(|error| error.into_inner())
                 .clear();
             CLAUDE_CODE_MODELS_CACHE
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+            ACP_DISCOVERY_CACHE
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .clear();
@@ -68,64 +78,70 @@ pub struct ChatModelMetadata {
     pub reasoning_unverified: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChatModelProviderStatus {
     pub status: String,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// What discovery found for an ACP harness.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<AcpDiscovery>,
 }
 
-pub fn chat_models(settings: &SparkSettings) -> WorkspaceResult<Value> {
+/// The chooser's models and provider statuses, with ACP harnesses probed in
+/// `work_area`, where their work would run.
+pub fn chat_models(settings: &SparkSettings, work_area: &Path) -> WorkspaceResult<Value> {
     let native = native_configuration(settings)?;
     let codex_result = codex_chat_models(&native);
-    chat_models_with_codex_result(settings, codex_result)
+    chat_models_with_codex_result(settings, work_area, codex_result)
 }
 
 pub fn chat_models_with_codex_result(
     settings: &SparkSettings,
+    work_area: &Path,
     codex_result: Result<Vec<ChatModelMetadata>, String>,
 ) -> WorkspaceResult<Value> {
-    let (mut models, codex_status) = match codex_result {
-        Ok(models) => (
-            models,
-            ChatModelProviderStatus {
-                status: "available".to_string(),
-                error: None,
-            },
-        ),
-        Err(error) => (
-            Vec::new(),
-            ChatModelProviderStatus {
-                status: "unavailable".to_string(),
-                error: Some(error),
-            },
-        ),
-    };
+    let mut models = Vec::new();
     let mut providers = serde_json::Map::new();
-    providers.insert("codex".into(), serde_json::json!(codex_status));
-    let mut add = |provider: &str, result: Result<Vec<ChatModelMetadata>, String>| {
-        let status = match result {
+    let mut add = |provider: &str,
+                   label: Option<&str>,
+                   result: Result<Vec<ChatModelMetadata>, String>,
+                   harness: Option<AcpDiscovery>| {
+        let (status, error) = match result {
             Ok(discovered) => {
                 models.extend(discovered);
-                ChatModelProviderStatus {
-                    status: "available".into(),
-                    error: None,
-                }
+                ("available", None)
             }
-            Err(error) => ChatModelProviderStatus {
-                status: "unavailable".into(),
-                error: Some(error),
-            },
+            Err(error) => ("unavailable", Some(error)),
+        };
+        let status = ChatModelProviderStatus {
+            status: status.into(),
+            error,
+            label: label.map(str::to_string),
+            harness,
         };
         providers.insert(provider.into(), serde_json::json!(status));
     };
+    add("codex", Some("Codex"), codex_result, None);
     add(
         "claude-code",
+        Some("Claude Code"),
         claude_code_chat_models(&native_configuration(settings)?),
+        None,
     );
     let configuration = spark_storage::settings::read_execution_configuration(
         &settings.config_dir,
         &spark_common::paths::ProcessEnvironment,
     )?;
+    for (id, harness, discovery) in acp_discoveries(&configuration.agents, work_area) {
+        let provider = format!("acp:{id}");
+        let result = match discovery.setup_status.as_str() {
+            "ready" => Ok(acp_chat_models(&provider, &discovery.config_options)),
+            _ => Err(discovery.error.clone().unwrap_or_default()),
+        };
+        add(&provider, Some(&harness.name), result, Some(discovery));
+    }
     let environment = unified_llm_adapter::ProviderEnvironment::from_env_map(
         &configuration
             .providers
@@ -139,10 +155,12 @@ pub fn chat_models_with_codex_result(
         if let Some(config) = environment.providers.get(provider) {
             add(
                 provider,
+                None,
                 cache
                     .get_or_insert_with(Default::default)
                     .models(config, &unified_llm_adapter::NativeHttpTransport::new())
                     .map(|models| models.into_iter().map(unified_chat_model).collect()),
+                None,
             );
         }
     }
@@ -152,6 +170,118 @@ pub fn chat_models_with_codex_result(
         "provider_reasoning_efforts": unified_llm_adapter::ModelCatalog::development().provider_reasoning_efforts,
         "providers": providers,
     }))
+}
+
+/// Each registered harness with its discovery in `work_area`, probing those
+/// not cached, in parallel.
+fn acp_discoveries<'a>(
+    agents: &'a SessionConfig,
+    work_area: &Path,
+) -> Vec<(
+    &'a String,
+    &'a spark_common::agent_settings::AcpHarness,
+    AcpDiscovery,
+)> {
+    let mut cache = ACP_DISCOVERY_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let keyed = agents
+        .acp_harnesses
+        .iter()
+        .map(|(id, harness)| {
+            let generation = acp::launch_generation(harness, agents.environment_inheritance);
+            let key = (
+                work_area.to_path_buf(),
+                id.clone(),
+                generation,
+                env!("CARGO_PKG_VERSION"),
+            );
+            (id, harness, key)
+        })
+        .collect::<Vec<_>>();
+    let probed = std::thread::scope(|scope| {
+        keyed
+            .iter()
+            .filter(|(_, _, key)| !cache.iter().any(|(cached, _)| cached == key))
+            .map(|(id, harness, key)| {
+                let probe = scope.spawn(|| {
+                    acp::discover(id, harness, agents.environment_inheritance, work_area)
+                });
+                (key.clone(), probe)
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|(key, probe)| (key, probe.join().expect("ACP discovery probe panicked")))
+            .collect::<Vec<_>>()
+    });
+    // Only ready discoveries are kept, so installing or signing in to a
+    // harness shows the next time models are listed.
+    cache.extend(
+        probed
+            .iter()
+            .filter(|(_, discovery)| discovery.setup_status == "ready")
+            .cloned(),
+    );
+    keyed
+        .into_iter()
+        .filter_map(|(id, harness, key)| {
+            let (_, discovery) = probed
+                .iter()
+                .chain(cache.iter())
+                .find(|(cached, _)| *cached == key)?;
+            let mut discovery = discovery.clone();
+            // A session's acknowledged state supersedes the probe's.
+            if let Some(options) = acp::acknowledged_options(work_area, id, &key.2)
+                .filter(|_| discovery.setup_status == "ready")
+            {
+                discovery.config_options = options;
+                discovery.modes = None;
+            }
+            Some((id, harness, discovery))
+        })
+        .collect()
+}
+
+/// An ACP harness's models are its model selector's values, in order. With
+/// no selector, one "Harness default" entry leaves the choice to the harness.
+/// Efforts are its thought-level value IDs, exactly as offered.
+fn acp_chat_models(provider: &str, options: &[Value]) -> Vec<ChatModelMetadata> {
+    let thought_level = acp::select_option(options, "thought_level");
+    let efforts = thought_level
+        .map(|option| {
+            acp::select_values(option)
+                .into_iter()
+                .filter_map(|value| value["value"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let default_effort = thought_level
+        .and_then(|option| option["currentValue"].as_str())
+        .map(str::to_string);
+    let model = |id: &str, display: &str, is_default: bool| ChatModelMetadata {
+        provider: provider.to_string(),
+        llm_profile: None,
+        id: id.to_string(),
+        display: display.to_string(),
+        is_default,
+        supported_reasoning_efforts: efforts.clone(),
+        default_reasoning_effort: default_effort.clone(),
+        supported_thinking: vec![],
+        supported_reasoning_modes: vec![],
+        supported_reasoning_summaries: vec![],
+        reasoning_unverified: false,
+    };
+    match acp::select_option(options, "model") {
+        Some(selector) => acp::select_values(selector)
+            .into_iter()
+            .filter_map(|value| {
+                let id = value["value"].as_str()?;
+                let display = value["name"].as_str().unwrap_or(id);
+                Some(model(id, display, selector["currentValue"] == id))
+            })
+            .collect(),
+        None => vec![model("", "Harness default", true)],
+    }
 }
 
 pub fn native_configuration(settings: &SparkSettings) -> WorkspaceResult<NativeAgentSettings> {
