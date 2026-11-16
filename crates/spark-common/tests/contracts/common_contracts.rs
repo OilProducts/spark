@@ -630,13 +630,15 @@ fn acp_instruction_channels_render_exact_bytes_once() {
 
 #[test]
 fn acp_configuration_generation_tracks_launch_settings_but_not_labels() {
+    use spark_common::agent_settings::EnvironmentInheritancePolicy;
     let base = json!({"name": "Agent", "executable": "agent", "args": ["acp"], "env": {"K": "v"}});
     let generation = |patch: serde_json::Value| {
         let mut harness = base.clone();
         for (key, value) in patch.as_object().unwrap() {
             harness[key] = value.clone();
         }
-        acp_config(json!({"agent": harness})).unwrap().acp_harnesses["agent"].generation()
+        acp_config(json!({"agent": harness})).unwrap().acp_harnesses["agent"]
+            .generation(EnvironmentInheritancePolicy::InheritAll)
     };
     let original = generation(json!({}));
     assert_eq!(original, generation(json!({"name": "Renamed"})));
@@ -651,4 +653,10 @@ fn acp_configuration_generation_tracks_launch_settings_but_not_labels() {
         assert_ne!(original, changed, "{change}");
         assert!(!changed.contains("changed"), "the generation is opaque");
     }
+    let harness = &acp_config(json!({"agent": base})).unwrap().acp_harnesses["agent"];
+    assert_ne!(
+        original,
+        harness.generation(EnvironmentInheritancePolicy::InheritNone),
+        "the inherited environment shapes the launch"
+    );
 }

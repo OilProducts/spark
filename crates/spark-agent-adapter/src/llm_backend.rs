@@ -554,7 +554,9 @@ impl RustLlmCodergenBackend {
                 )));
             }
         }
-        let agent_request = codergen_agent_turn_request(&request);
+        let mut agent_request = codergen_agent_turn_request(&request);
+        // Earlier exchanges, sent only if the session has to start fresh.
+        agent_request.history = self.resumed_history(&request)?;
         let provider = HarnessIdentity::Acp(harness.to_string()).selector();
         let turn_event_sink: Option<AgentTurnEventSink> = event_sink.as_ref().map(|sink| {
             let (sink, request, provider) = (sink.clone(), request.clone(), provider.clone());
@@ -578,34 +580,70 @@ impl RustLlmCodergenBackend {
         if let Some(output) = stop.finish() {
             return Ok(output);
         }
-        let turn = result.map_err(CodergenError::Backend)?;
-        let output = turn.output;
-        let response = match output.final_assistant_text.as_deref().and_then(non_empty) {
-            Some(text) if turn.stop_reason == StopReason::EndTurn => {
-                CodergenBackendResponse::Text(text.to_string())
-            }
-            _ => CodergenBackendResponse::Outcome(Outcome {
+        let failed = |failure_reason: String| {
+            CodergenBackendResponse::Outcome(Outcome {
                 status: OutcomeStatus::Error,
-                failure_reason: format!(
-                    "ACP harness {harness} ended the turn without an answer ({})",
-                    crate::acp::stop_label(&turn.stop_reason)
-                ),
+                failure_reason,
                 retryable: Some(false),
                 failure_kind: Some(FailureKind::Runtime),
                 ..Outcome::new(OutcomeStatus::Error)
-            }),
-        };
-        let mut events = output
-            .events
-            .iter()
-            .map(|event| {
-                harness_codergen_event(
-                    &request,
-                    event,
-                    (crate::acp::ACP_BACKEND, &provider, ACP_SESSION_EVENT),
-                )
             })
-            .collect::<Vec<_>>();
+        };
+        let codergen_events = |events: &[TurnStreamEvent]| {
+            events
+                .iter()
+                .map(|event| {
+                    harness_codergen_event(
+                        &request,
+                        event,
+                        (crate::acp::ACP_BACKEND, &provider, ACP_SESSION_EVENT),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let turn = match result {
+            Ok(turn) => turn,
+            // The harness may have acted on the prompt: settle, never resend it.
+            Err(failure) if failure.prompted => {
+                return Ok(CodergenBackendOutput {
+                    response: failed(format!(
+                        "{} (after the prompt was sent, so it is not retried)",
+                        failure.message
+                    )),
+                    events: codergen_events(&failure.events),
+                    usage: None,
+                    resume_metadata: BTreeMap::new(),
+                });
+            }
+            Err(failure) => return Err(CodergenError::Backend(failure.message)),
+        };
+        let output = turn.output;
+        let answer = output.final_assistant_text.as_deref().and_then(non_empty);
+        let response = match answer {
+            Some(text) if turn.stop_reason == StopReason::EndTurn => {
+                CodergenBackendResponse::Text(text.to_string())
+            }
+            _ => failed(format!(
+                "ACP harness {harness} ended the turn without an answer ({})",
+                crate::acp::stop_label(&turn.stop_reason)
+            )),
+        };
+        // The exchange, for a repair or a later node of the session that
+        // cannot continue the harness's own session.
+        let mut history = std::mem::take(&mut agent_request.history);
+        history.push(HistoryTurn::User(crate::history::UserTurn::new(
+            request.prompt.clone(),
+        )));
+        history.extend(
+            answer.map(|text| HistoryTurn::Assistant(crate::history::AssistantTurn::new(text))),
+        );
+        let mut resume_metadata = self.keep_for_repair(&request.metadata, history)?;
+        resume_metadata.extend(
+            turn.record
+                .map(|record| record.to_metadata())
+                .unwrap_or_default(),
+        );
+        let mut events = codergen_events(&output.events);
         events.extend(
             output
                 .thread_resume_failure
@@ -646,10 +684,7 @@ impl RustLlmCodergenBackend {
                 .token_usage
                 .as_ref()
                 .and_then(usage_from_token_usage_payload),
-            resume_metadata: turn
-                .record
-                .map(|record| record.to_metadata())
-                .unwrap_or_default(),
+            resume_metadata,
         })
     }
 
@@ -1698,7 +1733,8 @@ fn run_acp_chat_turn(
     harness: &str,
     event_sink: Option<AgentTurnEventSink>,
 ) -> Result<AgentTurnOutput, AgentError> {
-    let turn = crate::acp::run_turn(request, harness, event_sink.as_ref()).map_err(agent_error)?;
+    let turn = crate::acp::run_turn(request, harness, event_sink.as_ref())
+        .map_err(|failure| agent_error(failure.message))?;
     let mut output = turn.output;
     match turn.stop_reason {
         StopReason::EndTurn => Ok(output),

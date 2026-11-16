@@ -1,7 +1,8 @@
 //! Fake ACP v1 agent for process contracts: one session, one prompt, scripted
 //! by the JSON in `SPARK_FAKE_ACP`. Every message it receives is appended to
-//! the script's `log` file, after a first line with its argv, working
+//! the script's `log` file, after a first line with its pid, argv, working
 //! directory, the `log_env` variables and the contents of file arguments.
+//! `answers[n]` answers the log's nth prompt, across launches.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -54,6 +55,7 @@ impl Agent {
             .filter_map(|arg| Some((arg.clone(), json!(std::fs::read_to_string(arg).ok()?))))
             .collect::<serde_json::Map<_, _>>();
         self.append(json!({
+            "pid": std::process::id(),
             "argv": argv,
             "cwd": std::env::current_dir().ok(),
             "env": env,
@@ -186,6 +188,13 @@ impl Agent {
         }
         for update in script["updates"].as_array().into_iter().flatten() {
             self.update(update);
+        }
+        if let Some(answers) = script["answers"].as_array() {
+            let log = std::fs::read_to_string(script["log"].as_str().unwrap()).unwrap();
+            let prompts = log.matches("\"method\":\"session/prompt\"").count();
+            let text = &answers[(prompts - 1).min(answers.len() - 1)];
+            self.update(&json!({"sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": text}}));
         }
         if let Some(permission) = script.get("permission") {
             self.send(json!({

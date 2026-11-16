@@ -66,7 +66,7 @@ fn run(
             seen.lock().unwrap().push(event);
         })
     };
-    let result = acp::run_turn(request, "fake", Some(&sink));
+    let result = acp::run_turn(request, "fake", Some(&sink)).map_err(|failure| failure.message);
     let seen = seen.lock().unwrap().clone();
     (result, seen)
 }
@@ -315,7 +315,11 @@ fn acp_interrupt_cancels_the_open_prompt_and_keeps_the_session() {
     assert!(turn.record.is_some(), "a settled cancel keeps continuity");
     assert_eq!(turn.output.final_assistant_text, None);
     assert_eq!(received(dir.path(), "session/cancel").len(), 1);
-    assert_eq!(seen.last().unwrap().status.as_deref(), Some("cancelled"));
+    assert!(
+        seen.iter()
+            .all(|event| event.kind != TurnStreamEventKind::TurnCompleted),
+        "the caller settles a cancelled turn"
+    );
     assert!(!acp::interrupt(
         &request.project_path,
         &request.conversation_id
@@ -492,14 +496,18 @@ fn acp_failures_propagate_without_a_second_prompt() {
     assert!(error.contains("fatal: model unavailable"), "{error}");
 
     let dir = tempfile::tempdir().unwrap();
-    // The SDK answers a stray line with a parse error; the turn goes on.
+    // A line that is not JSON-RPC ends the turn, even with an answer to follow.
     let malformed = request(
         dir.path(),
         json!({"malformed_on_prompt": true, "updates": [chunk("agent_message_chunk", "Fine.")]}),
         json!({}),
     );
-    let turn = run(&malformed, |_| {}).0.expect("stray line tolerated");
-    assert_eq!(turn.output.final_assistant_text.as_deref(), Some("Fine."));
+    let error = run(&malformed, |_| {})
+        .0
+        .err()
+        .expect("malformed output fails");
+    assert!(error.contains("malformed protocol output"), "{error}");
+    assert_eq!(received(dir.path(), "session/prompt").len(), 1);
 
     let dir = tempfile::tempdir().unwrap();
     let refused = request(
@@ -547,7 +555,7 @@ fn saved(dir: &Path, request: &AgentTurnRequest, session_id: &str) -> AcpSession
             .unwrap()
             .to_string_lossy()
             .into_owned(),
-        configuration_generation: harness.generation(),
+        configuration_generation: harness.generation(Default::default()),
         instructions_sha256: None,
     }
 }
@@ -738,4 +746,204 @@ fn acp_parallel_runs_of_one_flow_node_keep_separate_sessions() {
     )
     .expect_err("utility calls need a utility-capable provider");
     assert!(error.contains("does not run utility calls"), "{error}");
+}
+
+/// The public chat backend over `request`, collecting what its sink saw.
+fn chat(
+    request: AgentTurnRequest,
+    on_event: impl Fn(&TurnStreamEvent) + Send + Sync + 'static,
+) -> (
+    Result<spark_agent_adapter::AgentTurnOutput, spark_agent_adapter::AgentError>,
+    Vec<TurnStreamEvent>,
+) {
+    use spark_agent_adapter::{AgentTurnBackend, RustLlmAgentTurnBackend};
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink: AgentTurnEventSink = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |event: TurnStreamEvent| {
+            on_event(&event);
+            seen.lock().unwrap().push(event);
+        })
+    };
+    let backend = RustLlmAgentTurnBackend::new(unified_llm_adapter::Client::new());
+    let result = backend.run_turn_with_event_sink(request, Some(sink));
+    let seen = seen.lock().unwrap().clone();
+    (result, seen)
+}
+
+fn interrupt_chat(project: &str, conversation: &str) -> bool {
+    use spark_agent_adapter::{AgentTurnBackend, RustLlmAgentTurnBackend};
+    RustLlmAgentTurnBackend::new(unified_llm_adapter::Client::new())
+        .interrupt_turn(project, conversation)
+}
+
+fn terminals(events: &[TurnStreamEvent]) -> Vec<Option<String>> {
+    events
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::TurnCompleted)
+        .map(|event| event.status.clone())
+        .collect()
+}
+
+fn agents(request: &mut AgentTurnRequest) -> &mut Value {
+    &mut request
+        .metadata
+        .get_mut("spark.execution.settings")
+        .unwrap()["configuration"]["agents"]
+}
+
+#[test]
+fn acp_chat_cancel_settles_once_and_explicit_reasoning_controls_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = json!({
+        "updates": [chunk("agent_message_chunk", "Working")],
+        "await_cancel": "respond",
+    });
+    let cancelled = request(dir.path(), script, json!({}));
+    let (project, conversation) = (
+        cancelled.project_path.clone(),
+        cancelled.conversation_id.clone(),
+    );
+    let (result, seen) = chat(cancelled, move |event| {
+        if event.kind == TurnStreamEventKind::ContentDelta {
+            assert!(interrupt_chat(&project, &conversation));
+        }
+    });
+    let output = result.expect("stopped turn");
+    assert_eq!(terminals(&seen), [Some("interrupted".to_string())]);
+    assert_eq!(terminals(&output.events), [Some("interrupted".to_string())]);
+
+    for (key, value) in [
+        ("thinking", json!("off")),
+        ("thinking_budget_tokens", json!(2048)),
+        ("reasoning_mode", json!("adaptive")),
+        ("reasoning_summary", json!("auto")),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut request = request(dir.path(), json!({}), json!({}));
+        request
+            .metadata
+            .get_mut("spark.execution.settings")
+            .unwrap()["model_settings"] = json!({"provider": "acp:fake", key: value});
+        let error = chat(request, |_| {}).0.err().expect("refused").message;
+        assert!(error.contains(key), "{error}");
+        assert_eq!(launches(dir.path()), 0, "{key} is refused before launch");
+    }
+}
+
+#[test]
+fn acp_chat_starts_fresh_when_the_inherited_environment_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = json!({"resume": true, "updates": [chunk("agent_message_chunk", "Hi.")]});
+    let mut first = request(dir.path(), script, json!({}));
+    agents(&mut first)["environment_inheritance"] = json!("inherit_all");
+    let mut second = first.clone();
+    let (result, seen) = chat(first, |_| {});
+    result.expect("first turn");
+    let record: AcpSessionRecord = serde_json::from_value(
+        other(&seen, "session_established")[0]
+            .details
+            .clone()
+            .unwrap(),
+    )
+    .unwrap();
+
+    second.metadata.extend(record.to_metadata());
+    let output = chat(second.clone(), |_| {}).0.expect("same settings");
+    assert_eq!(received(dir.path(), "session/resume").len(), 1);
+    assert!(output.thread_resume_failure.is_none());
+
+    agents(&mut second)["environment_inheritance"] = json!("inherit_none");
+    let output = chat(second, |_| {}).0.expect("fresh session");
+    assert_eq!(
+        received(dir.path(), "session/resume").len(),
+        1,
+        "never resumed"
+    );
+    assert_eq!(received(dir.path(), "session/new").len(), 2);
+    assert!(output.thread_resume_failure.is_some());
+}
+
+/// A sink that stops taking events neither holds back cancellation nor lets
+/// the harness's output queue up without bound.
+#[cfg(unix)]
+#[test]
+fn acp_blocked_sink_keeps_cancellation_independent_and_fails_on_overload() {
+    let exists = |path: &Path| path.exists();
+    let wait = |what: &str, done: &dyn Fn() -> bool| {
+        let started = std::time::Instant::now();
+        while !done() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "{what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    let blocking = |dir: &Path| {
+        let (entered, release) = (dir.join("entered"), dir.join("release"));
+        move |event: &TurnStreamEvent| {
+            if event.kind == TurnStreamEventKind::ContentDelta && !entered.exists() {
+                std::fs::write(&entered, "").unwrap();
+                while !release.exists() {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+    };
+
+    // Cancellation reaches the harness while the sink is blocked.
+    let dir = tempfile::tempdir().unwrap();
+    let script = json!({
+        "updates": [chunk("agent_message_chunk", "Working")],
+        "await_cancel": "respond",
+    });
+    let cancelled = request(dir.path(), script, json!({}));
+    let (project, conversation) = (
+        cancelled.project_path.clone(),
+        cancelled.conversation_id.clone(),
+    );
+    let turn = std::thread::spawn({
+        let sink = blocking(dir.path());
+        move || chat(cancelled, sink)
+    });
+    wait("the sink blocks", &|| exists(&dir.path().join("entered")));
+    assert!(interrupt_chat(&project, &conversation));
+    wait("cancel is sent", &|| {
+        received(dir.path(), "session/cancel").len() == 1
+    });
+    std::fs::write(dir.path().join("release"), "").unwrap();
+    let (result, _) = turn.join().unwrap();
+    let output = result.expect("cancelled turn");
+    assert_eq!(terminals(&output.events), [Some("interrupted".to_string())]);
+
+    // A sink a full queue behind fails the turn and stops the harness.
+    let dir = tempfile::tempdir().unwrap();
+    let updates = (0..400)
+        .map(|n| chunk("agent_message_chunk", &format!("{n} ")))
+        .collect::<Vec<_>>();
+    let flooding = request(
+        dir.path(),
+        json!({"updates": updates, "await_cancel": "ignore"}),
+        json!({}),
+    );
+    let turn = std::thread::spawn({
+        let sink = blocking(dir.path());
+        move || chat(flooding, sink)
+    });
+    wait("the sink blocks", &|| exists(&dir.path().join("entered")));
+    let pid = log(dir.path())[0]["pid"].to_string();
+    wait("the harness is stopped while the sink is blocked", &|| {
+        !std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    });
+    std::fs::write(dir.path().join("release"), "").unwrap();
+    let (result, seen) = turn.join().unwrap();
+    let error = result.err().expect("overloaded").message;
+    assert!(error.contains("overloaded"), "{error}");
+    assert!(seen.len() < 200, "the queue is bounded: {}", seen.len());
 }

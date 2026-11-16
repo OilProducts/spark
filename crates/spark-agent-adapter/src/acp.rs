@@ -33,15 +33,18 @@ use spark_common::agent_settings::{AcpHarness, AcpPermissionPolicy};
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{error::TrySendError, Receiver, Sender};
 use tokio::time::Instant;
 
 use crate::agent::{
     AgentRawLogLine, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
     AGENT_INSTRUCTIONS_METADATA_KEY,
 };
+use crate::codex_app_server::json_len;
 use crate::history::HistoryTurn;
-use crate::stdio_transport::{self, sleep_until, Endpoints, Incoming, Outgoing, Stop, LIMITS};
+use crate::stdio_transport::{
+    self, sleep_until, Budget, Endpoints, Held, Incoming, Outgoing, Stop, LIMITS,
+};
 
 pub const ACP_BACKEND: &str = "acp";
 /// The session a turn continues, and the one it leaves for the next turn.
@@ -76,6 +79,16 @@ impl AcpSessionRecord {
     }
 }
 
+/// A turn that failed. Once its primary prompt was sent, the harness may
+/// have done the work, so it must never be resent automatically.
+#[derive(Debug, Default)]
+pub struct AcpFailure {
+    pub message: String,
+    pub prompted: bool,
+    /// Every event the sink was given before the failure.
+    pub events: Vec<TurnStreamEvent>,
+}
+
 /// A settled primary prompt.
 pub struct AcpTurn {
     pub output: AgentTurnOutput,
@@ -91,7 +104,8 @@ type Key = (String, String);
 
 /// A running turn as other threads reach it.
 struct Live {
-    interrupts: UnboundedSender<()>,
+    /// Holds one pending interrupt; more add nothing.
+    interrupts: Sender<()>,
     stop: Mutex<Option<Stop>>,
     terminated: AtomicBool,
     closed: AtomicBool,
@@ -129,7 +143,8 @@ impl Drop for Registered {
 
 /// Sends `session/cancel` once the prompt is out, or skips the prompt.
 pub fn interrupt(project_path: &str, conversation_id: &str) -> bool {
-    find(project_path, conversation_id).is_some_and(|live| live.interrupts.send(()).is_ok())
+    find(project_path, conversation_id)
+        .is_some_and(|live| !matches!(live.interrupts.try_send(()), Err(TrySendError::Closed(_))))
 }
 
 /// Stops the turn's process group directly.
@@ -146,9 +161,12 @@ pub fn terminate(project_path: &str, conversation_id: &str) -> bool {
 
 // ---- the turn ------------------------------------------------------------
 
-/// What the worker hands the calling thread, in order.
+/// What the worker hands the calling thread, in order. An event holds its
+/// share of the sink's queue until the sink has returned.
 enum Message {
-    Event(TurnStreamEvent),
+    Event(TurnStreamEvent, Option<Held>),
+    /// The primary prompt is about to be sent.
+    Prompted,
     Done(Result<Finished, String>),
 }
 
@@ -193,6 +211,25 @@ pub fn run_turn(
     request: &AgentTurnRequest,
     harness_id: &str,
     sink: Option<&AgentTurnEventSink>,
+) -> Result<AcpTurn, AcpFailure> {
+    let mut seen = AcpFailure::default();
+    let result = turn(request, harness_id, sink, &mut seen);
+    result.map_err(|message| AcpFailure { message, ..seen })
+}
+
+/// Reasoning controls a turn may carry; ACP v1 has no portable equivalent.
+const REASONING_CONTROLS: [&str; 4] = [
+    "thinking",
+    "thinking_budget_tokens",
+    "reasoning_mode",
+    "reasoning_summary",
+];
+
+fn turn(
+    request: &AgentTurnRequest,
+    harness_id: &str,
+    sink: Option<&AgentTurnEventSink>,
+    seen: &mut AcpFailure,
 ) -> Result<AcpTurn, String> {
     let config = crate::config::captured_session_config(&request.metadata)?.unwrap_or_default();
     let harness: AcpHarness = config
@@ -209,6 +246,25 @@ pub fn run_turn(
     {
         return Err(format!(
             "Plan mode is unavailable for ACP harness {harness_id}: no read-only mode is verified for it."
+        ));
+    }
+    // Refused, never silently ignored: a flow node's own, else the chat's.
+    let reasoning = request
+        .metadata
+        .get("spark.execution.reasoning")
+        .or_else(|| {
+            request
+                .metadata
+                .get("spark.execution.settings")?
+                .get("model_settings")
+        });
+    if let Some((control, value)) = reasoning.and_then(|settings| {
+        REASONING_CONTROLS
+            .into_iter()
+            .find_map(|control| Some((control, settings.get(control).filter(|v| !v.is_null())?)))
+    }) {
+        return Err(format!(
+            "ACP harness {harness_id} has no {control} control, so {control} {value} cannot be applied; clear it or choose another harness."
         ));
     }
     let cwd = std::fs::canonicalize(&request.project_path).map_err(|error| {
@@ -286,7 +342,7 @@ pub fn run_turn(
     let plan = Plan {
         harness_id: harness_id.to_string(),
         policy: harness.permission_policy,
-        generation: harness.generation(),
+        generation: harness.generation(config.environment_inheritance),
         instructions_sha256: instructions
             .as_deref()
             .map(|text| spark_common::project::sha256_hex(text.as_bytes())),
@@ -316,7 +372,7 @@ pub fn run_turn(
         .envs(channel_env)
         .envs(crate::agent::agent_turn_env(&request.metadata));
 
-    let (interrupts, interrupted) = unbounded_channel();
+    let (interrupts, interrupted) = tokio::sync::mpsc::channel(1);
     let live = Arc::new(Live {
         interrupts,
         stop: Mutex::new(None),
@@ -341,8 +397,13 @@ pub fn run_turn(
     };
 
     let (messages, delivered) = std::sync::mpsc::channel();
+    let out = Out {
+        messages,
+        sink: sink.map(|_| Budget::new(&LIMITS)),
+        overflowed: AtomicBool::new(false),
+    };
     let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
-        drive(endpoints, plan, messages, interrupted)
+        drive(endpoints, plan, out, interrupted)
     })
     .map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -364,17 +425,17 @@ pub fn run_turn(
 
     // The sink runs here, off the worker, which keeps servicing the connection.
     let app_turn_id = uuid::Uuid::new_v4().to_string();
-    let mut events = Vec::new();
     let mut done = None;
     for message in delivered {
         match message {
-            Message::Event(mut event) => {
+            Message::Event(mut event, _held) => {
                 event.source.app_turn_id = Some(app_turn_id.clone());
                 if let Some(sink) = sink {
                     sink(event.clone());
                 }
-                events.push(event);
+                seen.events.push(event);
             }
+            Message::Prompted => seen.prompted = true,
             Message::Done(result) => {
                 done = Some(result);
                 break;
@@ -416,7 +477,7 @@ pub fn run_turn(
     });
     Ok(AcpTurn {
         output: AgentTurnOutput {
-            events,
+            events: std::mem::take(&mut seen.events),
             app_thread_id: record.as_ref().map(|record| record.session_id.clone()),
             app_turn_id: Some(app_turn_id),
             final_assistant_text: finished.final_text,
@@ -460,28 +521,65 @@ fn fresh_context(
 
 // ---- the worker ----------------------------------------------------------
 
-/// Sends events and the result to the calling thread.
-struct Out(std::sync::mpsc::Sender<Message>);
+/// Sends events and the result to the calling thread, never waiting on the
+/// sink: a sink a full queue behind fails the turn instead.
+struct Out {
+    messages: std::sync::mpsc::Sender<Message>,
+    /// The sink's queue, if the caller has a sink.
+    sink: Option<Budget>,
+    overflowed: AtomicBool,
+}
 
 impl Out {
     fn event(&self, event: TurnStreamEvent) {
-        let _ = self.0.send(Message::Event(event));
+        let held = match &self.sink {
+            Some(_) if self.overflowed.load(Ordering::SeqCst) => return,
+            Some(budget) => match budget.try_admit(json_len(&event)) {
+                Some(held) => Some(held),
+                None => return self.overflowed.store(true, Ordering::SeqCst),
+            },
+            None => None,
+        };
+        let _ = self.messages.send(Message::Event(event, held));
+    }
+
+    fn overloaded(&self) -> Result<(), String> {
+        match self.overflowed.load(Ordering::SeqCst) {
+            true => Err("overloaded: the event queue is full".to_string()),
+            false => Ok(()),
+        }
     }
 }
 
-/// The transport's stdout as the SDK's line stream: a read failure is an
-/// error, EOF or drained output ends it.
-fn incoming(stdout: Incoming) -> impl futures_util::Stream<Item = std::io::Result<String>> {
-    futures_util::stream::unfold(Some(stdout), |stdout| async move {
-        let mut stdout = stdout?;
-        match stdout.next().await {
-            Some(line) => Some((Ok(line.text), Some(stdout))),
-            None => match stdout.end() {
-                Some(stdio_transport::End::Failed(error)) => {
-                    Some((Err(std::io::Error::other(error.clone())), None))
-                }
-                _ => None,
-            },
+/// The first reason the harness's output became unusable.
+type Failure = Arc<OnceLock<String>>;
+
+/// The transport's stdout as the SDK's line stream: a read failure or a line
+/// that is not a JSON-RPC message is an error, EOF or drained output ends it.
+fn incoming(
+    stdout: Incoming,
+    failure: Failure,
+) -> impl futures_util::Stream<Item = std::io::Result<String>> {
+    futures_util::stream::unfold(Some(stdout), move |stdout| {
+        let failure = Arc::clone(&failure);
+        async move {
+            let mut stdout = stdout?;
+            let error = match stdout.next().await {
+                // ponytail: the SDK parses each line again; one parse would need our own transport.
+                Some(line) => match agent_client_protocol::TransportFrame::parse_json(&line.text) {
+                    agent_client_protocol::TransportFrame::Malformed { error, .. } => format!(
+                        "the harness wrote malformed protocol output: {}",
+                        error.message
+                    ),
+                    _ => return Some((Ok(line.text), Some(stdout))),
+                },
+                None => match stdout.end() {
+                    Some(stdio_transport::End::Failed(error)) => error.clone(),
+                    _ => return None,
+                },
+            };
+            let _ = failure.set(error.clone());
+            Some((Err(std::io::Error::other(error)), None))
         }
     })
 }
@@ -500,20 +598,18 @@ fn outgoing(stdin: Outgoing) -> impl futures_util::Sink<String, Error = std::io:
     })
 }
 
-async fn drive(
-    endpoints: Endpoints,
-    plan: Plan,
-    messages: std::sync::mpsc::Sender<Message>,
-    interrupts: UnboundedReceiver<()>,
-) {
+async fn drive(endpoints: Endpoints, plan: Plan, out: Out, interrupts: Receiver<()>) {
     let Endpoints {
         stdout,
         stdin,
         status: _,
         stop,
     } = endpoints;
-    let out = Out(messages);
-    let transport = Lines::new(Box::pin(outgoing(stdin)), Box::pin(incoming(stdout)));
+    let failure = Failure::default();
+    let transport = Lines::new(
+        Box::pin(outgoing(stdin)),
+        Box::pin(incoming(stdout, Arc::clone(&failure))),
+    );
     let result = Client
         .v1()
         .name("spark")
@@ -522,7 +618,12 @@ async fn drive(
         })
         .await
         .unwrap_or_else(|error| Err(describe(&error)));
-    let _ = out.0.send(Message::Done(result));
+    // Unusable output explains a failed turn better than the closed connection;
+    // a sink that missed events never sees the turn succeed.
+    let result = result
+        .map_err(|error| failure.get().cloned().unwrap_or(error))
+        .and_then(|finished| out.overloaded().map(|()| finished));
+    let _ = out.messages.send(Message::Done(result));
 }
 
 fn describe(error: &agent_client_protocol::Error) -> String {
@@ -572,7 +673,7 @@ impl<'a> Turn<'a> {
     async fn run(
         mut self,
         cx: ConnectionTo<Agent>,
-        mut interrupts: UnboundedReceiver<()>,
+        mut interrupts: Receiver<()>,
     ) -> Result<Finished, String> {
         // An interrupt before the prompt is sent skips the prompt.
         let ready = tokio::select! {
@@ -593,6 +694,7 @@ impl<'a> Turn<'a> {
         if let Some(context) = self.plan.fresh_context.as_ref().filter(|_| !resumed) {
             text = format!("{context}\n\n---\n\n{text}");
         }
+        let _ = self.out.messages.send(Message::Prompted);
         session
             .send_prompt(text)
             .map_err(|error| format!("session/prompt failed: {}", describe(&error)))?;
@@ -828,7 +930,7 @@ impl<'a> Turn<'a> {
     async fn prompt(
         mut self,
         session: &mut Session,
-        mut interrupts: UnboundedReceiver<()>,
+        mut interrupts: Receiver<()>,
         record: AcpSessionRecord,
         reset: Option<String>,
     ) -> Result<Finished, String> {
@@ -902,6 +1004,7 @@ impl<'a> Turn<'a> {
                     self.stop.stop();
                 }
             }
+            self.out.overloaded()?;
         }
     }
 
@@ -917,12 +1020,14 @@ impl<'a> Turn<'a> {
         for event in self.translate.close(end_turn) {
             self.out.event(event);
         }
-        let status = stop_label(&stop_reason);
-        self.out.event(self.translate.event(
-            TurnStreamEventKind::TurnCompleted,
-            "prompt_response",
-            |event| event.status = Some(status),
-        ));
+        // Only an answered prompt completes here; the caller settles any other end.
+        if end_turn {
+            self.out.event(self.translate.event(
+                TurnStreamEventKind::TurnCompleted,
+                "prompt_response",
+                |event| event.status = Some(stop_label(&stop_reason)),
+            ));
+        }
         Finished {
             final_text: self.translate.last_assistant.clone().filter(|_| end_turn),
             stop_reason,

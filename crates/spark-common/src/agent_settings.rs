@@ -377,9 +377,10 @@ impl AcpHarness {
     }
 
     /// An opaque token for everything that shapes a launch and its sessions:
-    /// command, arguments, environment, policy and instruction channel, but
-    /// not the label. It changes whenever any of them does.
-    pub fn generation(&self) -> String {
+    /// command, arguments, environment and what it inherits, policy and
+    /// instruction channel, but not the label. It changes whenever any of
+    /// them does.
+    pub fn generation(&self, inheritance: EnvironmentInheritancePolicy) -> String {
         let Self {
             name: _,
             executable,
@@ -393,7 +394,8 @@ impl AcpHarness {
             args,
             env,
             permission_policy,
-            system_instructions
+            system_instructions,
+            inheritance
         ]);
         crate::project::sha256_hex(identity.to_string().as_bytes())
     }
