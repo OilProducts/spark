@@ -87,11 +87,10 @@ fn decode<T: serde::de::DeserializeOwned>(value: &Value) -> WorkspaceResult<T> {
 
 /// The digest both sides compute over what a delegation asks for.
 pub fn request_digest(project_path: &str, kind: &str, request: &Value) -> String {
-    spark_common::project::sha256_hex(
-        json!({"project_path": project_path, "kind": kind, "request": request})
-            .to_string()
-            .as_bytes(),
-    )
+    let mut content = json!({"project_path": project_path, "kind": kind, "request": request});
+    // Sorted, so the digest doesn't depend on map order (serde_json keeps insertion order).
+    content.sort_all_objects();
+    spark_common::project::sha256_hex(content.to_string().as_bytes())
 }
 
 // ---- Links ------------------------------------------------------------------

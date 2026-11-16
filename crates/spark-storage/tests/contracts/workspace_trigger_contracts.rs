@@ -790,3 +790,21 @@ fn assert_invalid_reason(result: spark_storage::Result<Option<TriggerDefinition>
         Err(error) => panic!("expected invalid definition {expected:?}, got {error}"),
     }
 }
+
+#[test]
+fn definition_fingerprint_ignores_source_key_order() {
+    let mut forward = webhook_definition("order");
+    forward.source = json!({"a": 1, "b": {"x": 1, "y": 2}})
+        .as_object()
+        .unwrap()
+        .clone();
+    let mut reversed = forward.clone();
+    reversed.source = json!({"b": {"y": 2, "x": 1}, "a": 1})
+        .as_object()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        spark_storage::definition_fingerprint(&forward),
+        spark_storage::definition_fingerprint(&reversed)
+    );
+}

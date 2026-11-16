@@ -154,11 +154,13 @@ pub fn definition_fingerprint(definition: &TriggerDefinition) -> String {
     };
     let mut source = definition.source.clone();
     source.remove(POLL_HEADERS);
-    let content = serde_json::json!({
+    let mut content = serde_json::json!({
         "source_type": definition.source_type,
         "source": source,
         "action": action,
     });
+    // Sorted, so the fingerprint doesn't depend on map order (serde_json keeps insertion order).
+    content.sort_all_objects();
     format!("{:x}", Sha1::digest(content.to_string().as_bytes()))
 }
 
