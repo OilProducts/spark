@@ -192,6 +192,55 @@ fn main() {
         std::io::stdin().read_to_string(&mut remaining).unwrap();
         assert!(remaining.is_empty(), "legacy must receive EOF after prompt");
     }
+    if mode == "blocked-sink" {
+        // Needs an answer while Spark's sink is blocked, then waits to be stopped.
+        append_log(&format!("PID={}", std::process::id()));
+        emit(
+            &mut out,
+            json!({"type": "control_request", "request_id": "permission-1", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "true"}}}),
+        );
+        assert_eq!(read_control()["response"]["response"]["behavior"], "allow");
+        append_log("ANSWERED");
+        drain_stdin();
+        return;
+    }
+    if mode == "invalid-utf8" {
+        out.write_all(b"\xff\xfe\n").unwrap();
+        out.flush().unwrap();
+        drain_stdin();
+        return;
+    }
+    // Unix only, as is its contract: it closes file descriptor 0.
+    #[cfg(unix)]
+    if mode == "closed-stdin" {
+        // Stops reading but keeps running with stdout open, so a live
+        // message's write fails.
+        append_log(&format!("PID={}", std::process::id()));
+        drop(unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(0) });
+        emit(
+            &mut out,
+            json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Working."}}}),
+        );
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        return;
+    }
+    if mode == "flood" {
+        // Ordinary output past the sink's queue while a live message waits
+        // for a receipt that never comes.
+        let delta = |text: &str| {
+            json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}})
+        };
+        emit(&mut out, delta("Working."));
+        assert_eq!(read_control()["type"], "user");
+        for _ in 0..300 {
+            emit(&mut out, delta("."));
+        }
+        drain_stdin();
+        append_log("STDIN_CLOSED");
+        return;
+    }
     if mode.starts_with("malformed") {
         if mode == "malformed-json" {
             writeln!(out, "{{invalid").unwrap();

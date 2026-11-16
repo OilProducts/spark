@@ -141,6 +141,8 @@ pub(crate) struct Status {
     pub(crate) exited: Option<Result<ExitStatus, String>>,
     /// The first failed stdin write.
     pub(crate) write_failure: Option<String>,
+    /// Set once stderr has ended, so its tail is complete.
+    pub(crate) stderr_closed: bool,
 }
 
 /// Terminates the process group now, past every queue and the runtime.
@@ -439,6 +441,12 @@ where
                     let (writes, queued) = mpsc::unbounded_channel();
                     let (lines, received) = mpsc::unbounded_channel();
                     let end = Arc::new(Mutex::new(None));
+                    tokio::spawn(read_stderr(
+                        stderr,
+                        stderr_tail,
+                        limits.stderr_bytes,
+                        Arc::clone(&status_sender),
+                    ));
                     tokio::spawn(write_lines(stdin, queued, status_sender));
                     tokio::spawn(read_lines(
                         stdout,
@@ -447,7 +455,6 @@ where
                         lines,
                         Arc::clone(&end),
                     ));
-                    tokio::spawn(read_stderr(stderr, stderr_tail, limits.stderr_bytes));
                     io::Result::Ok(Endpoints {
                         stdout: Incoming {
                             lines: received,
@@ -597,7 +604,12 @@ async fn read_lines(
 
 /// Keeps reading stderr whatever it holds: an overlong or non-UTF-8 record
 /// is skipped, never an error.
-async fn read_stderr(mut stderr: ChildStderr, tail: Arc<Mutex<StderrTail>>, max_record: usize) {
+async fn read_stderr(
+    mut stderr: ChildStderr,
+    tail: Arc<Mutex<StderrTail>>,
+    max_record: usize,
+    status: Arc<watch::Sender<Status>>,
+) {
     let mut records = LinesCodec::new_with_max_length(max_record);
     let mut buffer = BytesMut::new();
     let keep = |line: String| {
@@ -622,6 +634,7 @@ async fn read_stderr(mut stderr: ChildStderr, tail: Arc<Mutex<StderrTail>>, max_
     if let Ok(Some(line)) = records.decode_eof(&mut buffer) {
         keep(line);
     }
+    status.send_modify(|status| status.stderr_closed = true);
 }
 
 /// Ordered work for one dedicated thread, so callbacks and file writes never

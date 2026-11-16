@@ -4,9 +4,9 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -169,7 +169,11 @@ impl ClaudeCodeBackend {
         );
         // A turn that dies mid-thought never closes its block.
         let thinking_ended = turn.state.end_thinking();
-        turn.push(thinking_ended, &event_sink);
+        turn.push(thinking_ended, |event| {
+            if let Some(sink) = &event_sink {
+                sink(event.clone());
+            }
+        });
         if let Err(error) = result {
             // The stored session never started, so start a fresh one.
             let Some(discarded_session_id) = resumed_session_id.filter(|_| {
@@ -314,10 +318,7 @@ impl ClaudeCodeBackend {
                     .and_then(|config| config.claude_permission_mode.clone())
                     .unwrap_or_else(permission_mode)
             })
-            .current_dir(&working_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .current_dir(&working_dir);
         if let Some(model) = request.model.as_deref().and_then(non_empty) {
             command.arg("--model").arg(model);
         }
@@ -378,213 +379,61 @@ impl ClaudeCodeBackend {
                 content
             }
         };
-        let mut child = crate::local_environment::spawn_process_group(command)
-            .map_err(|error| launch_error(&executable, error))?;
-        let (Some(stdin), Some(stdout), Some(stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(ClaudeCodeError::runtime(
-                "claude code did not expose its stdio",
-            ));
-        };
-        // Shared rather than joined: a leftover grandchild may hold stderr.
-        let stderr_lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let stderr_handle = std::thread::spawn({
-            let stderr_lines = stderr_lines.clone();
-            move || {
-                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    stderr_lines.lock().unwrap().push(line);
-                }
-            }
-        });
-        let control = control::Control::register(child, stdin, request, questions.clone());
-        // The prompt travels over stdin so arbitrarily large composed prompts
-        // never hit argv limits.
-        // A failed write closes stdin; the process exit then reports it.
-        control.lock().unwrap().send_user(content, None);
-
-        let (sender, receiver) = mpsc::channel();
-        // Detached: a leftover grandchild may hold stdout after the turn ends.
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if sender.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        let started = std::time::Instant::now();
-        let mut initialized = false;
-        let mut exited_at: Option<std::time::Instant> = None;
-        let mut abandoned = None;
-        while !control.lock().unwrap().ended {
-            // Checked every iteration: continuous output must not hide an
-            // exit or a missing system/init.
-            let sent = {
-                let mut control = control.lock().unwrap();
-                if exited_at.is_none() && matches!(control.child.try_wait(), Ok(Some(_))) {
-                    exited_at = Some(std::time::Instant::now());
-                }
-                control.expire_context_request(exited_at.is_some());
-                if control.ended {
-                    break;
-                }
-                if !initialized && started.elapsed() >= Duration::from_secs(5) {
-                    control.log("system/init timeout; using one-shot input");
-                    control.one_shot();
-                    initialized = true;
-                }
-                if let Err(reason) = control.poll_clarifications() {
-                    control.log(&reason);
-                    abandoned = Some(reason);
-                    break;
-                }
-                std::mem::take(&mut control.sent)
-            };
-            turn.push(turn.state.delivered_events(sent), event_sink);
-            // A leftover grandchild may hold stdout open past the process
-            // exit: stop once stdout goes quiet after the exit, or after a
-            // cap if the grandchild keeps writing.
-            if exited_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(2)) {
-                break;
-            }
-            let line = match receiver.recv_timeout(Duration::from_millis(100)) {
-                Ok(line) => line,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if exited_at.is_some() {
-                        break;
+        let (connection, _live, messages) = control::start(
+            command,
+            request,
+            questions.clone(),
+            content,
+            turn,
+            event_sink.is_some(),
+        )
+        .map_err(|error| launch_error(&executable, error))?;
+        // The sink runs here, off the connection worker, which keeps
+        // answering the CLI and other threads meanwhile.
+        let mut outcome = None;
+        for message in messages {
+            match message {
+                control::Message::Event(event, _held) => {
+                    if let Some(sink) = event_sink {
+                        sink(event);
                     }
-                    continue;
                 }
-            };
-            if line.trim().is_empty() {
-                continue;
-            }
-            turn.raw_log_lines.push(AgentRawLogLine {
-                direction: "stdout".to_string(),
-                line: line.clone(),
-            });
-            let Ok(mut message) = serde_json::from_str::<Value>(&line) else {
-                control.lock().unwrap().log("malformed JSON on stdout");
-                continue;
-            };
-            if message["type"] == "system" && message["subtype"] == "init" {
-                initialized = true;
-            }
-            let (sent, request_event, ended) = {
-                let mut control = control.lock().unwrap();
-                // Kept in the raw log only: it neither ends the turn nor
-                // reports text or usage.
-                if control.foreign_result(&message) {
-                    control.log("result before the prompt started; waiting for the prompt's");
-                    continue;
-                }
-                // 2.1.220 reports an interrupted stream as an error result.
-                // Only an acknowledged interrupt with an explicit abort reason
-                // is normal completion; genuine execution errors remain errors.
-                if control.interrupted_result(&message) {
-                    message["is_error"] = json!(false);
-                    message["subtype"] = json!("success");
-                    let (source, text) =
-                        crate::events::latest_assistant_text(&turn.events).unwrap_or_default();
-                    let item_id = source.item_id;
-                    if item_id.is_some() {
-                        turn.state.last_text_item_id = item_id;
+                control::Message::Done(done, ended, late) => {
+                    *turn = *done;
+                    outcome = Some(ended);
+                    if let Some(sink) = event_sink {
+                        late.into_iter().for_each(|event| sink(event));
                     }
-                    message["result"] = json!(non_empty(&text).unwrap_or("Stopped."));
+                    break;
                 }
-                // Taken with the line: a message written before the CLI
-                // produced this line is reported before it.
-                let sent = std::mem::take(&mut control.sent);
-                (sent, control.ingest(&message), control.finished())
-            };
-            let mut normalized = turn.state.delivered_events(sent);
-            normalized.extend(turn.state.ingest(&message, ended));
-            if let Some(mut event) = request_event {
-                event.source.app_thread_id = turn.state.session_id.clone();
-                normalized.push(event);
             }
-            turn.push(normalized, event_sink);
         }
-
-        let (ended, undelivered, sent) = {
-            let mut control = control.lock().unwrap();
-            // Output ended while the context usage was pending: the turn is done.
-            control.expire_context_request(true);
-            // Answered after the turn completed, so it rides the turn's output.
-            if let (Some(context), Some(usage)) =
-                (control.context.take(), turn.state.usage_payload.as_mut())
-            {
-                usage["context"] = context;
-            }
-            turn.stopping |= control.stopping;
-            turn.raw_log_lines.append(&mut control.logs);
-            let ended = control.ended;
-            control.end();
-            (
-                ended,
-                std::mem::take(&mut control.undelivered),
-                std::mem::take(&mut control.sent),
-            )
-        };
-        turn.push(turn.state.delivered_events(sent), event_sink);
-        // Messages the turn ended without using, such as on Stop.
-        let not_delivered = undelivered
-            .into_values()
-            .map(|message_id| {
-                stream_event(
-                    TurnStreamEventKind::Other("user_message_not_delivered".into()),
-                    turn.state.session_id.as_deref(),
-                    "user_message_not_delivered",
-                    |event| {
-                        event.source.item_id = Some(message_id);
-                        event.message =
-                            Some("Not sent: the turn ended before the agent read it.".into());
-                    },
-                )
-            })
-            .collect();
-        turn.push(not_delivered, event_sink);
-        let status = reap(&control)?;
-        if let Some(reason) = abandoned {
-            // The run stopped waiting for an answer; do not resume the session.
-            turn.stopping = true;
-            return Err(ClaudeCodeError {
-                message: reason,
+        match outcome {
+            Some(control::Outcome::Ended) => Ok(()),
+            Some(control::Outcome::Failed(message)) => Err(ClaudeCodeError {
+                message,
                 retryable: false,
                 details: None,
-            });
-        }
-        if ended {
-            // Stopped while idle: the last result, so far commentary, is final.
-            if !turn.state.completed {
-                if let Some(result) = turn.state.result_payload.clone() {
-                    let events = turn.state.ingest_result(&result, true);
-                    turn.push(events, event_sink);
-                }
+            }),
+            Some(control::Outcome::Exited(status)) => {
+                let stderr = connection.stderr();
+                let stderr_lines = stderr.lines().collect::<Vec<_>>();
+                let stderr_tail = stderr_lines[stderr_lines.len().saturating_sub(10)..].join("\n");
+                Err(ClaudeCodeError::runtime(format!(
+                    "claude code exited ({status}) {}; stderr tail:\n{stderr_tail}",
+                    if turn.state.result_payload.is_none() {
+                        "without a result event"
+                    } else {
+                        "before the turn ended"
+                    }
+                )))
             }
-            return Ok(());
+            None => Err(ClaudeCodeError {
+                message: "claude code connection worker stopped".into(),
+                retryable: false,
+                details: None,
+            }),
         }
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while !stderr_handle.is_finished() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let stderr_lines = std::mem::take(&mut *stderr_lines.lock().unwrap());
-        let stderr_tail = stderr_lines[stderr_lines.len().saturating_sub(10)..].join("\n");
-        Err(ClaudeCodeError {
-            message: format!(
-                "claude code exited ({status}) {}; stderr tail:\n{stderr_tail}",
-                if turn.state.result_payload.is_none() {
-                    "without a result event"
-                } else {
-                    "before the turn ended"
-                }
-            ),
-            retryable: true,
-            details: None,
-        })
     }
 }
 
@@ -592,30 +441,8 @@ const CONTINUATION_PROMPT: &str =
     "Your previous process exited before this turn finished. Continue the task where you left off.";
 const EXIT_GRACE: Duration = Duration::from_secs(3);
 
-/// Waits briefly for the ended process to exit on its own, then kills it.
-fn reap(
-    control: &std::sync::Mutex<control::Control>,
-) -> Result<std::process::ExitStatus, ClaudeCodeError> {
-    let deadline = std::time::Instant::now() + EXIT_GRACE;
-    loop {
-        let mut control = control.lock().unwrap();
-        match control.child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) if std::time::Instant::now() < deadline => {}
-            _ => {
-                let pid = control.child.id();
-                crate::local_environment::terminate_process_group(pid, Some(&mut control.child));
-                return control.child.wait().map_err(|error| {
-                    ClaudeCodeError::runtime(format!("claude code wait failed: {error}"))
-                });
-            }
-        }
-        drop(control);
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 /// Everything one turn has gathered, across its results and processes.
+#[derive(Default)]
 struct Turn {
     app_turn_id: String,
     state: ClaudeCodeTurnState,
@@ -641,12 +468,11 @@ impl Turn {
         }
     }
 
-    fn push(&mut self, events: Vec<TurnStreamEvent>, event_sink: &Option<AgentTurnEventSink>) {
+    /// Records `events`, each after `deliver` has seen it.
+    fn push(&mut self, events: Vec<TurnStreamEvent>, mut deliver: impl FnMut(&TurnStreamEvent)) {
         for mut event in events {
             event.source.app_turn_id = Some(self.app_turn_id.clone());
-            if let Some(sink) = event_sink {
-                sink(event.clone());
-            }
+            deliver(&event);
             // Thinking progress is live-only: it is never part of the turn's record.
             if event.thinking_state().is_none() {
                 self.events.push(event);
@@ -689,63 +515,22 @@ pub fn list_available_claude_code_models_with_settings(
         .arg("stream-json")
         // Discovery is project-independent; a neutral working directory keeps
         // project-level hooks and instructions out of the probe.
-        .current_dir(env::temp_dir())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-
-    let mut child = crate::local_environment::spawn_process_group(command)
-        .map_err(|error| log_model_discovery_error(launch_error(&executable, error)))?;
-
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| ClaudeCodeError::runtime("claude code did not expose stdin"))?;
-    let request = json!({
-        "type": "control_request",
-        "request_id": MODEL_DISCOVERY_REQUEST_ID,
-        "request": {"subtype": "list_models"},
-    });
-    writeln!(stdin, "{request}")
-        .and_then(|()| stdin.flush())
-        .map_err(|error| {
-            let _ = child.kill();
-            let _ = child.wait();
-            log_model_discovery_error(ClaudeCodeError::runtime(format!(
-                "claude code control request write failed: {error}"
-            )))
-        })?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| ClaudeCodeError::runtime("claude code did not expose stdout"))?;
-    // The CLI answers on its own schedule (startup hooks run first), so a
-    // reader thread feeds a channel and the timeout bounds the wait; stdin
-    // stays open until then so the CLI does not treat input as finished.
-    let (sender, receiver) = mpsc::channel::<Value>();
-    let reader = std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let Ok(message) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            if message.get("type").and_then(Value::as_str) == Some("control_response") {
-                let _ = sender.send(message);
-                return;
-            }
-        }
-    });
-    let outcome = receiver.recv_timeout(MODEL_DISCOVERY_TIMEOUT);
-    drop(stdin);
-    let _ = child.kill();
-    let _ = child.wait();
-    let _ = reader.join();
-
-    let message = outcome.map_err(|_| {
-        log_model_discovery_error(ClaudeCodeError::runtime(
-            "claude code exited or timed out without answering the list_models control request",
-        ))
-    })?;
+        .current_dir(env::temp_dir());
+    let (answer, answered) = mpsc::channel();
+    let connection = crate::stdio_transport::launch(
+        command,
+        crate::stdio_transport::LIMITS,
+        |endpoints| async move {
+            let _ = answer.send(discover_models(endpoints).await);
+        },
+    )
+    .map_err(|error| log_model_discovery_error(launch_error(&executable, error)))?;
+    let outcome = answered
+        .recv()
+        .unwrap_or_else(|_| Err("claude code model discovery stopped".into()));
+    drop(connection);
+    let message =
+        outcome.map_err(|error| log_model_discovery_error(ClaudeCodeError::runtime(error)))?;
     let response = message.get("response").cloned().unwrap_or(Value::Null);
     if response.get("request_id").and_then(Value::as_str) != Some(MODEL_DISCOVERY_REQUEST_ID) {
         return Err(log_model_discovery_error(ClaudeCodeError::runtime(
@@ -764,6 +549,49 @@ pub fn list_available_claude_code_models_with_settings(
     Ok(claude_code_models_from_list_result(
         response.get("response").unwrap_or(&Value::Null),
     ))
+}
+
+/// Sends the `list_models` request and waits for the first control response.
+/// The CLI answers on its own schedule (startup hooks run first), so the
+/// timeout bounds the wait; stdin stays open until then so the CLI does not
+/// treat input as finished.
+async fn discover_models(endpoints: crate::stdio_transport::Endpoints) -> Result<Value, String> {
+    let crate::stdio_transport::Endpoints {
+        mut stdout,
+        stdin,
+        status,
+        ..
+    } = endpoints;
+    let request = json!({
+        "type": "control_request",
+        "request_id": MODEL_DISCOVERY_REQUEST_ID,
+        "request": {"subtype": "list_models"},
+    });
+    stdin
+        .send(request.to_string())
+        .map_err(|refused| format!("claude code control request write failed: {refused:?}"))?;
+    let response = tokio::time::timeout(MODEL_DISCOVERY_TIMEOUT, async {
+        while let Some(line) = stdout.next().await {
+            let Ok(message) = serde_json::from_str::<Value>(&line.text) else {
+                continue;
+            };
+            if message["type"] == "control_response" {
+                return Some(message);
+            }
+        }
+        None
+    })
+    .await;
+    response
+        .ok()
+        .flatten()
+        .ok_or_else(|| match status.borrow().write_failure.clone() {
+            Some(error) => format!("claude code control request write failed: {error}"),
+            None => {
+                "claude code exited or timed out without answering the list_models control request"
+                    .into()
+            }
+        })
 }
 
 /// Maps a `list_models` result (`{"models": [...]}`) onto the metadata the

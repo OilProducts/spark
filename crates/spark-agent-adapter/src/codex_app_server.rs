@@ -1041,7 +1041,7 @@ fn overloaded(queue: &str) -> CodexAppServerError {
 }
 
 /// Serialized size, for queue accounting.
-fn json_len(value: &impl Serialize) -> usize {
+pub(crate) fn json_len(value: &impl Serialize) -> usize {
     struct Count(usize);
     impl std::io::Write for Count {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
