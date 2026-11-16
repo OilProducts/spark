@@ -1169,8 +1169,12 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     }
 
     assert_eq!(discover(), response, "cached");
-    assert_eq!(launches().len(), 4, "a cached discovery launches nothing");
+    assert_eq!(
+        launches().len(),
+        6,
+        "ready harnesses are cached; locked and leaky are probed again"
+    );
     spark_workspace::models::invalidate_model_discovery("agents");
     discover();
-    assert_eq!(launches().len(), 8, "an agents change probes again");
+    assert_eq!(launches().len(), 10, "an agents change probes again");
 }

@@ -214,11 +214,21 @@ fn acp_discoveries<'a>(
             .map(|(key, probe)| (key, probe.join().expect("ACP discovery probe panicked")))
             .collect::<Vec<_>>()
     });
-    cache.extend(probed);
+    // Only ready discoveries are kept, so installing or signing in to a
+    // harness shows the next time models are listed.
+    cache.extend(
+        probed
+            .iter()
+            .filter(|(_, discovery)| discovery.setup_status == "ready")
+            .cloned(),
+    );
     keyed
         .into_iter()
         .filter_map(|(id, harness, key)| {
-            let (_, discovery) = cache.iter().find(|(cached, _)| *cached == key)?;
+            let (_, discovery) = probed
+                .iter()
+                .chain(cache.iter())
+                .find(|(cached, _)| *cached == key)?;
             let mut discovery = discovery.clone();
             // A session's acknowledged state supersedes the probe's.
             if let Some(options) = acp::acknowledged_options(work_area, id, &key.2)
