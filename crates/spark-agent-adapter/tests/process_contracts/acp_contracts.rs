@@ -549,6 +549,43 @@ fn acp_session_controls_apply_exactly_for_their_harness_and_fail_when_stale() {
         assert!(received(dir.path(), "session/prompt").is_empty());
     }
 
+    // Choosing the mode resets the model, or drops the effort: an earlier
+    // explicit selection no longer holds, so nothing is prompted.
+    let mut reset = options.clone();
+    reset[0]["currentValue"] = json!("small");
+    reset[1]["currentValue"] = json!("High");
+    let mut dropped = options.clone();
+    dropped[0]["currentValue"] = json!("Large-1");
+    dropped.as_array_mut().unwrap().remove(1);
+    for (acknowledged, expected) in [
+        (
+            reset,
+            "config option \"model\" is \"small\" after the later selections, not the selected \"Large-1\"",
+        ),
+        (
+            dropped,
+            "no longer offers config option \"effort\" after the later selections",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut request = request(
+            dir.path(),
+            json!({"config_options": options, "on_set": {"approval=Auto/Edit": acknowledged}}),
+            json!({}),
+        );
+        request.model = Some("Large-1".to_string());
+        request.reasoning_effort = Some("High".to_string());
+        request
+            .metadata
+            .get_mut("spark.execution.settings")
+            .unwrap()["model_settings"] =
+            json!({"provider": "acp:fake", "session_config": {"approval": "Auto/Edit"}});
+        let error = run(&request, |_| {}).0.err().expect("a replaced selection fails");
+        assert!(error.contains(expected), "{error}");
+        assert_eq!(applied(dir.path()).len(), 3);
+        assert!(received(dir.path(), "session/prompt").is_empty());
+    }
+
     let dir = tempfile::tempdir().unwrap();
     turn(dir.path(), "acp:other", json!({"approval": "gone"})).expect("another harness's controls");
     assert_eq!(

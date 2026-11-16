@@ -1445,6 +1445,30 @@ impl<'a> Turn<'a> {
             }
             chosen.insert(config_id, value);
         }
+        // A later acknowledgement may change or drop an earlier selection;
+        // the prompt runs only under the state every selection asked for.
+        for (config_id, value) in &chosen {
+            let current = options
+                .iter()
+                .find(|option| option.id.0.as_ref() == config_id)
+                .and_then(|option| match &option.kind {
+                    SessionConfigKind::Select(select) => Some(select.current_value.0.to_string()),
+                    _ => None,
+                });
+            match current {
+                Some(current) if current == *value => {}
+                Some(current) => {
+                    return Err(format!(
+                        "config option {config_id:?} is {current:?} after the later selections, not the selected {value:?}"
+                    ))
+                }
+                None => {
+                    return Err(format!(
+                        "the harness no longer offers config option {config_id:?} after the later selections, so {value:?} does not hold"
+                    ))
+                }
+            }
+        }
         Ok(())
     }
 
