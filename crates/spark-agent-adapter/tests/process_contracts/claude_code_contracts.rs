@@ -1160,8 +1160,10 @@ fn claude_code_interrupt_while_waiting_on_background_tasks_ends_the_turn() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("claude.log");
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "background-interrupt");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log_path);
     let request = agent_request(temp.path());
     let (path, id) = (
         request.project_path.clone(),
@@ -1178,6 +1180,10 @@ fn claude_code_interrupt_while_waiting_on_background_tasks_ends_the_turn() {
                 if event.kind == TurnStreamEventKind::TokenUsageUpdated
                     && !stopped.swap(true, std::sync::atomic::Ordering::SeqCst)
                 {
+                    // Within the raw limit, but its escaped JSON line is not:
+                    // refused, it starts no model work for Stop to wait on.
+                    let quotes = "\"".repeat(9 << 20);
+                    assert!(!ClaudeCodeBackend::new().send_message(&path, &id, "note-1", &quotes));
                     assert!(ClaudeCodeBackend::new().interrupt(&path, &id));
                 }
             })),
@@ -1185,6 +1191,18 @@ fn claude_code_interrupt_while_waiting_on_background_tasks_ends_the_turn() {
         .unwrap();
 
     assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    // Ended by closing its input, not by an interrupt or a kill.
+    assert!(std::fs::read_to_string(&log_path)
+        .unwrap()
+        .contains("STDIN_CLOSED"));
+    assert!(!output
+        .raw_log_lines
+        .iter()
+        .any(|line| line.direction == "stdin" && line.line.contains("\"interrupt\"")));
+    assert!(!output.events.iter().any(|event| matches!(
+        &event.kind,
+        TurnStreamEventKind::Other(kind) if kind.starts_with("user_message_")
+    )));
     assert_eq!(
         output.final_assistant_text.as_deref(),
         Some("Started a background build.")

@@ -1045,11 +1045,12 @@ impl Worker {
         if !control.enabled || control.stopping || self.exited {
             return false;
         }
-        // The message starts model work that Stop must interrupt.
-        control.idle = false;
         if !control.send_user(json!(message), Some(&message_id)) {
             return false;
         }
+        // The message starts model work that Stop must interrupt; a refused
+        // one starts nothing.
+        control.idle = false;
         // Sequenced as it is admitted, before any output read after it; the
         // reply never waits on the sink, which may be the caller.
         let delivered = self
