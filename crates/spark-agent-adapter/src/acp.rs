@@ -1157,6 +1157,8 @@ fn permission(
 struct Open {
     channel: TurnStreamChannel,
     item_id: String,
+    /// Whether `item_id` is the agent's own message id.
+    named: bool,
     text: String,
 }
 
@@ -1242,7 +1244,7 @@ impl Translate {
                 self.chunk(TurnStreamChannel::Reasoning, chunk)
             }
             SessionUpdate::ToolCall(call) => {
-                let mut events = self.close(false);
+                let mut events = self.interrupt();
                 let id = call.tool_call_id.0.to_string();
                 let raw = serde_json::to_value(&call).unwrap_or_default();
                 self.tool_calls.insert(id.clone(), raw);
@@ -1250,7 +1252,7 @@ impl Translate {
                 events
             }
             SessionUpdate::ToolCallUpdate(update) => {
-                let mut events = self.close(false);
+                let mut events = self.interrupt();
                 let id = update.tool_call_id.0.to_string();
                 let fields = serde_json::to_value(&update.fields).unwrap_or_default();
                 let started = !self.tool_calls.contains_key(&id);
@@ -1269,7 +1271,7 @@ impl Translate {
                 events
             }
             SessionUpdate::Plan(plan) => {
-                let mut events = self.close(false);
+                let mut events = self.interrupt();
                 let entries = serde_json::to_value(&plan.entries).unwrap_or_default();
                 events.push(self.event(
                     TurnStreamEventKind::Other("plan_updated".into()),
@@ -1300,22 +1302,23 @@ impl Translate {
             self.log("non-text message content not translated".into());
             return Vec::new();
         };
+        let message_id = chunk.message_id.map(|id| id.0.to_string());
         let mut events = Vec::new();
-        if self
-            .open
-            .as_ref()
-            .is_some_and(|open| open.channel != channel)
-        {
+        // A new channel or a new message id starts a new message.
+        if self.open.as_ref().is_some_and(|open| {
+            open.channel != channel
+                || message_id
+                    .as_ref()
+                    .is_some_and(|id| !open.named || *id != open.item_id)
+        }) {
             events = self.close(false);
         }
         let open = self.open.get_or_insert_with(|| {
             self.items += 1;
             Open {
                 channel: channel.clone(),
-                item_id: chunk
-                    .message_id
-                    .map(|id| id.0.to_string())
-                    .unwrap_or_else(|| format!("message-{}", self.items)),
+                named: message_id.is_some(),
+                item_id: message_id.unwrap_or_else(|| format!("message-{}", self.items)),
                 text: String::new(),
             }
         });
@@ -1331,6 +1334,15 @@ impl Translate {
             },
         ));
         events
+    }
+
+    /// Completes the open message a tool call or plan interrupts. A message
+    /// the agent named continues around them until its id changes.
+    fn interrupt(&mut self) -> Vec<TurnStreamEvent> {
+        match &self.open {
+            Some(open) if open.named => Vec::new(),
+            _ => self.close(false),
+        }
     }
 
     /// Completes the open message; an assistant message that ends the turn
@@ -1391,8 +1403,17 @@ impl Translate {
         if !paths.is_empty() {
             tool_call["file_paths"] = json!(paths);
         }
+        // Agents such as Gemini CLI report results only as text content.
+        let content = raw["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item["content"]["text"].as_str())
+            .collect::<Vec<_>>();
         if !raw["rawOutput"].is_null() {
             tool_call["output"] = raw["rawOutput"].clone();
+        } else if !content.is_empty() {
+            tool_call["output"] = json!(content.join("\n"));
         }
         let kind = match status.as_str() {
             "completed" => TurnStreamEventKind::ToolCallCompleted,

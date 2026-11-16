@@ -723,3 +723,96 @@ fn a_restart_with_a_changed_inherited_environment_resets_acp_continuity() {
         Vec::<std::path::PathBuf>::new()
     );
 }
+
+fn acp_chunk(message_id: &str, text: &str) -> Value {
+    json!({"sessionUpdate": "agent_message_chunk", "messageId": message_id,
+        "content": {"type": "text", "text": text}})
+}
+
+fn segments_of_kind<'a>(snapshot: &'a Value, kind: &str) -> Vec<&'a Value> {
+    snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|segment| segment["kind"] == kind)
+        .collect()
+}
+
+#[test]
+fn an_acp_message_keeps_its_text_around_the_tool_calls_inside_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let (service, project) = acp_chat(
+        temp.path(),
+        json!({"updates": [
+            acp_chunk("m0", "Let me check."),
+            {"sessionUpdate": "tool_call", "toolCallId": "look", "title": "Look", "status": "pending"},
+            {"sessionUpdate": "tool_call_update", "toolCallId": "look", "status": "completed"},
+            acp_chunk("m1", "The complete answer is: "),
+            {"sessionUpdate": "tool_call", "toolCallId": "bg", "title": "Background", "status": "in_progress"},
+            {"sessionUpdate": "tool_call_update", "toolCallId": "bg", "status": "completed"},
+            acp_chunk("m1", "42."),
+        ]}),
+    );
+
+    service
+        .execute_turn("acp-message", acp_turn(&project, "Answer"))
+        .unwrap();
+
+    // A new message id starts a message; the same id continues it around tools.
+    let snapshot = service.get_snapshot("acp-message", Some(&project)).unwrap();
+    assert_eq!(
+        assistant_turn(&snapshot)["content"],
+        "The complete answer is: 42.",
+        "{snapshot}"
+    );
+    let messages = segments_of_kind(&snapshot, "assistant_message")
+        .iter()
+        .map(|segment| segment["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(messages, ["Let me check.", "The complete answer is: 42."]);
+}
+
+#[test]
+fn acp_tool_results_given_only_as_content_reach_chat_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let text = |text: &str| json!([{"type": "content", "content": {"type": "text", "text": text}}]);
+    let (service, project) = acp_chat(
+        temp.path(),
+        json!({"updates": [
+            {"sessionUpdate": "tool_call", "toolCallId": "read", "title": "Read", "status": "pending"},
+            {"sessionUpdate": "tool_call_update", "toolCallId": "read", "status": "in_progress",
+             "content": text("READ-PROGRESS")},
+            {"sessionUpdate": "tool_call_update", "toolCallId": "read", "status": "completed",
+             "content": text("READ-RESULT")},
+            {"sessionUpdate": "tool_call", "toolCallId": "write", "title": "Write", "status": "pending"},
+            {"sessionUpdate": "tool_call_update", "toolCallId": "write", "status": "failed",
+             "content": text("WRITE-DENIED")},
+            acp_chunk("m0", "Done."),
+        ]}),
+    );
+
+    service
+        .execute_turn("acp-tools", acp_turn(&project, "Work"))
+        .unwrap();
+
+    let snapshot = service.get_snapshot("acp-tools", Some(&project)).unwrap();
+    let tools = segments_of_kind(&snapshot, "tool_call")
+        .iter()
+        .map(|segment| {
+            let tool = &segment["tool_call"];
+            (
+                tool["id"].clone(),
+                tool["status"].clone(),
+                tool["output"].clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tools,
+        [
+            (json!("read"), json!("completed"), json!("READ-RESULT")),
+            (json!("write"), json!("failed"), json!("WRITE-DENIED")),
+        ],
+        "{snapshot}"
+    );
+}
