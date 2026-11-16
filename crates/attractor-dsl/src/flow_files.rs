@@ -695,6 +695,10 @@ fn render_node_file(node: &FlowNode) -> Result<String, FlowSourceError> {
         NodeKind::Tool => render_command_block(&body),
         _ => body.trim().to_string(),
     };
+    // Config renders with sorted keys, even though this build's JSON maps
+    // keep insertion order (the ACP SDK enables serde_json's preserve_order).
+    config.values_mut().for_each(Value::sort_all_objects);
+    config.sort_keys();
     let file = NodeFile {
         kind: node.kind.clone(),
         title: node.label.clone(),

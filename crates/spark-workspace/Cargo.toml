@@ -38,3 +38,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 name = "spark-workspace-fake-claude-code"
 path = "../spark-agent-adapter/src/bin/spark-agent-fake-claude-code.rs"
 test = false
+
+[[bin]]
+name = "spark-workspace-fake-acp"
+path = "../spark-agent-adapter/src/bin/spark-agent-fake-acp.rs"
+test = false

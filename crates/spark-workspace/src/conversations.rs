@@ -14,6 +14,7 @@ use spark_agent_adapter::{
     AgentTurnOutput, AgentTurnRequest, AssistantTurn, HistoryTurn, RustLlmAgentTurnBackend,
     UserTurn,
 };
+use spark_common::agent_settings::HarnessIdentity;
 use spark_common::debug::{codex_jsonrpc_trace_enabled, CODEX_JSONRPC_TRACE_PATH_METADATA_KEY};
 use spark_common::events::{TurnStreamEvent, TurnStreamEventKind};
 use spark_common::project::normalize_project_path;
@@ -385,6 +386,18 @@ pub(crate) fn capture_execution_settings(
     )?;
     configuration.retain_startup_settings(settings);
     spark_agent_adapter::config::capture_native_binaries(&mut configuration.agents);
+    if let Some(HarnessIdentity::Acp(id)) = effective
+        .provider
+        .as_deref()
+        .and_then(|provider| HarnessIdentity::parse(provider).ok())
+        .flatten()
+    {
+        if !configuration.agents.acp_harnesses.contains_key(&id) {
+            return Err(WorkspaceError::Validation(format!(
+                "ACP harness {id} is not registered in the agents settings."
+            )));
+        }
+    }
     let profile_definitions = profile_definitions.map_err(|_| {
         WorkspaceError::Validation(
             "Unable to load LLM profiles; check [llm_profiles] in spark.toml.".into(),
@@ -1889,8 +1902,7 @@ impl WorkspaceConversationService {
             &instructions_sha256,
             prepared.chat_mode == "plan",
         )?;
-        let previous_app_thread_id =
-            resume_runtime_session_thread_id(&repository, conversation_id, project_path, prepared);
+        let resume = resume_runtime_session(&repository, conversation_id, project_path, prepared);
 
         let mut metadata = BTreeMap::from([
             (
@@ -1912,18 +1924,13 @@ impl WorkspaceConversationService {
                 json!(prepared.attachments),
             );
         }
-        if let Some(thread_id) = previous_app_thread_id.as_deref() {
-            let key = if prepared.provider == "claude-code" {
-                "spark.runtime.claude_code.session_id"
-            } else {
-                "spark.runtime.codex_app_server.thread_id"
-            };
-            metadata.insert(key.to_string(), json!(thread_id));
+        if let Some((thread_id, resume)) = resume {
+            metadata.extend(resume);
             // The resumed session's cumulative usage, which the next turn subtracts.
             let model_usage = turns
                 .iter()
                 .rev()
-                .filter(|turn| turn["app_thread_id"].as_str() == Some(thread_id))
+                .filter(|turn| turn["app_thread_id"].as_str() == Some(thread_id.as_str()))
                 .find_map(|turn| turn["token_usage"].get("model_usage"));
             if let Some(model_usage) = model_usage {
                 metadata.insert(
@@ -1959,7 +1966,12 @@ impl WorkspaceConversationService {
                 prepared.prompt
             )
         };
-        if instructions_changed {
+        // ACP sessions never resume across changed instructions, so they need no note.
+        let acp = matches!(
+            HarnessIdentity::parse(&prepared.provider),
+            Ok(Some(HarnessIdentity::Acp(_)))
+        );
+        if instructions_changed && !acp {
             prompt = format!("Your instructions changed since your last turn; the system instructions now in effect replace the earlier ones.\n\n{prompt}");
         }
         Ok(AgentTurnRequest {
@@ -4687,25 +4699,41 @@ fn request_user_input_answer_delivered_to_live_request(output: &AgentTurnOutput)
     })
 }
 
-/// The provider thread the conversation's runtime session can resume, if
-/// it belongs to the turn's provider and its resume never failed.
-fn resume_runtime_session_thread_id(
+/// The session the conversation's runtime session lets this turn continue,
+/// if the turn's harness owns it and its resume never failed: its id and
+/// the metadata that harness resumes from. Direct providers keep none.
+fn resume_runtime_session(
     repository: &ConversationRepository,
     conversation_id: &str,
     project_path: &str,
     prepared: &PreparedConversationTurn,
-) -> Option<String> {
-    let expected_provider = if prepared.provider == "claude-code" {
-        "claude_code_cli"
-    } else {
-        "codex_app_server"
-    };
-    repository
+) -> Option<(String, BTreeMap<String, Value>)> {
+    let identity = HarnessIdentity::parse(&prepared.provider).ok().flatten()?;
+    let session = repository
         .read_runtime_session(conversation_id, Some(project_path))
         .ok()
         .flatten()
-        .filter(|session| !session.resume_failed && session.provider == expected_provider)
-        .and_then(|session| session.thread_id)
+        .filter(|session| !session.resume_failed && session.provider == identity.session_owner())?;
+    let thread_id = session.thread_id?;
+    let resume = match identity {
+        HarnessIdentity::Codex => BTreeMap::from([(
+            "spark.runtime.codex_app_server.thread_id".to_string(),
+            json!(thread_id),
+        )]),
+        HarnessIdentity::ClaudeCode => BTreeMap::from([(
+            "spark.runtime.claude_code.session_id".to_string(),
+            json!(thread_id),
+        )]),
+        HarnessIdentity::Acp(harness) => spark_agent_adapter::acp::AcpSessionRecord {
+            harness,
+            session_id: thread_id.clone(),
+            cwd: session.cwd?,
+            configuration_generation: session.configuration_generation?,
+            instructions_sha256: session.instructions_sha256,
+        }
+        .to_metadata(),
+    };
+    Some((thread_id, resume))
 }
 
 /// Text history plus each user turn's attachments, resolved from storage so

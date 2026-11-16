@@ -378,3 +378,144 @@ fn uploads_delivered_into_a_running_turn_are_owned_by_the_message() {
         .unwrap();
     assert_eq!(bytes, b"delivered notes");
 }
+
+const FAKE_ACP: &str = env!("CARGO_BIN_EXE_spark-workspace-fake-acp");
+
+/// A service whose `acp:fake` harness is the fake ACP agent running
+/// `script`, logging to `acp.log`, and the project it works in.
+fn acp_chat(temp: &std::path::Path, mut script: Value) -> (WorkspaceConversationService, String) {
+    script["log"] = json!(temp.join("acp.log"));
+    script["system_prompt"] = json!(true);
+    script["resume"] = json!(true);
+    let settings = settings(temp);
+    let project = temp.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&settings.config_dir).unwrap();
+    let agents = json!({"agents": {"acp_harnesses": {"fake": {
+        "name": "Fake ACP",
+        "executable": FAKE_ACP,
+        "env": {"SPARK_FAKE_ACP": script.to_string()},
+    }}}});
+    std::fs::write(
+        settings.config_dir.join("spark.toml"),
+        toml::to_string(&agents).unwrap(),
+    )
+    .unwrap();
+    let project = project.canonicalize().unwrap();
+    (
+        crate::conversations(settings),
+        project.to_string_lossy().into_owned(),
+    )
+}
+
+fn acp_turn(project: &str, message: &str) -> ConversationTurnRequest {
+    ConversationTurnRequest {
+        project_path: project.to_string(),
+        message: message.to_string(),
+        provider: Some("acp:fake".to_string()),
+        ..ConversationTurnRequest::default()
+    }
+}
+
+/// What the fake received for `method`, in order.
+fn acp_received(temp: &std::path::Path, method: &str) -> Vec<Value> {
+    std::fs::read_to_string(temp.join("acp.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|entry| entry["received"]["method"] == method)
+        .map(|entry| entry["received"]["params"].clone())
+        .collect()
+}
+
+fn acp_answer(text: &str) -> Value {
+    json!([{"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}])
+}
+
+#[test]
+fn acp_chat_turns_answer_from_the_harness_and_continue_its_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let (service, project) = acp_chat(
+        temp.path(),
+        json!({"updates": acp_answer("Hello from ACP.")}),
+    );
+
+    let first = service
+        .execute_turn("acp-chat", acp_turn(&project, "Hi"))
+        .unwrap();
+    assert_eq!(assistant_turn(&first)["status"], "complete", "{first}");
+    assert_eq!(assistant_turn(&first)["content"], "Hello from ACP.");
+    let session = spark_storage::ConversationRepository::new(crate::shared_store(
+        settings(temp.path()).data_dir,
+    ))
+    .read_runtime_session("acp-chat", Some(&project))
+    .unwrap()
+    .expect("session");
+    assert_eq!(session.provider, "acp:fake");
+    assert_eq!(session.thread_id.as_deref(), Some("fake-session"));
+    assert_eq!(session.cwd.as_deref(), Some(project.as_str()));
+
+    let second = service
+        .execute_turn("acp-chat", acp_turn(&project, "Again"))
+        .unwrap();
+    assert_eq!(assistant_turn(&second)["content"], "Hello from ACP.");
+    // The next turn continues the session, so nothing is replayed into it,
+    // and the pinned instructions travel as the system prompt both times.
+    assert_eq!(acp_received(temp.path(), "session/new").len(), 1);
+    let resumed = acp_received(temp.path(), "session/resume");
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0]["sessionId"], "fake-session");
+    assert!(resumed[0].get("systemPrompt").is_some());
+    let prompts = acp_received(temp.path(), "session/prompt");
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(
+        prompts[1]["prompt"],
+        json!([{"type": "text", "text": "Again"}])
+    );
+}
+
+#[test]
+fn a_message_sent_during_an_acp_turn_waits_for_the_next_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let gate = temp.path().join("gate");
+    let (service, project) = acp_chat(
+        temp.path(),
+        json!({"gate": gate, "updates": acp_answer("Answered.")}),
+    );
+
+    let running = {
+        let (service, project) = (service.clone(), project.clone());
+        std::thread::spawn(move || service.execute_turn("acp-queue", acp_turn(&project, "Work")))
+    };
+    let waited = std::time::Instant::now();
+    while acp_received(temp.path(), "session/prompt").is_empty() {
+        assert!(
+            waited.elapsed() < std::time::Duration::from_secs(10),
+            "prompt"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let (started, acceptance) = service
+        .send_turn("acp-queue", acp_turn(&project, "Later"))
+        .unwrap();
+    assert!(started.is_none());
+    assert_eq!(acceptance.status, "queued");
+    std::fs::write(&gate, "").unwrap();
+    let snapshot = running.join().unwrap().unwrap();
+
+    // The message ran as its own prompt after the turn, never inside it.
+    let prompts = acp_received(temp.path(), "session/prompt");
+    let texts = prompts
+        .iter()
+        .map(|prompt| prompt["prompt"][0]["text"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(texts, ["Work", "Later"]);
+    assert!(user_messages(&snapshot).is_empty(), "{snapshot}");
+    let assistants = snapshot["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|turn| turn["role"] == "assistant" && turn["status"] == "complete")
+        .count();
+    assert_eq!(assistants, 2, "{snapshot}");
+}

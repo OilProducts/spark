@@ -109,13 +109,7 @@ impl LocalExecutionEnvironment {
     }
 
     fn build_environment(&self, env_vars: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-        let mut environment = match self.environment_inheritance_policy {
-            EnvironmentInheritancePolicy::InheritAll => env::vars().collect(),
-            EnvironmentInheritancePolicy::InheritNone => BTreeMap::new(),
-            EnvironmentInheritancePolicy::InheritCoreOnly => env::vars()
-                .filter(|(key, _)| is_core_env_key(key) && !is_sensitive_env_key(key))
-                .collect(),
-        };
+        let mut environment = inherited_environment(self.environment_inheritance_policy);
         environment.extend(env_vars.clone());
         environment
     }
@@ -687,6 +681,19 @@ fn shell_command(command: &str) -> Command {
 
 /// Makes `command` lead its own process group, which `terminate_process_group`
 /// stops as a whole. Start it with `spawn_process_group`.
+/// What a child process inherits from Spark's own environment under `policy`.
+pub(crate) fn inherited_environment(
+    policy: EnvironmentInheritancePolicy,
+) -> BTreeMap<String, String> {
+    match policy {
+        EnvironmentInheritancePolicy::InheritAll => env::vars().collect(),
+        EnvironmentInheritancePolicy::InheritNone => BTreeMap::new(),
+        EnvironmentInheritancePolicy::InheritCoreOnly => env::vars()
+            .filter(|(key, _)| is_core_env_key(key) && !is_sensitive_env_key(key))
+            .collect(),
+    }
+}
+
 pub fn configure_process_group(command: &mut Command) {
     #[cfg(unix)]
     {

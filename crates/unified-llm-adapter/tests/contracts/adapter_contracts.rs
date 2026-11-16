@@ -442,8 +442,8 @@ fn assert_json_matches_fixture(actual: &Value, expected: &Value, path: &str) {
     match (actual, expected) {
         (Value::Object(actual), Value::Object(expected)) => {
             assert_eq!(
-                actual.keys().collect::<Vec<_>>(),
-                expected.keys().collect::<Vec<_>>(),
+                actual.keys().collect::<std::collections::BTreeSet<_>>(),
+                expected.keys().collect::<std::collections::BTreeSet<_>>(),
                 "object keys differ at {path}"
             );
             for (key, expected_value) in expected {

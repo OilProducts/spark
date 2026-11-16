@@ -656,7 +656,7 @@ data: \"type\":\"run.journal_entry\",\"payload\":{\"sequence\":8,\"type\":\"log\
     assert_eq!(json_output.exit_code, 0);
     assert_eq!(
         json_output.stdout,
-        "{\"payload\":{\"msg\":\"hello\",\"sequence\":8,\"type\":\"log\"},\"type\":\"run.journal_entry\"}\n"
+        "{\"type\":\"run.journal_entry\",\"payload\":{\"sequence\":8,\"type\":\"log\",\"msg\":\"hello\"}}\n"
     );
     assert_eq!(
         json_requests

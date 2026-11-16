@@ -24,6 +24,16 @@ fn setup(
 }
 
 fn start(repo: &ConversationRepository, conversation_id: &str, project_path: &str, turn: &str) {
+    start_on(repo, conversation_id, project_path, turn, json!({}));
+}
+
+fn start_on(
+    repo: &ConversationRepository,
+    conversation_id: &str,
+    project_path: &str,
+    turn: &str,
+    execution_settings: serde_json::Value,
+) {
     repo.accept_message(
         conversation_id,
         project_path,
@@ -37,7 +47,7 @@ fn start(repo: &ConversationRepository, conversation_id: &str, project_path: &st
             settings: Default::default(),
             held: false,
             assistant_turn_id: format!("turn-assistant-{turn}"),
-            execution_settings: json!({}),
+            execution_settings,
         },
     )
     .expect("accept message");
@@ -82,6 +92,9 @@ fn session(thread_id: &str) -> serde_json::Value {
         last_turn_id: Some("turn-assistant".to_string()),
         resume_failed: false,
         updated_at: "2026-01-01T00:00:00Z".to_string(),
+        cwd: None,
+        configuration_generation: None,
+        instructions_sha256: None,
     })
     .expect("session payload")
 }
@@ -181,4 +194,120 @@ fn runtime_session_presence_never_changes_snapshot_reads() {
         .expect("read again")
         .expect("snapshot");
     assert_eq!(snapshot_before, snapshot_after);
+}
+
+/// Run one ACP turn on `provider` that sets up `session_id` with `generation`
+/// and settles with `reset`, returning the session the conversation keeps.
+fn acp_turn(
+    repo: &ConversationRepository,
+    project_path: &str,
+    turn: &str,
+    provider: &str,
+    (session_id, generation): (&str, &str),
+    reset: Option<(String, Option<String>, Option<serde_json::Value>)>,
+) -> RuntimeSession {
+    let conversation_id = "conversation-acp";
+    let turn_id = format!("turn-assistant-{turn}");
+    start_on(
+        repo,
+        conversation_id,
+        project_path,
+        turn,
+        json!({"provider": provider}),
+    );
+    let established = serde_json::from_value(json!({
+        "kind": "session_established",
+        "source": {"backend": "acp", "app_thread_id": session_id},
+        "status": "new",
+        "details": {
+            "harness": provider.trim_start_matches("acp:"),
+            "session_id": session_id,
+            "cwd": "/work/project",
+            "configuration_generation": generation,
+            "instructions_sha256": "instructions-hash",
+        },
+    }))
+    .expect("event");
+    repo.record_provider_event(
+        conversation_id,
+        project_path,
+        &turn_id,
+        &established,
+        &BTreeMap::new(),
+    )
+    .expect("established");
+    answer(repo, conversation_id, project_path, &turn_id);
+    repo.settle_execution(
+        conversation_id,
+        project_path,
+        &turn_id,
+        returned(Some(session_id), reset),
+        &BTreeMap::new(),
+    )
+    .expect("settle");
+    repo.read_runtime_session(conversation_id, Some(project_path))
+        .expect("read")
+        .expect("session")
+}
+
+#[test]
+fn acp_sessions_are_filed_under_their_harness_with_the_scope_they_were_set_up_in() {
+    let project_path = "/projects/runtime-session-acp";
+    let (_temp, _store, repo) = setup(project_path);
+
+    let alpha = acp_turn(
+        &repo,
+        project_path,
+        "1",
+        "acp:alpha",
+        ("shared-id", "gen-a"),
+        None,
+    );
+    assert_eq!(
+        (alpha.provider.as_str(), alpha.thread_id.as_deref()),
+        ("acp:alpha", Some("shared-id"))
+    );
+    assert_eq!(alpha.cwd.as_deref(), Some("/work/project"));
+    assert_eq!(alpha.configuration_generation.as_deref(), Some("gen-a"));
+    assert_eq!(
+        alpha.instructions_sha256.as_deref(),
+        Some("instructions-hash")
+    );
+
+    // Another harness reporting the same opaque id owns a different session.
+    let beta = acp_turn(
+        &repo,
+        project_path,
+        "2",
+        "acp:beta",
+        ("shared-id", "gen-b"),
+        None,
+    );
+    assert_eq!(
+        (
+            beta.provider.as_str(),
+            beta.configuration_generation.as_deref()
+        ),
+        ("acp:beta", Some("gen-b"))
+    );
+
+    // A turn that could not continue its session settles on the fresh one it
+    // set up, with that session's scope, and stays resumable.
+    let reset = acp_turn(
+        &repo,
+        project_path,
+        "3",
+        "acp:beta",
+        ("fresh-id", "gen-c"),
+        Some((
+            "ACP harness beta could not continue session shared-id".to_string(),
+            Some("thread_resume_failure".to_string()),
+            None,
+        )),
+    );
+    assert_eq!(reset.thread_id.as_deref(), Some("fresh-id"));
+    assert_eq!(reset.provider, "acp:beta");
+    assert!(!reset.resume_failed);
+    assert_eq!(reset.configuration_generation.as_deref(), Some("gen-c"));
+    assert_eq!(reset.cwd.as_deref(), Some("/work/project"));
 }

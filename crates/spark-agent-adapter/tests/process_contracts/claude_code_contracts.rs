@@ -1270,8 +1270,8 @@ fn claude_code_message_sent_mid_turn_folds_in_and_holds_the_turn_until_delivered
     let backend = || RustLlmAgentTurnBackend::new(Client::new());
     assert!(!backend().send_message(&path, &id, "note-1", "Also check the docs."));
     let sent = std::sync::atomic::AtomicBool::new(false);
-    let output = ClaudeCodeBackend::new()
-        .run_agent_turn_with_event_sink(
+    let output = backend()
+        .run_turn_with_event_sink(
             request,
             Some(Arc::new(move |event| {
                 if event.kind == TurnStreamEventKind::ContentDelta

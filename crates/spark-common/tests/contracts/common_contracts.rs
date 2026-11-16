@@ -501,3 +501,154 @@ fn compaction_segment_says_what_it_freed_when_the_backend_reports_it() {
     );
     assert_eq!(content(None), "Context compacted to continue the turn.");
 }
+
+fn acp_config(
+    harnesses: serde_json::Value,
+) -> Result<spark_common::agent_settings::SessionConfig, String> {
+    let config: spark_common::agent_settings::SessionConfig =
+        serde_json::from_value(json!({ "acp_harnesses": harnesses }))
+            .map_err(|error| error.to_string())?;
+    config.validate().map_err(|error| error.to_string())?;
+    Ok(config)
+}
+
+#[test]
+fn acp_selectors_own_their_namespace_and_normalize_native_aliases() {
+    use spark_common::agent_settings::HarnessIdentity;
+    use spark_common::settings::ModelSettings;
+
+    assert_eq!(
+        HarnessIdentity::parse(" Claude_Code "),
+        Ok(Some(HarnessIdentity::ClaudeCode))
+    );
+    assert_eq!(
+        HarnessIdentity::parse("CODEX"),
+        Ok(Some(HarnessIdentity::Codex))
+    );
+    assert_eq!(HarnessIdentity::parse("openai"), Ok(None));
+    let acp = HarnessIdentity::parse("ACP:my-agent_2").unwrap().unwrap();
+    assert_eq!(acp, HarnessIdentity::Acp("my-agent_2".into()));
+    assert_eq!(acp.selector(), "acp:my-agent_2");
+    assert_eq!(acp.session_owner(), "acp:my-agent_2");
+    assert_eq!(
+        HarnessIdentity::ClaudeCode.session_owner(),
+        "claude_code_cli"
+    );
+    // A malformed ACP selector never falls through to a direct provider.
+    for selector in ["acp:", "acp:Upper", "acp:-x", "acp:a b", "acp:codex/../x"] {
+        assert!(HarnessIdentity::parse(selector).is_err(), "{selector}");
+    }
+
+    let selection = |provider: Option<&str>, profile: Option<&str>| ModelSettings {
+        provider: provider.map(str::to_string),
+        llm_profile: profile.map(str::to_string),
+        ..ModelSettings::default()
+    };
+    assert!(selection(Some("acp:agent"), None).validate().is_ok());
+    assert!(selection(Some("acp:Bad"), None).validate().is_err());
+    assert!(selection(None, Some("ACP:agent")).validate().is_err());
+    assert!(selection(None, Some("team-profile")).validate().is_ok());
+
+    assert!(acp_config(json!({"Bad": {"name": "x", "executable": "x"}})).is_err());
+    assert!(acp_config(json!({"ok": {"name": "x", "executable": "x", "shell": true}})).is_err());
+}
+
+#[test]
+fn acp_registrations_keep_literal_args_and_reject_reserved_or_unknown_bindings() {
+    let config = acp_config(json!({"agent": {
+        "name": "Agent",
+        "executable": "/opt/agent bin/run",
+        "args": ["acp", "--flag=$HOME", "'quoted' && echo; *"],
+        "env": {"AGENT_TOKEN": "secret"}
+    }}))
+    .expect("valid registration");
+    let harness = &config.acp_harnesses["agent"];
+    assert_eq!(harness.args, ["acp", "--flag=$HOME", "'quoted' && echo; *"]);
+    assert_eq!(
+        harness.permission_policy,
+        spark_common::agent_settings::AcpPermissionPolicy::Allow
+    );
+
+    for reserved in spark_common::agent_settings::RESERVED_HARNESS_ENV {
+        assert!(acp_config(
+            json!({"agent": {"name": "A", "executable": "a", "env": {reserved: "x"}}})
+        )
+        .is_err());
+        assert!(acp_config(json!({"agent": {"name": "A", "executable": "a",
+            "system_instructions": {"env": {reserved: {"text": "{{instructions}}"}}}}}))
+        .is_err());
+    }
+    // Unknown placeholders and channels that never carry the instructions are invalid.
+    for channel in [
+        json!({"args": ["--system={{instruction}}"]}),
+        json!({"env": {"X": {"json": {"a": "{{home}}"}}}, "args": ["{{instructions}}"]}),
+        json!({"args": ["--static"]}),
+        json!({}),
+        json!({"args": ["{{instructions}}"], "config": {"mode": ""}}),
+    ] {
+        assert!(
+            acp_config(
+                json!({"agent": {"name": "A", "executable": "a", "system_instructions": channel}})
+            )
+            .is_err(),
+            "{channel}"
+        );
+    }
+}
+
+#[test]
+fn acp_instruction_channels_render_exact_bytes_once() {
+    use spark_common::agent_settings::{EnvTemplate, InstructionChannel};
+
+    let channel = InstructionChannel {
+        env: BTreeMap::from([
+            (
+                "TEXT".into(),
+                EnvTemplate::Text("pre {{instructions}}".into()),
+            ),
+            (
+                "JSON".into(),
+                EnvTemplate::Json(
+                    json!({"agent": {"prompt": "{{instructions}}", "n": 1}, "file": ["{{instructions_file}}"]}),
+                ),
+            ),
+        ]),
+        args: vec!["--prompt-file={{instructions_file}}".into()],
+        config: BTreeMap::new(),
+    };
+    assert!(channel.uses_file());
+    let instructions = "Line \"one\"\nTab\t{{instructions_file}} stays literal";
+    let (env, args) = channel.render(instructions, "/tmp/i.md").unwrap();
+    let env = env.into_iter().collect::<BTreeMap<_, _>>();
+    assert_eq!(env["TEXT"], format!("pre {instructions}"));
+    let json: serde_json::Value = serde_json::from_str(&env["JSON"]).unwrap();
+    assert_eq!(json["agent"]["prompt"], instructions);
+    assert_eq!(json["agent"]["n"], 1);
+    assert_eq!(json["file"][0], "/tmp/i.md");
+    assert_eq!(args, ["--prompt-file=/tmp/i.md"]);
+}
+
+#[test]
+fn acp_configuration_generation_tracks_launch_settings_but_not_labels() {
+    let base = json!({"name": "Agent", "executable": "agent", "args": ["acp"], "env": {"K": "v"}});
+    let generation = |patch: serde_json::Value| {
+        let mut harness = base.clone();
+        for (key, value) in patch.as_object().unwrap() {
+            harness[key] = value.clone();
+        }
+        acp_config(json!({"agent": harness})).unwrap().acp_harnesses["agent"].generation()
+    };
+    let original = generation(json!({}));
+    assert_eq!(original, generation(json!({"name": "Renamed"})));
+    for change in [
+        json!({"executable": "other"}),
+        json!({"args": ["acp", "--x"]}),
+        json!({"env": {"K": "changed"}}),
+        json!({"permission_policy": "deny"}),
+        json!({"system_instructions": {"args": ["{{instructions}}"]}}),
+    ] {
+        let changed = generation(change.clone());
+        assert_ne!(original, changed, "{change}");
+        assert!(!changed.contains("changed"), "the generation is opaque");
+    }
+}

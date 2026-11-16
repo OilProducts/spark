@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use spark_common::agent_settings::HarnessIdentity;
 use spark_common::events::{TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind};
 use spark_common::segments::{
     assistant_segment_id, continued_segment_id, event_text, finalize_segment,
@@ -364,11 +365,22 @@ fn reported_delivery(event: &TurnStreamEvent) -> Option<bool> {
     }
 }
 
-fn runtime_provider(provider: Option<&str>) -> &'static str {
-    if provider == Some("claude-code") {
-        "claude_code_cli"
-    } else {
-        "codex_app_server"
+/// The owner a turn's session is filed under: its harness, else Codex's,
+/// which serves turns with no provider selected.
+fn runtime_provider(provider: Option<&str>) -> String {
+    provider
+        .and_then(|provider| HarnessIdentity::parse(provider).ok().flatten())
+        .map_or_else(
+            || "codex_app_server".to_string(),
+            |identity| identity.session_owner(),
+        )
+}
+
+/// Whether an event reports the session its turn set up.
+fn established_session(event: &TurnStreamEvent) -> Option<&Value> {
+    match &event.kind {
+        TurnStreamEventKind::Other(kind) if kind == "session_established" => event.details.as_ref(),
+        _ => None,
     }
 }
 
@@ -979,6 +991,7 @@ impl Op<'_> {
             turn_id,
             event.source.app_thread_id.as_deref(),
             event.source.app_turn_id.as_deref(),
+            established_session(event),
         )?;
         self.update_turn(turn_id, |turn| {
             if turn["status"] == "pending" {
@@ -1290,6 +1303,7 @@ impl Op<'_> {
         turn_id: &str,
         app_thread_id: Option<&str>,
         app_turn_id: Option<&str>,
+        established: Option<&Value>,
     ) -> Result<()> {
         let thread = app_thread_id.and_then(non_empty_string);
         let app_turn = app_turn_id.and_then(non_empty_string);
@@ -1305,7 +1319,7 @@ impl Op<'_> {
             }
         })?;
         if let Some(thread) = thread {
-            self.record_session(turn_id, &thread)?;
+            self.record_session(turn_id, &thread, established)?;
         }
         Ok(())
     }
@@ -1335,7 +1349,14 @@ impl Op<'_> {
     /// The provider thread a turn observed becomes the resumable session,
     /// filed under the provider its execution was accepted with, whatever
     /// the settings say by now.
-    fn record_session(&mut self, turn_id: &str, thread_id: &str) -> Result<()> {
+    /// `established` is the scope a session-established event reports;
+    /// without one, the scope recorded for the same thread is kept.
+    fn record_session(
+        &mut self,
+        turn_id: &str,
+        thread_id: &str,
+        established: Option<&Value>,
+    ) -> Result<()> {
         let provider = self
             .turn(turn_id)?
             .and_then(|turn| text(&turn["execution_settings"], "provider"));
@@ -1343,21 +1364,37 @@ impl Op<'_> {
         let same_thread = existing.as_ref().filter(|session| {
             !session.resume_failed && session.thread_id.as_deref() == Some(thread_id)
         });
-        if same_thread.is_some_and(|session| session.last_turn_id.as_deref() == Some(turn_id)) {
+        if established.is_none()
+            && same_thread.is_some_and(|session| session.last_turn_id.as_deref() == Some(turn_id))
+        {
             return Ok(());
         }
+        let scope = |key: &str, kept: fn(&RuntimeSession) -> Option<String>| match established {
+            Some(details) => text(details, key),
+            None => existing
+                .as_ref()
+                .filter(|session| session.thread_id.as_deref() == Some(thread_id))
+                .and_then(kept),
+        };
         let established_at = same_thread
             .map(|session| session.established_at.clone())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| self.now.clone());
         let session = RuntimeSession {
             schema_version: RUNTIME_SESSION_SCHEMA_VERSION,
-            provider: runtime_provider(provider.as_deref()).to_string(),
+            provider: runtime_provider(provider.as_deref()),
             thread_id: Some(thread_id.to_string()),
             established_at,
             last_turn_id: non_empty_string(turn_id),
             resume_failed: false,
             updated_at: self.now.clone(),
+            cwd: scope("cwd", |session| session.cwd.clone()),
+            configuration_generation: scope("configuration_generation", |session| {
+                session.configuration_generation.clone()
+            }),
+            instructions_sha256: scope("instructions_sha256", |session| {
+                session.instructions_sha256.clone()
+            }),
         };
         self.write_session(&session)
     }
@@ -1372,6 +1409,9 @@ impl Op<'_> {
             last_turn_id: None,
             resume_failed: true,
             updated_at: self.now.clone(),
+            cwd: None,
+            configuration_generation: None,
+            instructions_sha256: None,
         });
         session.resume_failed = true;
         session.updated_at = self.now.clone();
@@ -1555,7 +1595,12 @@ impl Op<'_> {
                     self.mark_session_resume_failed()?;
                 }
                 // A backend that recovered in a fresh thread replaces it.
-                self.record_app_ids(turn_id, app_thread_id.as_deref(), app_turn_id.as_deref())?;
+                self.record_app_ids(
+                    turn_id,
+                    app_thread_id.as_deref(),
+                    app_turn_id.as_deref(),
+                    None,
+                )?;
                 if !self.complete_returned(
                     turn_id,
                     final_text,

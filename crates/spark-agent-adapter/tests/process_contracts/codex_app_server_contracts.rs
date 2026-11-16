@@ -289,7 +289,9 @@ fn send_message_reaches_turn_steer_on_the_running_turn() {
     let backend = RustLlmAgentTurnBackend::new(unified_llm_adapter::Client::new());
     assert!(!backend.send_message(&path, "codex-steer", "note-1", "Use the docs."));
 
-    let turn = thread::spawn(move || CodexAppServerBackend::new().run_agent_turn(request));
+    let turn = thread::spawn(move || {
+        RustLlmAgentTurnBackend::new(unified_llm_adapter::Client::new()).run_turn(request)
+    });
     let started = std::time::Instant::now();
     while !fs::read_to_string(&log_path)
         .unwrap_or_default()

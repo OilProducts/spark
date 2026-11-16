@@ -446,6 +446,20 @@ impl ModelSettings {
                 ));
             }
         }
+        if let Some(provider) = self.provider.as_deref() {
+            crate::agent_settings::HarnessIdentity::parse(provider)
+                .map_err(SparkCommonError::SettingsValidation)?;
+        }
+        if self.llm_profile.as_deref().is_some_and(|profile| {
+            profile
+                .trim()
+                .to_ascii_lowercase()
+                .starts_with(crate::agent_settings::ACP_SELECTOR_PREFIX)
+        }) {
+            return Err(SparkCommonError::SettingsValidation(
+                "The acp: namespace names ACP harnesses, not LLM profiles.".into(),
+            ));
+        }
         Ok(())
     }
 }
