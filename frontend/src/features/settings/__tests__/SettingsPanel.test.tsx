@@ -149,7 +149,7 @@ it('uses discovered suggestions in both editors and displays inherited saved pro
     const user = userEvent.setup()
     const effective = { provider: null, llm_profile: 'team', model: null, reasoning_effort: 'low' }
     vi.mocked(fetchModelSettings).mockImplementation(async (path) => ({ scope: path ? 'project' : 'workspace', source: 'workspace', revision: 'one', stored: path ? null : effective, effective }))
-    vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [{ provider: 'codex', id: 'discovered', display: 'Discovered' }], providers: { codex: { status: 'available', error: null } } } })
+    vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [{ provider: 'codex', id: 'discovered', display: 'Discovered' }], providers: { codex: { status: 'available', error: null, label: 'Codex' } } } })
     render(<DialogProvider><WithProject /></DialogProvider>)
     const project = card('Project model defaults')
     await waitFor(() => expect(project.getByRole('switch')).toBeEnabled())

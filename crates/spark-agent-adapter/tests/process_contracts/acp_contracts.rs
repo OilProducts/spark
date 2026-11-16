@@ -484,6 +484,79 @@ fn acp_unsupported_settings_fail_before_the_prompt() {
     assert_eq!(received(dir.path(), "session/prompt").len(), 1);
 }
 
+/// Session controls apply by exact config and value ID after model and effort,
+/// only for the harness they were chosen for, and fail before the prompt
+/// when the harness no longer offers them.
+#[test]
+fn acp_session_controls_apply_exactly_for_their_harness_and_fail_when_stale() {
+    let options = json!([
+        {"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "small",
+         "options": [{"value": "small", "name": "Small"}, {"value": "Large-1", "name": "Large"}]},
+        {"id": "effort", "name": "Effort", "category": "thought_level", "type": "select", "currentValue": "Low",
+         "options": [{"value": "Low", "name": "Low"}, {"value": "High", "name": "High"}]},
+        {"id": "approval", "name": "Approval", "category": "mode", "type": "select", "currentValue": "ask",
+         "options": [
+            {"group": "manual", "name": "Manual", "options": [{"value": "ask", "name": "Ask"}]},
+            {"group": "auto", "name": "Automatic", "options": [{"value": "Auto/Edit", "name": "Auto edit"}]},
+         ]},
+        {"id": "verbose", "name": "Verbose", "type": "boolean", "currentValue": false},
+    ]);
+    let turn = |dir: &Path, provider: &str, controls: Value| {
+        let mut request = request(dir, json!({"config_options": options}), json!({}));
+        request.model = Some("Large-1".to_string());
+        request.reasoning_effort = Some("High".to_string());
+        request
+            .metadata
+            .get_mut("spark.execution.settings")
+            .unwrap()["model_settings"] = json!({"provider": provider, "session_config": controls});
+        run(&request, |_| {}).0
+    };
+    let applied = |dir: &Path| {
+        received(dir, "session/set_config_option")
+            .iter()
+            .map(|set| json!([set["configId"], set["value"]]))
+            .collect::<Vec<_>>()
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    turn(dir.path(), "acp:fake", json!({"approval": "Auto/Edit"})).expect("turn");
+    assert_eq!(
+        applied(dir.path()),
+        [
+            json!(["model", "Large-1"]),
+            json!(["effort", "High"]),
+            json!(["approval", "Auto/Edit"])
+        ]
+    );
+    assert_eq!(received(dir.path(), "session/prompt").len(), 1);
+
+    for (controls, expected) in [
+        (
+            json!({"approval": "auto/edit"}),
+            "does not offer the value \"auto/edit\"",
+        ),
+        (
+            json!({"retired": "on"}),
+            "offers no config option \"retired\"",
+        ),
+        (json!({"verbose": "true"}), "\"verbose\""),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let error = turn(dir.path(), "acp:fake", controls)
+            .err()
+            .expect("stale control fails");
+        assert!(error.contains(expected), "{error}");
+        assert!(received(dir.path(), "session/prompt").is_empty());
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    turn(dir.path(), "acp:other", json!({"approval": "gone"})).expect("another harness's controls");
+    assert_eq!(
+        applied(dir.path()),
+        [json!(["model", "Large-1"]), json!(["effort", "High"])]
+    );
+}
+
 #[test]
 fn acp_failures_propagate_without_a_second_prompt() {
     let dir = tempfile::tempdir().unwrap();

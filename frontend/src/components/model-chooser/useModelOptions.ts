@@ -22,7 +22,7 @@ export function useModelOptions(projectPath: string | null) {
                 void fetchProjectChatModelsValidated(projectPath).then(
                     (payload) => ({ projectPath, payload }),
                     (error: unknown) => ({ projectPath, failed: true, payload: {
-                        models: [], providers: { codex: { status: 'unavailable' as const,
+                        models: [], providers: { codex: { status: 'unavailable' as const, label: 'Codex',
                             error: error instanceof ApiHttpError && error.detail ? error.detail
                                 : error instanceof Error ? error.message : 'Unable to discover Codex models.' } },
                     } }),

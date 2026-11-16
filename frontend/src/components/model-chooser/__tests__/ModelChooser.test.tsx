@@ -11,7 +11,7 @@ vi.mock('@/lib/api/projectsApi', () => ({ fetchProjectChatModelsValidated: vi.fn
 vi.mock('@/lib/useLlmProfiles', () => ({ useLlmProfiles: vi.fn() }))
 const initial: ModelSettings = { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null }
 const catalog: ProjectChatModelsResponse = {
-    providers: { codex: { status: 'available', error: null } },
+    providers: { codex: { status: 'available', error: null, label: 'Codex' }, 'claude-code': { status: 'available', error: null, label: 'Claude Code' } },
     models: [
         { provider: 'codex', id: 'discovered', display: 'Discovered', is_default: true, supported_reasoning_efforts: ['low', 'ultra'], default_reasoning_effort: 'low' },
         { provider: 'codex', id: 'other', display: 'Other', is_default: false, supported_reasoning_efforts: ['medium'] },
@@ -304,4 +304,64 @@ it('notes a chosen model its provider no longer lists', async () => {
     await waitFor(() => expect(button).toHaveAccessibleDescription('Codex doesn’t list retired right now. Choose a listed model unless it’s a custom one you know works.'))
     view.rerender(<Editor key="listed" value={{ ...initial, model: 'other' }} />)
     expect(await screen.findByRole('button', { name: /Model: Other/ })).not.toHaveAccessibleDescription()
+})
+
+it('offers an ACP harness by its label, with a null-model harness default, exact efforts and next-turn session controls', async () => {
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({
+        providers: {
+            codex: { status: 'available', error: null, label: 'Codex' },
+            'acp:fake': { status: 'available', error: null, label: 'Fake ACP', setup_status: 'ready',
+                chat: { state: 'unsupported', reason: 'Chat pins instructions.' }, flow: { state: 'supported', reason: 'Ready.' },
+                config_options: [
+                    { id: 'effort', name: 'Effort', category: 'thought_level', type: 'select', currentValue: 'Lo', options: [{ value: 'Lo', name: 'Low' }, { value: 'Hi/2', name: 'Very high' }] },
+                    { id: 'Mode/ID', name: 'Approval', category: 'mode', type: 'select', currentValue: 'Ask', options: [
+                        { group: 'manual', name: 'Manual', options: [{ value: 'Ask', name: 'Ask first' }] },
+                        { group: 'auto', name: 'Automatic', options: [{ value: 'Auto/Edit', name: 'Auto edit' }] }] },
+                    { id: 'verbose', name: 'Verbose', type: 'boolean', currentValue: false },
+                ] },
+            'acp:locked': { status: 'unavailable', error: 'Sign in first.', label: 'Locked', setup_status: 'unauthenticated' },
+        },
+        models: [
+            { provider: 'codex', id: 'discovered', display: 'Discovered', is_default: true, supported_reasoning_efforts: ['low'] },
+            { provider: 'acp:fake', id: '', display: 'Harness default', is_default: true, supported_reasoning_efforts: ['Lo', 'Hi/2'], default_reasoning_effort: 'Lo' },
+        ],
+    })
+    const user = userEvent.setup(), onChange = vi.fn()
+    render(<Editor onChange={onChange} />)
+    await user.click(await screen.findByRole('button', { name: /Model: Default: Discovered/ }))
+    const harness = screen.getByRole('group', { name: 'Fake ACP', exact: true })
+    expect(harness).toHaveTextContent('Chat unavailable: Chat pins instructions.')
+    expect(harness).not.toHaveTextContent('Flows unavailable')
+    expect(screen.getByRole('group', { name: 'Locked', exact: true })).toHaveTextContent('Authentication required. Model discovery unavailable. Sign in first.')
+    expect(screen.queryByRole('group', { name: 'Session controls' })).not.toBeInTheDocument()
+
+    await user.click(within(harness).getByRole('option', { name: 'Harness default' }))
+    expect(onChange).toHaveBeenLastCalledWith({ ...initial, provider: 'acp:fake', model: null })
+    expect(within(harness).getByRole('option', { name: 'Harness default' })).toHaveAttribute('aria-selected', 'true')
+    await user.click(screen.getByRole('button', { name: 'Very high' }))
+    expect(onChange).toHaveBeenLastCalledWith({ ...initial, provider: 'acp:fake', model: null, reasoning_effort: 'Hi/2' })
+
+    await user.click(screen.getByRole('button', { name: /Model:/ }))
+    const controls = screen.getByRole('group', { name: 'Session controls' })
+    expect(controls).toHaveTextContent('changes apply from the next turn')
+    expect(within(controls).getAllByRole('combobox').map(select => select.getAttribute('aria-label'))).toEqual(['Approval'])
+    await user.selectOptions(within(controls).getByRole('combobox', { name: 'Approval' }), 'Auto/Edit')
+    expect(onChange).toHaveBeenLastCalledWith({ ...initial, provider: 'acp:fake', model: null, reasoning_effort: 'Hi/2', session_config: { 'Mode/ID': 'Auto/Edit' } })
+    await user.selectOptions(within(controls).getByRole('combobox', { name: 'Approval' }), 'Harness default')
+    expect(onChange.mock.lastCall?.[0].session_config).toEqual({})
+
+    // Saved choices the harness no longer offers stay visible until cleared.
+    cleanup()
+    render(<Editor value={{ ...initial, provider: 'acp:fake', session_config: { 'Mode/ID': 'gone', retired: 'on' } }} onChange={onChange} />)
+    await user.click(await screen.findByRole('button', { name: /Model:/ }))
+    const stale = screen.getByRole('group', { name: 'Session controls' })
+    expect(within(stale).getByRole('combobox', { name: 'Approval' })).toHaveDisplayValue('gone (not offered now)')
+    await user.selectOptions(within(stale).getByRole('combobox', { name: 'retired' }), 'Harness default')
+    expect(onChange.mock.lastCall?.[0].session_config).toEqual({ 'Mode/ID': 'gone' })
+
+    // Another provider starts without the harness's controls.
+    await user.click(screen.getByRole('option', { name: 'Discovered' }))
+    expect(onChange.mock.lastCall?.[0]).toMatchObject({ provider: 'codex', model: 'discovered' })
+    expect(onChange.mock.lastCall?.[0].session_config).toBeUndefined()
+    expect(screen.queryByRole('group', { name: 'Session controls' })).not.toBeInTheDocument()
 })

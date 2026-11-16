@@ -330,6 +330,10 @@ pub struct ModelSettings {
     pub thinking_budget_tokens: Option<u64>,
     pub reasoning_mode: Option<String>,
     pub reasoning_summary: Option<String>,
+    /// Exact ACP session config selections beyond model and effort, by
+    /// config ID, for the `acp:<id>` provider they were chosen from.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub session_config: BTreeMap<String, String>,
 }
 
 impl Default for ModelSettings {
@@ -343,6 +347,7 @@ impl Default for ModelSettings {
             thinking_budget_tokens: None,
             reasoning_mode: None,
             reasoning_summary: None,
+            session_config: BTreeMap::new(),
         }
     }
 }
@@ -449,6 +454,25 @@ impl ModelSettings {
         if let Some(provider) = self.provider.as_deref() {
             crate::agent_settings::HarnessIdentity::parse(provider)
                 .map_err(SparkCommonError::SettingsValidation)?;
+        }
+        if !self.session_config.is_empty()
+            && !self
+                .provider
+                .as_deref()
+                .is_some_and(crate::agent_settings::HarnessIdentity::is_acp)
+        {
+            return Err(SparkCommonError::SettingsValidation(
+                "Session controls apply only to an ACP harness provider (acp:<id>).".into(),
+            ));
+        }
+        if self
+            .session_config
+            .iter()
+            .any(|(id, value)| id.trim().is_empty() || value.trim().is_empty())
+        {
+            return Err(SparkCommonError::SettingsValidation(
+                "Session control IDs and values must be nonempty.".into(),
+            ));
         }
         if self.llm_profile.as_deref().is_some_and(|profile| {
             profile

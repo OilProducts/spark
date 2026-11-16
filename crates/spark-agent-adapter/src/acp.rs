@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -29,7 +29,9 @@ use agent_client_protocol::{Agent, Client, ErrorCode, Lines};
 use futures_util::FutureExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use spark_common::agent_settings::{AcpHarness, AcpPermissionPolicy};
+use spark_common::agent_settings::{
+    AcpHarness, AcpPermissionPolicy, EnvironmentInheritancePolicy, HarnessIdentity,
+};
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
@@ -202,7 +204,8 @@ struct Plan {
 #[derive(Clone, Debug)]
 enum Selector {
     Category(SessionConfigOptionCategory, &'static str),
-    Id(String),
+    /// A config ID, and who asked for it.
+    Id(String, &'static str),
 }
 
 /// Runs one primary prompt with `harness_id`'s registration, as captured in
@@ -240,7 +243,7 @@ fn live_harness(request: &AgentTurnRequest, harness_id: &str) -> Option<AcpHarne
 /// environment starts fresh. Only this hash is kept, never the values.
 pub fn launch_generation(
     harness: &AcpHarness,
-    inheritance: spark_common::agent_settings::EnvironmentInheritancePolicy,
+    inheritance: EnvironmentInheritancePolicy,
 ) -> String {
     let inherited = crate::local_environment::inherited_environment(inheritance);
     spark_common::project::sha256_hex(
@@ -248,6 +251,353 @@ pub fn launch_generation(
             .to_string()
             .as_bytes(),
     )
+}
+
+// ---- discovery -----------------------------------------------------------
+
+/// How long discovery waits for a harness to initialize and open its
+/// temporary session before reporting it unreachable.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+/// What a declared instruction channel carries during discovery, which
+/// never submits a prompt.
+const PROBE_INSTRUCTIONS: &str = "Spark is checking this harness's capabilities. No task follows.";
+
+/// A capability's effective state for Spark's use of a harness: `supported`,
+/// `unsupported` or `unverified`, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Capability {
+    pub state: String,
+    pub reason: String,
+}
+
+impl Capability {
+    fn new(state: &str, reason: impl Into<String>) -> Self {
+        Self {
+            state: state.to_string(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn supported(&self) -> bool {
+        self.state == "supported"
+    }
+}
+
+/// What a prompt-free probe of a registered harness found. Discovery is
+/// advisory: each turn's own negotiation decides. Setup failures stay apart
+/// from capabilities, since a harness that responds may still be unable to
+/// run a particular request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AcpDiscovery {
+    /// `ready`, `unreachable` or `unauthenticated`.
+    pub setup_status: String,
+    /// Why setup failed; callers report it as their own status error.
+    #[serde(skip)]
+    pub error: Option<String>,
+    pub capabilities: BTreeMap<String, Capability>,
+    pub chat: Capability,
+    pub flow: Capability,
+    /// The temporary session's config options exactly as the harness sent
+    /// them: IDs, value IDs, types, labels, order and groups.
+    pub config_options: Vec<Value>,
+    /// Legacy session modes, kept only when there are no config options.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modes: Option<Value>,
+}
+
+/// What initialize and the temporary session reported.
+struct Probed {
+    system_prompt: bool,
+    resume: bool,
+    load: bool,
+    /// The raw `session/new` result.
+    session: Value,
+}
+
+struct ProbeFailure {
+    unauthenticated: bool,
+    message: String,
+}
+
+impl From<String> for ProbeFailure {
+    fn from(message: String) -> Self {
+        Self {
+            unauthenticated: false,
+            message,
+        }
+    }
+}
+
+/// Probes `harness` in `cwd` without a prompt: initialize, then one
+/// temporary session for its config options. The process is stopped before
+/// this returns.
+pub fn discover(
+    harness_id: &str,
+    harness: &AcpHarness,
+    inheritance: EnvironmentInheritancePolicy,
+    cwd: &Path,
+) -> AcpDiscovery {
+    discovery(harness, probe(harness_id, harness, inheritance, cwd))
+}
+
+fn probe(
+    harness_id: &str,
+    harness: &AcpHarness,
+    inheritance: EnvironmentInheritancePolicy,
+    cwd: &Path,
+) -> Result<Probed, ProbeFailure> {
+    let cwd = std::fs::canonicalize(cwd)
+        .map_err(|error| format!("work area {} is unavailable: {error}", cwd.display()))?;
+    // A declared channel launches as it would for chat, with harmless text.
+    let instructions = harness
+        .system_instructions
+        .as_ref()
+        .map(|_| PROBE_INSTRUCTIONS);
+    let (command, instruction_file) = launch_command(
+        harness_id,
+        harness,
+        inheritance,
+        &cwd,
+        instructions,
+        &BTreeMap::new(),
+    )?;
+    let (done, result) = std::sync::mpsc::channel();
+    let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
+        probe_protocol(endpoints, cwd, done)
+    })
+    .map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            format!("executable not found: {}", harness.executable)
+        }
+        _ => format!("launch failed: {error}"),
+    })?;
+    let outcome = result.recv_timeout(PROBE_TIMEOUT);
+    let stderr = connection.stderr();
+    // Stops the process and waits for its worker.
+    drop(connection);
+    drop(instruction_file);
+    let mut failure = match outcome {
+        Ok(Ok(probed)) => return Ok(probed),
+        Ok(Err(failure)) => failure,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => ProbeFailure::from(format!(
+            "the harness did not finish setup within {}s",
+            PROBE_TIMEOUT.as_secs()
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            ProbeFailure::from("the ACP connection worker stopped".to_string())
+        }
+    };
+    let lines = stderr.lines().collect::<Vec<_>>();
+    let tail = lines[lines.len().saturating_sub(10)..].join("\n");
+    if !tail.is_empty() && !failure.unauthenticated {
+        failure.message = format!("{}; stderr tail:\n{tail}", failure.message);
+    }
+    Err(failure)
+}
+
+async fn probe_protocol(
+    endpoints: Endpoints,
+    cwd: PathBuf,
+    done: std::sync::mpsc::Sender<Result<Probed, ProbeFailure>>,
+) {
+    let Endpoints { stdout, stdin, .. } = endpoints;
+    let failure = Failure::default();
+    let transport = Lines::new(
+        Box::pin(outgoing(stdin)),
+        Box::pin(incoming(stdout, Arc::clone(&failure))),
+    );
+    let result = Client
+        .v1()
+        .name("spark")
+        .connect_with(transport, async |cx| Ok(probe_session(&cx, &cwd).await))
+        .await
+        .unwrap_or_else(|error| Err(describe(&error).into()))
+        .map_err(|error| match failure.get() {
+            Some(unusable) => unusable.clone().into(),
+            None => error,
+        });
+    let _ = done.send(result);
+}
+
+async fn probe_session(cx: &ConnectionTo<Agent>, cwd: &Path) -> Result<Probed, ProbeFailure> {
+    let failed = |error: agent_client_protocol::Error, method: &str| ProbeFailure {
+        unauthenticated: is_auth_error(&error),
+        message: setup_error(&error, method),
+    };
+    let init = cx
+        .send_request(
+            InitializeRequest::new(ProtocolVersion::V1)
+                .client_info(Implementation::new("spark", env!("CARGO_PKG_VERSION"))),
+        )
+        .block_task()
+        .await
+        .map_err(|error| failed(error, "initialize"))?;
+    if init.protocol_version != ProtocolVersion::V1 {
+        return Err(format!(
+            "the harness negotiated ACP protocol version {}, but Spark speaks version 1",
+            init.protocol_version.as_u16()
+        )
+        .into());
+    }
+    // Options and modes belong to a session; this one never gets a prompt.
+    // Sent untyped, so options of types Spark does not know are kept.
+    let request = agent_client_protocol::UntypedMessage::new(
+        "session/new",
+        NewSessionRequest::new(cwd.to_path_buf()),
+    )
+    .map_err(|error| describe(&error))?;
+    let session = cx
+        .send_request(request)
+        .block_task()
+        .await
+        .map_err(|error| failed(error, "session/new"))?;
+    let capabilities = init.agent_capabilities;
+    Ok(Probed {
+        system_prompt: capabilities.session_capabilities.system_prompt.is_some(),
+        resume: capabilities.session_capabilities.resume.is_some(),
+        load: capabilities.load_session,
+        session,
+    })
+}
+
+/// A select option's values in order, with grouped values flattened.
+pub fn select_values(option: &Value) -> Vec<&Value> {
+    option["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|entry| match entry["options"].as_array() {
+            Some(group) => group.iter().collect(),
+            None => vec![entry],
+        })
+        .collect()
+}
+
+/// The first select option of `category`, such as `model`.
+pub fn select_option<'a>(options: &'a [Value], category: &str) -> Option<&'a Value> {
+    options
+        .iter()
+        .find(|option| option["category"] == category && option["type"] == "select")
+}
+
+/// Spark's effective support, from what the probe saw and what this backend
+/// implements.
+fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpDiscovery {
+    let unsupported = |reason: &str| Capability::new("unsupported", reason);
+    // Fixed by this implementation, whatever a harness reports.
+    let mut capabilities = BTreeMap::from([
+        ("plan_mode".to_string(), unsupported("No read-only mode is verified for ACP harnesses; a harness mode named plan carries no such guarantee.")),
+        ("steering".to_string(), unsupported("ACP v1 has no portable way to accept a message during a prompt, so messages wait for the next turn.")),
+        ("child_intervention".to_string(), unsupported("Spark cannot intervene in an ACP harness's child work.")),
+        ("forms".to_string(), unsupported("Typed form questions from ACP harnesses are not supported yet.")),
+        ("per_prompt_usage".to_string(), Capability::new("unverified", "Counted only when the harness reports usage on a prompt's response; otherwise unknown.")),
+    ]);
+    let probed = match probed {
+        Ok(probed) => probed,
+        Err(failure) => {
+            for name in [
+                "pinned_instructions",
+                "session_resume",
+                "model_selection",
+                "reasoning_effort",
+            ] {
+                capabilities.insert(
+                    name.to_string(),
+                    Capability::new("unverified", "Discovery could not set up the harness."),
+                );
+            }
+            let unknown = Capability::new(
+                "unverified",
+                "Discovery could not set up the harness; see its setup error.",
+            );
+            return AcpDiscovery {
+                setup_status: if failure.unauthenticated {
+                    "unauthenticated"
+                } else {
+                    "unreachable"
+                }
+                .to_string(),
+                error: Some(failure.message),
+                capabilities,
+                chat: unknown.clone(),
+                flow: unknown,
+                config_options: Vec::new(),
+                modes: None,
+            };
+        }
+    };
+    let options = probed.session["configOptions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let offered = |id: &str, value: &str| {
+        options.iter().any(|option| {
+            option["id"] == id
+                && option["type"] == "select"
+                && select_values(option)
+                    .iter()
+                    .any(|entry| entry["value"] == value)
+        })
+    };
+    let pinned = match &harness.system_instructions {
+        Some(channel) => match channel.config.iter().find(|(id, value)| !offered(id, value)) {
+            Some((id, value)) => unsupported(&format!(
+                "Its system_instructions channel requires config option {id:?} set to {value:?}, which the harness does not offer."
+            )),
+            None => Capability::new("supported", "Its registration declares a system_instructions channel."),
+        },
+        None if probed.system_prompt => {
+            Capability::new("supported", "The harness advertises systemPrompt.")
+        }
+        None => unsupported("The harness advertises no systemPrompt and its registration declares no system_instructions channel."),
+    };
+    let chat = match pinned.supported() {
+        true => Capability::new(
+            "supported",
+            "Chat pins its instructions through a supported channel.",
+        ),
+        false => unsupported(&format!("Chat pins instructions. {}", pinned.reason)),
+    };
+    capabilities.insert("pinned_instructions".to_string(), pinned);
+    capabilities.insert(
+        "session_resume".to_string(),
+        if probed.resume {
+            Capability::new("supported", "The harness advertises session/resume.")
+        } else if probed.load {
+            Capability::new("supported", "The harness advertises session/load.")
+        } else {
+            unsupported("Each turn starts a fresh session, with earlier messages as context.")
+        },
+    );
+    capabilities.insert(
+        "model_selection".to_string(),
+        match select_option(&options, "model") {
+            Some(_) => Capability::new("supported", "The harness offers a model selector."),
+            None => unsupported("The harness offers no model selector; turns use its default."),
+        },
+    );
+    capabilities.insert(
+        "reasoning_effort".to_string(),
+        match select_option(&options, "thought_level") {
+            Some(_) => Capability::new("supported", "The harness offers a thought-level selector."),
+            None => unsupported("The harness offers no thought-level selector."),
+        },
+    );
+    AcpDiscovery {
+        setup_status: "ready".to_string(),
+        error: None,
+        capabilities,
+        chat,
+        flow: Capability::new(
+            "supported",
+            "Flow steps pin no instructions; a step that requires steering or child intervention is refused.",
+        ),
+        modes: options
+            .is_empty()
+            .then(|| probed.session.get("modes").filter(|modes| !modes.is_null()).cloned())
+            .flatten(),
+        config_options: options,
+    }
 }
 
 /// Reasoning controls a turn may carry; ACP v1 has no portable equivalent.
@@ -322,30 +672,14 @@ fn turn(
         .system_instructions
         .as_ref()
         .filter(|_| instructions.is_some());
-    let instruction_file = channel
-        .filter(|channel| channel.uses_file())
-        .map(|_| {
-            let mut file = tempfile::NamedTempFile::new()?;
-            file.write_all(instructions.as_deref().unwrap_or_default().as_bytes())?;
-            file.flush()?;
-            Ok::<_, std::io::Error>(file)
-        })
-        .transpose()
-        .map_err(|error| {
-            format!("ACP harness {harness_id} instruction file write failed: {error}")
-        })?;
-    let (channel_env, channel_args) = match channel {
-        Some(channel) => channel
-            .render(
-                instructions.as_deref().unwrap_or_default(),
-                &instruction_file
-                    .as_ref()
-                    .map(|file| file.path().to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            )
-            .map_err(|error| format!("ACP harness {harness_id} system_instructions: {error}"))?,
-        None => Default::default(),
-    };
+    let (command, instruction_file) = launch_command(
+        harness_id,
+        &harness,
+        config.environment_inheritance,
+        &cwd,
+        instructions.as_deref(),
+        &request.metadata,
+    )?;
 
     let mut selections = Vec::new();
     if let Some(model) = request
@@ -371,8 +705,31 @@ fn turn(
             effort.to_string(),
         ));
     }
+    // Session controls chosen for this harness; ones chosen for another
+    // provider, such as a flow's launch default a node overrides, are not its.
+    let controls = reasoning
+        .filter(|settings| {
+            settings["provider"]
+                .as_str()
+                .and_then(|provider| HarnessIdentity::parse(provider).ok().flatten())
+                == Some(HarnessIdentity::Acp(harness_id.to_string()))
+        })
+        .and_then(|settings| settings.get("session_config"))
+        .and_then(Value::as_object);
+    for (id, value) in controls.into_iter().flatten() {
+        let value = value
+            .as_str()
+            .ok_or_else(|| format!("session control {id:?} must name a value ID"))?;
+        selections.push((
+            Selector::Id(id.clone(), "chosen in its session controls"),
+            value.to_string(),
+        ));
+    }
     for (id, value) in channel.map(|channel| &channel.config).into_iter().flatten() {
-        selections.push((Selector::Id(id.clone()), value.clone()));
+        selections.push((
+            Selector::Id(id.clone(), "required by its system_instructions"),
+            value.clone(),
+        ));
     }
 
     let attachments = crate::attachments::request_attachments(&request.metadata);
@@ -395,20 +752,6 @@ fn turn(
         fresh_context: fresh_context(&request.history, &earlier),
         cwd: cwd.clone(),
     };
-
-    // Spark's reserved bindings last, so nothing overrides them.
-    let mut command = Command::new(&harness.executable);
-    command
-        .args(&harness.args)
-        .args(channel_args)
-        .current_dir(&cwd)
-        .env_clear()
-        .envs(crate::local_environment::inherited_environment(
-            config.environment_inheritance,
-        ))
-        .envs(&harness.env)
-        .envs(channel_env)
-        .envs(crate::agent::agent_turn_env(&request.metadata));
 
     let (interrupts, interrupted) = tokio::sync::mpsc::channel(1);
     let live = Arc::new(Live {
@@ -527,6 +870,55 @@ fn turn(
         stop_reason: finished.stop_reason,
         record,
     })
+}
+
+/// The command that launches `harness` in `cwd`, carrying `instructions`
+/// through its declared channel, and the instruction file that must outlive
+/// the process. Spark's reserved bindings come last, so nothing overrides them.
+fn launch_command(
+    harness_id: &str,
+    harness: &AcpHarness,
+    inheritance: EnvironmentInheritancePolicy,
+    cwd: &Path,
+    instructions: Option<&str>,
+    metadata: &BTreeMap<String, Value>,
+) -> Result<(Command, Option<tempfile::NamedTempFile>), String> {
+    let channel = harness.system_instructions.as_ref().zip(instructions);
+    let instruction_file = channel
+        .filter(|(channel, _)| channel.uses_file())
+        .map(|(_, text)| {
+            let mut file = tempfile::NamedTempFile::new()?;
+            file.write_all(text.as_bytes())?;
+            file.flush()?;
+            Ok::<_, std::io::Error>(file)
+        })
+        .transpose()
+        .map_err(|error| {
+            format!("ACP harness {harness_id} instruction file write failed: {error}")
+        })?;
+    let (channel_env, channel_args) = match channel {
+        Some((channel, text)) => channel
+            .render(
+                text,
+                &instruction_file
+                    .as_ref()
+                    .map(|file| file.path().to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            )
+            .map_err(|error| format!("ACP harness {harness_id} system_instructions: {error}"))?,
+        None => Default::default(),
+    };
+    let mut command = Command::new(&harness.executable);
+    command
+        .args(&harness.args)
+        .args(channel_args)
+        .current_dir(cwd)
+        .env_clear()
+        .envs(crate::local_environment::inherited_environment(inheritance))
+        .envs(&harness.env)
+        .envs(channel_env)
+        .envs(crate::agent::agent_turn_env(metadata));
+    Ok((command, instruction_file))
 }
 
 /// Earlier conversation as ordinary context for a session that starts
@@ -901,14 +1293,14 @@ impl<'a> Turn<'a> {
                 .iter()
                 .find(|option| match &selector {
                     Selector::Category(category, _) => option.category.as_ref() == Some(category),
-                    Selector::Id(id) => option.id.0.as_ref() == id,
+                    Selector::Id(id, _) => option.id.0.as_ref() == id,
                 })
                 .ok_or_else(|| match &selector {
                     Selector::Category(_, label) => format!(
                         "the harness offers no {label} selection, so {label} {value:?} cannot be applied"
                     ),
-                    Selector::Id(id) => format!(
-                        "the harness offers no config option {id:?} required by its system_instructions"
+                    Selector::Id(id, source) => format!(
+                        "the harness offers no config option {id:?} {source}"
                     ),
                 })?;
             let config_id = option.id.0.to_string();

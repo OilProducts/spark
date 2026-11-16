@@ -105,7 +105,7 @@ describe('Graph and settings behavior', () => {
             ? input.toString()
             : input.url
         const method = init?.method ?? 'GET'
-        if (url.includes('/chat-models')) return Response.json({ models: [{ provider: 'anthropic', id: 'claude-sonnet-4-6', supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }, { provider: 'codex', id: 'gpt-5.5' }, { provider: 'openai', id: 'gpt-5.3', supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh'] }], providers: { codex: { status: 'available', error: null } }, provider_reasoning_efforts: { openai: ['low', 'medium', 'high', 'xhigh'], anthropic: ['low', 'medium', 'high', 'xhigh', 'max'] } })
+        if (url.includes('/chat-models')) return Response.json({ models: [{ provider: 'anthropic', id: 'claude-sonnet-4-6', supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }, { provider: 'codex', id: 'gpt-5.5' }, { provider: 'openai', id: 'gpt-5.3', supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh'] }], providers: { codex: { status: 'available', error: null, label: 'Codex' } }, provider_reasoning_efforts: { openai: ['low', 'medium', 'high', 'xhigh'], anthropic: ['low', 'medium', 'high', 'xhigh', 'max'] } })
         if (url.endsWith('/workspace/api/settings')) {
           if (method === 'PATCH') {
             const body = JSON.parse(String(init?.body))

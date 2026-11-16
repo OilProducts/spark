@@ -312,6 +312,108 @@ fn legacy_token_usage_events_only_count_when_no_completed_event_carried_usage() 
     assert!(project_run_usage(&[], "compat-model").is_none());
 }
 
+/// Each ACP harness prompt, primary or repair, counts its own reported usage
+/// once, from any harness, under the harness and the model chosen for it,
+/// never the run's model or a catalog price. Session snapshots and context
+/// meters never add to it; a prompt without usage leaves the totals partial.
+#[test]
+fn harness_prompt_usage_counts_once_per_prompt_and_labels_missing_usage_partial() {
+    let prompt = |sequence, node: &str, provider: &str, model: Value, usage: Value| {
+        completed_entry(
+            sequence,
+            "agent_harness_request_completed",
+            json!({"node_id": node, "provider": provider, "model": model, "token_usage": usage}),
+        )
+    };
+    let meter = |sequence, node: &str| {
+        journal_entry(
+            sequence,
+            "CodergenAdapter",
+            json!({"adapter_event_type": "acp_session_event", "node_id": node, "payload": {
+                "event_type": "context_usage_updated", "details": {"used": 90000, "size": 200000},
+                "token_usage": {"inputTokens": 90000, "totalTokens": 90000},
+            }}),
+        )
+    };
+    let entries = vec![
+        meter(1, "build"),
+        prompt(
+            2,
+            "build",
+            "acp:fake",
+            json!("gpt-5"),
+            json!({
+                "inputTokens": 100, "outputTokens": 20, "thoughtTokens": 5, "totalTokens": 125,
+                "cachedReadTokens": 40, "cachedWriteTokens": 10,
+            }),
+        ),
+        prompt(
+            3,
+            "build",
+            "acp:fake",
+            json!("gpt-5"),
+            json!({"inputTokens": 50, "outputTokens": 10, "totalTokens": 60}),
+        ),
+        prompt(
+            4,
+            "review",
+            "acp:other",
+            Value::Null,
+            json!({"inputTokens": 7, "outputTokens": 3}),
+        ),
+        meter(5, "review"),
+        prompt(6, "review", "acp:other", Value::Null, Value::Null),
+    ];
+
+    let breakdown = project_run_usage(&entries, "gpt-5.4").expect("usage");
+    assert_eq!(
+        breakdown.by_model.keys().collect::<Vec<_>>(),
+        ["acp:fake/gpt-5", "acp:other"]
+    );
+    let fake = breakdown.by_model["acp:fake/gpt-5"];
+    assert_eq!(
+        (
+            fake.input_tokens,
+            fake.cached_input_tokens,
+            fake.output_tokens,
+            fake.total_tokens
+        ),
+        (150, 40, 30, 185)
+    );
+    assert_eq!(breakdown.totals.total_tokens, 195);
+    let value = breakdown.to_value();
+    assert_eq!(
+        (
+            value["coverage"].clone(),
+            value["requests_without_usage"].clone()
+        ),
+        (json!("partial"), json!(1))
+    );
+    let cost = estimate_model_cost(&breakdown).expect("cost");
+    assert_eq!(cost["status"], "unpriced", "{cost}");
+
+    let mut incremental = RunUsageAccumulator::new("gpt-5.4");
+    for end in 1..=entries.len() {
+        incremental.apply(&entries[end - 1..end]);
+        assert_eq!(
+            incremental.breakdown(),
+            project_run_usage(&entries[..end], "gpt-5.4"),
+            "cursor {end}"
+        );
+    }
+    let complete = project_run_usage(&entries[..5], "gpt-5.4").expect("usage");
+    assert!(complete.to_value().get("coverage").is_none());
+    // No reported usage at all stays unknown rather than zero.
+    assert!(project_run_usage(
+        &[
+            meter(1, "build"),
+            prompt(2, "build", "acp:fake", Value::Null, Value::Null)
+        ],
+        "gpt-5"
+    )
+    .is_none());
+}
+
 #[test]
 fn incremental_usage_matches_full_projection_at_every_cursor() {
     let event = |sequence, node: &str, event_type: &str, model: &str, total| {

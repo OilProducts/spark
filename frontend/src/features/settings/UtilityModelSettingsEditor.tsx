@@ -30,7 +30,7 @@ export function UtilityModelSettingsEditor({ projectPath }: { projectPath: strin
             <fieldset disabled={!editor.saved || editor.pending} className="space-y-3">
                 <Label className="flex items-center gap-2 text-sm"><Switch checked={editor.draft !== null}
                     onCheckedChange={(checked) => editor.setDraft(checked ? { ...utilityDefault } : null)} />Use a utility model</Label>
-                {editor.draft && <ModelChooser inherited={codexDefault} disabled={!editor.saved || editor.pending} value={editor.draft} onChange={next => editor.setDraft(next.provider || next.llm_profile ? next : { ...next, provider: 'codex' })} projectPath={projectPath} inheritLabel="Provider default" invalidModel={!!invalidModel} />}
+                {editor.draft && <ModelChooser sessionControls={false} inherited={codexDefault} disabled={!editor.saved || editor.pending} value={editor.draft} onChange={next => editor.setDraft(next.provider || next.llm_profile ? next : { ...next, provider: 'codex' })} projectPath={projectPath} inheritLabel="Provider default" invalidModel={!!invalidModel} />}
             </fieldset>
             <div className="flex flex-wrap gap-2">
                 <Button aria-label="Save utility model" size="sm" disabled={!editor.dirty || editor.pending || !!invalidModel} onClick={() => void editor.save()}>Save</Button>

@@ -465,7 +465,7 @@ export function GraphLlmDefaultsSection({
                 title="Model defaults"
             />
             <div className="space-y-3">
-                <ModelChooser projectPath={projectPath} inheritLabel="Workspace default"
+                <ModelChooser projectPath={projectPath} inheritLabel="Workspace default" sessionControls={false}
                     inherited={{ provider: uiDefaults.llm_provider || null, llm_profile: uiDefaults.llm_profile || null, model: uiDefaults.llm_model || null, reasoning_effort: uiDefaults.reasoning_effort || null, thinking: uiDefaults.thinking || null, thinking_budget_tokens: Number(uiDefaults.thinking_budget_tokens) || null, reasoning_mode: uiDefaults.reasoning_mode || null, reasoning_summary: uiDefaults.reasoning_summary || null }}
                     value={{ provider: flowMetadata.llm_provider || null, llm_profile: flowMetadata.llm_profile || null,
                         model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null, thinking: flowMetadata.thinking || null, thinking_budget_tokens: Number(flowMetadata.thinking_budget_tokens) || null, reasoning_mode: flowMetadata.reasoning_mode || null, reasoning_summary: flowMetadata.reasoning_summary || null }}

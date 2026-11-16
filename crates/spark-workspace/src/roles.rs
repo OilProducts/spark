@@ -124,6 +124,7 @@ pub(crate) fn role_model_settings(role: &attractor_dsl::Role) -> Option<ModelSet
         thinking_budget_tokens: execution.thinking_budget_tokens,
         reasoning_mode: execution.reasoning_mode,
         reasoning_summary: execution.reasoning_summary,
+        session_config: Default::default(),
     })
 }
 

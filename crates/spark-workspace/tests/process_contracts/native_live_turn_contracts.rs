@@ -816,3 +816,187 @@ fn acp_tool_results_given_only_as_content_reach_chat_history() {
         "{snapshot}"
     );
 }
+
+/// Discovery probes each registered harness in the work area without a
+/// prompt, reports raw config options and separate setup and capability
+/// states, and reuses its result until the agents settings change.
+#[test]
+fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
+    let temp = tempfile::tempdir().unwrap();
+    let log = temp.path().join("acp.log");
+    let options = json!([
+        {"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "fast",
+         "options": [
+            {"group": "quick", "name": "Quick", "options": [{"value": "fast", "name": "Fast"}]},
+            {"group": "deep", "name": "Deep", "options": [{"value": "Deep/1", "name": "Deep One"}]},
+         ]},
+        {"id": "effort", "name": "Effort", "category": "thought_level", "type": "select", "currentValue": "Med",
+         "options": [{"value": "Low", "name": "Low"}, {"value": "Med", "name": "Medium"}]},
+        {"id": "approval", "name": "Approval", "category": "mode", "type": "select", "currentValue": "ask",
+         "options": [{"value": "ask", "name": "Ask"}, {"value": "plan", "name": "Plan"}]},
+        {"id": "verbose", "name": "Verbose", "type": "boolean", "currentValue": false},
+        {"id": "dial", "name": "Dial", "type": "slider", "currentValue": 3},
+    ]);
+    let modes =
+        json!({"currentModeId": "code", "availableModes": [{"id": "code", "name": "Code"}]});
+    let harness = |name: &str, executable: &str, script: Value| {
+        let mut script = script;
+        script["log"] = json!(log);
+        json!({"name": name, "executable": executable, "env": {
+            "SPARK_FAKE_ACP": script.to_string(), "AGENT_TOKEN": "discovery-secret-sentinel",
+        }})
+    };
+    let settings = settings(temp.path());
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&settings.config_dir).unwrap();
+    let agents = json!({"agents": {
+        "native": {"claude_binary": "/nonexistent/claude-for-tests"},
+        "acp_harnesses": {
+            "fake": harness("Fake ACP", FAKE_ACP, json!({"system_prompt": true, "resume": true, "config_options": options})),
+            "plain": harness("Plain", FAKE_ACP, json!({"modes": modes})),
+            "locked": harness("Locked", FAKE_ACP, json!({"new_error": {"code": -32000, "message": "Authentication required"}})),
+            "missing": harness("Missing", "/nonexistent/acp-agent", json!({})),
+        },
+    }});
+    std::fs::write(
+        settings.config_dir.join("spark.toml"),
+        toml::to_string(&agents).unwrap(),
+    )
+    .unwrap();
+    let project = project.canonicalize().unwrap();
+    let discover = || {
+        spark_workspace::models::chat_models_with_codex_result(&settings, &project, Ok(vec![]))
+            .unwrap()
+    };
+    let launches = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|entry| entry.get("pid").is_some())
+            .collect::<Vec<_>>()
+    };
+
+    let response = discover();
+    let providers = &response["providers"];
+    let fake = &providers["acp:fake"];
+    assert_eq!(fake["status"], "available", "{fake}");
+    assert_eq!(fake["label"], "Fake ACP");
+    assert_eq!(fake["setup_status"], "ready");
+    assert_eq!(fake["config_options"], options, "options are kept exactly");
+    assert!(fake.get("modes").is_none(), "config options win over modes");
+    assert_eq!(fake["chat"]["state"], "supported");
+    assert_eq!(fake["flow"]["state"], "supported");
+    for (capability, state) in [
+        ("model_selection", "supported"),
+        ("reasoning_effort", "supported"),
+        ("session_resume", "supported"),
+        ("pinned_instructions", "supported"),
+        ("plan_mode", "unsupported"),
+        ("forms", "unsupported"),
+        ("per_prompt_usage", "unverified"),
+    ] {
+        assert_eq!(
+            fake["capabilities"][capability]["state"], state,
+            "{capability}"
+        );
+        assert!(fake["capabilities"][capability]["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()));
+    }
+    let models = |provider: &str| {
+        response["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|model| model["provider"] == provider)
+            .map(|model| {
+                json!([
+                    model["id"],
+                    model["display"],
+                    model["is_default"],
+                    model["supported_reasoning_efforts"],
+                    model["default_reasoning_effort"]
+                ])
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        models("acp:fake"),
+        vec![
+            json!(["fast", "Fast", true, ["Low", "Med"], "Med"]),
+            json!(["Deep/1", "Deep One", false, ["Low", "Med"], "Med"]),
+        ]
+    );
+
+    let plain = &providers["acp:plain"];
+    assert_eq!(plain["setup_status"], "ready", "{plain}");
+    assert_eq!(
+        plain["chat"]["state"], "unsupported",
+        "no systemPrompt or channel"
+    );
+    assert_eq!(plain["flow"]["state"], "supported");
+    assert_eq!(
+        plain["capabilities"]["model_selection"]["state"],
+        "unsupported"
+    );
+    assert_eq!(
+        plain["modes"], modes,
+        "legacy modes show without config options"
+    );
+    assert_eq!(
+        models("acp:plain"),
+        vec![json!(["", "Harness default", true, [], null])]
+    );
+
+    let locked = &providers["acp:locked"];
+    assert_eq!(locked["status"], "unavailable", "{locked}");
+    assert_eq!(locked["setup_status"], "unauthenticated");
+    assert!(locked["error"]
+        .as_str()
+        .is_some_and(|error| !error.is_empty()));
+    assert_eq!(locked["chat"]["state"], "unverified");
+    assert_eq!(
+        locked["capabilities"]["model_selection"]["state"],
+        "unverified"
+    );
+    assert!(models("acp:locked").is_empty());
+
+    let missing = &providers["acp:missing"];
+    assert_eq!(missing["setup_status"], "unreachable", "{missing}");
+    assert!(missing["error"]
+        .as_str()
+        .unwrap()
+        .contains("executable not found"));
+
+    assert!(!response.to_string().contains("discovery-secret-sentinel"));
+    assert!(acp_received(temp.path(), "session/prompt").is_empty());
+    let sessions = acp_received(temp.path(), "session/new");
+    assert_eq!(
+        sessions.len(),
+        3,
+        "one temporary session per reachable harness"
+    );
+    assert!(sessions
+        .iter()
+        .all(|session| session["cwd"] == json!(project)));
+    let probes = launches();
+    assert_eq!(probes.len(), 3);
+    for probe in &probes {
+        assert_eq!(probe["cwd"], json!(project));
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &probe["pid"].to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "the probe's process was released: {probe}");
+    }
+
+    assert_eq!(discover(), response, "cached");
+    assert_eq!(launches().len(), 3, "a cached discovery launches nothing");
+    spark_workspace::models::invalidate_model_discovery("agents");
+    discover();
+    assert_eq!(launches().len(), 6, "an agents change probes again");
+}

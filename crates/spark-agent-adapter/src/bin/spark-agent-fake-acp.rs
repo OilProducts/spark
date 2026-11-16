@@ -106,10 +106,13 @@ impl Agent {
     }
 
     fn setup_result(&self) -> Value {
-        match self.script.get("config_options") {
-            Some(options) => json!({"sessionId": self.session_id, "configOptions": options}),
-            None => json!({"sessionId": self.session_id}),
+        let mut result = json!({"sessionId": self.session_id});
+        for (key, field) in [("config_options", "configOptions"), ("modes", "modes")] {
+            if let Some(value) = self.script.get(key) {
+                result[field] = value.clone();
+            }
         }
+        result
     }
 
     fn handle(&mut self, message: Value) {
