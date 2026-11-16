@@ -210,11 +210,12 @@ fn main() {
         drain_stdin();
         return;
     }
+    // Unix only, as is its contract: it closes file descriptor 0.
+    #[cfg(unix)]
     if mode == "closed-stdin" {
         // Stops reading but keeps running with stdout open, so a live
         // message's write fails.
         append_log(&format!("PID={}", std::process::id()));
-        #[cfg(unix)]
         drop(unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(0) });
         emit(
             &mut out,

@@ -1372,21 +1372,25 @@ fn claude_code_answers_the_cli_and_terminates_while_the_sink_is_blocked() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(ClaudeCodeBackend::new().terminate(&path, &id));
-    let pid = log()
-        .lines()
-        .find_map(|line| line.strip_prefix("PID=").map(str::to_string))
-        .expect("pid");
-    let alive = || {
-        std::process::Command::new("kill")
-            .args(["-0", &pid])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap()
-            .success()
-    };
-    while alive() {
-        assert!(std::time::Instant::now() < deadline, "{pid} still running");
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    // The process is gone before the sink is released, checked with `kill -0`.
+    #[cfg(unix)]
+    {
+        let pid = log()
+            .lines()
+            .find_map(|line| line.strip_prefix("PID=").map(str::to_string))
+            .expect("pid");
+        let alive = || {
+            std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        while alive() {
+            assert!(std::time::Instant::now() < deadline, "{pid} still running");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
     // The turn returns only once the sink has every event.
     assert!(!turn.is_finished());
@@ -1459,6 +1463,9 @@ fn not_delivered(events: &[TurnStreamEvent]) -> Vec<Option<String>> {
         .collect()
 }
 
+/// Unix only: the fixture closes its stdin descriptor, and `kill -0` checks
+/// its cleanup.
+#[cfg(unix)]
 #[test]
 fn claude_code_failed_stdin_write_ends_the_turn_and_settles_its_message() {
     let _lock = ENV_LOCK
