@@ -588,9 +588,19 @@ fn app_server_exit_ends_the_turn_even_while_a_question_waits() {
     let _lock = ENV_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    for mode in ["exit-mid-turn", "question-then-exit"] {
+    // question-then-orphan leaves a descendant holding stdout open for 30 s.
+    for mode in [
+        "exit-mid-turn",
+        "question-then-exit",
+        "question-then-orphan",
+    ] {
         let temp = tempfile::tempdir().expect("tempdir");
         let _env = fake_codex(temp.path(), mode);
+        let descendant = temp.path().join("descendant.pid");
+        let _descendant = EnvVarGuard::set(
+            "SPARK_FAKE_CODEX_APP_SERVER_DESCENDANT_PID_FILE",
+            &descendant,
+        );
         let turn = spawn_turn(turn_request(temp.path(), "codex-exit"));
         let error = turn
             .recv_timeout(PROMPTLY)
@@ -600,6 +610,11 @@ fn app_server_exit_ends_the_turn_even_while_a_question_waits() {
             error.message, "codex app-server exited before turn completion",
             "{mode}"
         );
+        // Ended with the client, while this process lives on.
+        #[cfg(unix)]
+        if mode == "question-then-orphan" {
+            assert_ends(&descendant);
+        }
     }
     let late_answer = CodexAppServerBackend::new()
         .answer_request_user_input(AgentRequestUserInputAnswerRequest {
@@ -633,6 +648,401 @@ fn app_server_exit_ends_the_turn_even_while_a_question_waits() {
             .and_then(|failure| failure.error_code)
             .as_deref(),
         Some("request_user_input_not_pending")
+    );
+}
+
+#[test]
+fn server_requests_between_calls_are_answered_while_a_call_waits() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "server-requests");
+    // The fake withholds thread/start's reply until both requests are answered.
+    let output = spawn_turn(turn_request(temp.path(), "codex-server-requests"))
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect("turn");
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Ack"));
+    let messages = read_jsonrpc_log(&temp.path().join("codex-rpc.jsonl"));
+    let reply = |id: &str| {
+        messages
+            .iter()
+            .find(|message| message["id"] == json!(id) && message.get("method").is_none())
+            .unwrap_or_else(|| panic!("reply to {id}"))
+            .clone()
+    };
+    assert_eq!(
+        reply("approval-1")["result"],
+        json!({"decision": "acceptForSession"})
+    );
+    assert_eq!(
+        reply("unsupported-1")["error"]["message"],
+        json!("Unsupported request: item/unknown/request")
+    );
+}
+
+#[test]
+fn invalid_utf8_on_stdout_fails_the_turn_explicitly() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "invalid-utf8");
+    let error = spawn_turn(turn_request(temp.path(), "codex-invalid-utf8"))
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect_err("unreadable stdout");
+    assert!(
+        error
+            .message
+            .starts_with("codex app-server stdout read failed: "),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn oversized_message_is_refused_at_once_and_never_sent() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "steerable");
+    let path = temp.path().to_string_lossy().into_owned();
+    let turn = spawn_turn(turn_request(temp.path(), "codex-oversized"));
+    wait_for_logged(temp.path(), "turn/start");
+
+    let oversized = "x".repeat(16 * 1024 * 1024 + 1);
+    assert!(!CodexAppServerBackend::new().send_message(
+        &path,
+        "codex-oversized",
+        "note-1",
+        &oversized
+    ));
+    let accepted = spawn_send_message(temp.path(), "codex-oversized", "note-2");
+    assert_eq!(accepted.recv_timeout(PROMPTLY), Ok(true));
+    let output = turn
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect("turn");
+    assert_eq!(delivered_ids(&output), ["note-2"]);
+    let steers = read_jsonrpc_log(&temp.path().join("codex-rpc.jsonl"))
+        .into_iter()
+        .filter(|message| message["method"] == "turn/steer")
+        .count();
+    assert_eq!(steers, 1);
+}
+
+#[test]
+fn a_sink_can_steer_the_turn_it_is_receiving() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "gated");
+    let path = temp.path().to_string_lossy().into_owned();
+    let (accepted, accepted_receiver) = mpsc::channel();
+    let steered = std::sync::Once::new();
+    let request = turn_request(temp.path(), "codex-sink-steers");
+    let turn = thread::spawn(move || {
+        CodexAppServerBackend::new().run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |_event| {
+                steered.call_once(|| {
+                    let _ = accepted.send(CodexAppServerBackend::new().send_message(
+                        &path,
+                        "codex-sink-steers",
+                        "note-1",
+                        "Use the docs.",
+                    ));
+                });
+            })),
+        )
+    });
+    assert_eq!(accepted_receiver.recv_timeout(PROMPTLY), Ok(true));
+    fs::write(temp.path().join("continue"), "").expect("continue gate");
+    fs::write(temp.path().join("finish"), "").expect("finish gate");
+    let output = turn.join().expect("turn thread").expect("turn");
+    assert_eq!(delivered_ids(&output), ["note-1"]);
+}
+
+#[test]
+fn a_message_sent_once_the_turn_has_completed_is_refused_at_once() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "default");
+    let path = temp.path().to_string_lossy().into_owned();
+    let (accepted, accepted_receiver) = mpsc::channel();
+    let request = turn_request(temp.path(), "codex-sink-after-completion");
+    let (turn_sender, turn) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = turn_sender.send(CodexAppServerBackend::new().run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |event| {
+                if event.kind == TurnStreamEventKind::TurnCompleted {
+                    let _ = accepted.send(CodexAppServerBackend::new().send_message(
+                        &path,
+                        "codex-sink-after-completion",
+                        "note-1",
+                        "Too late.",
+                    ));
+                }
+            })),
+        ));
+    });
+
+    // Whether it lands before or after the worker takes the result, the
+    // completed turn answers it rather than the 61 s facade wait.
+    assert_eq!(accepted_receiver.recv_timeout(PROMPTLY), Ok(false));
+    let output = turn
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect("completed turn");
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Ack"));
+    assert!(delivered_ids(&output).is_empty());
+    assert!(!read_jsonrpc_log(&temp.path().join("codex-rpc.jsonl"))
+        .iter()
+        .any(|message| message["method"] == "turn/steer"));
+}
+
+/// A steer stays unread past its 60 s request deadline, so this takes a minute.
+#[cfg(unix)]
+#[test]
+fn a_steer_left_unread_past_its_deadline_is_refused_only_once_it_cannot_be_read() {
+    let lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    // Reads no stdin after turn/start until the `resume` gate opens; a steer
+    // read then completes the turn.
+    let env = fake_codex(temp.path(), "stall-stdin");
+    let pid_file = temp.path().join("app-server.pid");
+    let pid = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_PID_FILE", &pid_file);
+    let turn = spawn_turn(turn_request(temp.path(), "codex-stalled-steer"));
+    wait_for_logged(temp.path(), "turn/start");
+    // The app-server has its environment: the wait below holds up no other test.
+    drop((env, pid, lock));
+
+    let taken = spawn_send_message(temp.path(), "codex-stalled-steer", "note-1");
+    thread::sleep(Duration::from_millis(200));
+    let queued = spawn_send_message(temp.path(), "codex-stalled-steer", "note-2");
+    assert_eq!(taken.recv_timeout(Duration::from_secs(75)), Ok(false));
+    let app_server = fs::read_to_string(&pid_file).expect("pid file");
+    let app_server = rustix::process::Pid::from_raw(app_server.parse().expect("pid")).expect("pid");
+    assert!(
+        rustix::process::test_kill_process(app_server).is_err(),
+        "refused while the app-server could still read the steer"
+    );
+    assert_eq!(queued.recv_timeout(PROMPTLY), Ok(false));
+
+    // Reading resumes, if anything is left to read.
+    fs::write(temp.path().join("resume"), "").expect("resume gate");
+    thread::sleep(Duration::from_millis(300));
+    let error = turn
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect_err("timed-out turn");
+    assert_eq!(
+        error.message,
+        "codex app-server request timed out waiting for response"
+    );
+    assert!(!read_jsonrpc_log(&temp.path().join("codex-rpc.jsonl"))
+        .iter()
+        .any(|message| message["method"] == "turn/steer"));
+}
+
+#[test]
+fn a_sink_that_steers_while_a_full_queue_behind_fails_the_turn_at_once() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    // 300 deltas after turn/start; a steer would complete the turn.
+    let _env = fake_codex(temp.path(), "turn-burst");
+    let path = temp.path().to_string_lossy().into_owned();
+    let (accepted, accepted_receiver) = mpsc::channel();
+    let steered = std::sync::Once::new();
+    let request = turn_request(temp.path(), "codex-sink-burst");
+    let (turn_sender, turn) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = turn_sender.send(CodexAppServerBackend::new().run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |_event| {
+                steered.call_once(|| {
+                    let _ = accepted.send(CodexAppServerBackend::new().send_message(
+                        &path,
+                        "codex-sink-burst",
+                        "note-1",
+                        "Use the docs.",
+                    ));
+                });
+            })),
+        ));
+    });
+
+    // The sink waits on its own message while the output it has not taken
+    // outgrows its queue; the message settles instead of waiting it out.
+    assert_eq!(accepted_receiver.recv_timeout(PROMPTLY), Ok(false));
+    let error = turn
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect_err("overflowed turn");
+    assert!(
+        error
+            .message
+            .starts_with("codex app-server overloaded: its "),
+        "{}",
+        error.message
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn blocked_trace_storage_neither_holds_up_the_end_nor_queues_without_bound() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _debug = EnvVarGuard::set(ENV_SPARK_DEBUG_CODEX_JSONRPC, "1");
+    // Trace writes block opening a FIFO nothing reads.
+    let traced_request = |dir: &Path, conversation_id: &str| {
+        let fifo = dir.join("trace.jsonl");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo")
+            .success());
+        let mut request = turn_request(dir, conversation_id);
+        request.metadata.insert(
+            CODEX_JSONRPC_TRACE_PATH_METADATA_KEY.to_string(),
+            json!(fifo.to_string_lossy()),
+        );
+        (request, fifo)
+    };
+
+    // 300 lines arrive before initialize's reply: the full trace queue fails
+    // the connection rather than waiting on storage.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "initialize-burst");
+    let (request, fifo) = traced_request(temp.path(), "codex-trace-full");
+    let error = spawn_turn(request)
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect_err("trace overflow");
+    assert!(
+        error
+            .message
+            .contains("codex app-server overloaded: its trace queue is full"),
+        "{}",
+        error.message
+    );
+    release_fifo(&fifo);
+
+    // initialize's reply waits behind its blocked trace; a forced stop
+    // settles it, the turn and a queued message anyway.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "default");
+    let path = temp.path().to_string_lossy().into_owned();
+    let (request, fifo) = traced_request(temp.path(), "codex-trace-blocked");
+    let turn = spawn_turn(request);
+    wait_for_logged(temp.path(), "initialize");
+    let queued = spawn_send_message(temp.path(), "codex-trace-blocked", "note-1");
+    thread::sleep(Duration::from_millis(200));
+    assert!(CodexAppServerBackend::new().terminate(&path, "codex-trace-blocked"));
+    let error = turn
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect_err("terminated turn");
+    assert_eq!(
+        error.message,
+        "codex app-server was terminated after its turn did not stop"
+    );
+    assert_eq!(queued.recv_timeout(PROMPTLY), Ok(false));
+    release_fifo(&fifo);
+}
+
+/// Lets the trace write blocked opening `fifo` finish, and sends any later
+/// ones to a plain file.
+#[cfg(unix)]
+fn release_fifo(fifo: &Path) {
+    let (opened, reader) = mpsc::channel();
+    let path = fifo.to_path_buf();
+    thread::spawn(move || opened.send(fs::File::open(path).expect("open fifo")));
+    let mut reader = reader
+        .recv_timeout(PROMPTLY)
+        .expect("a trace write waits on the fifo");
+    fs::remove_file(fifo).expect("remove fifo");
+    fs::write(fifo, "").expect("plain trace file");
+    std::io::copy(&mut reader, &mut std::io::sink()).expect("drain fifo");
+}
+
+/// Waits for the process whose id is in `pid_file` to be gone.
+#[cfg(unix)]
+fn assert_ends(pid_file: &Path) {
+    let pid = fs::read_to_string(pid_file)
+        .expect("pid file")
+        .parse()
+        .expect("pid");
+    let pid = rustix::process::Pid::from_raw(pid).expect("pid");
+    let started = std::time::Instant::now();
+    while rustix::process::test_kill_process(pid).is_ok() {
+        assert!(started.elapsed() < PROMPTLY, "{pid:?} still running");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn terminate_settles_controls_and_ends_the_process_while_the_sink_is_blocked() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    // Streams output, then never answers turn/steer.
+    let _env = fake_codex(temp.path(), "gated-steer-withheld");
+    let pid_file = temp.path().join("app-server.pid");
+    let _pid = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_PID_FILE", &pid_file);
+    let path = temp.path().to_string_lossy().into_owned();
+    let (blocked, blocked_receiver) = mpsc::channel();
+    let (release, release_receiver) = mpsc::channel::<()>();
+    let release_receiver = std::sync::Mutex::new(release_receiver);
+    let request = turn_request(temp.path(), "codex-sink-blocked");
+    let (turn_sender, turn) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = turn_sender.send(CodexAppServerBackend::new().run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |_event| {
+                let _ = blocked.send(());
+                let _ = release_receiver.lock().unwrap().recv();
+            })),
+        ));
+    });
+    blocked_receiver
+        .recv_timeout(PROMPTLY)
+        .expect("sink received an event");
+
+    let taken = spawn_send_message(temp.path(), "codex-sink-blocked", "note-1");
+    wait_for_logged(temp.path(), "turn/steer");
+    let backend = CodexAppServerBackend::new();
+    assert!(backend.terminate(&path, "codex-sink-blocked"));
+    assert_eq!(taken.recv_timeout(PROMPTLY), Ok(false));
+    #[cfg(unix)]
+    assert_ends(&pid_file);
+    assert_eq!(
+        turn.recv_timeout(Duration::from_millis(200)).err(),
+        Some(mpsc::RecvTimeoutError::Timeout),
+        "returned before the sink took its events"
+    );
+
+    drop(release);
+    let error = turn
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect_err("terminated turn");
+    assert_eq!(
+        error.message,
+        "codex app-server was terminated after its turn did not stop"
     );
 }
 
