@@ -22,3 +22,8 @@ sha2 = "0.10"
 tempfile = "3.10"
 
 spark-storage = { path = "../spark-storage" }
+
+[[bin]]
+name = "attractor-api-fake-acp"
+path = "../spark-agent-adapter/src/bin/spark-agent-fake-acp.rs"
+test = false

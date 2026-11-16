@@ -26,6 +26,15 @@ pub struct RuntimeSession {
     pub resume_failed: bool,
     #[serde(default)]
     pub updated_at: String,
+    /// The canonical work area, configuration generation and instruction
+    /// fingerprint the session was set up under, when its harness reports
+    /// them: a later turn resumes it only under the same ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration_generation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions_sha256: Option<String>,
 }
 
 impl ConversationRepository {

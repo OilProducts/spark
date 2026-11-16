@@ -35,6 +35,8 @@ use crate::profiles::{
 };
 use crate::session::Session;
 use crate::session::SessionSteeringHandle;
+use agent_client_protocol::v1::schema::StopReason;
+use spark_common::agent_settings::HarnessIdentity;
 
 const BACKEND_NAME: &str = "rust_unified_llm_adapter";
 const PROVIDER_PLACEHOLDERS: &[&str] = &["codex default (config/profile)"];
@@ -99,11 +101,18 @@ impl CodergenBackend for RustLlmCodergenBackend {
         request: CodergenBackendRequest,
         event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenBackendOutput, CodergenError> {
-        if is_codex_provider_selector(&request.provider) {
-            return self.run_codex_app_server_codergen(request, event_sink);
-        }
-        if is_claude_code_provider_selector(&request.provider) {
-            return self.run_claude_code_codergen(request, event_sink);
+        let owner = Owner::of(Some(&request.provider)).map_err(CodergenError::Backend)?;
+        let _owned = owner
+            .reserve(
+                &codergen_project_path(&request),
+                &codergen_conversation_id(&request),
+            )
+            .map_err(CodergenError::Backend)?;
+        match owner {
+            Owner::Codex => return self.run_codex_app_server_codergen(request, event_sink),
+            Owner::ClaudeCode => return self.run_claude_code_codergen(request, event_sink),
+            Owner::Acp(harness) => return self.run_acp_codergen(request, &harness, event_sink),
+            Owner::Native => {}
         }
         if request.runtime_mode.requires_agent() {
             return self.run_agent_codergen(request, event_sink);
@@ -232,9 +241,10 @@ impl RustLlmCodergenBackend {
         let turn_event_sink: Option<AgentTurnEventSink> =
             Some(std::sync::Arc::new(move |turn_event: TurnStreamEvent| {
                 if let Some(sink) = &stream_sink {
-                    sink(codergen_event_from_turn_stream_event(
+                    sink(harness_codergen_event(
                         &sink_request,
                         &turn_event,
+                        CODEX_EVENTS,
                     ));
                 }
             }) as AgentTurnEventSink);
@@ -307,7 +317,7 @@ impl RustLlmCodergenBackend {
         };
         let mut events = capture_event.into_iter().collect::<Vec<_>>();
         for event in &output.events {
-            let codergen_event = codergen_event_from_turn_stream_event(&request, event);
+            let codergen_event = harness_codergen_event(&request, event, CODEX_EVENTS);
             events.push(codergen_event);
         }
         let completed_event = CodergenEvent::new(
@@ -404,9 +414,10 @@ impl RustLlmCodergenBackend {
         let turn_event_sink: Option<AgentTurnEventSink> = stream_sink.as_ref().map(|sink| {
             let sink = sink.clone();
             std::sync::Arc::new(move |turn_event: TurnStreamEvent| {
-                sink(claude_code_codergen_event_from_turn_stream_event(
+                sink(harness_codergen_event(
                     &sink_request,
                     &turn_event,
+                    CLAUDE_CODE_EVENTS,
                 ));
             }) as AgentTurnEventSink
         });
@@ -452,9 +463,7 @@ impl RustLlmCodergenBackend {
         };
         let mut events = capture_event.into_iter().collect::<Vec<_>>();
         for event in &output.events {
-            events.push(claude_code_codergen_event_from_turn_stream_event(
-                &request, event,
-            ));
+            events.push(harness_codergen_event(&request, event, CLAUDE_CODE_EVENTS));
         }
         events.extend(
             output
@@ -519,6 +528,162 @@ impl RustLlmCodergenBackend {
             response,
             events,
             usage,
+            resume_metadata,
+        })
+    }
+
+    /// A node's turn on a registered ACP harness: one primary prompt, whose
+    /// session record the node's session and contract repairs continue.
+    fn run_acp_codergen(
+        &mut self,
+        request: CodergenBackendRequest,
+        harness: &str,
+        event_sink: Option<CodergenEventSink>,
+    ) -> Result<CodergenBackendOutput, CodergenError> {
+        for (required, control) in [
+            (request.runtime_mode.requires_steering, "steering"),
+            (
+                request.runtime_mode.requires_child_intervention,
+                "child intervention",
+            ),
+        ] {
+            if required {
+                return Err(CodergenError::Backend(format!(
+                    "ACP harness {harness} does not support {control}, which node {} requires",
+                    request.node_id
+                )));
+            }
+        }
+        let mut agent_request = codergen_agent_turn_request(&request);
+        // Earlier exchanges, sent only if the session has to start fresh.
+        agent_request.history = self.resumed_history(&request)?;
+        let provider = HarnessIdentity::Acp(harness.to_string()).selector();
+        let turn_event_sink: Option<AgentTurnEventSink> = event_sink.as_ref().map(|sink| {
+            let (sink, request, provider) = (sink.clone(), request.clone(), provider.clone());
+            std::sync::Arc::new(move |turn_event: TurnStreamEvent| {
+                sink(harness_codergen_event(
+                    &request,
+                    &turn_event,
+                    (crate::acp::ACP_BACKEND, &provider, ACP_SESSION_EVENT),
+                ));
+            }) as AgentTurnEventSink
+        });
+        let _active_session = self.register_live_turn(
+            &request,
+            &agent_request,
+            &provider,
+            request.model.clone(),
+            SessionSteeringHandle::new(),
+        );
+        let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
+        let result = crate::acp::run_turn(&agent_request, harness, turn_event_sink.as_ref());
+        if let Some(output) = stop.finish() {
+            return Ok(output);
+        }
+        let failed = |failure_reason: String| {
+            CodergenBackendResponse::Outcome(Outcome {
+                status: OutcomeStatus::Error,
+                failure_reason,
+                retryable: Some(false),
+                failure_kind: Some(FailureKind::Runtime),
+                ..Outcome::new(OutcomeStatus::Error)
+            })
+        };
+        let codergen_events = |events: &[TurnStreamEvent]| {
+            events
+                .iter()
+                .map(|event| {
+                    harness_codergen_event(
+                        &request,
+                        event,
+                        (crate::acp::ACP_BACKEND, &provider, ACP_SESSION_EVENT),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let turn = match result {
+            Ok(turn) => turn,
+            // The harness may have acted on the prompt: settle, never resend it.
+            Err(failure) if failure.prompted => {
+                return Ok(CodergenBackendOutput {
+                    response: failed(format!(
+                        "{} (after the prompt was sent, so it is not retried)",
+                        failure.message
+                    )),
+                    events: codergen_events(&failure.events),
+                    usage: None,
+                    resume_metadata: BTreeMap::new(),
+                });
+            }
+            Err(failure) => return Err(CodergenError::Backend(failure.message)),
+        };
+        let output = turn.output;
+        let answer = output.final_assistant_text.as_deref().and_then(non_empty);
+        let response = match answer {
+            Some(text) if turn.stop_reason == StopReason::EndTurn => {
+                CodergenBackendResponse::Text(text.to_string())
+            }
+            _ => failed(format!(
+                "ACP harness {harness} ended the turn without an answer ({})",
+                crate::acp::stop_label(&turn.stop_reason)
+            )),
+        };
+        // The exchange, for a repair or a later node of the session that
+        // cannot continue the harness's own session.
+        let mut history = std::mem::take(&mut agent_request.history);
+        history.push(HistoryTurn::User(crate::history::UserTurn::new(
+            request.prompt.clone(),
+        )));
+        history.extend(
+            answer.map(|text| HistoryTurn::Assistant(crate::history::AssistantTurn::new(text))),
+        );
+        let mut resume_metadata = self.keep_for_repair(&request.metadata, history)?;
+        resume_metadata.extend(
+            turn.record
+                .map(|record| record.to_metadata())
+                .unwrap_or_default(),
+        );
+        let mut events = codergen_events(&output.events);
+        events.extend(
+            output
+                .thread_resume_failure
+                .as_ref()
+                .map(|failure| continuity_reset_event(&request, failure)),
+        );
+        events.push(CodergenEvent::new(
+            "agent_harness_request_completed",
+            BTreeMap::from([
+                ("backend".to_string(), json!(crate::acp::ACP_BACKEND)),
+                ("node_id".to_string(), json!(request.node_id.clone())),
+                (
+                    "provider_selector".to_string(),
+                    json!(request.provider.clone()),
+                ),
+                ("provider".to_string(), json!(provider)),
+                ("model_selector".to_string(), json!(request.model.clone())),
+                ("model".to_string(), json!(request.model.clone())),
+                (
+                    "reasoning_effort".to_string(),
+                    json!(request.reasoning_effort.clone()),
+                ),
+                (
+                    "response_contract".to_string(),
+                    json!(request.response_contract.clone()),
+                ),
+                (
+                    "stop_reason".to_string(),
+                    json!(crate::acp::stop_label(&turn.stop_reason)),
+                ),
+                ("token_usage".to_string(), json!(output.token_usage.clone())),
+            ]),
+        ));
+        Ok(CodergenBackendOutput {
+            response,
+            events,
+            usage: output
+                .token_usage
+                .as_ref()
+                .and_then(usage_from_token_usage_payload),
             resume_metadata,
         })
     }
@@ -1076,21 +1241,20 @@ fn codergen_event_from_session_event_with_metadata(
     CodergenEvent::new("rust_agent_session_event", payload)
 }
 
-fn codergen_event_from_turn_stream_event(
+/// A harness turn's stream event as the node's journal event.
+fn harness_codergen_event(
     request: &CodergenBackendRequest,
     event: &TurnStreamEvent,
+    (backend, provider, event_type): (&str, &str, &str),
 ) -> CodergenEvent {
     let mut payload = BTreeMap::from([
         ("node_id".to_string(), json!(request.node_id.clone())),
-        (
-            "backend".to_string(),
-            json!(CODEX_APP_SERVER_BACKEND.to_string()),
-        ),
+        ("backend".to_string(), json!(backend)),
         (
             "provider_selector".to_string(),
             json!(request.provider.clone()),
         ),
-        ("provider".to_string(), json!("codex")),
+        ("provider".to_string(), json!(provider)),
         ("model_selector".to_string(), json!(request.model.clone())),
         (
             "reasoning_effort".to_string(),
@@ -1112,47 +1276,20 @@ fn codergen_event_from_turn_stream_event(
     if let Some(token_usage) = event.token_usage.as_ref() {
         payload.insert("token_usage".to_string(), token_usage.clone());
     }
-    CodergenEvent::new("codex_app_server_session_event", payload)
+    CodergenEvent::new(event_type, payload)
 }
 
-fn claude_code_codergen_event_from_turn_stream_event(
-    request: &CodergenBackendRequest,
-    event: &TurnStreamEvent,
-) -> CodergenEvent {
-    let mut payload = BTreeMap::from([
-        ("node_id".to_string(), json!(request.node_id.clone())),
-        (
-            "backend".to_string(),
-            json!(CLAUDE_CODE_BACKEND.to_string()),
-        ),
-        (
-            "provider_selector".to_string(),
-            json!(request.provider.clone()),
-        ),
-        ("provider".to_string(), json!("claude-code")),
-        ("model_selector".to_string(), json!(request.model.clone())),
-        (
-            "reasoning_effort".to_string(),
-            json!(request.reasoning_effort.clone()),
-        ),
-        ("kind".to_string(), json!(event.kind.as_str())),
-        (
-            "category".to_string(),
-            json!(codergen_turn_stream_event_category(event)),
-        ),
-        (
-            "turn_stream_event".to_string(),
-            serde_json::to_value(event).unwrap_or_else(|_| json!({})),
-        ),
-    ]);
-    if let Some(tool_call) = event.tool_call.as_ref() {
-        payload.insert("tool_event".to_string(), tool_call.clone());
-    }
-    if let Some(token_usage) = event.token_usage.as_ref() {
-        payload.insert("token_usage".to_string(), token_usage.clone());
-    }
-    CodergenEvent::new("claude_code_session_event", payload)
-}
+const CODEX_EVENTS: (&str, &str, &str) = (
+    CODEX_APP_SERVER_BACKEND,
+    "codex",
+    "codex_app_server_session_event",
+);
+const CLAUDE_CODE_EVENTS: (&str, &str, &str) = (
+    CLAUDE_CODE_BACKEND,
+    "claude-code",
+    "claude_code_session_event",
+);
+const ACP_SESSION_EVENT: &str = "acp_session_event";
 
 fn codergen_turn_stream_event_category(event: &TurnStreamEvent) -> &'static str {
     match event.kind {
@@ -1447,19 +1584,39 @@ impl RustLlmAgentTurnBackend {
 }
 
 impl RustLlmAgentTurnBackend {
-    /// A conversation runs one turn at a time, so at most one backend has it live.
+    /// Controls reach the backend that owns the live turn.
     fn interrupt(project_path: &str, conversation_id: &str) -> bool {
-        ClaudeCodeBackend::new().interrupt(project_path, conversation_id)
-            || CodexAppServerBackend::new().interrupt(project_path, conversation_id)
-            || NativeTurn::find(project_path, conversation_id).is_some_and(|turn| turn.stop())
+        match Owner::live(project_path, conversation_id) {
+            Some(Owner::Codex) => {
+                CodexAppServerBackend::new().interrupt(project_path, conversation_id)
+            }
+            Some(Owner::ClaudeCode) => {
+                ClaudeCodeBackend::new().interrupt(project_path, conversation_id)
+            }
+            Some(Owner::Acp(_)) => crate::acp::interrupt(project_path, conversation_id),
+            Some(Owner::Native) => {
+                NativeTurn::find(project_path, conversation_id).is_some_and(|turn| turn.stop())
+            }
+            None => false,
+        }
     }
 
     /// A native turn runs in this process, so it ends the way it is
     /// interrupted: its request is aborted and its commands killed.
     fn terminate(project_path: &str, conversation_id: &str) -> bool {
-        ClaudeCodeBackend::new().terminate(project_path, conversation_id)
-            || CodexAppServerBackend::new().terminate(project_path, conversation_id)
-            || NativeTurn::find(project_path, conversation_id).is_some_and(|turn| turn.stop())
+        match Owner::live(project_path, conversation_id) {
+            Some(Owner::Codex) => {
+                CodexAppServerBackend::new().terminate(project_path, conversation_id)
+            }
+            Some(Owner::ClaudeCode) => {
+                ClaudeCodeBackend::new().terminate(project_path, conversation_id)
+            }
+            Some(Owner::Acp(_)) => crate::acp::terminate(project_path, conversation_id),
+            Some(Owner::Native) => {
+                NativeTurn::find(project_path, conversation_id).is_some_and(|turn| turn.stop())
+            }
+            None => false,
+        }
     }
 
     /// The one path that sends a message into a live agent turn, for chat
@@ -1470,18 +1627,128 @@ impl RustLlmAgentTurnBackend {
         message_id: &str,
         message: &str,
     ) -> bool {
-        ClaudeCodeBackend::new().send_message(project_path, conversation_id, message_id, message)
-            || CodexAppServerBackend::new().send_message(
+        match Owner::live(project_path, conversation_id) {
+            Some(Owner::Codex) => CodexAppServerBackend::new().send_message(
                 project_path,
                 conversation_id,
                 message_id,
                 message,
-            )
-            || NativeTurn::find(project_path, conversation_id).is_some_and(|turn| {
-                turn.steering
-                    .as_ref()
-                    .is_some_and(|steering| steering.queue_live_message(message_id, message))
-            })
+            ),
+            Some(Owner::ClaudeCode) => ClaudeCodeBackend::new().send_message(
+                project_path,
+                conversation_id,
+                message_id,
+                message,
+            ),
+            Some(Owner::Native) => {
+                NativeTurn::find(project_path, conversation_id).is_some_and(|turn| {
+                    turn.steering
+                        .as_ref()
+                        .is_some_and(|steering| steering.queue_live_message(message_id, message))
+                })
+            }
+            // ACP v1 has no portable acceptance for a second prompt, so the
+            // message stays queued for the next turn.
+            Some(Owner::Acp(_)) | None => false,
+        }
+    }
+}
+
+/// The backend running a conversation's live turn. It is recorded before
+/// launch, so controls reach that backend alone, whatever the settings say
+/// by now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Owner {
+    Codex,
+    ClaudeCode,
+    Acp(String),
+    /// A direct provider, run by Spark's native agent.
+    Native,
+}
+
+type OwnerKey = (String, String);
+
+/// Holds a conversation's ownership until the turn returns, on every path.
+struct Ownership(OwnerKey, u64);
+
+impl Owner {
+    fn of(provider: Option<&str>) -> Result<Self, String> {
+        let identity = provider.map(HarnessIdentity::parse).transpose()?.flatten();
+        Ok(match identity {
+            Some(HarnessIdentity::Codex) => Self::Codex,
+            Some(HarnessIdentity::ClaudeCode) => Self::ClaudeCode,
+            Some(HarnessIdentity::Acp(id)) => Self::Acp(id),
+            None => Self::Native,
+        })
+    }
+
+    fn registry() -> &'static std::sync::Mutex<std::collections::HashMap<OwnerKey, (u64, Owner)>> {
+        static OWNERS: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<OwnerKey, (u64, Owner)>>,
+        > = std::sync::OnceLock::new();
+        OWNERS.get_or_init(Default::default)
+    }
+
+    fn live(project_path: &str, conversation_id: &str) -> Option<Self> {
+        Self::registry()
+            .lock()
+            .unwrap()
+            .get(&(project_path.to_string(), conversation_id.to_string()))
+            .map(|(_, owner)| owner.clone())
+    }
+
+    /// Takes the conversation for one primary turn. An ACP turn never
+    /// overlaps another; native turns keep their newest-wins registration.
+    fn reserve(&self, project_path: &str, conversation_id: &str) -> Result<Ownership, String> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let key = (project_path.to_string(), conversation_id.to_string());
+        let mut owners = Self::registry().lock().unwrap();
+        if owners
+            .get(&key)
+            .is_some_and(|(_, live)| matches!(live, Self::Acp(_)) || matches!(self, Self::Acp(_)))
+        {
+            return Err("Another turn is still running for this conversation.".to_string());
+        }
+        let token = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        owners.insert(key.clone(), (token, self.clone()));
+        Ok(Ownership(key, token))
+    }
+}
+
+impl Drop for Ownership {
+    fn drop(&mut self) {
+        let mut owners = Owner::registry().lock().unwrap();
+        if owners
+            .get(&self.0)
+            .is_some_and(|(token, _)| *token == self.1)
+        {
+            owners.remove(&self.0);
+        }
+    }
+}
+
+/// A chat turn on a registered ACP harness.
+fn run_acp_chat_turn(
+    request: &AgentTurnRequest,
+    harness: &str,
+    event_sink: Option<AgentTurnEventSink>,
+) -> Result<AgentTurnOutput, AgentError> {
+    let turn = crate::acp::run_turn(request, harness, event_sink.as_ref())
+        .map_err(|failure| agent_error(failure.message))?;
+    let mut output = turn.output;
+    match turn.stop_reason {
+        StopReason::EndTurn => Ok(output),
+        StopReason::Cancelled => {
+            // A stopped turn keeps the continuity change it made.
+            let reset = output.thread_resume_failure.take();
+            settle_stopped_turn(&mut output, event_sink.as_ref());
+            output.thread_resume_failure = reset;
+            Ok(output)
+        }
+        reason => Err(agent_error(format!(
+            "ACP harness {harness} ended the turn without an answer ({}).",
+            crate::acp::stop_label(&reason)
+        ))),
     }
 }
 
@@ -1657,19 +1924,23 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, AgentError> {
-        if is_codex_request_provider(request.provider.as_deref(), request.llm_profile.as_deref()) {
-            return CodexAppServerBackend::new()
-                .run_agent_turn_with_event_sink(request, event_sink)
-                .map_err(codex_app_server_agent_error);
-        }
-        if request
-            .provider
-            .as_deref()
-            .is_some_and(is_claude_code_provider_selector)
-        {
-            return ClaudeCodeBackend::new()
-                .run_agent_turn_with_event_sink(request, event_sink)
-                .map_err(claude_code_agent_error);
+        let owner = Owner::of(request.provider.as_deref()).map_err(agent_error)?;
+        let _owned = owner
+            .reserve(&request.project_path, &request.conversation_id)
+            .map_err(agent_error)?;
+        match owner {
+            Owner::Codex => {
+                return CodexAppServerBackend::new()
+                    .run_agent_turn_with_event_sink(request, event_sink)
+                    .map_err(codex_app_server_agent_error);
+            }
+            Owner::ClaudeCode => {
+                return ClaudeCodeBackend::new()
+                    .run_agent_turn_with_event_sink(request, event_sink)
+                    .map_err(claude_code_agent_error);
+            }
+            Owner::Acp(harness) => return run_acp_chat_turn(&request, &harness, event_sink),
+            Owner::Native => {}
         }
         let attachments = crate::attachments::request_attachments(&request.metadata);
         let prompt = request.prompt.clone();
@@ -1706,6 +1977,17 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
             .is_some_and(is_claude_code_provider_selector)
         {
             return Ok(ClaudeCodeBackend::new().answer_request_user_input(request));
+        }
+        if let Ok(Owner::Acp(_)) = Owner::of(request.provider.as_deref()) {
+            // ACP turns ask no questions until forms are supported.
+            return Ok(AgentTurnOutput {
+                thread_resume_failure: Some(AgentThreadResumeFailure {
+                    message: "request-user-input answer could not resume because the live request is no longer pending.".into(),
+                    error_code: Some("request_user_input_not_pending".into()),
+                    details: Some(json!({"request_id": request.request_id})),
+                }),
+                ..AgentTurnOutput::default()
+            });
         }
         if NativeTurn::find(&request.project_path, &request.conversation_id)
             .is_some_and(|turn| turn.answer(&request.request_id, &request.answers))
@@ -1788,6 +2070,9 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
         )
         .map_err(agent_adapter_error)?;
         session.mark_awaiting_input(continuation.pending_question);
+        let _owned = Owner::Native
+            .reserve(&project_path, &conversation_id)
+            .map_err(agent_error)?;
         self.run_native_turn(
             (&project_path, &conversation_id),
             session,
@@ -1875,6 +2160,11 @@ pub struct UtilityCall {
 /// timeout, or empty output.
 pub fn run_utility_call(client: &Client, call: &UtilityCall) -> Result<String, String> {
     let provider = call.provider.as_deref().unwrap_or("");
+    if let Some(HarnessIdentity::Acp(id)) = HarnessIdentity::parse(provider)? {
+        return Err(format!(
+            "ACP harness {id} does not run utility calls; choose a native harness or an API provider for utility work."
+        ));
+    }
     let text = if is_codex_provider_selector(provider) || is_claude_code_provider_selector(provider)
     {
         // A fresh empty directory keeps project instructions, settings and
@@ -2890,12 +3180,19 @@ fn is_codex_request_provider(provider: Option<&str>, _llm_profile: Option<&str>)
 }
 
 fn is_codex_provider_selector(provider: &str) -> bool {
-    provider.trim().eq_ignore_ascii_case("codex")
+    HarnessIdentity::parse(provider) == Ok(Some(HarnessIdentity::Codex))
 }
 
 fn is_claude_code_provider_selector(provider: &str) -> bool {
-    let normalized = provider.trim();
-    normalized.eq_ignore_ascii_case("claude-code") || normalized.eq_ignore_ascii_case("claude_code")
+    HarnessIdentity::parse(provider) == Ok(Some(HarnessIdentity::ClaudeCode))
+}
+
+fn agent_error(message: String) -> AgentError {
+    AgentError {
+        message,
+        retryable: false,
+        raw: None,
+    }
 }
 
 #[cfg(test)]

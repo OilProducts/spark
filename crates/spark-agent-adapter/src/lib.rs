@@ -3,6 +3,7 @@
 
 //! Rust-owned adapter contracts for Spark agent and codergen migration.
 
+pub mod acp;
 pub mod agent;
 pub mod apply_patch;
 pub mod attachments;

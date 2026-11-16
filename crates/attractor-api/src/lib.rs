@@ -1850,6 +1850,7 @@ impl AttractorApiService {
             &flow,
             request.reasoning_effort.as_deref(),
             &requested_context,
+            &selected_provider,
         )
         .or_else(|| {
             use_defaults
@@ -1998,6 +1999,7 @@ impl AttractorApiService {
                 "group": defaults, "source": defaults_source, "reasoning_controls": if use_defaults { json!(defaults) } else { json!({}) },
             }),
         );
+        configuration.agents.redact_acp_env();
         runtime_context.insert(
             "internal.execution_configuration_snapshot".into(),
             json!(configuration),
@@ -3805,6 +3807,7 @@ fn resolve_launch_reasoning_effort(
     flow: &FlowDefinition,
     requested: Option<&str>,
     launch_context: &ContextMap,
+    provider: &str,
 ) -> Option<String> {
     trimmed_option(requested)
         .or_else(|| {
@@ -3814,7 +3817,13 @@ fn resolve_launch_reasoning_effort(
             )
         })
         .or_else(|| trimmed_option(flow.defaults.reasoning_effort.as_deref()))
-        .map(|value| value.to_lowercase())
+        .map(|value| {
+            if spark_common::agent_settings::HarnessIdentity::is_acp(provider) {
+                value
+            } else {
+                value.to_lowercase()
+            }
+        })
 }
 
 fn context_value_text(context: &ContextMap, key: &str) -> Option<String> {

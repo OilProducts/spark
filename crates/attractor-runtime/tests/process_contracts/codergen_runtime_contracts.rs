@@ -1925,3 +1925,125 @@ for line in [
     assert_eq!(resumed.status, "completed", "{}", resumed.failure_reason);
     assert_eq!(seen(), expected.repeat(2));
 }
+
+const FAKE_ACP: &str = env!("CARGO_BIN_EXE_attractor-runtime-fake-acp");
+
+/// An agent task on the registered `acp:fake` harness.
+fn acp_task(session: Option<&str>, prompt: &str, to: &str) -> serde_json::Value {
+    let mut task = agent_in(session, to);
+    task["config"]["prompt"] = json!(prompt);
+    task["execution"] = json!({"llm_provider": "acp:fake"});
+    task
+}
+
+/// Runs `nodes` with `acp:fake` scripted by `script`; returns the result and
+/// the fake's log.
+fn run_on_acp(
+    temp: &std::path::Path,
+    nodes: serde_json::Value,
+    script: serde_json::Value,
+) -> (
+    attractor_runtime::PipelineExecutionResult,
+    Vec<serde_json::Value>,
+) {
+    let log = temp.join("acp.log");
+    let mut script = script;
+    script["log"] = json!(log);
+    let harness = json!({"name": "Fake ACP", "executable": FAKE_ACP,
+        "env": {"SPARK_FAKE_ACP": script.to_string()}});
+    let runner = RuntimeHandlerRunner::new()
+        .with_codergen_backend_factory(|| Box::new(RustLlmCodergenBackend::new(Client::new())));
+    let result = attractor_runtime::PipelineExecutor::new(runner)
+        .execute(attractor_runtime::ExecuteRunRequest {
+            store: attractor_runtime::RunStore::for_runs_dir(temp.join("runs")),
+            record: attractor_core::RunRecord::new("run-acp", temp.to_string_lossy()),
+            flow: session_flow(nodes),
+            flow_definition_json: None,
+            launch_context: attractor_core::LaunchContext::empty(),
+            runtime_context: ContextMap::from([(
+                "internal.execution_configuration_snapshot".to_string(),
+                json!({"agents": {"acp_harnesses": {"fake": harness}}}),
+            )]),
+            max_steps: None,
+            start: Default::default(),
+        })
+        .expect("run executes");
+    let log = std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    (result, log)
+}
+
+fn acp_prompts(log: &[serde_json::Value]) -> Vec<String> {
+    log.iter()
+        .filter(|entry| entry["received"]["method"] == "session/prompt")
+        .map(|entry| entry["received"]["params"]["prompt"][0]["text"].to_string())
+        .collect()
+}
+
+fn acp_launches(log: &[serde_json::Value]) -> usize {
+    log.iter()
+        .filter(|entry| entry.get("argv").is_some())
+        .count()
+}
+
+#[test]
+fn acp_nodes_never_resend_a_submitted_prompt_and_refuse_reasoning_controls() {
+    // The harness exits once the prompt is out: the node fails, unretried.
+    let temp = tempdir().unwrap();
+    let nodes = json!({"start": start_to("task"), "done": exit_node(),
+        "task": acp_task(None, "Ship it.", "done")});
+    let (result, log) = run_on_acp(
+        temp.path(),
+        nodes.clone(),
+        json!({"exit_on_prompt": {"code": 7, "stderr": "lost after submit"}}),
+    );
+    assert_eq!(result.status, "failed", "{}", result.failure_reason);
+    assert_eq!(acp_prompts(&log).len(), 1, "never resent");
+    assert_eq!(acp_launches(&log), 1);
+
+    // A reasoning control ACP cannot apply is refused before any launch.
+    let temp = tempdir().unwrap();
+    let mut nodes = nodes;
+    nodes["task"]["execution"]["thinking"] = json!("off");
+    let (result, log) = run_on_acp(temp.path(), nodes, json!({}));
+    assert_eq!(result.status, "failed");
+    assert!(
+        result.failure_reason.contains("thinking"),
+        "{}",
+        result.failure_reason
+    );
+    assert_eq!(acp_launches(&log), 0);
+}
+
+#[test]
+fn acp_repairs_and_session_nodes_keep_their_context_across_fresh_sessions() {
+    let answers = json!([
+        "Not an envelope.",
+        r#"{"decision": "done"}"#,
+        r#"{"decision": "done"}"#
+    ]);
+    for resume in [false, true] {
+        let temp = tempdir().unwrap();
+        let nodes = json!({"start": start_to("a"), "done": exit_node(),
+            "a": acp_task(Some("s"), "Draft the alpha plan.", "b"),
+            "b": acp_task(Some("s"), "Refine the plan.", "done")});
+        let (result, log) = run_on_acp(
+            temp.path(),
+            nodes,
+            json!({"resume": resume, "answers": answers}),
+        );
+        assert_eq!(result.status, "completed", "{}", result.failure_reason);
+        // a's task, a's contract repair, then b's task.
+        let prompts = acp_prompts(&log);
+        assert_eq!(prompts.len(), 3, "{prompts:?}");
+        for later in &prompts[1..] {
+            let carried =
+                later.contains("Draft the alpha plan.") && later.contains("Not an envelope.");
+            // A resumed session already holds the exchange; a fresh one is given it.
+            assert_eq!(carried, !resume, "resume={resume}: {later}");
+        }
+    }
+}

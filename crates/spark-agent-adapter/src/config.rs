@@ -53,13 +53,14 @@ pub fn validate_model_settings_with_profiles(
         if normalized != provider {
             return Err("Use the canonical provider identifier.".into());
         }
-        // The catalog describes the unified LLM adapter's API models; the codex and
-        // claude-code harnesses discover their own models, which may share ids.
-        if let Some(model) = value
-            .model
-            .as_deref()
-            .filter(|_| !matches!(provider, "codex" | "claude-code"))
-        {
+        // The catalog describes the unified LLM adapter's API models; harnesses
+        // discover their own models, which may share ids.
+        if let Some(model) = value.model.as_deref().filter(|_| {
+            !matches!(
+                spark_common::agent_settings::HarnessIdentity::parse(provider),
+                Ok(Some(_))
+            )
+        }) {
             let models = unified_llm_adapter::list_models(None);
             if models.iter().any(|entry| entry.id == model)
                 && !models
@@ -83,12 +84,17 @@ pub fn validate_model_settings_with_profiles(
         validate_profile_model(profile, value.model.as_deref())?;
     }
     if let Some(effort) = value.reasoning_effort.as_deref() {
-        validate_reasoning_effort(effort)?;
+        validate_reasoning_effort(effort, value.provider.as_deref())?;
     }
     Ok(())
 }
 
 pub fn validate_provider(value: &str) -> Result<String, String> {
+    if let Some(harness @ spark_common::agent_settings::HarnessIdentity::Acp(_)) =
+        spark_common::agent_settings::HarnessIdentity::parse(value)?
+    {
+        return Ok(harness.selector());
+    }
     let normalized = value.trim().to_lowercase();
     let normalized = if normalized.is_empty() {
         "codex".to_string()
@@ -99,17 +105,20 @@ pub fn validate_provider(value: &str) -> Result<String, String> {
         "codex" | "claude-code" | "openai" | "anthropic" | "gemini" | "openrouter" | "litellm"
         | "openai_compatible" => Ok(normalized),
         _ => Err(
-            "Provider must be blank or one of: codex, claude-code, openai, anthropic, gemini, openrouter, litellm, openai_compatible."
+            "Provider must be blank, acp:<harness id>, or one of: codex, claude-code, openai, anthropic, gemini, openrouter, litellm, openai_compatible."
                 .to_string(),
         ),
     }
 }
 
-pub fn validate_reasoning_effort(value: &str) -> Result<String, String> {
+/// Native and API efforts are canonically lowercase; an ACP harness's effort
+/// IDs are opaque, so they are kept exactly.
+pub fn validate_reasoning_effort(value: &str, provider: Option<&str>) -> Result<String, String> {
     let value = value.trim();
     let normalized = value.to_ascii_lowercase();
+    let acp = provider.is_some_and(spark_common::agent_settings::HarnessIdentity::is_acp);
     Ok(
-        if matches!(normalized.as_str(), "low" | "medium" | "high" | "xhigh") {
+        if !acp && matches!(normalized.as_str(), "low" | "medium" | "high" | "xhigh") {
             normalized
         } else {
             value.to_string()

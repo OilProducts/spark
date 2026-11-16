@@ -1,0 +1,245 @@
+//! Fake ACP v1 agent for process contracts: one session, one prompt, scripted
+//! by the JSON in `SPARK_FAKE_ACP`. Every message it receives is appended to
+//! the script's `log` file, after a first line with its pid, argv, working
+//! directory, the `log_env` variables and the contents of file arguments.
+//! `answers[n]` answers the log's nth prompt, across launches.
+
+use serde_json::{json, Value};
+use std::io::{BufRead, Write};
+
+fn main() {
+    // Bound blocked contracts so a missing reply fails instead of hanging the gate.
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(20));
+        eprintln!("fake ACP agent timed out");
+        std::process::exit(3);
+    });
+    let script: Value = std::env::var("SPARK_FAKE_ACP")
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| json!({}));
+    let mut agent = Agent {
+        log: script["log"].as_str().map(str::to_string),
+        lines: std::io::stdin().lock().lines(),
+        session_id: script["session_id"]
+            .as_str()
+            .unwrap_or("fake-session")
+            .to_string(),
+        script,
+    };
+    agent.startup();
+    while let Some(message) = agent.read() {
+        agent.handle(message);
+    }
+}
+
+struct Agent {
+    script: Value,
+    log: Option<String>,
+    lines: std::io::Lines<std::io::StdinLock<'static>>,
+    session_id: String,
+}
+
+impl Agent {
+    fn startup(&self) {
+        let argv = std::env::args().skip(1).collect::<Vec<_>>();
+        let env = self.script["log_env"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|name| (name.to_string(), json!(std::env::var(name).ok())))
+            .collect::<serde_json::Map<_, _>>();
+        let files = argv
+            .iter()
+            .filter_map(|arg| Some((arg.clone(), json!(std::fs::read_to_string(arg).ok()?))))
+            .collect::<serde_json::Map<_, _>>();
+        self.append(json!({
+            "pid": std::process::id(),
+            "argv": argv,
+            "cwd": std::env::current_dir().ok(),
+            "env": env,
+            "files": files,
+        }));
+    }
+
+    fn append(&self, entry: Value) {
+        if let Some(path) = &self.log {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("fake ACP log");
+            // One write per line, so concurrent fakes sharing a log never interleave.
+            file.write_all(format!("{entry}\n").as_bytes())
+                .expect("fake ACP log write");
+        }
+    }
+
+    fn read(&mut self) -> Option<Value> {
+        let line = self.lines.next()?.ok()?;
+        let message: Value = serde_json::from_str(&line).expect("client sent JSON");
+        self.append(json!({"received": message}));
+        Some(message)
+    }
+
+    fn send(&self, message: Value) {
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{message}").unwrap();
+        stdout.flush().unwrap();
+    }
+
+    fn reply(&self, id: &Value, result: Value) {
+        self.send(json!({"jsonrpc": "2.0", "id": id, "result": result}));
+    }
+
+    fn fail(&self, id: &Value, error: &Value) {
+        self.send(json!({"jsonrpc": "2.0", "id": id, "error": error}));
+    }
+
+    fn update(&self, update: &Value) {
+        self.send(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": self.session_id, "update": update},
+        }));
+    }
+
+    fn setup_result(&self) -> Value {
+        match self.script.get("config_options") {
+            Some(options) => json!({"sessionId": self.session_id, "configOptions": options}),
+            None => json!({"sessionId": self.session_id}),
+        }
+    }
+
+    fn handle(&mut self, message: Value) {
+        let id = message["id"].clone();
+        let script = self.script.clone();
+        match message["method"].as_str().unwrap_or_default() {
+            "initialize" => {
+                let mut session = json!({});
+                if script["system_prompt"].as_bool().unwrap_or(false) {
+                    session["systemPrompt"] = json!({});
+                }
+                if script["resume"].as_bool().unwrap_or(false) {
+                    session["resume"] = json!({});
+                }
+                self.reply(
+                    &id,
+                    json!({
+                        "protocolVersion": script["protocol_version"].as_u64().unwrap_or(1),
+                        "agentCapabilities": {
+                            "loadSession": script["load"].as_bool().unwrap_or(false),
+                            "sessionCapabilities": session,
+                        },
+                        "authMethods": [],
+                    }),
+                );
+            }
+            method @ ("session/new" | "session/load" | "session/resume") => {
+                let kind = method.trim_start_matches("session/");
+                if let Some(error) = script.get(&format!("{kind}_error")) {
+                    return self.fail(&id, error);
+                }
+                if kind != "new" {
+                    self.session_id = message["params"]["sessionId"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                if kind == "load" {
+                    for update in script["replay"].as_array().into_iter().flatten() {
+                        self.update(update);
+                    }
+                }
+                self.reply(&id, self.setup_result());
+            }
+            "session/set_config_option" => {
+                let (config, value) = (
+                    message["params"]["configId"].clone(),
+                    message["params"]["value"].clone(),
+                );
+                let mut options = script["config_options"].clone();
+                for option in options.as_array_mut().into_iter().flatten() {
+                    if option["id"] == config {
+                        option["currentValue"] = value.clone();
+                    }
+                }
+                self.script["config_options"] = options.clone();
+                self.reply(&id, json!({"configOptions": options}));
+            }
+            "session/prompt" => self.prompt(&id),
+            _ => {}
+        }
+    }
+
+    fn prompt(&mut self, id: &Value) {
+        let script = self.script.clone();
+        if let Some(exit) = script.get("exit_on_prompt") {
+            eprintln!(
+                "{}",
+                exit["stderr"].as_str().unwrap_or("fake ACP agent exiting")
+            );
+            std::process::exit(exit["code"].as_i64().unwrap_or(1) as i32);
+        }
+        if script["malformed_on_prompt"].as_bool().unwrap_or(false) {
+            println!("this is not JSON-RPC");
+            std::io::stdout().flush().unwrap();
+        }
+        for update in script["updates"].as_array().into_iter().flatten() {
+            self.update(update);
+        }
+        if let Some(answers) = script["answers"].as_array() {
+            let log = std::fs::read_to_string(script["log"].as_str().unwrap()).unwrap();
+            let prompts = log.matches("\"method\":\"session/prompt\"").count();
+            let text = &answers[(prompts - 1).min(answers.len() - 1)];
+            self.update(&json!({"sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": text}}));
+        }
+        if let Some(permission) = script.get("permission") {
+            self.send(json!({
+                "jsonrpc": "2.0",
+                "id": "permission-1",
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": self.session_id,
+                    "toolCall": permission["toolCall"],
+                    "options": permission["options"],
+                },
+            }));
+            // The reply is logged as it is read.
+            while let Some(message) = self.read() {
+                if message["id"] == "permission-1" {
+                    break;
+                }
+            }
+        }
+        if let Some(gate) = script["gate"].as_str() {
+            while !std::path::Path::new(gate).exists() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        if let Some(on_cancel) = script["await_cancel"].as_str() {
+            while let Some(message) = self.read() {
+                if message["method"] == "session/cancel" {
+                    break;
+                }
+            }
+            if on_cancel == "ignore" {
+                while self.read().is_some() {}
+                return;
+            }
+            return self.reply(id, json!({"stopReason": "cancelled"}));
+        }
+        if let Some(error) = script.get("prompt_error") {
+            return self.fail(id, error);
+        }
+        let mut result = json!({
+            "stopReason": script["stop_reason"].as_str().unwrap_or("end_turn"),
+        });
+        if let Some(usage) = script.get("usage") {
+            result["usage"] = usage.clone();
+        }
+        self.reply(id, result);
+    }
+}

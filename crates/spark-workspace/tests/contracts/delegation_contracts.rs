@@ -824,3 +824,13 @@ fn b_launches_accepted_rows_at_startup_once() {
     delegations::launch_accepted(&home.service()).unwrap();
     assert_eq!(home.runs().len(), 2);
 }
+
+#[test]
+fn request_digest_ignores_key_order() {
+    let forward: Value = serde_json::from_str(r#"{"a": 1, "b": {"x": 1, "y": 2}}"#).unwrap();
+    let reversed: Value = serde_json::from_str(r#"{"b": {"y": 2, "x": 1}, "a": 1}"#).unwrap();
+    assert_eq!(
+        request_digest("/p", "flow", &forward),
+        request_digest("/p", "flow", &reversed)
+    );
+}

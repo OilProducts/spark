@@ -3875,7 +3875,7 @@ fn normalize_reasoning_effort(value: Option<&str>) -> Result<Option<String>, Cod
         return Ok(None);
     };
     Ok(Some(
-        crate::config::validate_reasoning_effort(value)
+        crate::config::validate_reasoning_effort(value, None)
             .map_err(CodexAppServerError::configuration)?,
     ))
 }

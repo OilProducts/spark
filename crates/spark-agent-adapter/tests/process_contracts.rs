@@ -1,3 +1,5 @@
+#[path = "process_contracts/acp_contracts.rs"]
+mod acp_contracts;
 #[path = "process_contracts/claude_code_contracts.rs"]
 mod claude_code_contracts;
 #[path = "process_contracts/codex_app_server_contracts.rs"]

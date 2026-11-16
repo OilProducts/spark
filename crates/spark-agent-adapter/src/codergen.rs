@@ -484,6 +484,16 @@ impl CodergenSessionInterventionBroker {
         };
 
         if let Some((project_path, conversation_id)) = active.live_turn.as_ref() {
+            if let Ok(Some(spark_common::agent_settings::HarnessIdentity::Acp(id))) =
+                spark_common::agent_settings::HarnessIdentity::parse(&active.provider)
+            {
+                return rejected_intervention(
+                    &request,
+                    "backend_steering_unsupported",
+                    "live_turn",
+                    format!("ACP harness {id} does not accept messages during a turn."),
+                );
+            }
             let provider = match active.provider.as_str() {
                 "claude-code" => "Claude Code",
                 "codex" => "Codex app-server",
