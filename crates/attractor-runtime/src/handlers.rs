@@ -1918,11 +1918,12 @@ impl RuntimeHandlerRunner {
         else {
             return Ok(());
         };
-        // Never clobber an in-flight control request with a gate transition.
+        // Never clobber an in-flight control request or an ended run with a
+        // gate transition.
         let current = crate::records::normalize_run_status(&record.status);
         if matches!(
             current.as_str(),
-            "cancel_requested" | "canceled" | "pause_requested" | "paused"
+            "cancel_requested" | "canceled" | "pause_requested" | "paused" | "completed" | "failed"
         ) {
             return Ok(());
         }
