@@ -96,7 +96,7 @@ it('does not rerender resource subscribers when an unrelated session changes', (
 })
 
 it('sends a form gate its typed reply, and keeps it waiting with the reason when refused', async () => {
-    const form = { harness: 'acp:x', harnessLabel: 'X', message: 'Pick', schema: { type: 'object', properties: {} } }
+    const form = { requestId: 'acp-form-1', harness: 'acp:x', harnessLabel: 'X', message: 'Pick', schema: { type: 'object', properties: {} } }
     const formQuestion: PendingQuestionSnapshot = { ...question, questionId: 'f', questionType: null, form }
     const formGate = { ...gate, questionId: 'f', questionType: null, form } as PendingInterviewGate
     useStore.getState().updateRunDetailSession('a', { questionsStatus: 'ready', pendingQuestionSnapshots: [formQuestion] })

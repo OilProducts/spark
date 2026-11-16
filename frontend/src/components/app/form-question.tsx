@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import {
     REPLY_ACTION_LABELS,
+    canLeaveUnset,
     draftReply,
     formFields,
     initialDraft,
@@ -40,7 +41,7 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
     const [invalid, setInvalid] = useState<{ field: string; error: string } | null>(null)
     const formRef = useRef<HTMLFormElement>(null)
     const fieldId = (name: string) => `${idPrefix}-${name}`
-    const setDraft = (name: string, value: string | string[]) => {
+    const setDraft = (name: string, value: string | string[] | null) => {
         setInvalid(null)
         setDraftState((current) => {
             const next = { ...current, [name]: value }
@@ -64,7 +65,7 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
     }
 
     const renderControl = (field: FormField, describedBy: string | undefined) => {
-        const value = draft[field.name] ?? (field.kind === 'multi' ? [] : '')
+        const value = draft[field.name] ?? null
         const common = {
             id: fieldId(field.name),
             'data-form-field': field.name,
@@ -75,7 +76,7 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
             disabled: isSubmitting,
         }
         if (field.kind === 'multi') {
-            const picks = value as string[]
+            const picks = (value ?? []) as string[]
             return (
                 <div className="flex flex-wrap gap-x-4 gap-y-2">
                     {field.choices.map((choice, index) => {
@@ -105,17 +106,19 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
             const choices = field.kind === 'boolean'
                 ? [{ value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }]
                 : field.choices
+            // Options are keyed by position, so a choice whose value is '' stays apart from unset.
+            const selected = value === null ? -1 : choices.findIndex((choice) => choice.value === value)
             return (
                 <NativeSelect
                     {...common}
                     size="sm"
-                    value={value as string}
-                    onChange={(event) => setDraft(field.name, event.target.value)}
+                    value={selected < 0 ? '' : String(selected)}
+                    onChange={(event) => setDraft(field.name, event.target.value === '' ? null : choices[Number(event.target.value)].value)}
                     className="bg-background"
                 >
                     <NativeSelectOption value="">{field.required ? 'Choose…' : 'Not set'}</NativeSelectOption>
-                    {choices.map((choice) => (
-                        <NativeSelectOption key={choice.value} value={choice.value}>{choice.label}</NativeSelectOption>
+                    {choices.map((choice, index) => (
+                        <NativeSelectOption key={choice.value} value={String(index)}>{choice.label}</NativeSelectOption>
                     ))}
                 </NativeSelect>
             )
@@ -129,9 +132,9 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
                 step={field.kind === 'integer' ? 1 : numeric ? 'any' : undefined}
                 min={field.minimum ?? undefined}
                 max={field.maximum ?? undefined}
-                placeholder={field.format === 'date-time' ? '2026-01-31T09:00:00Z' : undefined}
+                placeholder={value === null ? 'Not set' : field.format === 'date-time' ? '2026-01-31T09:00:00Z' : undefined}
                 autoComplete="off"
-                value={value as string}
+                value={(value ?? '') as string}
                 onChange={(event) => setDraft(field.name, event.target.value)}
                 className="h-8 bg-background text-sm"
             />
@@ -152,6 +155,7 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
         >
             <div className="space-y-0.5">
                 <p className="text-xs text-muted-foreground">Asked by {form.harnessLabel}</p>
+                {form.requestId ? <p className="text-xs text-muted-foreground">Request ID: <span className="font-mono">{form.requestId}</span></p> : null}
                 <p id={`${idPrefix}-message`} className="text-sm text-foreground">{form.message || 'Fill in the form.'}</p>
                 <p className="text-xs text-muted-foreground">Don't enter passwords, keys or other secrets.</p>
             </div>
@@ -166,8 +170,21 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
                         {field.required ? null : <>{' '}<span className="font-normal text-muted-foreground">(optional)</span></>}
                     </>
                 )
+                // An optional field whose empty control is a value ('' or []) says whether it is sent.
+                const leaveUnsetId = `${fieldId(field.name)}-unset`
                 const details = (
                     <>
+                        {canLeaveUnset(field) ? (
+                            <div className="flex items-center gap-2">
+                                <Checkbox
+                                    id={leaveUnsetId}
+                                    checked={(draft[field.name] ?? null) === null}
+                                    disabled={isSubmitting}
+                                    onCheckedChange={(checked) => setDraft(field.name, checked === true ? null : field.kind === 'multi' ? [] : '')}
+                                />
+                                <Label htmlFor={leaveUnsetId} className="text-xs font-normal text-muted-foreground">Leave {field.label} unset</Label>
+                            </div>
+                        ) : null}
                         {descriptionId ? <p id={descriptionId} className="text-xs text-muted-foreground">{field.description}</p> : null}
                         {errorId ? <p id={errorId} role="alert" className="text-xs text-destructive">{invalid?.error}</p> : null}
                     </>
@@ -214,6 +231,7 @@ export function FormReplySummary({ form, reply }: { form: FormQuestion; reply: F
         <div className="space-y-2">
             <p className="text-sm text-foreground">{form.message || 'Form'}</p>
             <p className="text-xs text-muted-foreground">Asked by {form.harnessLabel} · {REPLY_ACTION_LABELS[reply.action]}</p>
+            {form.requestId ? <p className="text-xs text-muted-foreground">Request ID: <span className="font-mono">{form.requestId}</span></p> : null}
             {reply.action === 'accept' && lines.length === 0 ? <p className="text-sm text-muted-foreground">No values given.</p> : null}
             {lines.length > 0 ? (
                 <dl className="space-y-1">

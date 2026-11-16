@@ -220,6 +220,7 @@ fn check_property(name: &str, property: &Value) -> Result<(), String> {
             }
             if object.contains_key("enum") || object.contains_key("oneOf") {
                 choices(object).ok_or_else(|| malformed("enum"))?;
+                options_only(name, object.get("oneOf"))?;
             }
             if object
                 .get("default")
@@ -245,6 +246,17 @@ fn check_property(name: &str, property: &Value) -> Result<(), String> {
             count("minItems")?;
             count("maxItems")?;
             item_choices(object).ok_or_else(|| malformed("items"))?;
+            let items = object["items"].as_object().expect("checked items");
+            let allowed: &[&str] = match items.contains_key("anyOf") {
+                true => &["type", "anyOf"],
+                false => &["type", "enum"],
+            };
+            if let Some(key) = items.keys().find(|key| !allowed.contains(&key.as_str())) {
+                return Err(format!(
+                    "field {name:?} uses {key:?} in its items, which Spark does not support"
+                ));
+            }
+            options_only(name, items.get("anyOf"))?;
             if let Some(default) = object.get("default") {
                 if !default
                     .as_array()
@@ -256,6 +268,22 @@ fn check_property(name: &str, property: &Value) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Refuses a titled choice (`oneOf` or `anyOf` entry) with any keyword but `const` and `title`.
+fn options_only(name: &str, options: Option<&Value>) -> Result<(), String> {
+    let mut keys = options
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .flat_map(Map::keys);
+    match keys.find(|key| !matches!(key.as_str(), "const" | "title")) {
+        Some(key) => Err(format!(
+            "field {name:?} uses {key:?} in a choice, which Spark does not support"
+        )),
+        None => Ok(()),
+    }
 }
 
 fn is_integer(value: &Value) -> bool {
@@ -278,7 +306,9 @@ fn item_choices(property: &Map<String, Value>) -> Option<Vec<&str>> {
         (Some(values), None) if items["type"] == "string" => {
             values.as_array()?.iter().map(Value::as_str).collect()
         }
-        (None, Some(options)) => options.as_array()?.iter().map(titled).collect(),
+        (None, Some(options)) if items.get("type").is_none_or(|kind| kind == "string") => {
+            options.as_array()?.iter().map(titled).collect()
+        }
         _ => None,
     }
 }
@@ -297,11 +327,8 @@ fn check_value(label: &str, property: &Value, value: &Value) -> Result<(), Strin
             let text = value
                 .as_str()
                 .ok_or_else(|| format!("{label} must be text."))?;
-            if let Some(choices) = choices(object) {
-                if !choices.contains(&text) {
-                    return Err(format!("{label} must be one of its choices."));
-                }
-                return Ok(());
+            if choices(object).is_some_and(|choices| !choices.contains(&text)) {
+                return Err(format!("{label} must be one of its choices."));
             }
             let length = text.chars().count() as u64;
             if count("minLength").is_some_and(|min| length < min) {

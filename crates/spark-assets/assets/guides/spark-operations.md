@@ -367,7 +367,7 @@ spark delegation cancel <delegation_id>
 
 - `--request-key` is your name for the task: starting again with the same key returns the same delegation, so a retried step never starts a second task.
 - `--kind conversation` starts a conversation there with `--message` instead of running a flow.
-- `spark delegation get <delegation_id>` shows the open questions. Answer a conversation's several questions at once with `--answers`, keyed by question id.
+- `spark delegation get <delegation_id>` shows the open questions. Answer a conversation's several questions at once with `--answers`, keyed by question id. A question with a `form` takes one typed reply with `--form`, such as `{"action":"accept","content":{"count":0}}`, `{"action":"decline"}` or `{"action":"cancel"}`.
 - `wait` prints the record once the delegation seals, or with `timed_out` when `--timeout` passes first; stopping it changes nothing on either side.
 
 ## Link Environments

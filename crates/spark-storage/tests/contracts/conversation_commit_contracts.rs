@@ -651,7 +651,8 @@ fn a_form_question_keeps_only_a_valid_typed_reply_and_expires_when_withdrawn() {
     start(&repo, "conversation-f", project_path, "Ask with a form");
     let form = json!({"harness": "acp:fake", "harness_label": "Fake", "message": "Pick.",
         "schema": {"type": "object", "properties": {
-            "count": {"type": "integer"}, "agree": {"type": "boolean"}, "note": {"type": "string"}},
+            "count": {"type": "integer"}, "agree": {"type": "boolean"},
+            "note": {"type": "string", "enum": ["a", "bb"], "minLength": 2}},
             "required": ["count", "agree"]}});
     let ask = |request_id: &str, status: Option<&str>| {
         let mut request = json!({"request_id": request_id, "questions": [], "form": form});
@@ -696,6 +697,8 @@ fn a_form_question_keeps_only_a_valid_typed_reply_and_expires_when_withdrawn() {
         Some(json!({"action": "accept", "content": {"count": "0", "agree": false}})),
         Some(json!({"action": "accept", "content": {"agree": false}})),
         Some(json!({"action": "accept", "content": {"count": 0, "agree": false, "other": 1}})),
+        // A listed choice still has to meet the field's other constraints.
+        Some(json!({"action": "accept", "content": {"count": 0, "agree": false, "note": "a"}})),
     ] {
         assert!(
             answer("acp-form-1", invalid.clone()).is_err(),

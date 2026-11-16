@@ -2,8 +2,9 @@
 // schema, the person's draft, and the reply. The checks mirror the backend's, which stays the
 // authority: a reply the backend refuses leaves the question pending.
 
-/** A form as asked: who asks, why, and the original restricted schema. */
+/** A form as asked: its Spark request ID, who asks, why, and the original restricted schema. */
 export interface FormQuestion {
+    requestId: string
     harness: string
     harnessLabel: string
     message: string
@@ -35,8 +36,12 @@ export interface FormField {
     defaultValue: FormValue | undefined
 }
 
-/** What the person entered: text as typed ('' is unset; booleans 'true'/'false'), picks as lists. */
-export type FormDraft = Record<string, string | string[]>
+/**
+ * What the person entered: text as typed, a choice's value (booleans 'true'/'false'), picks as
+ * lists. `null` is a field left unset, which the reply omits; '' and [] are values. A number
+ * field's empty text is unset too, since it can't be a number.
+ */
+export type FormDraft = Record<string, string | string[] | null>
 
 const asRecord = (value: unknown): Record<string, unknown> | null => (
     value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
@@ -49,6 +54,7 @@ export function parseFormQuestion(value: unknown): FormQuestion | null {
     const schema = asRecord(record?.schema)
     if (!record || !schema) return null
     return {
+        requestId: text(record.request_id),
         harness: text(record.harness),
         harnessLabel: text(record.harness_label) || text(record.harness) || 'The agent',
         message: text(record.message),
@@ -63,7 +69,7 @@ const titledChoices = (options: unknown) => (Array.isArray(options) ? options : 
 
 const plainChoices = (values: unknown) => (Array.isArray(values) ? values : [])
     .filter((value): value is string => typeof value === 'string')
-    .map((value) => ({ value, label: value }))
+    .map((value) => ({ value, label: value || '(empty)' }))
 
 export function formFields(schema: Record<string, unknown>): FormField[] {
     const required = Array.isArray(schema.required) ? schema.required : []
@@ -97,14 +103,23 @@ export function formFields(schema: Record<string, unknown>): FormField[] {
     })
 }
 
-/** The draft a form opens with: its defaults filled in, everything else unset. */
+/**
+ * The draft a form opens with: its defaults filled in. A required text or multi-select field
+ * starts empty, since '' and [] may answer it; anything else starts unset.
+ */
 export function initialDraft(fields: FormField[]): FormDraft {
     return Object.fromEntries(fields.map((field) => {
         const value = field.defaultValue
-        if (field.kind === 'multi') return [field.name, Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []]
-        return [field.name, value === undefined || Array.isArray(value) ? '' : String(value)]
+        if (field.kind === 'multi') {
+            return [field.name, Array.isArray(value) ? value.filter((item) => typeof item === 'string') : field.required ? [] : null]
+        }
+        if (value !== undefined && !Array.isArray(value)) return [field.name, String(value)]
+        return [field.name, field.required && field.kind === 'text' ? '' : null]
     }))
 }
+
+/** Whether a field may be left unset: optional, and its empty control is itself a value. */
+export const canLeaveUnset = (field: FormField) => !field.required && (field.kind === 'text' || field.kind === 'multi')
 
 const isEmail = (value: string) => {
     const at = value.indexOf('@')
@@ -157,10 +172,11 @@ function checkField(field: FormField, value: FormValue): string | null {
         if (field.maximum !== null && number > field.maximum) return `${label} is above its maximum.`
         return null
     }
-    if (field.kind === 'choice') {
-        return field.choices.some((choice) => choice.value === value) ? null : `${label} must be one of its choices.`
+    // A choice is still text, so it meets the field's other string constraints too.
+    if (field.kind === 'choice' && !field.choices.some((choice) => choice.value === value)) {
+        return `${label} must be one of its choices.`
     }
-    if (field.kind !== 'text') return null
+    if (field.kind !== 'text' && field.kind !== 'choice') return null
     const entered = value as string
     const length = [...entered].length
     if (field.minLength !== null && length < field.minLength) return `${label} is too short.`
@@ -181,20 +197,20 @@ function checkField(field: FormField, value: FormValue): string | null {
 
 /**
  * The accept reply a draft makes, or the first field it fails and why. Unset optional fields
- * are omitted, never sent empty; false and zero are values.
+ * are omitted; false, zero, '' and [] are values.
  */
 export function draftReply(fields: FormField[], draft: FormDraft): { reply: FormReply } | { field: string; error: string } {
     const content: Record<string, FormValue> = {}
     for (const field of fields) {
         const entered = draft[field.name]
-        const unset = field.kind === 'multi' ? !entered?.length && !field.required : entered === undefined || entered === ''
-        if (unset) {
+        const numeric = field.kind === 'number' || field.kind === 'integer'
+        if (entered === null || entered === undefined || (numeric && entered === '')) {
             if (field.required) return { field: field.name, error: `${field.label} is required.` }
             continue
         }
-        const value: FormValue = field.kind === 'multi' ? [...(entered ?? [])]
+        const value: FormValue = field.kind === 'multi' ? [...entered]
             : field.kind === 'boolean' ? entered === 'true'
-                : field.kind === 'number' || field.kind === 'integer' ? Number(entered)
+                : numeric ? Number(entered)
                     : entered as string
         const error = checkField(field, value)
         if (error) return { field: field.name, error }
@@ -221,7 +237,7 @@ export function replyLines(fields: FormField[], reply: FormReply): Array<{ label
                 ? value.map((item) => field.choices.find((choice) => choice.value === item)?.label ?? item).join(', ') || 'None'
                 : typeof value === 'boolean' ? (value ? 'Yes' : 'No')
                     : field.choices.find((choice) => choice.value === value)?.label ?? String(value)
-            return { label: field.label, value: shown }
+            return { label: field.label, value: shown || '(empty)' }
         })
 }
 

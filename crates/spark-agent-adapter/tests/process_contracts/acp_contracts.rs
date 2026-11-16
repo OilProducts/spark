@@ -1181,9 +1181,11 @@ fn acp_chat_form_reaches_its_live_turn_once_with_typed_values() {
         .unwrap()
         .starts_with("acp-form-"));
     assert_eq!(asked["questions"], json!([]));
+    // The form shows people the Spark request ID their reply answers.
     assert_eq!(
         asked["form"],
         json!({
+            "request_id": asked["request_id"],
             "harness": "acp:fake",
             "harness_label": "Fake ACP",
             "message": "Pick the details.",

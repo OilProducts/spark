@@ -114,7 +114,7 @@ it('answers a harness form gate with one typed reply, or declines it', async () 
     sourceScope: 'root', sourceParentNodeId: null, sourceFlowName: null,
     prompt: 'Pick a size', details: null, questionType: null, options: [],
     form: {
-      harness: 'acp:writer', harnessLabel: 'Writer Agent', message: 'Pick a size',
+      requestId: 'acp-form-9', harness: 'acp:writer', harnessLabel: 'Writer Agent', message: 'Pick a size',
       schema: { type: 'object', properties: { size: { type: 'string', title: 'Size', enum: ['s', 'm'] }, rush: { type: 'boolean', title: 'Rush' } }, required: ['size'] },
     },
   }
@@ -128,6 +128,8 @@ it('answers a harness form gate with one typed reply, or declines it', async () 
   />)
   expect(screen.getByRole('form', { name: 'Pick a size' })).toBeInTheDocument()
   expect(screen.getByText('Asked by Writer Agent')).toBeInTheDocument()
+  // The form's own Spark request ID, not the run question's ID, names what is being answered.
+  expect(screen.getByText('acp-form-9').parentElement).toHaveTextContent('Request ID: acp-form-9')
   expect(screen.queryByRole('textbox')).toBeNull()
   await user.click(screen.getByRole('button', { name: 'Submit' }))
   expect(submit).not.toHaveBeenCalled()

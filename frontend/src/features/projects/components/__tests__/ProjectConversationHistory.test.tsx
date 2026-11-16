@@ -1079,7 +1079,7 @@ describe('ProjectConversationHistory', () => {
         const user = userEvent.setup()
         const at = '2026-04-17T12:00:00Z'
         const form = {
-            harness: 'acp:writer', harness_label: 'Writer Agent', message: 'How should I publish?',
+            request_id: 'acp-form-1', harness: 'acp:writer', harness_label: 'Writer Agent', message: 'How should I publish?',
             schema: { type: 'object', properties: { copies: { type: 'integer', title: 'Copies' }, draft: { type: 'boolean', title: 'Draft' } }, required: ['copies'] },
         }
         const entriesWith = (requestUserInput: Record<string, unknown>) => getConversationTimelineEntries(applyConversationPage(undefined, parseConversationPageResponse(conversationPage({
@@ -1098,6 +1098,7 @@ describe('ProjectConversationHistory', () => {
 
         const card = screen.getByTestId('project-request-user-input-card-form-segment')
         expect(within(card).getByText('Asked by Writer Agent')).toBeVisible()
+        expect(within(card).getByText('acp-form-1').parentElement).toHaveTextContent('Request ID: acp-form-1')
         await user.type(within(card).getByRole('spinbutton', { name: 'Copies' }), '0')
         await user.selectOptions(within(card).getByRole('combobox', { name: 'Draft (optional)' }), 'No')
         await user.click(within(card).getByRole('button', { name: 'Submit' }))
@@ -1106,12 +1107,13 @@ describe('ProjectConversationHistory', () => {
         rerender(makeHistoryElement(entriesWith({ status: 'answered', reply: { action: 'accept', content: { copies: 0, draft: false } } })))
         const summary = screen.getByTestId('project-request-user-input-summary-form-segment')
         expect(within(summary).getByText('Asked by Writer Agent · Submitted')).toBeVisible()
+        expect(within(summary).getByText('acp-form-1')).toBeVisible()
         expect(within(summary).getByText('Copies').nextSibling).toHaveTextContent('0')
         expect(within(summary).getByText('Draft').nextSibling).toHaveTextContent('No')
 
         rerender(makeHistoryElement(entriesWith({ status: 'expired' })))
         const expired = screen.getByTestId('project-request-user-input-expired-form-segment')
-        expect(within(expired).getByText('How should I publish? · No answer submitted')).toBeVisible()
+        expect(within(expired).getByText('How should I publish? · No answer submitted · Request ID: acp-form-1')).toBeVisible()
         expect(within(expired).queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
     })
 

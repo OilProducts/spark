@@ -677,9 +677,9 @@ fn delegation_command() -> Command {
                 value(
                     "question",
                     "QUESTION_ID",
-                    "Question id, from spark delegation get; optional with --answers",
+                    "Question id, from spark delegation get; optional with --answers or --form",
                 )
-                .required_unless_present("answers"),
+                .required_unless_present_any(["answers", "form"]),
                 value("option", "VALUE", "Value of the option to choose").requires("question"),
                 text_value("text", "TEXT", "Free-text answer").requires("question"),
                 value(
@@ -687,10 +687,15 @@ fn delegation_command() -> Command {
                     "JSON",
                     "Answers keyed by question id: inline JSON, a file path, or - for stdin",
                 ),
+                value(
+                    "form",
+                    "JSON",
+                    "A form question's reply, such as {\"action\":\"accept\",\"content\":{...}} or {\"action\":\"decline\"}: inline JSON, a file path, or - for stdin",
+                ),
             ])
             .group(
                 ArgGroup::new("answer")
-                    .args(["option", "text", "answers"])
+                    .args(["option", "text", "answers", "form"])
                     .required(true),
             ),
     ])
@@ -1219,9 +1224,13 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
                     ..request(Get, path)
                 },
                 _ => {
-                    let answer = match json_input(m, "answers", stdin)? {
-                        Some(answers) => json!({ "answers": answers }),
-                        None => json!({
+                    let answer = match (
+                        json_input(m, "answers", stdin)?,
+                        json_input(m, "form", stdin)?,
+                    ) {
+                        (Some(answers), _) => json!({ "answers": answers }),
+                        (None, Some(form)) => json!({ "form": form }),
+                        (None, None) => json!({
                             "selected_value": value_of(m, "option").or_else(|| value_of(m, "text")),
                         }),
                     };

@@ -131,6 +131,7 @@ export function ProjectConversationRequestUserInputCard({
                         ) : (
                             <p className="text-sm text-muted-foreground">
                                 {entry.requestUserInput.form.message || 'Form'} · No answer submitted
+                                {entry.requestUserInput.form.requestId ? ` · Request ID: ${entry.requestUserInput.form.requestId}` : ''}
                             </p>
                         )}
                     </div>

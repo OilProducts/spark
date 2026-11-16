@@ -1713,7 +1713,9 @@ impl<'a> Turn<'a> {
             return None;
         }
         let request_id = format!("acp-form-{}", uuid::Uuid::new_v4());
+        // The form names its Spark request ID, so a person sees which request they answer.
         let form = json!({
+            "request_id": request_id,
             "harness": HarnessIdentity::Acp(self.plan.harness_id.clone()).selector(),
             "harness_label": self.plan.harness_label,
             "message": params["message"],

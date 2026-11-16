@@ -65,6 +65,51 @@ fn zero_false_and_omitted_optional_fields_are_valid_answers() {
 }
 
 #[test]
+fn empty_values_answer_fields_that_allow_them() {
+    let schema = json!({"type": "object", "properties": {
+        "note": {"type": "string"},
+        "pick": {"type": "string", "enum": ["", "a"], "default": ""},
+        "tags": {"type": "array", "items": {"type": "string", "enum": ["a"]}},
+    }, "required": ["note", "pick"]});
+    let reply = accept(json!({"note": "", "pick": "", "tags": []}));
+    assert_eq!(check_reply(&schema, &reply), Ok(()));
+    assert_eq!(
+        check_reply(&schema, &accept(json!({"note": "", "pick": ""}))),
+        Ok(()),
+        "an optional multi-select may still be omitted"
+    );
+}
+
+#[test]
+fn choices_still_meet_the_field_s_string_constraints() {
+    let schema = json!({"type": "object", "properties": {
+        "pick": {"type": "string", "enum": ["a", "bb"], "minLength": 2},
+        "code": {"type": "string", "pattern": "^[A-Z]", "oneOf": [
+            {"const": "x1", "title": "X"}, {"const": "Y1", "title": "Y"},
+        ]},
+        "mail": {"type": "string", "format": "email", "enum": ["nobody", "a@b.co"]},
+    }});
+    for (field, value, outcome) in [
+        ("pick", "a", Err("pick is too short.")),
+        ("pick", "bb", Ok(())),
+        (
+            "code",
+            "x1",
+            Err("code does not match the required pattern."),
+        ),
+        ("code", "Y1", Ok(())),
+        ("mail", "nobody", Err("mail must be a valid email.")),
+        ("mail", "a@b.co", Ok(())),
+    ] {
+        assert_eq!(
+            check_reply(&schema, &accept(json!({ field: value }))),
+            outcome.map_err(str::to_string),
+            "{field} = {value:?}"
+        );
+    }
+}
+
+#[test]
 fn decline_and_cancel_need_no_answers() {
     for (reply, wire) in [
         (FormReply::Decline, json!({"action": "decline"})),
@@ -166,6 +211,30 @@ fn unsupported_schemas_fail_explicitly() {
         (
             json!({"type": "object", "properties": {}, "required": ["f"]}),
             "not one of its fields",
+        ),
+        (
+            field(
+                json!({"type": "string", "oneOf": [{"const": "a", "title": "A", "description": "x"}]}),
+            ),
+            "\"description\" in a choice",
+        ),
+        (
+            field(
+                json!({"type": "array", "items": {"type": "string", "enum": ["a"], "minLength": 1}}),
+            ),
+            "\"minLength\" in its items",
+        ),
+        (
+            field(
+                json!({"type": "array", "items": {"anyOf": [{"const": "a", "title": "A", "enum": ["a"]}]}}),
+            ),
+            "\"enum\" in a choice",
+        ),
+        (
+            field(
+                json!({"type": "array", "items": {"type": "number", "anyOf": [{"const": "a", "title": "A"}]}}),
+            ),
+            "malformed \"items\"",
         ),
     ] {
         let error = check_schema(&schema).expect_err(&schema.to_string());

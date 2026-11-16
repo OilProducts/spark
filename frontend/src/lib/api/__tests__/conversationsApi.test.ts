@@ -481,7 +481,7 @@ describe('conversationsApi parsing', () => {
     })
 
     it('parses a form request and its typed reply, and leaves a string reply unread', () => {
-        const form = { harness: 'acp:x', harness_label: 'X Agent', message: 'Pick', schema: { type: 'object', properties: { n: { type: 'integer' } } } }
+        const form = { request_id: 'acp-form-1', harness: 'acp:x', harness_label: 'X Agent', message: 'Pick', schema: { type: 'object', properties: { n: { type: 'integer' } } } }
         const parse = (requestUserInput: Record<string, unknown>) => parseConversationSnapshotResponse({
             revision: 0, conversation_id: 'c', conversation_handle: 'h', project_path: '/p', chat_mode: 'chat', title: 'T',
             created_at: '2026-04-16T18:00:00Z', updated_at: '2026-04-16T18:00:00Z', turns: [],
@@ -494,7 +494,7 @@ describe('conversationsApi parsing', () => {
         }).segments[0].request_user_input
         expect(parse({ form, reply: { action: 'accept', content: { n: 0 } } })).toMatchObject({
             questions: [],
-            form: { harness: 'acp:x', harnessLabel: 'X Agent', message: 'Pick', schema: form.schema },
+            form: { requestId: 'acp-form-1', harness: 'acp:x', harnessLabel: 'X Agent', message: 'Pick', schema: form.schema },
             reply: { action: 'accept', content: { n: 0 } },
         })
         expect(parse({ form, reply: 'Accepted.' })).toMatchObject({ form: { message: 'Pick' }, reply: null })
