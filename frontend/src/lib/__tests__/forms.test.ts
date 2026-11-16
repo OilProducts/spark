@@ -83,6 +83,29 @@ it('sends empty text, an empty choice and an emptied multi-select as values, apa
     expect(draftReply(empties, { ...draft, pick: null })).toEqual({ field: 'pick', error: 'pick is required.' })
 })
 
+it('sends numbers as typed: exact past f64 precision, and never a text JSON would read differently', () => {
+    const numbers = formFields({ type: 'object', properties: { n: { type: 'integer' }, x: { type: 'number' } } })
+    const sent = (draft: FormDraft) => {
+        const result = draftReply(numbers, { n: null, x: null, ...draft })
+        return 'reply' in result ? JSON.stringify(result.reply) : result.error
+    }
+    expect(sent({ n: '9007199254740993', x: '-18446744073709551615' })).toBe('{"action":"accept","content":{"n":9007199254740993,"x":-18446744073709551615}}')
+    expect(sent({ n: ' 007 ', x: '1e3' })).toBe('{"action":"accept","content":{"n":7,"x":1000}}')
+    expect(sent({ n: '1e3', x: '.5' })).toBe('{"action":"accept","content":{"n":1000,"x":0.5}}')
+    expect(sent({ n: '9.007199254740993e15' })).toBe('n must be a whole number.')
+    for (const text of [' ', 'Infinity', '0x10', '1e400', '1,5']) expect(sent({ x: text })).toBe('x must be a number.')
+})
+
+it('opens on defaults of the field\'s own type, reading null as none', () => {
+    const defaults = formFields({ type: 'object', properties: {
+        n: { type: 'integer', default: null }, big: { type: 'integer', default: 2 ** 60 }, x: { type: 'number', default: 1e-7 },
+        s: { type: 'string', default: null }, b: { type: 'boolean', default: false },
+        tags: { type: 'array', items: { type: 'string', enum: ['a', 'b'] }, default: ['b', 'gone'] },
+    } })
+    expect(initialDraft(defaults)).toEqual({ n: null, big: null, x: '1e-7', s: null, b: 'false', tags: ['b'] })
+    expect(draftReply(defaults, initialDraft(defaults))).toEqual({ reply: { action: 'accept', content: { x: 1e-7, b: false, tags: ['b'] } } })
+})
+
 it('accepts an empty reply when no field is required', () => {
     const empty = formFields({ type: 'object', properties: { note: { type: 'string' } } })
     expect(draftReply(empty, initialDraft(empty))).toEqual({ reply: { action: 'accept', content: {} } })

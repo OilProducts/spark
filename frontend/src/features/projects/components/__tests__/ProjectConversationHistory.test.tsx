@@ -1099,7 +1099,7 @@ describe('ProjectConversationHistory', () => {
         const card = screen.getByTestId('project-request-user-input-card-form-segment')
         expect(within(card).getByText('Asked by Writer Agent')).toBeVisible()
         expect(within(card).getByText('acp-form-1').parentElement).toHaveTextContent('Request ID: acp-form-1')
-        await user.type(within(card).getByRole('spinbutton', { name: 'Copies' }), '0')
+        await user.type(within(card).getByRole('textbox', { name: 'Copies' }), '0')
         await user.selectOptions(within(card).getByRole('combobox', { name: 'Draft (optional)' }), 'No')
         await user.click(within(card).getByRole('button', { name: 'Submit' }))
         expect(onSubmitRequestUserInput).toHaveBeenCalledWith('acp-form-1', {}, { action: 'accept', content: { copies: 0, draft: false } })

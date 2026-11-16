@@ -11,7 +11,12 @@ export interface FormQuestion {
     schema: Record<string, unknown>
 }
 
-export type FormValue = string | number | boolean | string[]
+/** A number sent as its exact JSON digits: a whole number beyond f64's exact integers. */
+export interface ExactNumber {
+    readonly rawJSON: string
+}
+
+export type FormValue = string | number | boolean | string[] | ExactNumber
 
 export type FormReply =
     | { action: 'accept'; content: Record<string, FormValue> }
@@ -25,7 +30,7 @@ export interface FormField {
     required: boolean
     kind: 'text' | 'number' | 'integer' | 'boolean' | 'choice' | 'multi'
     format: string | null
-    choices: Array<{ value: string; label: string }>
+    choices: Array<{ value: string; label: string; description?: string }>
     pattern: string | null
     minimum: number | null
     maximum: number | null
@@ -37,9 +42,9 @@ export interface FormField {
 }
 
 /**
- * What the person entered: text as typed, a choice's value (booleans 'true'/'false'), picks as
- * lists. `null` is a field left unset, which the reply omits; '' and [] are values. A number
- * field's empty text is unset too, since it can't be a number.
+ * What the person entered: text and numbers as typed, a choice's value (booleans 'true'/'false'),
+ * picks as lists. `null` is a field left unset, which the reply omits; '' and [] are values. A
+ * number field's empty text is unset too, since it can't be a number.
  */
 export type FormDraft = Record<string, string | string[] | null>
 
@@ -65,7 +70,11 @@ export function parseFormQuestion(value: unknown): FormQuestion | null {
 const titledChoices = (options: unknown) => (Array.isArray(options) ? options : [])
     .map(asRecord)
     .filter((option): option is Record<string, unknown> => typeof option?.const === 'string')
-    .map((option) => ({ value: option.const as string, label: text(option.title) || (option.const as string) }))
+    .map((option) => ({
+        value: option.const as string,
+        label: text(option.title) || (option.const as string),
+        description: text(option.description) || undefined,
+    }))
 
 const plainChoices = (values: unknown) => (Array.isArray(values) ? values : [])
     .filter((value): value is string => typeof value === 'string')
@@ -105,15 +114,22 @@ export function formFields(schema: Record<string, unknown>): FormField[] {
 
 /**
  * The draft a form opens with: its defaults filled in. A required text or multi-select field
- * starts empty, since '' and [] may answer it; anything else starts unset.
+ * starts empty, since '' and [] may answer it; anything else starts unset, as does a field whose
+ * default is `null` (ACP's omitted) or of another type.
  */
 export function initialDraft(fields: FormField[]): FormDraft {
     return Object.fromEntries(fields.map((field) => {
         const value = field.defaultValue
         if (field.kind === 'multi') {
-            return [field.name, Array.isArray(value) ? value.filter((item) => typeof item === 'string') : field.required ? [] : null]
+            const picks = Array.isArray(value) ? value.filter((item) => field.choices.some((choice) => choice.value === item)) : null
+            return [field.name, picks ?? (field.required ? [] : null)]
         }
-        if (value !== undefined && !Array.isArray(value)) return [field.name, String(value)]
+        // ponytail: a whole number beyond f64's exact integers may have been rounded when the
+        // schema was read, so it isn't offered; reading the schema with its source text would keep it.
+        const offered = field.kind === 'number' || field.kind === 'integer'
+            ? typeof value === 'number' && (Number.isSafeInteger(value) || !Number.isInteger(value))
+            : typeof value === (field.kind === 'boolean' ? 'boolean' : 'string')
+        if (offered) return [field.name, String(value)]
         return [field.name, field.required && field.kind === 'text' ? '' : null]
     }))
 }
@@ -154,6 +170,33 @@ const FORMAT_CHECKS: Record<string, (value: string) => boolean> = {
     'date-time': isDateTime,
 }
 
+const NUMBER_TEXT = /^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i
+const WHOLE_TEXT = /^[-+]?\d+$/
+// JSON.rawJSON (ES2025) writes a number's exact digits; TypeScript's ES2022 lib doesn't declare it.
+const rawJSON = (JSON as JSON & { rawJSON?: (text: string) => ExactNumber }).rawJSON
+
+/**
+ * The number a field's text sends, or why it can't. A whole number beyond f64's exact integers
+ * is sent as the digits typed, so the value is never rounded on its way out.
+ */
+function readNumber(field: FormField, entered: string): { value: FormValue } | { error: string } {
+    const { label } = field
+    const text = entered.trim()
+    const number = Number(text)
+    const whole = WHOLE_TEXT.test(text)
+    const integer = field.kind === 'integer'
+    if (!NUMBER_TEXT.test(text) || !Number.isFinite(number) || (integer && !whole && !Number.isSafeInteger(number))) {
+        return { error: integer ? `${label} must be a whole number.` : `${label} must be a number.` }
+    }
+    // Rounding to f64 keeps order, so these never refuse wrongly; a tie past f64's exact
+    // integers (where the bound itself was read rounded) is the backend's, which compares exactly.
+    if (field.minimum !== null && number < field.minimum) return { error: `${label} is below its minimum.` }
+    if (field.maximum !== null && number > field.maximum) return { error: `${label} is above its maximum.` }
+    if (!whole || Number.isSafeInteger(number)) return { value: number }
+    if (!rawJSON) return { error: `${label} is too large for this browser to send exactly.` }
+    return { value: rawJSON(BigInt(text).toString()) }
+}
+
 /** The field a draft value fails, and why; null when it is valid. */
 function checkField(field: FormField, value: FormValue): string | null {
     const { label } = field
@@ -161,15 +204,6 @@ function checkField(field: FormField, value: FormValue): string | null {
         const picks = value as string[]
         if (field.minItems !== null && picks.length < field.minItems) return `${label} needs more choices.`
         if (field.maxItems !== null && picks.length > field.maxItems) return `${label} has too many choices.`
-        return null
-    }
-    if (field.kind === 'number' || field.kind === 'integer') {
-        const number = value as number
-        if (Number.isNaN(number) || (field.kind === 'integer' && !Number.isInteger(number))) {
-            return field.kind === 'integer' ? `${label} must be a whole number.` : `${label} must be a number.`
-        }
-        if (field.minimum !== null && number < field.minimum) return `${label} is below its minimum.`
-        if (field.maximum !== null && number > field.maximum) return `${label} is above its maximum.`
         return null
     }
     // A choice is still text, so it meets the field's other string constraints too.
@@ -208,9 +242,11 @@ export function draftReply(fields: FormField[], draft: FormDraft): { reply: Form
             if (field.required) return { field: field.name, error: `${field.label} is required.` }
             continue
         }
-        const value: FormValue = field.kind === 'multi' ? [...entered]
-            : field.kind === 'boolean' ? entered === 'true'
-                : numeric ? Number(entered)
+        const read = numeric ? readNumber(field, entered as string) : null
+        if (read && 'error' in read) return { field: field.name, error: read.error }
+        const value: FormValue = read ? read.value
+            : field.kind === 'multi' ? [...entered]
+                : field.kind === 'boolean' ? entered === 'true'
                     : entered as string
         const error = checkField(field, value)
         if (error) return { field: field.name, error }
@@ -233,10 +269,13 @@ export function replyLines(fields: FormField[], reply: FormReply): Array<{ label
         .filter((field) => field.name in reply.content)
         .map((field) => {
             const value = reply.content[field.name]
+            // ponytail: a reply read back from the server shows a whole number beyond f64's exact
+            // integers rounded; what was sent and stored keeps every digit.
             const shown = Array.isArray(value)
                 ? value.map((item) => field.choices.find((choice) => choice.value === item)?.label ?? item).join(', ') || 'None'
                 : typeof value === 'boolean' ? (value ? 'Yes' : 'No')
-                    : field.choices.find((choice) => choice.value === value)?.label ?? String(value)
+                    : typeof value === 'object' && value !== null ? value.rawJSON
+                        : field.choices.find((choice) => choice.value === value)?.label ?? String(value)
             return { label: field.label, value: shown || '(empty)' }
         })
 }

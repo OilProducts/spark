@@ -33,7 +33,7 @@ it('labels each field, names the asking harness and never asks for a secret', ()
     expect(within(named).getByText('acp-form-7').parentElement).toHaveTextContent('Request ID: acp-form-7')
     expect(within(named).getByText("Don't enter passwords, keys or other secrets.")).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Title' })).toHaveAccessibleDescription('Shown on the page.')
-    expect(screen.getByRole('spinbutton', { name: 'Copies' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Copies' })).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Keep as draft (optional)' })).toHaveDisplayValue('Yes')
     expect(screen.getByRole('combobox', { name: 'Channel (optional)' })).toHaveDisplayValue('Not set')
     expect(screen.getByRole('group', { name: 'Tags (optional)' })).toBeInTheDocument()
@@ -47,7 +47,7 @@ it('keeps an invalid draft for editing, then sends the reviewed typed reply', as
     const onReply = renderForm()
     await user.click(screen.getByRole('button', { name: 'Submit' }))
     expect(onReply).not.toHaveBeenCalled()
-    const copies = screen.getByRole('spinbutton', { name: 'Copies' })
+    const copies = screen.getByRole('textbox', { name: 'Copies' })
     expect(copies).toHaveAttribute('aria-invalid', 'true')
     expect(copies).toHaveAccessibleDescription('Copies is required.')
     expect(copies).toHaveFocus()
@@ -64,7 +64,7 @@ it('keeps an invalid draft for editing, then sends the reviewed typed reply', as
 it('sends an empty required text and an emptied multi-select, and omits what is left unset', async () => {
     const user = userEvent.setup()
     const onReply = renderForm(vi.fn(), 'empties')
-    await user.type(screen.getByRole('spinbutton', { name: 'Copies' }), '2')
+    await user.type(screen.getByRole('textbox', { name: 'Copies' }), '2')
     await user.click(screen.getByRole('button', { name: 'Submit' }))
     expect(onReply).toHaveBeenLastCalledWith({ action: 'accept', content: { title: '', copies: 2, draft: true } })
 
@@ -78,6 +78,59 @@ it('sends an empty required text and an emptied multi-select, and omits what is 
     await user.selectOptions(screen.getByRole('combobox', { name: 'Keep as draft (optional)' }), 'Not set')
     await user.click(screen.getByRole('button', { name: 'Submit' }))
     expect(onReply).toHaveBeenLastCalledWith({ action: 'accept', content: { title: '', copies: 2 } })
+})
+
+it('sends a whole number with every digit typed, and leaves a past-precision bound tie to the backend', async () => {
+    const user = userEvent.setup()
+    const onReply = vi.fn()
+    render(<FormQuestionFields
+        actionError={null} draftKey="exact" isSubmitting={false} onReply={onReply} testId="form"
+        form={{ ...form, schema: { type: 'object', properties: {
+            id: { type: 'integer', title: 'ID', maximum: 9007199254740991 },
+            big: { type: 'integer', title: 'Big', default: 9007199254740992, maximum: 9007199254740992 },
+            ratio: { type: 'number', title: 'Ratio', default: 0.5 },
+        }, required: ['id', 'big'] } }}
+    />)
+    const id = screen.getByRole('textbox', { name: 'ID' })
+    const big = screen.getByRole('textbox', { name: 'Big' })
+    expect(big).toHaveValue('')
+    expect(screen.getByRole('textbox', { name: 'Ratio (optional)' })).toHaveValue('0.5')
+    await user.type(id, '9007199254740992')
+    await user.click(screen.getByRole('button', { name: 'Submit' }))
+    expect(id).toHaveAccessibleDescription('ID is above its maximum.')
+    await user.clear(id)
+    await user.type(id, '-9007199254740993')
+    await user.type(big, '9007199254740993')
+    expect(big).toHaveValue('9007199254740993')
+    await user.click(screen.getByRole('button', { name: 'Submit' }))
+    expect(JSON.stringify(onReply.mock.lastCall?.[0])).toBe('{"action":"accept","content":{"id":-9007199254740993,"big":9007199254740993,"ratio":0.5}}')
+})
+
+it('reads ACP nulls as omitted and shows what each choice means', async () => {
+    const user = userEvent.setup()
+    const onReply = vi.fn()
+    render(<FormQuestionFields
+        actionError={null} draftKey="nulls" isSubmitting={false} onReply={onReply} testId="form"
+        form={{ ...form, schema: { type: 'object', required: null, properties: {
+            plan: { type: 'string', title: 'Plan', enum: null, default: null, minLength: null, oneOf: [
+                { const: 'free', title: 'Free', description: 'No cost', _meta: { k: 1 } },
+                { const: 'pro', title: 'Pro', description: null },
+            ] },
+            count: { type: 'integer', title: 'Count', minimum: null, default: null },
+            tags: { type: 'array', title: 'Tags', default: null, items: { anyOf: [{ const: 'a', title: 'A', description: 'First' }], _meta: null } },
+        } } }}
+    />)
+    const plan = screen.getByRole('combobox', { name: 'Plan (optional)' })
+    expect(plan).toHaveDisplayValue('Not set')
+    expect(plan).toHaveAccessibleDescription('Free: No cost')
+    expect(screen.getByRole('group', { name: 'Tags (optional)' })).toHaveAccessibleDescription('A: First')
+    expect(screen.getByRole('textbox', { name: 'Count (optional)' })).toHaveValue('')
+    await user.click(screen.getByRole('button', { name: 'Submit' }))
+    expect(onReply).toHaveBeenLastCalledWith({ action: 'accept', content: {} })
+    await user.type(screen.getByRole('textbox', { name: 'Count (optional)' }), '-3')
+    await user.selectOptions(plan, 'Pro')
+    await user.click(screen.getByRole('button', { name: 'Submit' }))
+    expect(onReply).toHaveBeenLastCalledWith({ action: 'accept', content: { plan: 'pro', count: -3 } })
 })
 
 it('offers a choice whose value is empty, apart from leaving it unset', async () => {

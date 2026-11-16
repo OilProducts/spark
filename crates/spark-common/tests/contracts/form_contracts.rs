@@ -110,6 +110,82 @@ fn choices_still_meet_the_field_s_string_constraints() {
 }
 
 #[test]
+fn acp_annotations_and_null_keywords_are_supported_as_omitted() {
+    let schema = json!({"type": "object", "title": null, "required": null, "_meta": {"k": 1}, "properties": {
+        "plan": {"type": "string", "title": null, "enum": null, "minLength": null, "format": null, "default": null, "oneOf": [
+            {"const": "free", "title": "Free", "description": "No cost", "_meta": {"k": 1}},
+            {"const": "pro", "title": "Pro", "description": null, "_meta": null},
+        ]},
+        "note": {"type": "string", "pattern": null, "maxLength": null, "oneOf": null, "_meta": null},
+        "count": {"type": "integer", "minimum": null, "maximum": 2, "default": null},
+        "ok": {"type": "boolean", "default": null},
+        "tags": {"type": "array", "minItems": null, "default": null, "items": {
+            "type": "string", "enum": ["a"], "_meta": {"k": 1},
+        }},
+        "picks": {"type": "array", "items": {"anyOf": [{"const": "x", "title": "X", "description": "Ex"}], "_meta": null}},
+    }});
+    assert_eq!(check_schema(&schema), Ok(()));
+    let reply = accept(json!({"plan": "pro", "note": "", "count": -5, "tags": [], "picks": ["x"]}));
+    assert_eq!(
+        check_reply(&schema, &reply),
+        Ok(()),
+        "a null keyword constrains nothing"
+    );
+    for (field, value, reason) in [
+        ("plan", json!("team"), "plan must be one of its choices."),
+        ("count", json!(3), "count is above its maximum."),
+        ("picks", json!(["y"]), "picks must list only its choices."),
+    ] {
+        assert_eq!(
+            check_reply(&schema, &accept(json!({ field: value }))),
+            Err(reason.to_string())
+        );
+    }
+}
+
+#[test]
+fn integer_bounds_hold_beyond_float_precision() {
+    // 2^53 + 1 rounds to the same f64 as 2^53.
+    let schema = json!({"type": "object", "properties": {
+        "low": {"type": "integer", "minimum": 9_007_199_254_740_993_i64},
+        "high": {"type": "integer", "maximum": 9_007_199_254_740_992_i64},
+        "wide": {"type": "number", "maximum": 9_007_199_254_740_992.0},
+    }});
+    for (field, value, outcome) in [
+        ("low", 9_007_199_254_740_993_i64, Ok(())),
+        (
+            "low",
+            9_007_199_254_740_992,
+            Err("low is below its minimum."),
+        ),
+        ("high", 9_007_199_254_740_992, Ok(())),
+        (
+            "high",
+            9_007_199_254_740_993,
+            Err("high is above its maximum."),
+        ),
+        ("wide", 9_007_199_254_740_992, Ok(())),
+        (
+            "wide",
+            9_007_199_254_740_993,
+            Err("wide is above its maximum."),
+        ),
+    ] {
+        assert_eq!(
+            check_reply(&schema, &accept(json!({ field: value }))),
+            outcome.map_err(str::to_string),
+            "{field} = {value}"
+        );
+    }
+    let reply = accept(json!({"low": 9_007_199_254_740_993_i64}));
+    assert_eq!(
+        serde_json::to_string(&reply).unwrap(),
+        r#"{"action":"accept","content":{"low":9007199254740993}}"#,
+        "the reply keeps every digit"
+    );
+}
+
+#[test]
 fn decline_and_cancel_need_no_answers() {
     for (reply, wire) in [
         (FormReply::Decline, json!({"action": "decline"})),
@@ -214,19 +290,13 @@ fn unsupported_schemas_fail_explicitly() {
         ),
         (
             field(
-                json!({"type": "string", "oneOf": [{"const": "a", "title": "A", "description": "x"}]}),
-            ),
-            "\"description\" in a choice",
-        ),
-        (
-            field(
                 json!({"type": "array", "items": {"type": "string", "enum": ["a"], "minLength": 1}}),
             ),
             "\"minLength\" in its items",
         ),
         (
             field(
-                json!({"type": "array", "items": {"anyOf": [{"const": "a", "title": "A", "enum": ["a"]}]}}),
+                json!({"type": "array", "items": {"anyOf": [{"const": "a", "title": "A", "enum": ["a"]}], "_meta": null}}),
             ),
             "\"enum\" in a choice",
         ),

@@ -1,5 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { draftReply, formFields } from '@/lib/forms'
 import { useStore } from '@/store'
 import { useRunDetailResources } from '../hooks/useRunDetailResources'
 import { useRunTimeline } from '../hooks/useRunTimeline'
@@ -101,10 +102,11 @@ it('sends a form gate its typed reply, and keeps it waiting with the reason when
     const formGate = { ...gate, questionId: 'f', questionType: null, form } as PendingInterviewGate
     useStore.getState().updateRunDetailSession('a', { questionsStatus: 'ready', pendingQuestionSnapshots: [formQuestion] })
     const { result } = renderHook(() => useRunTimeline({ selectedRunTimelineId: 'a', pendingQuestionSnapshots: [formQuestion] }))
-    const reply = { action: 'accept' as const, content: {} }
-    act(() => { void result.current.submitPendingGateAnswer(formGate, '', undefined, reply) })
+    const exact = draftReply(formFields({ type: 'object', properties: { n: { type: 'integer' } } }), { n: '9007199254740993' })
+    if (!('reply' in exact)) throw new Error(exact.error)
+    act(() => { void result.current.submitPendingGateAnswer(formGate, '', undefined, exact.reply) })
     expect(pending).toHaveLength(1)
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ question_id: 'f', selected_value: '', form: reply })
+    expect(String(vi.mocked(fetch).mock.calls[0][1]?.body)).toBe('{"question_id":"f","selected_value":"","form":{"action":"accept","content":{"n":9007199254740993}}}')
     await act(async () => pending[0].resolve(json({ status: 'validation_error', error: 'size is required.' })))
     expect(useStore.getState().runDetailSessionsByRunId.a.answeredGateIds).toEqual({})
     expect(useStore.getState().runDetailSessionsByRunId.a.pendingGateActionError).toBe('Unable to submit answer (HTTP 422): size is required.')

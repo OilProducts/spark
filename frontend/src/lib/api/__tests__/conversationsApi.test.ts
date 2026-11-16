@@ -14,6 +14,7 @@ import {
     type ConversationRow,
 } from '@/lib/api/conversationsApi'
 import { afterEach, vi } from 'vitest'
+import { draftReply, formFields } from '@/lib/forms'
 import { artifactRow, conversationBatch, conversationPage, conversationRow, segmentRow, summarySnapshot, tombstoneRow, turnRow } from '@/test/conversationWire'
 
 // The page a transcript-shaped fixture becomes, with its rows' payloads grouped by kind.
@@ -750,6 +751,11 @@ describe('conversation reads', () => {
         const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>
         expect(calls[0][0]).toBe('/workspace/api/conversations/c/request-user-input/acp-form-1/answer')
         expect(JSON.parse(String(calls[0][1].body))).toEqual({ project_path: '/p', answers: {}, form: { action: 'decline' } })
+
+        const exact = draftReply(formFields({ type: 'object', properties: { n: { type: 'integer' } } }), { n: '9007199254740993' })
+        if (!('reply' in exact)) throw new Error(exact.error)
+        await submitConversationRequestUserInputValidated('c', 'acp-form-1', { project_path: '/p', answers: {}, form: exact.reply }).catch(() => undefined)
+        expect(String(calls[1][1].body)).toContain('"form":{"action":"accept","content":{"n":9007199254740993}}')
     })
 
     it('requests the newest page, then the page before a cursor', async () => {

@@ -588,7 +588,8 @@ fn form_questions_list_their_form_and_take_only_a_valid_typed_reply() {
     let active = attractor_runtime::clarification::ActiveClarification::new(&paths).unwrap();
     let form = json!({"harness": "acp:fake", "harness_label": "Fake", "message": "Pick.",
         "schema": {"type": "object", "properties": {
-            "count": {"type": "integer", "title": "Count"}, "agree": {"type": "boolean"}},
+            "count": {"type": "integer", "title": "Count", "maximum": 9_007_199_254_740_992_u64},
+            "agree": {"type": "boolean"}},
             "required": ["count"]}});
     let mut gate =
         human_gate_pending_event("run-form", "form-q", "task", "Flow", "Pick.", None, vec![]);
@@ -637,6 +638,11 @@ fn form_questions_list_their_form_and_take_only_a_valid_typed_reply() {
             json!({"form": {"action": "accept", "content": {}}}),
             "Count is required.",
         ),
+        (
+            // One past a maximum it rounds to as an f64.
+            json!({"form": {"action": "accept", "content": {"count": 9_007_199_254_740_993_u64}}}),
+            "Count is above its maximum.",
+        ),
     ] {
         assert_eq!(
             post("form-q", body),
@@ -656,7 +662,7 @@ fn form_questions_list_their_form_and_take_only_a_valid_typed_reply() {
         "an invalid reply leaves the form pending"
     );
 
-    let reply = json!({"action": "accept", "content": {"count": 0, "agree": false}});
+    let reply = json!({"action": "accept", "content": {"count": 9_007_199_254_740_992_u64, "agree": false}});
     assert_eq!(post("form-q", json!({"form": reply}))["status"], "accepted");
     let events = store
         .read_run_bundle("run-form")
@@ -669,10 +675,13 @@ fn form_questions_list_their_form_and_take_only_a_valid_typed_reply() {
             event.event_type == "InterviewCompleted" && event.payload["question_id"] == "form-q"
         })
         .expect("answered");
-    assert_eq!(answered.payload["form_reply"], reply, "kept as typed");
+    assert_eq!(
+        answered.payload["form_reply"], reply,
+        "kept as typed, every digit"
+    );
     assert_eq!(
         answered.payload["answer"],
-        "Accepted.\nCount: 0\nagree: false"
+        "Accepted.\nCount: 9007199254740992\nagree: false"
     );
     assert_eq!(answered.payload["agent_request_id"], "acp-form-1");
     assert_eq!(

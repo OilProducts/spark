@@ -1292,6 +1292,115 @@ fn request_in(dir: &Path, script: Value) -> AgentTurnRequest {
 }
 
 #[test]
+fn acp_sdk_shaped_form_is_asked_as_sent_and_answered_exactly() {
+    use agent_client_protocol::v1::schema::{
+        CreateElicitationResponse, ElicitationSchema, EnumOption, IntegerPropertySchema,
+        MultiSelectItems, MultiSelectPropertySchema, StringPropertySchema, TitledMultiSelectItems,
+    };
+    use spark_common::forms::check_reply;
+    let meta = serde_json::Map::from_iter([("origin".to_string(), json!("sdk"))]);
+    let option = |value: &str, title: &str| {
+        EnumOption::new(value, title)
+            .description(format!("About {title}"))
+            .meta(meta.clone())
+    };
+    let mut tags = MultiSelectPropertySchema::titled(Vec::new()).max_items(2);
+    tags.items = MultiSelectItems::Titled(
+        TitledMultiSelectItems::new(vec![option("a", "A"), option("b", "B")]).meta(meta.clone()),
+    );
+    let sdk = ElicitationSchema::new()
+        .property(
+            "plan",
+            StringPropertySchema::new()
+                .title("Plan")
+                .one_of(vec![option("free", "Free"), option("pro", "Pro")])
+                .meta(meta.clone()),
+            true,
+        )
+        .property(
+            "count",
+            IntegerPropertySchema::new()
+                .minimum(0)
+                .maximum(9_007_199_254_740_993),
+            true,
+        )
+        .property("tags", tags, false)
+        .property("note", StringPropertySchema::new(), false);
+    // What the SDK emits, plus the nulls it reads as omitted keywords.
+    let mut schema = serde_json::to_value(&sdk).unwrap();
+    for (field, key) in [
+        ("note", "minLength"),
+        ("note", "pattern"),
+        ("note", "format"),
+        ("note", "default"),
+        ("note", "enum"),
+        ("plan", "enum"),
+        ("plan", "description"),
+        ("count", "default"),
+        ("tags", "default"),
+        ("tags", "minItems"),
+    ] {
+        schema["properties"][field][key] = Value::Null;
+    }
+    schema["properties"]["plan"]["oneOf"][0]["description"] = Value::Null;
+    schema["properties"]["tags"]["items"]["anyOf"][1]["_meta"] = Value::Null;
+    serde_json::from_value::<ElicitationSchema>(schema.clone()).expect("the SDK reads it");
+
+    let dir = tempfile::tempdir().unwrap();
+    let params = json!({"mode": "form", "message": "Plan?", "requestedSchema": schema});
+    let request = request_in(dir.path(), json!({"forms": [{"params": params}]}));
+    let (project, conversation) = (
+        request.project_path.clone(),
+        request.conversation_id.clone(),
+    );
+    let answer = |count: Value| {
+        serde_json::from_value::<spark_common::forms::FormReply>(json!({
+            "action": "accept",
+            "content": {"plan": "pro", "count": count, "tags": ["b"]},
+        }))
+        .unwrap()
+    };
+    let delivered = Arc::new(Mutex::new(Vec::new()));
+    let (result, seen) = run(&request, {
+        let delivered = Arc::clone(&delivered);
+        move |event| {
+            let Some(asked) = &event.request_user_input else {
+                return;
+            };
+            let (id, asked) = (
+                asked["request_id"].as_str().unwrap(),
+                &asked["form"]["schema"],
+            );
+            // One past the declared maximum is refused, though both round to the same f64.
+            let over = answer(json!(9_007_199_254_740_994_u64));
+            assert!(check_reply(asked, &over)
+                .unwrap_err()
+                .contains("above its maximum"));
+            let reply = answer(json!(9_007_199_254_740_993_u64));
+            assert_eq!(check_reply(asked, &reply), Ok(()));
+            let sent = acp::answer(&project, &conversation, id, reply);
+            delivered.lock().unwrap().push(sent);
+        }
+    });
+    assert_eq!(
+        result.expect("answered turn").stop_reason,
+        StopReason::EndTurn
+    );
+    assert_eq!(*delivered.lock().unwrap(), [true]);
+    let forms = forms_seen(&seen);
+    assert_eq!(forms.len(), 1, "{forms:?}");
+    assert_eq!(forms[0].1["form"]["schema"], schema, "the original schema");
+    assert!(other(&seen, "warning").is_empty());
+    let replied = &reply_to(dir.path(), "form-1")[0]["result"];
+    assert_eq!(
+        replied.to_string(),
+        r#"{"action":"accept","content":{"plan":"pro","count":9007199254740993,"tags":["b"]}}"#
+    );
+    serde_json::from_value::<CreateElicitationResponse>(replied.clone())
+        .expect("the SDK reads the reply");
+}
+
+#[test]
 fn acp_unsupported_form_schemas_and_modes_are_refused_explicitly() {
     let dir = tempfile::tempdir().unwrap();
     let nested = json!({"params": {

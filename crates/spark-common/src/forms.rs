@@ -7,6 +7,8 @@
 //! unsupported, so a form never asks for something Spark cannot show or
 //! check; secret inputs, such as passwords, are never offered.
 
+use std::cmp::Ordering;
+
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
@@ -34,9 +36,7 @@ const ANNOTATIONS: &[&str] = &["type", "title", "description", "_meta"];
 
 /// Whether Spark can show `schema` and check replies to it; the reason when not.
 pub fn check_schema(schema: &Value) -> Result<(), String> {
-    let root = schema
-        .as_object()
-        .ok_or("the form schema is not an object")?;
+    let root = keywords(schema).ok_or("the form schema is not an object")?;
     if let Some(key) = root.keys().find(|key| {
         !ANNOTATIONS.contains(&key.as_str()) && !matches!(key.as_str(), "properties" | "required")
     }) {
@@ -152,15 +152,25 @@ fn label(name: &str, property: &Value) -> String {
         .to_string()
 }
 
+/// A schema object's keywords. ACP defines a `null` keyword as omitted, so it drops out.
+fn keywords(schema: &Value) -> Option<Map<String, Value>> {
+    let object = schema.as_object()?;
+    Some(
+        object
+            .iter()
+            .filter(|(_, value)| !value.is_null())
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    )
+}
+
 fn check_property(name: &str, property: &Value) -> Result<(), String> {
-    let object = property
-        .as_object()
-        .ok_or_else(|| format!("field {name:?} has no schema"))?;
+    let object = &keywords(property).ok_or_else(|| format!("field {name:?} has no schema"))?;
     let kind = object
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let keywords: &[&str] = match kind {
+    let supported: &[&str] = match kind {
         "string" => &[
             "minLength",
             "maxLength",
@@ -181,7 +191,7 @@ fn check_property(name: &str, property: &Value) -> Result<(), String> {
     };
     if let Some(key) = object
         .keys()
-        .find(|key| !ANNOTATIONS.contains(&key.as_str()) && !keywords.contains(&key.as_str()))
+        .find(|key| !ANNOTATIONS.contains(&key.as_str()) && !supported.contains(&key.as_str()))
     {
         return Err(format!(
             "field {name:?} uses {key:?}, which Spark does not support"
@@ -245,11 +255,14 @@ fn check_property(name: &str, property: &Value) -> Result<(), String> {
         _ => {
             count("minItems")?;
             count("maxItems")?;
-            item_choices(object).ok_or_else(|| malformed("items"))?;
-            let items = object["items"].as_object().expect("checked items");
+            let items = object
+                .get("items")
+                .and_then(keywords)
+                .ok_or_else(|| malformed("items"))?;
+            item_choices(&items).ok_or_else(|| malformed("items"))?;
             let allowed: &[&str] = match items.contains_key("anyOf") {
-                true => &["type", "anyOf"],
-                false => &["type", "enum"],
+                true => &["type", "anyOf", "_meta"],
+                false => &["type", "enum", "_meta"],
             };
             if let Some(key) = items.keys().find(|key| !allowed.contains(&key.as_str())) {
                 return Err(format!(
@@ -270,7 +283,7 @@ fn check_property(name: &str, property: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Refuses a titled choice (`oneOf` or `anyOf` entry) with any keyword but `const` and `title`.
+/// Refuses a titled choice (`oneOf` or `anyOf` entry) with a keyword ACP's choices don't have.
 fn options_only(name: &str, options: Option<&Value>) -> Result<(), String> {
     let mut keys = options
         .and_then(Value::as_array)
@@ -278,7 +291,7 @@ fn options_only(name: &str, options: Option<&Value>) -> Result<(), String> {
         .flatten()
         .filter_map(Value::as_object)
         .flat_map(Map::keys);
-    match keys.find(|key| !matches!(key.as_str(), "const" | "title")) {
+    match keys.find(|key| !matches!(key.as_str(), "const" | "title" | "description" | "_meta")) {
         Some(key) => Err(format!(
             "field {name:?} uses {key:?} in a choice, which Spark does not support"
         )),
@@ -300,10 +313,9 @@ fn choices(property: &Map<String, Value>) -> Option<Vec<&str>> {
 }
 
 /// A multi-select field's values: `items.enum` of strings, or `items.anyOf`'s `const`s.
-fn item_choices(property: &Map<String, Value>) -> Option<Vec<&str>> {
-    let items = property.get("items")?;
+fn item_choices(items: &Map<String, Value>) -> Option<Vec<&str>> {
     match (items.get("enum"), items.get("anyOf")) {
-        (Some(values), None) if items["type"] == "string" => {
+        (Some(values), None) if items.get("type").is_some_and(|kind| kind == "string") => {
             values.as_array()?.iter().map(Value::as_str).collect()
         }
         (None, Some(options)) if items.get("type").is_none_or(|kind| kind == "string") => {
@@ -319,8 +331,7 @@ fn titled(option: &Value) -> Option<&str> {
 }
 
 fn check_value(label: &str, property: &Value, value: &Value) -> Result<(), String> {
-    let object = property.as_object().expect("a checked schema");
-    let bound = |key: &str| object.get(key).and_then(Value::as_f64);
+    let object = &keywords(property).expect("a checked schema");
     let count = |key: &str| object.get(key).and_then(Value::as_u64);
     match object["type"].as_str().unwrap_or_default() {
         "string" => {
@@ -361,17 +372,22 @@ fn check_value(label: &str, property: &Value, value: &Value) -> Result<(), Strin
             }
         }
         kind @ ("number" | "integer") => {
-            let number = value
-                .as_f64()
-                .filter(|_| kind == "number" || is_integer(value))
-                .ok_or_else(|| match kind {
+            if !value.is_number() || (kind == "integer" && !is_integer(value)) {
+                return Err(match kind {
                     "integer" => format!("{label} must be a whole number."),
                     _ => format!("{label} must be a number."),
-                })?;
-            if bound("minimum").is_some_and(|min| number < min) {
+                });
+            }
+            let beyond = |key: &str, side: Ordering| {
+                object
+                    .get(key)
+                    .and_then(|bound| compare(value, bound))
+                    .is_some_and(|order| order == side)
+            };
+            if beyond("minimum", Ordering::Less) {
                 return Err(format!("{label} is below its minimum."));
             }
-            if bound("maximum").is_some_and(|max| number > max) {
+            if beyond("maximum", Ordering::Greater) {
                 return Err(format!("{label} is above its maximum."));
             }
         }
@@ -381,7 +397,9 @@ fn check_value(label: &str, property: &Value, value: &Value) -> Result<(), Strin
             }
         }
         _ => {
-            let choices = item_choices(object).expect("a checked schema");
+            let items = object.get("items").and_then(keywords);
+            let choices =
+                item_choices(items.as_ref().expect("a checked schema")).expect("a checked schema");
             let items = value
                 .as_array()
                 .filter(|items| {
@@ -400,6 +418,22 @@ fn check_value(label: &str, property: &Value, value: &Value) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+/// How a number compares with a bound, exactly: an integer beyond f64's precision is not
+/// rounded into range. Rounding to f64 keeps order, so only a tie can hide a difference,
+/// and only between whole numbers, which compare exactly.
+fn compare(number: &Value, bound: &Value) -> Option<Ordering> {
+    let whole = |value: &Value, float: f64| {
+        (value.as_i64().map(i128::from))
+            .or(value.as_u64().map(i128::from))
+            .unwrap_or(float as i128)
+    };
+    let (a, b) = (number.as_f64()?, bound.as_f64()?);
+    match a.partial_cmp(&b)? {
+        Ordering::Equal => Some(whole(number, a).cmp(&whole(bound, b))),
+        order => Some(order),
+    }
 }
 
 fn is_email(text: &str) -> bool {

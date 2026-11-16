@@ -123,15 +123,13 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
                 </NativeSelect>
             )
         }
-        const numeric = field.kind === 'number' || field.kind === 'integer'
+        // Numbers are typed as text: a number input's stepping and reading round past f64's
+        // exact integers, and the reply keeps every digit typed.
         return (
             <Input
                 {...common}
-                type={numeric ? 'number' : INPUT_TYPES[field.format ?? ''] ?? 'text'}
-                inputMode={field.kind === 'integer' ? 'numeric' : numeric ? 'decimal' : undefined}
-                step={field.kind === 'integer' ? 1 : numeric ? 'any' : undefined}
-                min={field.minimum ?? undefined}
-                max={field.maximum ?? undefined}
+                type={INPUT_TYPES[field.format ?? ''] ?? 'text'}
+                inputMode={field.kind === 'integer' ? 'numeric' : field.kind === 'number' ? 'decimal' : undefined}
                 placeholder={value === null ? 'Not set' : field.format === 'date-time' ? '2026-01-31T09:00:00Z' : undefined}
                 autoComplete="off"
                 value={(value ?? '') as string}
@@ -162,8 +160,10 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
             {actionError && !invalid ? <InlineError className="mt-2" dense>{actionError}</InlineError> : null}
             {fields.map((field) => {
                 const descriptionId = field.description ? `${fieldId(field.name)}-description` : null
+                const described = field.choices.filter((choice) => choice.description)
+                const choicesId = described.length > 0 ? `${fieldId(field.name)}-choices` : null
                 const errorId = invalid?.field === field.name ? `${fieldId(field.name)}-error` : null
-                const describedBy = [descriptionId, errorId].filter(Boolean).join(' ') || undefined
+                const describedBy = [descriptionId, choicesId, errorId].filter(Boolean).join(' ') || undefined
                 const label = (
                     <>
                         {field.label}
@@ -186,6 +186,15 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
                             </div>
                         ) : null}
                         {descriptionId ? <p id={descriptionId} className="text-xs text-muted-foreground">{field.description}</p> : null}
+                        {choicesId ? (
+                            <ul id={choicesId} className="space-y-0.5 text-xs text-muted-foreground">
+                                {described.map((choice) => (
+                                    <li key={choice.value}>
+                                        <span className="font-medium text-foreground">{choice.label}:</span> {choice.description}
+                                    </li>
+                                ))}
+                            </ul>
+                        ) : null}
                         {errorId ? <p id={errorId} role="alert" className="text-xs text-destructive">{invalid?.error}</p> : null}
                     </>
                 )
