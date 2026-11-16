@@ -116,6 +116,9 @@ export interface TokenUsageBucketResponse {
 
 export interface TokenUsageBreakdownResponse extends TokenUsageBucketResponse {
     by_model: Record<string, TokenUsageBucketResponse>
+    /** Set when some requests reported no usage, so the totals leave them out. */
+    coverage?: 'partial'
+    requests_without_usage?: number
 }
 
 export interface ModelEstimatedCostResponse {
@@ -762,6 +765,10 @@ function parseTokenUsageBreakdown(value: unknown): TokenUsageBreakdownResponse |
     return {
         ...aggregate,
         by_model: byModel,
+        ...(record.coverage === 'partial' ? {
+            coverage: 'partial' as const,
+            requests_without_usage: typeof record.requests_without_usage === 'number' ? record.requests_without_usage : 0,
+        } : {}),
     }
 }
 

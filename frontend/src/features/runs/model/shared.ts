@@ -7,6 +7,9 @@ export interface TokenUsageBucket {
 
 export interface TokenUsageBreakdown extends TokenUsageBucket {
     by_model: Record<string, TokenUsageBucket>
+    /** Set when some requests reported no usage, so the totals leave them out. */
+    coverage?: 'partial'
+    requests_without_usage?: number
 }
 
 export interface ModelEstimatedCost {

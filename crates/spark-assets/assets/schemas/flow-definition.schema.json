@@ -41,6 +41,13 @@
             "null"
           ]
         },
+        "session_config": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "An ACP harness's session controls, config ID to value ID, for the harness this node resolves.",
+          "type": "object"
+        },
         "thinking": {
           "type": [
             "string",
@@ -132,6 +139,13 @@
             "string",
             "null"
           ]
+        },
+        "session_config": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "An ACP harness's session controls, config ID to value ID, for the default `llm_provider`.",
+          "type": "object"
         },
         "thinking": {
           "type": [

@@ -152,6 +152,8 @@ export function GraphSettings() {
             : '',
         reasoning_mode: flowMetadata.reasoning_mode || uiDefaults.reasoning_mode || '',
         reasoning_summary: flowMetadata.reasoning_summary || uiDefaults.reasoning_summary || '',
+        // The flow's harness controls go with its own provider; the workspace default's stay with the workspace.
+        session_config: flowMetadata.session_config || '',
     }
     // What the last apply did, shown while the flow, its defaults and its agent steps' model settings
     // are as the apply left them: an Undo or a step's own edit makes it stale.

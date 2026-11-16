@@ -92,13 +92,13 @@ it('joins the roster with run facts by run id', () => {
     const record = (run: Partial<RunRecord>) => ({ flow_name: 'work/build-it.yaml', status: 'completed', working_directory: '', model: '', started_at: '2026-09-28T12:00:00Z', ...run }) as RunRecord
     const runs = joinRuns(
         [roster('r1', 'completed', 'Build'), roster('r2', 'waiting', 'Review'), roster('r3', 'running', 'Unknown to the list')],
-        [record({ run_id: 'r1', title: 'Build the search index', ended_at: '2026-09-28T12:04:30Z', token_usage: 1200 }), record({ run_id: 'r2', status: 'running', token_usage: 800 }), record({ run_id: 'other', token_usage: 5 })],
+        [record({ run_id: 'r1', title: 'Build the search index', ended_at: '2026-09-28T12:04:30Z', token_usage: 1200 }), record({ run_id: 'r2', status: 'running', token_usage: 800, token_usage_breakdown: { input_tokens: 800, cached_input_tokens: 0, output_tokens: 0, total_tokens: 800, by_model: {}, coverage: 'partial', requests_without_usage: 1 } }), record({ run_id: 'other', token_usage: 5 })],
         now,
     )
     expect(runs).toEqual([
-        { runId: 'r1', title: 'Build the search index', flowTitle: 'Build It', status: 'completed', kind: 'completed', duration: '4m 30s', tokens: 1200 },
-        { runId: 'r2', title: 'Review', flowTitle: 'Build It', status: 'waiting', kind: 'waiting', duration: '30m 00s', tokens: 800 },
-        { runId: 'r3', title: 'Unknown to the list', flowTitle: 'Build It', status: 'running', kind: 'running', duration: '12m 00s', tokens: null },
+        { runId: 'r1', title: 'Build the search index', flowTitle: 'Build It', status: 'completed', kind: 'completed', duration: '4m 30s', tokens: 1200, partialTokens: false },
+        { runId: 'r2', title: 'Review', flowTitle: 'Build It', status: 'waiting', kind: 'waiting', duration: '30m 00s', tokens: 800, partialTokens: true },
+        { runId: 'r3', title: 'Unknown to the list', flowTitle: 'Build It', status: 'running', kind: 'running', duration: '12m 00s', tokens: null, partialTokens: false },
     ])
     expect(totalTokens(runs)).toBe(2000)
     expect(totalTokens(runs.slice(2))).toBeNull()

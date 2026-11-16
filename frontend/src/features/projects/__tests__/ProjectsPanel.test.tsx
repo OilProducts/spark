@@ -835,6 +835,10 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.endsWith('/settings') && init?.method === 'PUT') {
+          sendRequests.push(url)
+          return new Response(JSON.stringify(conversationMutationAck(conversationFixture(activeSnapshot([])))), { status: 200 })
+        }
         if (url.endsWith('/interrupt') && init?.method === 'POST') {
           sendRequests.push(url)
           expect(JSON.parse(String(init.body))).toEqual({ project_path: '/tmp/chat-project' })
@@ -914,6 +918,9 @@ describe('ProjectsPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('message-delivery')).toHaveTextContent('Queued · starts when the current turn ends')
     })
+    // The model stays editable during work; the running turn keeps what it started with.
+    await chooseModel(user, 'Codex', 'GPT-5.4')
+    await waitFor(() => expect(sendRequests).toContain('/workspace/api/conversations/conversation-active-turn/settings'))
     await user.click(screen.getByTestId('project-chat-stop'))
     await waitFor(() => expect(sendRequests).toContain('/workspace/api/conversations/conversation-active-turn/interrupt'))
   })

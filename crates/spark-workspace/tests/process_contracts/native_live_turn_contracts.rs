@@ -521,6 +521,69 @@ fn a_message_sent_during_an_acp_turn_waits_for_the_next_turn() {
 }
 
 #[test]
+fn acp_session_controls_edited_during_a_turn_apply_from_the_next_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let gate = temp.path().join("gate");
+    let (service, project) = acp_chat(
+        temp.path(),
+        json!({
+            "gate": gate,
+            "config_options": [{"id": "approval", "name": "Approval", "type": "select", "currentValue": "ask",
+                                "options": [{"value": "ask", "name": "Ask"}, {"value": "auto", "name": "Auto"}]}],
+            "updates": acp_answer("Done."),
+        }),
+    );
+    let running = {
+        let (service, project) = (service.clone(), project.clone());
+        std::thread::spawn(move || service.execute_turn("acp-edit", acp_turn(&project, "Work")))
+    };
+    let waited = std::time::Instant::now();
+    while acp_received(temp.path(), "session/prompt").is_empty() {
+        assert!(
+            waited.elapsed() < std::time::Duration::from_secs(10),
+            "prompt"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let revision = service.get_snapshot("acp-edit", Some(&project)).unwrap()["settings"]["models"]
+        ["revision"]
+        .clone();
+    service
+        .update_conversation_settings(
+            "acp-edit",
+            serde_json::from_value(json!({
+                "project_path": project, "expected_revision": revision,
+                "model_settings": {"provider": "acp:fake", "session_config": {"approval": "auto"}},
+            }))
+            .unwrap(),
+        )
+        .expect("an edit during work is accepted");
+    std::fs::write(&gate, "").unwrap();
+    let first = running.join().unwrap().unwrap();
+    assert_eq!(assistant_turn(&first)["status"], "complete", "{first}");
+    assert!(
+        acp_received(temp.path(), "session/set_config_option").is_empty(),
+        "the accepted turn keeps the settings it started with"
+    );
+    assert_eq!(
+        first["model_settings"]["session_config"],
+        json!({"approval": "auto"}),
+        "finishing the turn keeps the edit: {first}"
+    );
+
+    let second = service
+        .execute_turn("acp-edit", acp_turn(&project, "Next"))
+        .unwrap();
+    assert_eq!(assistant_turn(&second)["status"], "complete", "{second}");
+    let set = acp_received(temp.path(), "session/set_config_option");
+    assert_eq!(set.len(), 1);
+    assert_eq!(
+        (&set[0]["configId"], &set[0]["value"]),
+        (&json!("approval"), &json!("auto"))
+    );
+}
+
+#[test]
 fn acp_effort_ids_reach_the_harness_exactly() {
     let temp = tempfile::tempdir().unwrap();
     let (service, project) = acp_chat(
@@ -821,6 +884,100 @@ fn acp_tool_results_given_only_as_content_reach_chat_history() {
 /// prompt, reports raw config options and separate setup and capability
 /// states, and reuses its result until the agents settings change.
 #[test]
+fn acp_choosers_offer_what_a_session_last_acknowledged() {
+    let temp = tempfile::tempdir().unwrap();
+    let model = |current: &str| {
+        json!({"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": current,
+               "options": [{"value": "fast", "name": "Fast"}, {"value": "deep", "name": "Deep"}]})
+    };
+    let effort = |values: &[&str]| {
+        json!({"id": "effort", "name": "Effort", "category": "thought_level", "type": "select", "currentValue": "Low",
+               "options": values.iter().map(|value| json!({"value": value, "name": value})).collect::<Vec<_>>()})
+    };
+    let approval = |values: &[&str]| {
+        json!({"id": "approval", "name": "Approval", "type": "select", "currentValue": "ask",
+               "options": values.iter().map(|value| json!({"value": value, "name": value})).collect::<Vec<_>>()})
+    };
+    // Choosing deep offers High; a later notification offers auto approval.
+    let notified = json!([
+        model("deep"),
+        effort(&["Low", "High"]),
+        approval(&["ask", "auto"])
+    ]);
+    let mut updates =
+        vec![json!({"sessionUpdate": "config_option_update", "configOptions": notified})];
+    updates.extend(acp_answer("Done.").as_array().unwrap().clone());
+    let (service, project) = acp_chat(
+        temp.path(),
+        json!({
+            "config_options": [model("fast"), effort(&["Low"]), approval(&["ask"])],
+            "on_set": {"model=deep": [model("deep"), effort(&["Low", "High"]), approval(&["ask"])]},
+            "updates": updates,
+        }),
+    );
+    let settings = settings(temp.path());
+    let chooser = || {
+        let payload = spark_workspace::models::chat_models_with_codex_result(
+            &settings,
+            std::path::Path::new(&project),
+            Ok(vec![]),
+        )
+        .unwrap();
+        let deep = payload["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["provider"] == "acp:fake" && model["id"] == "deep")
+            .cloned()
+            .unwrap();
+        (
+            deep,
+            payload["providers"]["acp:fake"]["config_options"].clone(),
+        )
+    };
+    let (deep, _) = chooser();
+    assert_eq!(deep["supported_reasoning_efforts"], json!(["Low"]));
+
+    let turn = |model: &str, effort: Option<&str>| {
+        let mut request = acp_turn(&project, "Work");
+        request.model = Some(model.to_string());
+        request.reasoning_effort = effort.map(str::to_string);
+        service.execute_turn("acp-acknowledged", request).unwrap()
+    };
+    let first = turn("deep", None);
+    assert_eq!(assistant_turn(&first)["status"], "complete", "{first}");
+    let (deep, options) = chooser();
+    assert_eq!(
+        deep["supported_reasoning_efforts"],
+        json!(["Low", "High"]),
+        "the dependent effort is offered without a settings change or restart"
+    );
+    assert_eq!(deep["is_default"], true);
+    assert_eq!(options[2], approval(&["ask", "auto"]), "{options}");
+
+    let second = turn("deep", Some("High"));
+    assert_eq!(assistant_turn(&second)["status"], "complete", "{second}");
+    assert_eq!(
+        acp_received(temp.path(), "session/set_config_option")
+            .last()
+            .unwrap()["value"],
+        "High"
+    );
+
+    // A value the harness no longer offers is still refused before the prompt.
+    let prompts = acp_received(temp.path(), "session/prompt").len();
+    let mut stale = acp_turn(&project, "Work");
+    stale.model = Some("fast".to_string());
+    stale.reasoning_effort = Some("High".to_string());
+    let refused = service.execute_turn("acp-acknowledged", stale).unwrap();
+    assert_eq!(assistant_turn(&refused)["status"], "failed", "{refused}");
+    assert!(refused
+        .to_string()
+        .contains(r#"does not offer the value \"High\""#));
+    assert_eq!(acp_received(temp.path(), "session/prompt").len(), prompts);
+}
+
+#[test]
 fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     let temp = tempfile::tempdir().unwrap();
     let log = temp.path().join("acp.log");
@@ -856,6 +1013,7 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
             "fake": harness("Fake ACP", FAKE_ACP, json!({"system_prompt": true, "resume": true, "config_options": options})),
             "plain": harness("Plain", FAKE_ACP, json!({"modes": modes})),
             "locked": harness("Locked", FAKE_ACP, json!({"new_error": {"code": -32000, "message": "Authentication required"}})),
+            "leaky": harness("Leaky", FAKE_ACP, json!({"echo_env": ["AGENT_TOKEN"], "new_error": {"code": -32603, "message": "model catalog unavailable"}})),
             "missing": harness("Missing", "/nonexistent/acp-agent", json!({})),
         },
     }});
@@ -970,19 +1128,29 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         .unwrap()
         .contains("executable not found"));
 
+    let leaky = &providers["acp:leaky"];
+    assert_eq!(leaky["setup_status"], "unreachable", "{leaky}");
+    let error = leaky["error"].as_str().unwrap();
+    assert!(
+        error.contains("session/new failed")
+            && error.contains("model catalog unavailable")
+            && error.contains("AGENT_TOKEN=[redacted]"),
+        "the setup error stays actionable without the value: {error}"
+    );
+
     assert!(!response.to_string().contains("discovery-secret-sentinel"));
     assert!(acp_received(temp.path(), "session/prompt").is_empty());
     let sessions = acp_received(temp.path(), "session/new");
     assert_eq!(
         sessions.len(),
-        3,
+        4,
         "one temporary session per reachable harness"
     );
     assert!(sessions
         .iter()
         .all(|session| session["cwd"] == json!(project)));
     let probes = launches();
-    assert_eq!(probes.len(), 3);
+    assert_eq!(probes.len(), 4);
     for probe in &probes {
         assert_eq!(probe["cwd"], json!(project));
         let alive = std::process::Command::new("kill")
@@ -995,8 +1163,8 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     }
 
     assert_eq!(discover(), response, "cached");
-    assert_eq!(launches().len(), 3, "a cached discovery launches nothing");
+    assert_eq!(launches().len(), 4, "a cached discovery launches nothing");
     spark_workspace::models::invalidate_model_discovery("agents");
     discover();
-    assert_eq!(launches().len(), 6, "an agents change probes again");
+    assert_eq!(launches().len(), 8, "an agents change probes again");
 }

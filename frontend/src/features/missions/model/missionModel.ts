@@ -104,6 +104,8 @@ export function parseTurn(content: string, first = false): TurnEvent[] {
 export type MissionRun = {
     runId: string; title: string; flowTitle: string; status: string; kind: RunStatusKind
     duration: string; tokens: number | null
+    /** Some of its requests reported no usage, so `tokens` leaves them out. */
+    partialTokens: boolean
 }
 
 /** Each roster entry with the facts the run record holds: its title, live status, duration and tokens. */
@@ -122,6 +124,7 @@ export function joinRuns(roster: RosterEntry[], runs: RunRecord[], now = Date.no
             kind: runStatusKind(status, false),
             duration: duration === '—' ? '' : duration,
             tokens: run?.token_usage ?? null,
+            partialTokens: run?.token_usage_breakdown?.coverage === 'partial',
         }
     })
 }

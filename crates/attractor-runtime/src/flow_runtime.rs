@@ -39,6 +39,7 @@ const CORE_NODE_EXTENSION_KEYS: &[&str] = &[
     "reasoning_mode",
     "reasoning_summary",
     "retry_policy",
+    "session_config",
     "shape",
     "spark.reads_context",
     "spark.writes_context",
@@ -269,6 +270,13 @@ pub fn node_attrs_for_handler(node_id: &str, node: &FlowNode) -> BTreeMap<String
         if let Some(value) = execution.reasoning_summary.as_deref() {
             insert_authored_string_attr(&mut attrs, "reasoning_summary", value);
         }
+        if !execution.session_config.is_empty() {
+            insert_authored_string_attr(
+                &mut attrs,
+                "session_config",
+                &serde_json::json!(execution.session_config).to_string(),
+            );
+        }
     }
     for (key, value) in &node.context {
         if !is_core_node_attr_key(key) {
@@ -342,6 +350,13 @@ pub fn graph_attrs_for_handler(flow: &FlowDefinition) -> BTreeMap<String, DotAtt
     }
     if let Some(value) = flow.defaults.reasoning_effort.as_deref() {
         insert_string_attr(&mut attrs, "ui_default_reasoning_effort", value);
+    }
+    if !flow.defaults.session_config.is_empty() {
+        insert_string_attr(
+            &mut attrs,
+            "ui_default_session_config",
+            &serde_json::json!(flow.defaults.session_config).to_string(),
+        );
     }
     if let Some(value) = flow.defaults.thinking.as_deref() {
         insert_string_attr(&mut attrs, "thinking", value);

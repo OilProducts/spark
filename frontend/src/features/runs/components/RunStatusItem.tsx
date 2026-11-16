@@ -391,7 +391,7 @@ function RunFacts({ run, now }: { run: RunRecord; now: number }) {
         ...(run.execution_profile_id || run.execution_mode
             ? [['execution', 'Execution', [...new Set([run.execution_profile_id, run.execution_mode, run.execution_container_image].filter(Boolean))].join(' · ')] as [string, string, ReactNode]]
             : []),
-        ['tokens', 'Tokens', usage ? tokenBreakdown(usage) : formatTokenCount(run.token_usage)],
+        ['tokens', 'Tokens', usage ? `${tokenBreakdown(usage)}${usage.coverage === 'partial' ? ` · partial: ${formatTokenCount(usage.requests_without_usage ?? 0)} request${usage.requests_without_usage === 1 ? '' : 's'} reported no usage` : ''}` : formatTokenCount(run.token_usage)],
         ...Object.entries(usage?.by_model ?? {}).map(([modelId, bucket]) => {
             const cost = run.estimated_model_cost?.by_model?.[modelId]
             return ['model-usage', `  ${modelId}`, `${tokenBreakdown(bucket)} · ${cost?.status === 'estimated' ? formatEstimatedCost(cost.amount, cost.currency) : 'unpriced'}`] as [string, string, ReactNode]

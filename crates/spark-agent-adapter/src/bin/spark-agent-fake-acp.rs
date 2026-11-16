@@ -2,7 +2,9 @@
 //! by the JSON in `SPARK_FAKE_ACP`. Every message it receives is appended to
 //! the script's `log` file, after a first line with its pid, argv, working
 //! directory, the `log_env` variables and the contents of file arguments.
-//! `answers[n]` answers the log's nth prompt, across launches.
+//! `answers[n]` answers the log's nth prompt, across launches. `echo_env`
+//! variables are printed to stderr at startup and in every error, as a leaky
+//! harness would.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -61,6 +63,21 @@ impl Agent {
             "env": env,
             "files": files,
         }));
+        let echoed = self.echoed();
+        if !echoed.is_empty() {
+            eprintln!("{echoed}");
+        }
+    }
+
+    fn echoed(&self) -> String {
+        self.script["echo_env"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|name| format!("{name}={}", std::env::var(name).unwrap_or_default()))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     fn append(&self, entry: Value) {
@@ -94,6 +111,14 @@ impl Agent {
     }
 
     fn fail(&self, id: &Value, error: &Value) {
+        let mut error = error.clone();
+        let echoed = self.echoed();
+        if !echoed.is_empty() {
+            error["message"] = json!(format!(
+                "{} ({echoed})",
+                error["message"].as_str().unwrap_or_default()
+            ));
+        }
         self.send(json!({"jsonrpc": "2.0", "id": id, "error": error}));
     }
 
@@ -162,7 +187,17 @@ impl Agent {
                     message["params"]["configId"].clone(),
                     message["params"]["value"].clone(),
                 );
-                let mut options = script["config_options"].clone();
+                // `on_set["id=value"]` is the full set a choice leads to, as
+                // when a model offers its own efforts.
+                let chosen = format!(
+                    "{}={}",
+                    config.as_str().unwrap_or_default(),
+                    value.as_str().unwrap_or_default()
+                );
+                let mut options = script["on_set"]
+                    .get(&chosen)
+                    .unwrap_or(&script["config_options"])
+                    .clone();
                 for option in options.as_array_mut().into_iter().flatten() {
                     if option["id"] == config {
                         option["currentValue"] = value.clone();

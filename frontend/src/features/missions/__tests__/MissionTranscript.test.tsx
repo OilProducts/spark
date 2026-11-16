@@ -119,8 +119,8 @@ it('shows run recoveries as run cards linking the resulting run, a pending one a
         ],
     } as ConversationSnapshotResponse
     const runs = new Map<string, MissionRun>([
-        ['run-source', { runId: 'run-source', title: 'Build the index', flowTitle: 'Build', status: 'failed', kind: 'failed', duration: '2m', tokens: null }],
-        ['run-result', { runId: 'run-result', title: 'Verify the index', flowTitle: 'Build', status: 'running', kind: 'running', duration: '1m', tokens: null }],
+        ['run-source', { runId: 'run-source', title: 'Build the index', flowTitle: 'Build', status: 'failed', kind: 'failed', duration: '2m', tokens: null, partialTokens: false }],
+        ['run-result', { runId: 'run-result', title: 'Verify the index', flowTitle: 'Build', status: 'running', kind: 'running', duration: '1m', tokens: null, partialTokens: false }],
     ])
     render(<MissionTranscript conversation={{ conversationId: 'mission-1', record: record(fixture), loading: false, error: '', reload: vi.fn() }} project="/project" runs={runs} />)
 

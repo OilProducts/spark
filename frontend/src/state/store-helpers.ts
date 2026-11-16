@@ -43,7 +43,7 @@ const STRING_GRAPH_ATTR_KEYS: (keyof GraphAttrs)[] = [
     'thinking_budget_tokens',
     'reasoning_mode',
     'reasoning_summary',
-
+    'session_config',
 ]
 
 const MAX_RETRIES_KEY: keyof GraphAttrs = 'max_retries'

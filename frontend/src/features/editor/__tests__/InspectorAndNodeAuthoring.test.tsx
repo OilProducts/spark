@@ -25,6 +25,7 @@ vi.mock('@/features/roles/rolesModel', async (importOriginal) => ({
 }))
 
 vi.mock('@/components/model-chooser/useModelOptions', () => ({
+    refreshModelOptions: () => {},
     useModelOptions: () => ({ projectPath: null, payload: { models: [{ provider: 'openai', id: 'gpt-5.5', display: 'gpt-5.5', is_default: false, supported_reasoning_efforts: ['high'] }], providers: { codex: { status: 'available', error: null } } } }),
 }))
 

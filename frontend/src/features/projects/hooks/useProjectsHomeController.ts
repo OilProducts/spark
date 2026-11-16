@@ -488,7 +488,7 @@ export function useProjectsHomeController() {
             inheritedModelSettings: editableModelSettings === INHERITED_MODEL_SETTINGS ? currentModelSettings : inheritedModelSettings,
             defaultModel: isCodexProvider && !currentModelSettings.model ? activeProjectChatModel : undefined,
             onModelSettingsChange: (value: ModelSettings) => { void persistChatSettings(value) },
-            isModelSettingsLoading: isConversationHydrating,
+            isModelSettingsLocked: isConversationHydrating || isConversationTurnStarting || isConversationUnavailable,
             chatModelAvailabilityMessage,
             hasRenderableConversationHistory,
             follow,

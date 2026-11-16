@@ -904,6 +904,32 @@ impl CodergenHandler {
             reasoning["reasoning_summary"].as_str(),
         )
         .map_err(CodergenError::Backend)?;
+        let provider = resolve_effective_llm_provider(&resolution_inputs, &request.context);
+        // Session controls are a harness's own: a node's apply to the harness
+        // it resolves, the flow default's only on the flow's default harness.
+        let graph_attr = |key| attr_text(&request.graph.graph_attrs, key);
+        let session_config = attr_text(&request.node.attrs, "session_config").or_else(|| {
+            (graph_attr("ui_default_llm_provider").as_deref() == Some(provider.as_str()))
+                .then(|| graph_attr("ui_default_session_config"))
+                .flatten()
+        });
+        if let Some(text) = session_config.filter(|text| !text.trim().is_empty()) {
+            let controls =
+                serde_json::from_str::<BTreeMap<String, String>>(&text).map_err(|_| {
+                    CodergenError::Backend("session_config must map config IDs to value IDs".into())
+                })?;
+            if !matches!(
+                spark_common::agent_settings::HarnessIdentity::parse(&provider),
+                Ok(Some(spark_common::agent_settings::HarnessIdentity::Acp(_)))
+            ) {
+                return Err(CodergenError::Backend(format!(
+                    "session_config applies only to an ACP harness, but node '{}' resolves provider '{provider}'",
+                    request.node_id
+                )));
+            }
+            reasoning["provider"] = json!(provider);
+            reasoning["session_config"] = json!(controls);
+        }
         metadata.insert("spark.execution.reasoning".into(), reasoning);
         if response_contract == DECISION_ENVELOPE_RESPONSE_CONTRACT {
             metadata.insert(
@@ -927,7 +953,6 @@ impl CodergenHandler {
                     .to_string()),
             );
         }
-        let provider = resolve_effective_llm_provider(&resolution_inputs, &request.context);
         if let Some(session) = request.session.as_ref() {
             if let Some(handle) = session.handle.as_ref() {
                 if handle.provider != provider {

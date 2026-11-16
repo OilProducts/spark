@@ -3,6 +3,7 @@ import { useId, type ReactNode } from 'react'
 import type { ExtensionAttrEntry } from '@/lib/extensionAttrs'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import { ModelChooser } from '@/components/model-chooser/ModelChooser'
+import { parseSessionConfig, sessionConfigText } from '@/lib/llmSuggestions'
 import type { FlowDefinitionMetadata, FlowMetadataErrors, UiDefaults } from '@/store'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -49,7 +50,7 @@ export const CORE_FLOW_METADATA_KEYS = new Set<string>([
     'thinking_budget_tokens',
     'reasoning_mode',
     'reasoning_summary',
-
+    'session_config',
 ])
 
 function GraphSettingsSectionIntro({
@@ -434,7 +435,7 @@ export function GraphAdvancedAttrsSection({
     )
 }
 
-const MODEL_DEFAULT_KEYS = ['llm_provider', 'llm_profile', 'llm_model', 'reasoning_effort', 'thinking', 'thinking_budget_tokens', 'reasoning_mode', 'reasoning_summary'] as const satisfies readonly (keyof FlowDefinitionMetadata)[]
+const MODEL_DEFAULT_KEYS = ['llm_provider', 'llm_profile', 'llm_model', 'reasoning_effort', 'thinking', 'thinking_budget_tokens', 'reasoning_mode', 'reasoning_summary', 'session_config'] as const satisfies readonly (keyof FlowDefinitionMetadata)[]
 
 interface GraphLlmDefaultsSectionProps {
     canApplyDefaults: boolean
@@ -465,10 +466,10 @@ export function GraphLlmDefaultsSection({
                 title="Model defaults"
             />
             <div className="space-y-3">
-                <ModelChooser projectPath={projectPath} inheritLabel="Workspace default" sessionControls={false}
+                <ModelChooser projectPath={projectPath} inheritLabel="Workspace default"
                     inherited={{ provider: uiDefaults.llm_provider || null, llm_profile: uiDefaults.llm_profile || null, model: uiDefaults.llm_model || null, reasoning_effort: uiDefaults.reasoning_effort || null, thinking: uiDefaults.thinking || null, thinking_budget_tokens: Number(uiDefaults.thinking_budget_tokens) || null, reasoning_mode: uiDefaults.reasoning_mode || null, reasoning_summary: uiDefaults.reasoning_summary || null }}
                     value={{ provider: flowMetadata.llm_provider || null, llm_profile: flowMetadata.llm_profile || null,
-                        model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null, thinking: flowMetadata.thinking || null, thinking_budget_tokens: Number(flowMetadata.thinking_budget_tokens) || null, reasoning_mode: flowMetadata.reasoning_mode || null, reasoning_summary: flowMetadata.reasoning_summary || null }}
+                        model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null, thinking: flowMetadata.thinking || null, thinking_budget_tokens: Number(flowMetadata.thinking_budget_tokens) || null, reasoning_mode: flowMetadata.reasoning_mode || null, reasoning_summary: flowMetadata.reasoning_summary || null, session_config: parseSessionConfig(flowMetadata.session_config) }}
                     onChange={(value) => {
                         updateFlowMetadata('llm_provider', value.provider || '')
                         updateFlowMetadata('llm_profile', value.llm_profile || '')
@@ -478,7 +479,7 @@ export function GraphLlmDefaultsSection({
                         updateFlowMetadata('thinking_budget_tokens', value.thinking_budget_tokens == null ? '' : String(value.thinking_budget_tokens))
                         updateFlowMetadata('reasoning_mode', value.reasoning_mode == null ? '' : String(value.reasoning_mode))
                         updateFlowMetadata('reasoning_summary', value.reasoning_summary == null ? '' : String(value.reasoning_summary))
-
+                        updateFlowMetadata('session_config', sessionConfigText(value.session_config))
                     }} />
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <Button

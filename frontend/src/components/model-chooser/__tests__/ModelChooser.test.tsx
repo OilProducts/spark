@@ -145,7 +145,8 @@ it('shares loading, failed discovery and refresh across StrictMode choosers', as
     vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue(catalog)
     act(() => window.dispatchEvent(new CustomEvent('spark:settings-live-event', { detail: { payload: { section: 'codex' } } })))
     await screen.findByRole('option', { name: 'Discovered' })
-    expect(fetchProjectChatModelsValidated).toHaveBeenCalledTimes(2)
+    // Mount, opening, then the settings event.
+    expect(fetchProjectChatModelsValidated).toHaveBeenCalledTimes(3)
 })
 
 it('keeps projects isolated and ignores pre-refresh responses', async () => {
@@ -364,4 +365,29 @@ it('offers an ACP harness by its label, with a null-model harness default, exact
     expect(onChange.mock.lastCall?.[0]).toMatchObject({ provider: 'codex', model: 'discovered' })
     expect(onChange.mock.lastCall?.[0].session_config).toBeUndefined()
     expect(screen.queryByRole('group', { name: 'Session controls' })).not.toBeInTheDocument()
+})
+
+it('refetches quietly on open, so values a harness acknowledged since can be chosen', async () => {
+    const select = (id: string, category: string | undefined, values: string[]) => ({ id, name: id, category, type: 'select', currentValue: values[0], options: values.map(value => ({ value, name: value })) })
+    const offering = (efforts: string[], approvals: string[]): ProjectChatModelsResponse => ({
+        providers: { 'acp:fake': { status: 'available', error: null, label: 'Fake ACP', setup_status: 'ready',
+            config_options: [select('effort', 'thought_level', efforts), select('Approval', undefined, approvals)] } },
+        models: [{ provider: 'acp:fake', id: 'deep', display: 'Deep', is_default: true, supported_reasoning_efforts: efforts }],
+    })
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue(offering(['Low'], ['ask']))
+    const user = userEvent.setup(), onChange = vi.fn()
+    render(<Editor value={{ ...initial, provider: 'acp:fake', model: 'deep' }} onChange={onChange} />)
+    const trigger = await screen.findByRole('button', { name: /Model: Deep/ })
+    await user.click(trigger)
+    expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).queryByRole('button', { name: 'High' })).not.toBeInTheDocument()
+    await user.keyboard('{Escape}')
+
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue(offering(['Low', 'High'], ['ask', 'auto']))
+    await user.click(trigger)
+    expect(screen.queryByText('Loading models…')).not.toBeInTheDocument()
+    await user.click(await within(screen.getByRole('group', { name: 'Reasoning effort' })).findByRole('button', { name: 'High' }))
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'acp:fake', model: 'deep', reasoning_effort: 'High' }))
+    await user.click(trigger)
+    await user.selectOptions(within(screen.getByRole('group', { name: 'Session controls' })).getByRole('combobox', { name: 'Approval' }), 'auto')
+    expect(onChange.mock.lastCall?.[0].session_config).toEqual({ Approval: 'auto' })
 })

@@ -145,3 +145,16 @@ export function isModelSelectionValid(provider: string, model: string | null, pr
     return profile ? (model ? profile.models.includes(model) : !!profile.default_model)
         : !['openrouter', 'litellm', 'openai_compatible'].includes(provider) || !!model
 }
+
+/** Session controls as a flow stores them in its editor: a JSON object of config IDs to value IDs. */
+export function parseSessionConfig(text: unknown): Record<string, string> | undefined {
+    try {
+        const value: unknown = typeof text === 'string' && text ? JSON.parse(text) : undefined
+        return value && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every(entry => typeof entry === 'string')
+            ? value as Record<string, string> : undefined
+    } catch {
+        return undefined
+    }
+}
+
+export const sessionConfigText = (config?: Record<string, string> | null) => config && Object.keys(config).length ? JSON.stringify(config) : ''

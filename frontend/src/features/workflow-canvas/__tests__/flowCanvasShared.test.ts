@@ -961,6 +961,20 @@ it('serializes and clears reasoning controls in node execution and graph default
     for (const field of Object.keys(controls)) expect(updated).not.toContain(`"${field}"`)
 })
 
+it('saves, reloads and clears harness session controls in node execution and graph defaults, IDs exactly', () => {
+    const controls = { 'Mode/ID': 'Auto/Edit' }
+    const text = JSON.stringify(controls)
+    const nodes = [{ id: 'work', position: { x: 0, y: 0 }, data: { shape: 'box', prompt: 'hello', llm_provider: 'acp:fake', session_config: text } }]
+    const flow = buildFlow('controls.yaml', nodes, [], { llm_provider: 'acp:fake', session_config: text })
+    expect(flow.defaults?.session_config).toEqual(controls)
+    expect(flow.nodes.work.execution?.session_config).toEqual(controls)
+    const hydrated = buildHydratedFlowGraph('controls.yaml', { status: 'ok', flow, graph: flowDefinitionToPreviewGraph(flow) }, { llm_model: '', llm_provider: '', reasoning_effort: '' })
+    expect(hydrated?.flowMetadata.session_config).toBe(text)
+    expect(hydrated?.nodes.find((node) => node.id === 'work')?.data.session_config).toBe(text)
+    const cleared = JSON.stringify(buildFlow('controls.yaml', [{ ...nodes[0], data: { ...nodes[0].data, session_config: '' } }], [], { llm_provider: 'acp:fake', session_config: '' }, flow))
+    expect(cleared).not.toContain('session_config')
+})
+
 describe('schema-2 routes and fork structure', () => {
     const hydrate = (flow: LooseFlowDefinition) => {
         const hydrated = buildHydratedFlowGraph('routes', { status: 'ok', flow, graph: flowDefinitionToPreviewGraph(flow) }, {

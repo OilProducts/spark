@@ -201,6 +201,31 @@ struct Plan {
     fresh_context: Option<String>,
 }
 
+impl Plan {
+    /// Records `options`, a full set the harness acknowledged, for choosers.
+    /// An empty set is a response that omitted them, so it changes nothing.
+    fn acknowledge(&self, options: &[SessionConfigOption]) {
+        if options.is_empty() {
+            return;
+        }
+        let options = options
+            .iter()
+            .filter_map(|option| serde_json::to_value(option).ok())
+            .collect();
+        ACKNOWLEDGED
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                (
+                    self.cwd.clone(),
+                    self.harness_id.clone(),
+                    self.generation.clone(),
+                ),
+                options,
+            );
+    }
+}
+
 #[derive(Clone, Debug)]
 enum Selector {
     Category(SessionConfigOptionCategory, &'static str),
@@ -361,6 +386,8 @@ fn probe(
         instructions,
         &BTreeMap::new(),
     )?;
+    // A harness may echo what it was launched with, in an error or on stderr.
+    let secrets = environment_values(&command);
     let (done, result) = std::sync::mpsc::channel();
     let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
         probe_protocol(endpoints, cwd, done)
@@ -392,7 +419,25 @@ fn probe(
     if !tail.is_empty() && !failure.unauthenticated {
         failure.message = format!("{}; stderr tail:\n{tail}", failure.message);
     }
+    failure.message = secrets.iter().fold(failure.message, |message, value| {
+        message.replace(value.as_str(), "[redacted]")
+    });
     Err(failure)
+}
+
+/// The environment values `command` sets, longest first, so one that
+/// contains another is hidden whole.
+// ponytail: values under 4 bytes stay visible; hiding them would garble every message.
+fn environment_values(command: &Command) -> Vec<String> {
+    let mut values = command
+        .get_envs()
+        .filter_map(|(_, value)| value?.to_str())
+        .filter(|value| value.len() >= 4)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    values.dedup();
+    values
 }
 
 async fn probe_protocol(
@@ -458,6 +503,27 @@ async fn probe_session(cx: &ConnectionTo<Agent>, cwd: &Path) -> Result<Probed, P
         load: capabilities.load_session,
         session,
     })
+}
+
+/// Each harness's config options as a session last acknowledged them, by
+/// work area, harness ID and launch generation: what its choosers offer now,
+/// values that depend on an earlier choice included.
+// ponytail: one entry per work area and registration, never pruned.
+type AcknowledgedKey = (PathBuf, String, String);
+static ACKNOWLEDGED: Mutex<BTreeMap<AcknowledgedKey, Vec<Value>>> = Mutex::new(BTreeMap::new());
+
+/// The options `harness_id` last acknowledged in `cwd` under `generation`.
+pub fn acknowledged_options(cwd: &Path, harness_id: &str, generation: &str) -> Option<Vec<Value>> {
+    let key = (
+        std::fs::canonicalize(cwd).ok()?,
+        harness_id.to_string(),
+        generation.to_string(),
+    );
+    ACKNOWLEDGED
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&key)
+        .cloned()
 }
 
 /// A select option's values in order, with grouped values flattened.
@@ -1271,6 +1337,7 @@ impl<'a> Turn<'a> {
             },
         ));
 
+        self.plan.acknowledge(&options);
         self.select(&session, &mut options).await?;
         Ok(Ready {
             session,
@@ -1349,6 +1416,7 @@ impl<'a> Turn<'a> {
                         )
                     })?;
                 *options = response.config_options;
+                self.plan.acknowledge(options);
             }
             chosen.insert(config_id, value);
         }
@@ -1373,9 +1441,13 @@ impl<'a> Turn<'a> {
             tokio::select! {
                 update = session.read_update() => match update {
                     Ok(SessionMessage::Message(dispatch)) => {
-                        let (translate, out, policy) = (&mut self.translate, self.out, self.plan.policy);
+                        let (translate, out, plan) = (&mut self.translate, self.out, &self.plan);
+                        let policy = plan.policy;
                         MatchDispatch::new(dispatch.into_raw())
                             .if_notification(async |notification: SessionNotification| {
+                                if let SessionUpdate::ConfigOptionUpdate(update) = &notification.update {
+                                    plan.acknowledge(&update.config_options);
+                                }
                                 for event in translate.update(notification.update) {
                                     out.event(event);
                                 }

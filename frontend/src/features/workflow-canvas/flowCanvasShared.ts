@@ -177,6 +177,7 @@ function buildHydratedNode(
         ...(node.attrs.thinking_budget_tokens != null ? { thinking_budget_tokens: node.attrs.thinking_budget_tokens } : {}),
         ...(node.attrs.reasoning_mode != null ? { reasoning_mode: node.attrs.reasoning_mode } : {}),
         ...(node.attrs.reasoning_summary != null ? { reasoning_summary: node.attrs.reasoning_summary } : {}),
+        ...(node.attrs.session_config != null ? { session_config: node.attrs.session_config } : {}),
 
         'manager.poll_interval': typeof node.attrs['manager.poll_interval'] === 'string'
             ? node.attrs['manager.poll_interval']

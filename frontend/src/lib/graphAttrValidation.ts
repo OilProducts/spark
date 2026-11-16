@@ -16,7 +16,7 @@ const GRAPH_ATTR_STRING_KEYS: (keyof GraphAttrs)[] = [
     'thinking_budget_tokens',
     'reasoning_mode',
     'reasoning_summary',
-
+    'session_config',
 ]
 
 export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): string => {

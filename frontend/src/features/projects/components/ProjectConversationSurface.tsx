@@ -46,7 +46,8 @@ interface ProjectConversationSurfaceProps {
     modelSettings: ModelSettings
     inheritedModelSettings?: ModelSettings
     onModelSettingsChange: (value: ModelSettings) => void
-    isModelSettingsLoading?: boolean
+    /** Locks the model while the chat loads or a turn is starting; during a turn, edits apply from the next one. */
+    isModelSettingsLocked?: boolean
     chatModelAvailabilityMessage: string | null
     hasRenderableConversationHistory: boolean
     follow: ReturnType<typeof useScrollFollow>
@@ -120,7 +121,7 @@ export function ProjectConversationSurface({
     modelSettings,
     inheritedModelSettings,
     onModelSettingsChange,
-    isModelSettingsLoading = false,
+    isModelSettingsLocked = false,
     chatModelAvailabilityMessage,
     hasRenderableConversationHistory,
     follow,
@@ -272,7 +273,7 @@ export function ProjectConversationSurface({
                                         projectPath={activeProjectPath} inheritLabel={defaultModel || 'Provider default'}
                                         defaultPrefix={modelSettingsSource ? MODEL_SOURCES[modelSettingsSource].prefix : undefined}
                                         title={modelSettingsSource ? MODEL_SOURCES[modelSettingsSource].title : undefined}
-                                        layout="compact" disabled={controlsDisabled || isModelSettingsLoading} />
+                                        layout="compact" disabled={!activeProjectPath || isModelSettingsLocked} />
                                 </>
                             ),
                         }}

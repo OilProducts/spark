@@ -219,7 +219,15 @@ fn acp_discoveries<'a>(
         .into_iter()
         .filter_map(|(id, harness, key)| {
             let (_, discovery) = cache.iter().find(|(cached, _)| *cached == key)?;
-            Some((id, harness, discovery.clone()))
+            let mut discovery = discovery.clone();
+            // A session's acknowledged state supersedes the probe's.
+            if let Some(options) = acp::acknowledged_options(work_area, id, &key.2)
+                .filter(|_| discovery.setup_status == "ready")
+            {
+                discovery.config_options = options;
+                discovery.modes = None;
+            }
+            Some((id, harness, discovery))
         })
         .collect()
 }

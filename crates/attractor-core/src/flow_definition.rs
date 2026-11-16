@@ -99,6 +99,10 @@ pub struct FlowDefaults {
     pub reasoning_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_summary: Option<String>,
+    /// An ACP harness's session controls, config ID to value ID, for the
+    /// default `llm_provider`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub session_config: BTreeMap<String, String>,
 
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<String, Value>,
@@ -115,6 +119,7 @@ impl FlowDefaults {
             && self.thinking_budget_tokens.is_none()
             && self.reasoning_mode.is_none()
             && self.reasoning_summary.is_none()
+            && self.session_config.is_empty()
             && self.extensions.is_empty()
     }
 }
@@ -442,6 +447,10 @@ pub struct ExecutionConfig {
     pub reasoning_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_summary: Option<String>,
+    /// An ACP harness's session controls, config ID to value ID, for the
+    /// harness this node resolves.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub session_config: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -672,6 +681,13 @@ impl FlowDefinition {
         }
         if let Some(value) = self.defaults.reasoning_effort.as_deref() {
             insert_string_attr(&mut graph_attrs, "ui_default_reasoning_effort", value);
+        }
+        if !self.defaults.session_config.is_empty() {
+            insert_string_attr(
+                &mut graph_attrs,
+                "ui_default_session_config",
+                &json!(self.defaults.session_config).to_string(),
+            );
         }
         if let Some(value) = self.defaults.thinking.as_deref() {
             insert_string_attr(&mut graph_attrs, "thinking", value);
@@ -1814,6 +1830,13 @@ fn runtime_dot_node(node_id: &str, node: &FlowNode) -> DotNode {
         }
         if let Some(value) = execution.reasoning_summary.as_deref() {
             insert_string_attr(&mut attrs, "reasoning_summary", value);
+        }
+        if !execution.session_config.is_empty() {
+            insert_string_attr(
+                &mut attrs,
+                "session_config",
+                &json!(execution.session_config).to_string(),
+            );
         }
     }
     if let Some(NodeConfig::Subflow { flow_ref, .. }) = node.config.as_ref() {

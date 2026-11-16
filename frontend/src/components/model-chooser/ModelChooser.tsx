@@ -5,7 +5,7 @@ import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { NativeSelect, NativeSelectOptGroup, NativeSelectOption } from '@/components/ui/native-select'
-import { useModelOptions } from './useModelOptions'
+import { refreshModelOptions, useModelOptions } from './useModelOptions'
 import { useLlmProfiles } from '@/lib/useLlmProfiles'
 import { effortNames, providerLabel as labelOf, sessionControls, type SessionControlValue } from '@/lib/llmSuggestions'
 import type { ModelSettings } from '@/lib/api/settingsApi'
@@ -128,7 +128,7 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
 
     return <Field className={layout === 'compact' ? 'min-w-0 w-auto max-w-full' : 'w-full'}>
         {layout === 'fields' && <FieldLabel htmlFor={id}>Model</FieldLabel>}
-        <Popover.Root open={open && !disabled} onOpenChange={next => { setOpen(next); setSearch(''); setActive(-1) }}>
+        <Popover.Root open={open && !disabled} onOpenChange={next => { setOpen(next); setSearch(''); setActive(-1); if (next) refreshModelOptions(projectPath) }}>
             <Popover.Trigger asChild>
                 <Button id={id} type="button" variant="outline" disabled={disabled} title={title} aria-label={`Model: ${value.model ? describe(resolved) : `${defaultPrefix}: ${describe(resolved)}`}`}
                     aria-invalid={invalidModel} aria-describedby={note}

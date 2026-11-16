@@ -16,7 +16,7 @@ const WithProject = () => <><SettingsPanel /><ProjectModelSettingsEditor project
 vi.mock('@/lib/api/settingsApi', () => ({ fetchModelSettings: vi.fn(), saveModelSettings: vi.fn() }))
 vi.mock('../services/clientPreferences', async (original) => ({ ...await original<object>(), fetchClientPreferences: vi.fn() }))
 vi.mock('@/lib/useLlmProfiles', () => ({ useLlmProfiles: () => [{ id: 'team', label: 'Team models', provider: 'openai_compatible', models: ['team-one'], default_model: 'team-one' }] }))
-vi.mock('@/components/model-chooser/useModelOptions', () => ({ useModelOptions: vi.fn() }))
+vi.mock('@/components/model-chooser/useModelOptions', () => ({ useModelOptions: vi.fn(), refreshModelOptions: vi.fn() }))
 vi.mock('../CodexConnectionSettings', () => ({ CodexConnectionSettings: () => null }))
 vi.mock('../ClaudeCodeConnectionSettings', () => ({ ClaudeCodeConnectionSettings: () => null }))
 vi.mock('../ProviderSettingsEditor', () => ({ ProviderSettingsEditor: () => null }))
