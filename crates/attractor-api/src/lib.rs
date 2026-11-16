@@ -1998,6 +1998,7 @@ impl AttractorApiService {
                 "group": defaults, "source": defaults_source, "reasoning_controls": if use_defaults { json!(defaults) } else { json!({}) },
             }),
         );
+        configuration.agents.redact_acp_env();
         runtime_context.insert(
             "internal.execution_configuration_snapshot".into(),
             json!(configuration),

@@ -519,3 +519,139 @@ fn a_message_sent_during_an_acp_turn_waits_for_the_next_turn() {
         .count();
     assert_eq!(assistants, 2, "{snapshot}");
 }
+
+#[test]
+fn acp_effort_ids_reach_the_harness_exactly() {
+    let temp = tempfile::tempdir().unwrap();
+    let (service, project) = acp_chat(
+        temp.path(),
+        json!({
+            "config_options": [{
+                "id": "effort", "name": "Effort", "category": "thought_level", "type": "select",
+                "currentValue": "Low",
+                "options": [{"value": "Low", "name": "Low"}, {"value": "High", "name": "High"}],
+            }],
+            "updates": acp_answer("Thought it through."),
+        }),
+    );
+    let high = Some("High".to_string());
+
+    service
+        .update_conversation_settings(
+            "acp-effort",
+            spark_workspace::ConversationSettingsUpdate {
+                project_path: project.clone(),
+                provider: Some("acp:fake".to_string()),
+                reasoning_effort: high.clone(),
+                expected_revision: Some("0".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let saved = service.get_snapshot("acp-effort", Some(&project)).unwrap();
+    assert_eq!(saved["reasoning_effort"], "High", "{saved}");
+    assert_eq!(
+        saved["model_settings"]["reasoning_effort"], "High",
+        "{saved}"
+    );
+
+    let snapshot = service
+        .execute_turn(
+            "acp-effort",
+            ConversationTurnRequest {
+                reasoning_effort: high,
+                ..acp_turn(&project, "Think")
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        assistant_turn(&snapshot)["status"],
+        "complete",
+        "{snapshot}"
+    );
+    let set = acp_received(temp.path(), "session/set_config_option");
+    assert_eq!(
+        (set[0]["configId"].clone(), set[0]["value"].clone()),
+        (json!("effort"), json!("High"))
+    );
+}
+
+/// Files under `root`, other than `except`, whose bytes contain `needle`.
+fn files_containing(
+    root: &std::path::Path,
+    needle: &str,
+    except: &[&str],
+) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(root).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(files_containing(&path, needle, except));
+        } else if !except.iter().any(|name| path.ends_with(name))
+            && std::fs::read(&path)
+                .unwrap()
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+        {
+            found.push(path);
+        }
+    }
+    found
+}
+
+#[test]
+fn acp_registration_secrets_reach_the_harness_but_not_chat_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let (service, project) = acp_chat(
+        temp.path(),
+        json!({"log_env": ["AGENT_TOKEN"], "updates": acp_answer("Done.")}),
+    );
+    let config = settings(temp.path()).config_dir.join("spark.toml");
+    let mut document: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    document["agents"]["acp_harnesses"]["fake"]["env"]
+        .as_table_mut()
+        .unwrap()
+        .insert("AGENT_TOKEN".into(), "fake-secret-sentinel".into());
+    document["agents"]["acp_harnesses"]
+        .as_table_mut()
+        .unwrap()
+        .insert(
+            "other".into(),
+            toml::Value::try_from(json!({
+                "name": "Other", "executable": "other-agent",
+                "env": {"OTHER_TOKEN": "other-secret-sentinel"},
+            }))
+            .unwrap(),
+        );
+    std::fs::write(&config, toml::to_string(&document).unwrap()).unwrap();
+
+    let snapshot = service
+        .execute_turn("acp-secrets", acp_turn(&project, "Hi"))
+        .unwrap();
+    assert_eq!(
+        assistant_turn(&snapshot)["status"],
+        "complete",
+        "{snapshot}"
+    );
+    let launch: Value = serde_json::from_str(
+        std::fs::read_to_string(temp.path().join("acp.log"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(launch["env"]["AGENT_TOKEN"], "fake-secret-sentinel");
+    let reread = service.get_snapshot("acp-secrets", Some(&project)).unwrap();
+    for response in [&snapshot, &reread] {
+        assert!(
+            !response.to_string().contains("secret-sentinel"),
+            "{response}"
+        );
+    }
+    assert_eq!(
+        files_containing(temp.path(), "secret-sentinel", &["spark.toml", "acp.log"]),
+        Vec::<std::path::PathBuf>::new()
+    );
+}

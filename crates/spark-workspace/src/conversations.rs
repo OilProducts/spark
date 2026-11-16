@@ -398,6 +398,7 @@ pub(crate) fn capture_execution_settings(
             )));
         }
     }
+    configuration.agents.redact_acp_env();
     let profile_definitions = profile_definitions.map_err(|_| {
         WorkspaceError::Validation(
             "Unable to load LLM profiles; check [llm_profiles] in spark.toml.".into(),
@@ -881,7 +882,10 @@ impl WorkspaceConversationService {
             group.model = non_empty_string(value);
         }
         if let Some(value) = effort {
-            group.reasoning_effort = non_empty_string(&validate_reasoning_effort(value)?);
+            group.reasoning_effort = non_empty_string(&validate_reasoning_effort(
+                value,
+                group.provider.as_deref(),
+            )?);
         }
         crate::settings::validate_model_settings(&self.settings, &group)?;
         Ok(Some(group))
@@ -1152,11 +1156,6 @@ impl WorkspaceConversationService {
             .as_deref()
             .map(validate_provider)
             .transpose()?;
-        let reasoning_effort = request
-            .reasoning_effort
-            .as_deref()
-            .map(validate_reasoning_effort)
-            .transpose()?;
         let normalized_model = request.model.as_deref().and_then(non_empty_string);
         let normalized_profile = request.llm_profile.as_deref().and_then(non_empty_string);
 
@@ -1236,7 +1235,14 @@ impl WorkspaceConversationService {
             patch.llm_profile = Some(normalized_profile);
         }
         if request.reasoning_effort.is_some() {
-            patch.reasoning_effort = Some(reasoning_effort);
+            // The group's effort, canonical for its provider.
+            patch.reasoning_effort = Some(
+                patch
+                    .model_settings
+                    .clone()
+                    .flatten()
+                    .and_then(|group| group.reasoning_effort),
+            );
         }
         // A revision that does not parse names no revision, so it conflicts.
         let expected = request
@@ -5353,8 +5359,11 @@ pub(crate) fn validate_provider(value: &str) -> WorkspaceResult<String> {
     spark_agent_adapter::config::validate_provider(value).map_err(WorkspaceError::Validation)
 }
 
-pub(crate) fn validate_reasoning_effort(value: &str) -> WorkspaceResult<String> {
-    spark_agent_adapter::config::validate_reasoning_effort(value)
+pub(crate) fn validate_reasoning_effort(
+    value: &str,
+    provider: Option<&str>,
+) -> WorkspaceResult<String> {
+    spark_agent_adapter::config::validate_reasoning_effort(value, provider)
         .map_err(WorkspaceError::Validation)
 }
 

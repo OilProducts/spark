@@ -1357,3 +1357,86 @@ fn mounted_start_route_rejects_unknown_node_override_properties() {
         .unwrap()
         .is_none());
 }
+
+const FAKE_ACP: &str = env!("CARGO_BIN_EXE_attractor-api-fake-acp");
+
+/// Files under `root`, other than `except`, whose bytes contain `needle`.
+fn files_containing(root: &Path, needle: &str, except: &[&str]) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(root).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(files_containing(&path, needle, except));
+        } else if !except.iter().any(|name| path.ends_with(name))
+            && fs::read(&path)
+                .unwrap()
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+        {
+            found.push(path);
+        }
+    }
+    found
+}
+
+#[test]
+fn acp_registration_secrets_reach_flow_nodes_but_not_run_history() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    let log = temp.path().join("acp.log");
+    let script = json!({"log": log, "log_env": ["AGENT_TOKEN"], "system_prompt": true,
+        "answers": [r#"{"decision": "done"}"#]});
+    // JSON string literals are TOML basic strings.
+    let text = |value: &str| json!(value).to_string();
+    fs::write(
+        settings.config_dir.join("spark.toml"),
+        format!(
+            "[agents.acp_harnesses.fake]\nname = 'Fake ACP'\nexecutable = {}\n\
+             env = {{ SPARK_FAKE_ACP = {}, AGENT_TOKEN = 'flow-secret-sentinel' }}\n\
+             [agents.acp_harnesses.other]\nname = 'Other'\nexecutable = 'other-agent'\n\
+             env = {{ OTHER_TOKEN = 'other-secret-sentinel' }}\n",
+            text(FAKE_ACP),
+            text(&script.to_string()),
+        ),
+    )
+    .unwrap();
+
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        std::sync::Arc::new(|| {
+            attractor_runtime::RuntimeHandlerRunner::new()
+                .with_rust_llm_client(unified_llm_adapter::Client::new())
+        }),
+    );
+    let response = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
+        run_id: Some("run-acp-secrets".to_string()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
+        working_directory: temp.path().join("project").to_string_lossy().to_string(),
+        llm_provider: Some("acp:fake".to_string()),
+        ..PipelineStartRequest::default()
+    });
+    assert_eq!(response.status_code, 200, "{}", response.body);
+    let bundle = RunStore::for_settings(&settings)
+        .read_run_bundle("run-acp-secrets")
+        .unwrap()
+        .unwrap();
+    let record = bundle.record.unwrap();
+    assert_eq!(record.status, "completed", "{record:?}");
+    let launch: serde_json::Value =
+        serde_json::from_str(fs::read_to_string(&log).unwrap().lines().next().unwrap()).unwrap();
+    assert_eq!(launch["env"]["AGENT_TOKEN"], "flow-secret-sentinel");
+    // The checkpoint keeps the registration, but not its values.
+    let captured = &bundle.checkpoint.unwrap().context["internal.execution_configuration_snapshot"]
+        ["agents"]["acp_harnesses"];
+    assert!(
+        captured["fake"]["env"]["AGENT_TOKEN"].is_string(),
+        "{captured}"
+    );
+    assert!(!response.body.to_string().contains("secret-sentinel"));
+    assert_eq!(
+        files_containing(temp.path(), "secret-sentinel", &["spark.toml", "acp.log"]),
+        Vec::<std::path::PathBuf>::new()
+    );
+}

@@ -399,6 +399,50 @@ impl AcpHarness {
         ]);
         crate::project::sha256_hex(identity.to_string().as_bytes())
     }
+
+    /// This captured registration, with environment values that
+    /// [`SessionConfig::redact_acp_env`] replaced taken from `live`, the
+    /// current registration, when it is still the one captured.
+    pub fn restore_env(
+        self,
+        live: Option<&AcpHarness>,
+        inheritance: EnvironmentInheritancePolicy,
+    ) -> Result<Self, String> {
+        let Some(generation) = self
+            .env
+            .values()
+            .find_map(|value| value.strip_prefix(REDACTED_ENV))
+        else {
+            return Ok(self);
+        };
+        live.filter(|live| live.generation(inheritance) == generation)
+            .cloned()
+            .ok_or_else(|| {
+                "the registration this work started with is no longer in the settings, so its environment cannot be restored; start the work again."
+                    .into()
+            })
+    }
+}
+
+/// Stands in for an ACP environment value in captured settings, followed by
+/// its registration's generation: execution history keeps no values.
+const REDACTED_ENV: &str = "spark-redacted:";
+
+impl SessionConfig {
+    /// Replaces ACP environment values, which may be secrets, so this can be
+    /// persisted; [`AcpHarness::restore_env`] takes them back from the live
+    /// registration with the same generation.
+    pub fn redact_acp_env(&mut self) {
+        for harness in self.acp_harnesses.values_mut() {
+            let stand_in = format!(
+                "{REDACTED_ENV}{}",
+                harness.generation(self.environment_inheritance)
+            );
+            for value in harness.env.values_mut() {
+                value.clone_from(&stand_in);
+            }
+        }
+    }
 }
 
 impl InstructionChannel {

@@ -217,6 +217,24 @@ pub fn run_turn(
     result.map_err(|message| AcpFailure { message, ..seen })
 }
 
+/// `harness_id`'s current registration in the settings the work was captured
+/// from, if they can be read.
+// ponytail: a worker that cannot read the captured settings path, such as one
+// in a container, cannot restore harness environments; pass them in if needed.
+fn live_harness(request: &AgentTurnRequest, harness_id: &str) -> Option<AcpHarness> {
+    let path = std::path::Path::new(
+        request.metadata.get("spark.execution.settings")?["configuration"]["config_dir"]
+            .as_str()?,
+    )
+    .join("spark.toml");
+    let agents: crate::config::SessionConfig =
+        spark_storage::settings::read_settings_document(&path)
+            .ok()?
+            .section(&path, "agents")
+            .ok()??;
+    agents.acp_harnesses.get(harness_id).cloned()
+}
+
 /// Reasoning controls a turn may carry; ACP v1 has no portable equivalent.
 const REASONING_CONTROLS: [&str; 4] = [
     "thinking",
@@ -238,7 +256,12 @@ fn turn(
         .cloned()
         .ok_or_else(|| {
             format!("ACP harness {harness_id} is not registered in the agents settings.")
-        })?;
+        })?
+        .restore_env(
+            live_harness(request, harness_id).as_ref(),
+            config.environment_inheritance,
+        )
+        .map_err(|error| format!("ACP harness {harness_id}: {error}"))?;
     if request
         .chat_mode
         .as_deref()

@@ -84,7 +84,7 @@ pub fn validate_model_settings_with_profiles(
         validate_profile_model(profile, value.model.as_deref())?;
     }
     if let Some(effort) = value.reasoning_effort.as_deref() {
-        validate_reasoning_effort(effort)?;
+        validate_reasoning_effort(effort, value.provider.as_deref())?;
     }
     Ok(())
 }
@@ -111,11 +111,19 @@ pub fn validate_provider(value: &str) -> Result<String, String> {
     }
 }
 
-pub fn validate_reasoning_effort(value: &str) -> Result<String, String> {
+/// Native and API efforts are canonically lowercase; an ACP harness's effort
+/// IDs are opaque, so they are kept exactly.
+pub fn validate_reasoning_effort(value: &str, provider: Option<&str>) -> Result<String, String> {
     let value = value.trim();
     let normalized = value.to_ascii_lowercase();
+    let acp = provider.is_some_and(|provider| {
+        matches!(
+            spark_common::agent_settings::HarnessIdentity::parse(provider),
+            Ok(Some(spark_common::agent_settings::HarnessIdentity::Acp(_)))
+        )
+    });
     Ok(
-        if matches!(normalized.as_str(), "low" | "medium" | "high" | "xhigh") {
+        if !acp && matches!(normalized.as_str(), "low" | "medium" | "high" | "xhigh") {
             normalized
         } else {
             value.to_string()
