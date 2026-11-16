@@ -979,6 +979,9 @@ fn acp_choosers_offer_what_a_session_last_acknowledged() {
 
 #[test]
 fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
+    // Native discovery in the same response reads the Claude binary override,
+    // which other tests change meanwhile.
+    let _env = super::utility_contracts::claude_env();
     let temp = tempfile::tempdir().unwrap();
     let log = temp.path().join("acp.log");
     let options = json!([
@@ -1001,6 +1004,7 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         script["log"] = json!(log);
         json!({"name": name, "executable": executable, "env": {
             "SPARK_FAKE_ACP": script.to_string(), "AGENT_TOKEN": "discovery-secret-sentinel",
+            "AGENT_PIN": "cat",
         }})
     };
     let settings = settings(temp.path());
@@ -1013,7 +1017,7 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
             "fake": harness("Fake ACP", FAKE_ACP, json!({"system_prompt": true, "resume": true, "config_options": options})),
             "plain": harness("Plain", FAKE_ACP, json!({"modes": modes})),
             "locked": harness("Locked", FAKE_ACP, json!({"new_error": {"code": -32000, "message": "Authentication required"}})),
-            "leaky": harness("Leaky", FAKE_ACP, json!({"echo_env": ["AGENT_TOKEN"], "new_error": {"code": -32603, "message": "model catalog unavailable"}})),
+            "leaky": harness("Leaky", FAKE_ACP, json!({"echo_env": ["AGENT_TOKEN", "AGENT_PIN"], "new_error": {"code": -32603, "message": "model catalog unavailable"}})),
             "missing": harness("Missing", "/nonexistent/acp-agent", json!({})),
         },
     }});
@@ -1134,11 +1138,13 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     assert!(
         error.contains("session/new failed")
             && error.contains("model catalog unavailable")
-            && error.contains("AGENT_TOKEN=[redacted]"),
-        "the setup error stays actionable without the value: {error}"
+            && error.contains("AGENT_TOKEN=[redacted]")
+            && error.contains("AGENT_PIN=[redacted]"),
+        "the setup error stays actionable without the values, short ones included: {error}"
     );
 
     assert!(!response.to_string().contains("discovery-secret-sentinel"));
+    assert!(!response.to_string().contains("=cat"));
     assert!(acp_received(temp.path(), "session/prompt").is_empty());
     let sessions = acp_received(temp.path(), "session/new");
     assert_eq!(

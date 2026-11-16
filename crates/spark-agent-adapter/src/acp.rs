@@ -419,20 +419,45 @@ fn probe(
     if !tail.is_empty() && !failure.unauthenticated {
         failure.message = format!("{}; stderr tail:\n{tail}", failure.message);
     }
-    failure.message = secrets.iter().fold(failure.message, |message, value| {
-        message.replace(value.as_str(), "[redacted]")
-    });
+    failure.message = secrets
+        .iter()
+        .fold(failure.message, |message, value| redact(message, value));
     Err(failure)
+}
+
+/// `message` with every occurrence of `value` replaced. A value under 4
+/// bytes is replaced wherever it stands as its own word, so `PIN=abc` loses
+/// its value while "abcde" and error codes keep their text.
+fn redact(message: String, value: &str) -> String {
+    let joined = |outer: Option<char>, inner: Option<char>| {
+        outer
+            .zip(inner)
+            .is_some_and(|(outer, inner)| outer.is_alphanumeric() && inner.is_alphanumeric())
+    };
+    let (mut redacted, mut last) = (String::with_capacity(message.len()), 0);
+    for (at, _) in message.match_indices(value) {
+        let end = at + value.len();
+        if value.len() < 4
+            && (joined(message[..at].chars().next_back(), value.chars().next())
+                || joined(message[end..].chars().next(), value.chars().next_back()))
+        {
+            continue;
+        }
+        redacted.push_str(&message[last..at]);
+        redacted.push_str("[redacted]");
+        last = end;
+    }
+    redacted.push_str(&message[last..]);
+    redacted
 }
 
 /// The environment values `command` sets, longest first, so one that
 /// contains another is hidden whole.
-// ponytail: values under 4 bytes stay visible; hiding them would garble every message.
 fn environment_values(command: &Command) -> Vec<String> {
     let mut values = command
         .get_envs()
         .filter_map(|(_, value)| value?.to_str())
-        .filter(|value| value.len() >= 4)
+        .filter(|value| !value.is_empty())
         .map(str::to_string)
         .collect::<Vec<_>>();
     values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));

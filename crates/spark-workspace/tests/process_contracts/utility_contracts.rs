@@ -27,12 +27,12 @@ const PROJECT: &str = "/projects/utility";
 
 /// Holds the shared env lock with the Claude binary override cleared, so the
 /// fake CLI stored in spark.toml is the one that runs.
-struct ClaudeEnv {
+pub(super) struct ClaudeEnv {
     _lock: std::sync::MutexGuard<'static, ()>,
     previous: Option<String>,
 }
 
-fn claude_env() -> ClaudeEnv {
+pub(super) fn claude_env() -> ClaudeEnv {
     let lock = super::test_support::ENV_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
