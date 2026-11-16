@@ -658,8 +658,8 @@ export function RunsPanel() {
                                                         [questionId]: value,
                                                     }))
                                                 }}
-                                                onSubmitPendingGateAnswer={(gate, selectedValue, note) => {
-                                                    void submitPendingGateAnswer(gate, selectedValue, note)
+                                                onSubmitPendingGateAnswer={(gate, selectedValue, note, form) => {
+                                                    void submitPendingGateAnswer(gate, selectedValue, note, form)
                                                 }}
                                                 pendingGateActionError={pendingGateActionError}
                                                 submittingGateIds={submittingGateIds}

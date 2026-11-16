@@ -583,9 +583,13 @@ fn finalization_records_both_removal_failure_types_and_never_retries() {
     }
 }
 
-/// Asks one question through the flow clarification handler and answers
-/// with what it receives, as an agent backend inside a worker would.
-struct AskingBackend(Option<spark_agent_adapter::codergen::ClarificationHandler>);
+/// Asks one question, or the form it holds, through the flow clarification
+/// handler and answers with what it receives, as an agent backend inside a
+/// worker would.
+struct AskingBackend(
+    Option<spark_agent_adapter::codergen::ClarificationHandler>,
+    Option<serde_json::Value>,
+);
 
 impl spark_agent_adapter::CodergenBackend for AskingBackend {
     fn set_clarification_handler(
@@ -604,12 +608,36 @@ impl spark_agent_adapter::CodergenBackend for AskingBackend {
             .0
             .as_ref()
             .expect("worker sets a clarification handler");
+        if let Some(form) = &self.1 {
+            let mut poll = handler(json!({"agent_request_id": "f1", "form": form}))
+                .map_err(spark_agent_adapter::CodergenError::Backend)?;
+            let reply = loop {
+                match poll().map_err(spark_agent_adapter::CodergenError::Backend)? {
+                    Some(spark_agent_adapter::codergen::ClarificationReply::Form(reply)) => {
+                        break reply
+                    }
+                    Some(other) => panic!("a form answered with {other:?}"),
+                    None => std::thread::sleep(std::time::Duration::from_millis(25)),
+                }
+            };
+            return Ok(spark_agent_adapter::CodergenBackendOutput {
+                response: spark_agent_adapter::CodergenBackendResponse::Text(
+                    json!({"decision": "done", "notes": json!(reply).to_string()}).to_string(),
+                ),
+                events: Vec::new(),
+                usage: None,
+                resume_metadata: Default::default(),
+            });
+        }
         let mut poll = handler(json!({"agent_request_id": "q1", "questions": [
             {"id": "question-1", "question": "Which audience?", "options": []}
         ]}))
         .map_err(spark_agent_adapter::CodergenError::Backend)?;
         let answers = loop {
-            if let Some(answers) = poll().map_err(spark_agent_adapter::CodergenError::Backend)? {
+            if let Some(answers) =
+                spark_agent_adapter::codergen::ClarificationReply::polled_answers(poll())
+                    .map_err(spark_agent_adapter::CodergenError::Backend)?
+            {
                 break answers;
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
@@ -631,6 +659,58 @@ impl spark_agent_adapter::CodergenBackend for AskingBackend {
 
 #[test]
 fn worker_clarification_reaches_the_host_journal_and_reads_its_answer() {
+    let (question, result) = worker_clarification(None, |run_id, question| {
+        attractor_runtime::human_gate_answered_event(
+            run_id,
+            question["question_id"].as_str().unwrap(),
+            Some("task".into()),
+            None,
+            None,
+            "Developers",
+            None,
+        )
+    });
+    assert_eq!(question["question_type"], "FREEFORM");
+    assert_eq!(result.outcome["notes"], "Audience: Developers");
+}
+
+#[test]
+fn worker_form_clarification_is_one_gate_whose_typed_reply_reaches_the_agent() {
+    let form = json!({"harness": "acp:fake", "harness_label": "Fake", "message": "Pick.",
+        "schema": {"type": "object", "properties": {"count": {"type": "integer"}},
+            "required": ["count"]}});
+    let reply = json!({"action": "accept", "content": {"count": 0}});
+    let (question, result) = worker_clarification(Some(form.clone()), |run_id, question| {
+        let mut answer = attractor_runtime::human_gate_answered_event(
+            run_id,
+            question["question_id"].as_str().unwrap(),
+            Some("task".into()),
+            None,
+            None,
+            "Accepted.\ncount: 0",
+            None,
+        );
+        answer.payload.insert("form_reply".into(), reply.clone());
+        answer
+    });
+    assert_eq!(question["question_type"], "FORM");
+    assert_eq!(question["form"], form);
+    assert_eq!(question["prompt"], "Pick.");
+    assert_eq!(question["agent_request_id"], "f1");
+    assert_eq!(
+        result.outcome["notes"],
+        reply.to_string(),
+        "typed, not stringified"
+    );
+}
+
+/// Runs a worker node whose agent asks one clarification, `form` if given,
+/// and answers its single host gate with `answer`. Returns the gate as asked
+/// and the node's result.
+fn worker_clarification(
+    form: Option<serde_json::Value>,
+    answer: impl FnOnce(&str, &serde_json::Value) -> RawRuntimeEvent,
+) -> (serde_json::Value, ResultFrame) {
     let temp = tempfile::tempdir().unwrap();
     let run_id = "worker-clarify";
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
@@ -695,7 +775,7 @@ fn worker_clarification_reaches_the_host_journal_and_reads_its_answer() {
     let worker_frames = frames.clone();
     let worker = std::thread::spawn(move || {
         let runner = RuntimeHandlerRunner::new()
-            .with_codergen_backend_factory(|| Box::new(AskingBackend(None)));
+            .with_codergen_backend_factory(move || Box::new(AskingBackend(None, form.clone())));
         run_worker_node_from_reader_writer(input.as_slice(), worker_frames, runner)
     });
 
@@ -721,15 +801,7 @@ fn worker_clarification_reaches_the_host_journal_and_reads_its_answer() {
         "waiting"
     );
     let question = json!(question.payload);
-    let mut answer = attractor_runtime::human_gate_answered_event(
-        run_id,
-        question["question_id"].as_str().unwrap(),
-        Some("task".into()),
-        None,
-        None,
-        "Developers",
-        None,
-    );
+    let mut answer = answer(run_id, &question);
     answer.payload.insert(
         "clarification_id".into(),
         question["clarification_id"].clone(),
@@ -755,6 +827,13 @@ fn worker_clarification_reaches_the_host_journal_and_reads_its_answer() {
         store.read_run_record(&paths).unwrap().unwrap().status,
         "running"
     );
+    let gates = attractor_runtime::read_raw_events(&paths)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == "human_gate")
+        .count();
+    assert_eq!(gates, 1, "one clarification, one gate");
+    (question, result.clone())
 }
 
 #[derive(Clone, Default)]

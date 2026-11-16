@@ -141,6 +141,8 @@ export function segmentTimelineEntry(segment: ConversationSegmentResponse, turnI
                 })),
                 answers: segment.request_user_input.answers,
                 submittedAt: segment.request_user_input.submitted_at ?? null,
+                form: segment.request_user_input.form ?? null,
+                reply: segment.request_user_input.reply ?? null,
             },
         }
     }

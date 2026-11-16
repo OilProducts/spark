@@ -709,7 +709,7 @@ impl Control {
             };
             let (id, completions) = (question.id.clone(), self.completions.clone());
             queued = work.run(0, move || {
-                let answers = poll();
+                let answers = crate::codergen::ClarificationReply::polled_answers(poll());
                 let _ = completions.send(Completion::Polled { id, poll, answers });
             });
             if queued.is_err() {

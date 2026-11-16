@@ -620,6 +620,7 @@ fn app_server_exit_ends_the_turn_even_while_a_question_waits() {
     }
     let late_answer = CodexAppServerBackend::new()
         .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            form: None,
             conversation_id: "codex-exit".to_string(),
             project_path: String::new(),
             request_id: "choice".to_string(),
@@ -1092,7 +1093,12 @@ fn flow_question_is_answered_from_state_the_turn_is_not_woken_for() {
             Ok(fs::read_to_string(&answer_path)
                 .ok()
                 .filter(|answer| !answer.is_empty())
-                .map(|answer| BTreeMap::from([("choice".to_string(), answer)])))
+                .map(|answer| {
+                    spark_agent_adapter::codergen::ClarificationReply::Answers(BTreeMap::from([(
+                        "choice".to_string(),
+                        answer,
+                    )]))
+                }))
         })
             as spark_agent_adapter::codergen::ClarificationPoll)
     }));
@@ -1591,6 +1597,7 @@ fn app_server_request_user_input_blocks_until_backend_answer_is_submitted() {
 
     let delivery = CodexAppServerBackend::new()
         .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            form: None,
             conversation_id: "conversation-input".to_string(),
             project_path,
             request_id: "choice".to_string(),
@@ -1700,6 +1707,7 @@ fn interrupt_while_awaiting_request_user_input_stops_the_turn() {
     ));
     let late_answer = CodexAppServerBackend::new()
         .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            form: None,
             conversation_id: "codex-stop-question".to_string(),
             project_path,
             request_id: "choice".to_string(),

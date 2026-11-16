@@ -1,3 +1,4 @@
+import { parseFormQuestion } from '@/lib/forms'
 import { ApiHttpError } from '@/lib/attractorClient'
 import type {
     ArtifactErrorState,
@@ -128,6 +129,7 @@ const asPendingQuestionSnapshot = (value: unknown): PendingQuestionSnapshot | nu
         prompt,
         questionType,
         options,
+        form: parseFormQuestion(payload.form),
         askedAt: typeof payload.asked_at === 'string' ? payload.asked_at : '',
     }
 }

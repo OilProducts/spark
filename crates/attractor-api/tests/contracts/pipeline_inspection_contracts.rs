@@ -569,6 +569,121 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
 }
 
 #[test]
+fn form_questions_list_their_form_and_take_only_a_valid_typed_reply() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let service = AttractorApiService::new(settings.clone());
+    service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
+        run_id: Some("run-form".to_string()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
+        working_directory: temp.path().join("Project").to_string_lossy().to_string(),
+        ..PipelineStartRequest::default()
+    });
+    let store = RunStore::for_settings(&settings);
+    let paths = store.read_run_bundle("run-form").unwrap().unwrap().paths;
+    store
+        .update_run_record("run-form", |record| record.status = "waiting".to_string())
+        .unwrap();
+    let active = attractor_runtime::clarification::ActiveClarification::new(&paths).unwrap();
+    let form = json!({"harness": "acp:fake", "harness_label": "Fake", "message": "Pick.",
+        "schema": {"type": "object", "properties": {
+            "count": {"type": "integer", "title": "Count"}, "agree": {"type": "boolean"}},
+            "required": ["count"]}});
+    let mut gate =
+        human_gate_pending_event("run-form", "form-q", "task", "Flow", "Pick.", None, vec![]);
+    gate.payload.extend([
+        ("origin".to_string(), json!("agent_clarification")),
+        ("clarification_id".to_string(), json!(active.id)),
+        ("agent_request_id".to_string(), json!("acp-form-1")),
+        ("question_type".to_string(), json!("FORM")),
+        ("form".to_string(), form.clone()),
+    ]);
+    store.append_event(&paths, gate).unwrap();
+    let plain =
+        human_gate_pending_event("run-form", "plain-q", "gate", "Flow", "Go?", None, vec![]);
+    store.append_event(&paths, plain).unwrap();
+
+    let listed = service.list_pipeline_questions("run-form").body;
+    let asked = listed["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|question| question["question_id"] == "form-q")
+        .cloned()
+        .expect("listed form question");
+    assert_eq!(asked["question_type"], "FORM");
+    assert_eq!(asked["form"], form, "the form is listed as asked");
+
+    let post = |question: &str, body: Value| {
+        handle_attractor_request(
+            "POST",
+            &format!("/attractor/pipelines/run-form/questions/{question}/answer"),
+            &body.to_string(),
+            settings.clone(),
+        )
+        .body
+    };
+    for (body, error) in [
+        (
+            json!({"selected_value": "0"}),
+            "This question is a form: reply with an action.",
+        ),
+        (
+            json!({"form": {"action": "accept", "content": {"count": "0"}}}),
+            "Count must be a whole number.",
+        ),
+        (
+            json!({"form": {"action": "accept", "content": {}}}),
+            "Count is required.",
+        ),
+    ] {
+        assert_eq!(
+            post("form-q", body),
+            json!({"status": "validation_error", "error": error})
+        );
+    }
+    assert_eq!(
+        post("plain-q", json!({"form": {"action": "decline"}})),
+        json!({"status": "validation_error", "error": "This question takes an answer, not a form reply."})
+    );
+    assert!(
+        service.list_pipeline_questions("run-form").body["questions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|question| question["question_id"] == "form-q"),
+        "an invalid reply leaves the form pending"
+    );
+
+    let reply = json!({"action": "accept", "content": {"count": 0, "agree": false}});
+    assert_eq!(post("form-q", json!({"form": reply}))["status"], "accepted");
+    let events = store
+        .read_run_bundle("run-form")
+        .unwrap()
+        .unwrap()
+        .raw_events;
+    let answered = events
+        .iter()
+        .find(|event| {
+            event.event_type == "InterviewCompleted" && event.payload["question_id"] == "form-q"
+        })
+        .expect("answered");
+    assert_eq!(answered.payload["form_reply"], reply, "kept as typed");
+    assert_eq!(
+        answered.payload["answer"],
+        "Accepted.\nCount: 0\nagree: false"
+    );
+    assert_eq!(answered.payload["agent_request_id"], "acp-form-1");
+    assert_eq!(
+        post("form-q", json!({"form": {"action": "decline"}}))["detail"],
+        "Unknown question for pipeline",
+        "a duplicate reply finds nothing pending"
+    );
+    drop(active);
+}
+
+#[test]
 fn run_listing_filters_by_project_path_query() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

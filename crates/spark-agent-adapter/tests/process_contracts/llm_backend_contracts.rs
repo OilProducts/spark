@@ -153,6 +153,7 @@ fn agent_turn_request_round_trips_selector_metadata_and_history() {
 #[test]
 fn request_user_input_answer_request_round_trips_resume_lifecycle_fields() {
     let request = AgentRequestUserInputAnswerRequest {
+        form: None,
         conversation_id: "conversation-answer".to_string(),
         project_path: "/repo".to_string(),
         request_id: "request-1".to_string(),
@@ -1533,6 +1534,7 @@ fn agent_turn_backend_answers_request_user_input_through_rust_session_lifecycle(
 
     let output = backend
         .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            form: None,
             conversation_id: "conversation-answer".to_string(),
             project_path: "/repo".to_string(),
             request_id: "request-1".to_string(),
@@ -1678,6 +1680,7 @@ fn agent_turn_backend_answer_preserves_profile_selector_semantics() {
 
     backend
         .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            form: None,
             conversation_id: "conversation-profile-answer".to_string(),
             project_path: "/repo".to_string(),
             request_id: "request-1".to_string(),
@@ -1801,6 +1804,7 @@ fn agent_turn_backend_answer_reports_recoverable_resume_failure_as_output() {
 
     let output = backend
         .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            form: None,
             conversation_id: "conversation-answer".to_string(),
             project_path: "/repo".to_string(),
             request_id: "request-1".to_string(),
@@ -3940,6 +3944,7 @@ fn a_native_turn_resumed_by_a_clarification_answer_takes_steers_and_stops() {
 
     let output = RustLlmAgentTurnBackend::new(client)
         .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            form: None,
             conversation_id: "answer-chat".to_string(),
             project_path: project_path.clone(),
             request_id: "request-1".to_string(),

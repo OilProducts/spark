@@ -1258,6 +1258,7 @@ pub fn answer_incoming(
             attractor_api::HumanAnswerRequest {
                 selected_value: request.selected_value,
                 note: String::new(),
+                form: None,
             },
         );
         let detail = response.body["detail"].to_string();
@@ -1305,6 +1306,7 @@ pub fn answer_incoming(
         ConversationRequestUserInputAnswerRequest {
             project_path: row.project_path.clone(),
             answers,
+            form: None,
         },
     )?;
     Ok(json!({"question_id": question_id, "answered": true}))

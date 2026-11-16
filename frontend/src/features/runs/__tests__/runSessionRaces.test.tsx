@@ -94,3 +94,18 @@ it('does not rerender resource subscribers when an unrelated session changes', (
     act(() => { select('b'); useStore.getState().updateRunDetailSession('b', { contextSearchQuery: 'other' }) })
     expect(renders).toBe(before)
 })
+
+it('sends a form gate its typed reply, and keeps it waiting with the reason when refused', async () => {
+    const form = { harness: 'acp:x', harnessLabel: 'X', message: 'Pick', schema: { type: 'object', properties: {} } }
+    const formQuestion: PendingQuestionSnapshot = { ...question, questionId: 'f', questionType: null, form }
+    const formGate = { ...gate, questionId: 'f', questionType: null, form } as PendingInterviewGate
+    useStore.getState().updateRunDetailSession('a', { questionsStatus: 'ready', pendingQuestionSnapshots: [formQuestion] })
+    const { result } = renderHook(() => useRunTimeline({ selectedRunTimelineId: 'a', pendingQuestionSnapshots: [formQuestion] }))
+    const reply = { action: 'accept' as const, content: {} }
+    act(() => { void result.current.submitPendingGateAnswer(formGate, '', undefined, reply) })
+    expect(pending).toHaveLength(1)
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({ question_id: 'f', selected_value: '', form: reply })
+    await act(async () => pending[0].resolve(json({ status: 'validation_error', error: 'size is required.' })))
+    expect(useStore.getState().runDetailSessionsByRunId.a.answeredGateIds).toEqual({})
+    expect(useStore.getState().runDetailSessionsByRunId.a.pendingGateActionError).toBe('Unable to submit answer (HTTP 422): size is required.')
+})

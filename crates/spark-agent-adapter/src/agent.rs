@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::events::TurnStreamEvent;
+use spark_common::forms::FormReply;
 
 use crate::history::HistoryTurn;
 
@@ -69,6 +70,9 @@ pub struct AgentRequestUserInputAnswerRequest {
     pub assistant_turn_id: String,
     #[serde(default)]
     pub answers: BTreeMap<String, String>,
+    /// A form question's typed reply, in place of `answers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<FormReply>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_user_input: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

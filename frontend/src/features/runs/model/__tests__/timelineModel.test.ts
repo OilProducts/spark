@@ -237,3 +237,15 @@ it('keeps clarification identities distinct, routes child answers, and hides orp
   expect(buildPendingInterviewGates(events, [snapshot('second')]).map((q) => q.questionId)).toEqual(['second'])
   expect(buildPendingInterviewGates(events, [])).toEqual([])
 })
+
+it('carries a harness form from its gate event or snapshot to the one pending gate', () => {
+  const form = { harness: 'acp:x', harness_label: 'X Agent', message: 'Pick a size', schema: { type: 'object', properties: {} } }
+  const event = toTimelineEvent({
+    type: 'human_gate', sequence: 1, emitted_at: '2026-09-08T00:00:00Z', question_id: 'f', node_id: 'work',
+    run_id: 'run', origin: 'agent_clarification', prompt: 'Pick a size', question_type: 'FORM', form,
+  })!
+  const snapshot = { questionId: 'f', runId: 'run', origin: 'agent_clarification', nodeId: 'work', prompt: 'Pick a size', questionType: null, options: [], askedAt: '' }
+  const expected = { harness: 'acp:x', harnessLabel: 'X Agent', message: 'Pick a size', schema: form.schema }
+  expect(buildPendingInterviewGates([event], [snapshot])).toMatchObject([{ questionId: 'f', questionType: null, options: [], form: expected }])
+  expect(buildPendingInterviewGates([], [{ ...snapshot, form: expected }])).toMatchObject([{ questionId: 'f', form: expected }])
+})

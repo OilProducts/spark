@@ -893,6 +893,98 @@ async fn request_user_input_answer_route_continues_pending_requests() {
 }
 
 #[tokio::test]
+async fn request_user_input_answer_route_carries_a_typed_form_reply_end_to_end() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::with_answer_outputs(
+        Vec::new(),
+        vec![AgentTurnOutput {
+            final_assistant_text: Some("Form taken.".to_string()),
+            ..AgentTurnOutput::default()
+        }],
+    );
+    let answer_requests = backend.answer_requests();
+    let app = crate::store_app(settings.clone(), Arc::new(backend));
+    let service = crate::conversations(settings.clone());
+    let (prepared, _) = service
+        .start_turn(
+            "conversation-http-form",
+            ConversationTurnRequest {
+                project_path: "/projects/http-form".to_string(),
+                message: "Need a form".to_string(),
+                provider: Some("openrouter".to_string()),
+                model: Some("openrouter/route-form".to_string()),
+                chat_mode: Some("chat".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start");
+    let form = json!({"harness": "acp:fake", "harness_label": "Fake", "message": "Pick.",
+        "schema": {"type": "object", "properties": {
+            "count": {"type": "integer"}, "agree": {"type": "boolean"},
+            "tags": {"type": "array", "items": {"type": "string", "enum": ["a", "b"]}}},
+            "required": ["count"]}});
+    let mut asked = request_user_input_event();
+    asked.source.item_id = Some("acp-form-1".to_string());
+    asked.request_user_input =
+        Some(json!({"request_id": "acp-form-1", "questions": [], "form": form}));
+    service
+        .ingest_agent_turn_output(
+            "conversation-http-form",
+            "/projects/http-form",
+            &prepared.assistant_turn_id,
+            "chat",
+            AgentTurnOutput {
+                events: vec![asked],
+                ..AgentTurnOutput::default()
+            },
+        )
+        .expect("pending form");
+
+    let path =
+        "/workspace/api/conversations/conversation-http-form/request-user-input/acp-form-1/answer";
+    for body in [
+        json!({"project_path": "/projects/http-form", "answers": {"count": "0"}}),
+        json!({"project_path": "/projects/http-form",
+            "form": {"action": "accept", "content": {"count": 0.5}}}),
+        json!({"project_path": "/projects/http-form", "form": {"action": "maybe"}}),
+    ] {
+        let refused = request_json(app.clone(), "POST", path, Some(body.clone())).await;
+        assert!(refused.0.is_client_error(), "{body}: {refused:?}");
+    }
+    assert!(
+        answer_requests.lock().unwrap().is_empty(),
+        "nothing reached the agent"
+    );
+
+    let reply = json!({"action": "accept", "content": {"count": 0, "agree": false, "tags": []}});
+    let answered = request_json(
+        app.clone(),
+        "POST",
+        path,
+        Some(json!({"project_path": "/projects/http-form", "form": reply})),
+    )
+    .await;
+    assert_eq!(answered.0, StatusCode::OK, "{answered:?}");
+    let segment = crate::row_payloads(&answered.1["changes"], "segment")
+        .into_iter()
+        .find(|segment| segment["kind"] == "request_user_input")
+        .expect("request segment");
+    assert_eq!(segment["request_user_input"]["status"], "answered");
+    assert_eq!(segment["request_user_input"]["form"], form);
+    assert_eq!(segment["request_user_input"]["reply"], reply);
+    let answer_requests = answer_requests.lock().expect("answer requests");
+    assert_eq!(answer_requests.len(), 1);
+    assert_eq!(answer_requests[0].request_id, "acp-form-1");
+    assert_eq!(
+        json!(answer_requests[0].form),
+        reply,
+        "typed, not stringified"
+    );
+    assert!(answer_requests[0].answers.is_empty());
+}
+
+#[tokio::test]
 async fn request_user_input_answer_route_returns_backend_errors_without_expiring_request() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

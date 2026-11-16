@@ -1,3 +1,4 @@
+import type { FormQuestion, FormReply } from '@/lib/forms'
 import type {
     ConversationAttachmentResponse,
     ConversationSegmentResponse,
@@ -51,6 +52,9 @@ export interface ConversationTimelineRequestUserInput {
     questions: ConversationTimelineRequestUserInputQuestion[]
     answers: Record<string, string>
     submittedAt?: string | null
+    /** A harness's typed form, asked instead of questions. */
+    form?: FormQuestion | null
+    reply?: FormReply | null
 }
 
 export type ConversationTimelineEntry =

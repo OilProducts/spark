@@ -24,6 +24,7 @@ import { MessageSquare } from 'lucide-react'
 import { statusTextClassName } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import type { FormReply } from '@/lib/forms'
 import { ProjectConversationMarkdown } from './ProjectConversationMarkdown'
 import { formatRunDate } from '@/features/runs/model/runOverviewModel'
 
@@ -57,7 +58,7 @@ interface ProjectConversationHistoryProps {
     requestUserInputActionError: string | null
     submittingRequestUserInputIds: Record<string, boolean>
     formatConversationTimestamp: (value: string) => string
-    onSubmitRequestUserInput: (requestId: string, answers: Record<string, string>) => void | Promise<void>
+    onSubmitRequestUserInput: (requestId: string, answers: Record<string, string>, form?: FormReply) => void | Promise<void>
     onToggleToolCallExpanded: (toolCallId: string) => void
     onToggleThinkingEntryExpanded: (entryId: string) => void
     onReviewFlowRunRequest: (
@@ -92,7 +93,7 @@ const RequestUserInputRow = memo(function RequestUserInputRow({
     entry: RequestUserInputEntry
     formatConversationTimestamp: (value: string) => string
     isSubmitting: boolean
-    onSubmitRequestUserInput: (requestId: string, answers: Record<string, string>) => void | Promise<void>
+    onSubmitRequestUserInput: (requestId: string, answers: Record<string, string>, form?: FormReply) => void | Promise<void>
 }) {
     return (
         <li className="flex min-w-0 justify-start">

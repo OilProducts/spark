@@ -576,7 +576,12 @@ impl RustLlmCodergenBackend {
             SessionSteeringHandle::new(),
         );
         let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
-        let result = crate::acp::run_turn(&agent_request, harness, turn_event_sink.as_ref());
+        let result = crate::acp::run_turn(
+            &agent_request,
+            harness,
+            turn_event_sink.as_ref(),
+            stop.pausing(self.clarification_handler.clone()),
+        );
         if let Some(output) = stop.finish() {
             return Ok(output);
         }
@@ -1728,12 +1733,31 @@ impl Drop for Ownership {
 }
 
 /// A chat turn on a registered ACP harness.
+/// A live turn took a question's answer.
+fn answer_delivered(backend: &str, request_id: &str) -> AgentTurnOutput {
+    let mut delivered = TurnStreamEvent::new(TurnStreamEventKind::Other(
+        "request_user_input_answer_delivered".to_string(),
+    ))
+    .expect("answer delivery is a valid turn event");
+    delivered.source = TurnStreamSource {
+        backend: Some(backend.to_string()),
+        item_id: Some(request_id.to_string()),
+        raw_kind: Some("request_user_input_answer_delivered".to_string()),
+        ..TurnStreamSource::default()
+    };
+    delivered.status = Some("delivered".to_string());
+    AgentTurnOutput {
+        events: vec![delivered],
+        ..AgentTurnOutput::default()
+    }
+}
+
 fn run_acp_chat_turn(
     request: &AgentTurnRequest,
     harness: &str,
     event_sink: Option<AgentTurnEventSink>,
 ) -> Result<AgentTurnOutput, AgentError> {
-    let turn = crate::acp::run_turn(request, harness, event_sink.as_ref())
+    let turn = crate::acp::run_turn(request, harness, event_sink.as_ref(), None)
         .map_err(|failure| agent_error(failure.message))?;
     let mut output = turn.output;
     match turn.stop_reason {
@@ -1824,7 +1848,7 @@ impl NativeTurn {
             let (sender, answers) = std::sync::mpsc::channel();
             questions.lock().unwrap().insert(request_id, sender);
             Ok(Box::new(move || match answers.try_recv() {
-                Ok(answers) => Ok(Some(answers)),
+                Ok(answers) => Ok(Some(crate::codergen::ClarificationReply::Answers(answers))),
                 Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     Err("The question is no longer pending.".to_string())
@@ -1979,7 +2003,20 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
             return Ok(ClaudeCodeBackend::new().answer_request_user_input(request));
         }
         if let Ok(Owner::Acp(_)) = Owner::of(request.provider.as_deref()) {
-            // ACP turns ask no questions until forms are supported.
+            // Only the live turn that asked can take a form's reply.
+            if request.form.clone().is_some_and(|reply| {
+                crate::acp::answer(
+                    &request.project_path,
+                    &request.conversation_id,
+                    &request.request_id,
+                    reply,
+                )
+            }) {
+                return Ok(answer_delivered(
+                    crate::acp::ACP_BACKEND,
+                    &request.request_id,
+                ));
+            }
             return Ok(AgentTurnOutput {
                 thread_resume_failure: Some(AgentThreadResumeFailure {
                     message: "request-user-input answer could not resume because the live request is no longer pending.".into(),
@@ -1992,21 +2029,7 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
         if NativeTurn::find(&request.project_path, &request.conversation_id)
             .is_some_and(|turn| turn.answer(&request.request_id, &request.answers))
         {
-            let mut delivered = TurnStreamEvent::new(TurnStreamEventKind::Other(
-                "request_user_input_answer_delivered".to_string(),
-            ))
-            .expect("answer delivery is a valid turn event");
-            delivered.source = TurnStreamSource {
-                backend: Some(BACKEND_NAME.to_string()),
-                item_id: Some(request.request_id.clone()),
-                raw_kind: Some("request_user_input_answer_delivered".to_string()),
-                ..TurnStreamSource::default()
-            };
-            delivered.status = Some("delivered".to_string());
-            return Ok(AgentTurnOutput {
-                events: vec![delivered],
-                ..AgentTurnOutput::default()
-            });
+            return Ok(answer_delivered(BACKEND_NAME, &request.request_id));
         }
         let continuation = match request_user_input_answer_continuation(&request) {
             Ok(continuation) => continuation,
@@ -2024,6 +2047,7 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
             request_id,
             assistant_turn_id,
             answers,
+            form: _,
             request_user_input,
             history,
             provider,

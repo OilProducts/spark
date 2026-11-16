@@ -1,0 +1,232 @@
+// Typed form questions an agent harness asks (ACP form elicitation): reading the restricted
+// schema, the person's draft, and the reply. The checks mirror the backend's, which stays the
+// authority: a reply the backend refuses leaves the question pending.
+
+/** A form as asked: who asks, why, and the original restricted schema. */
+export interface FormQuestion {
+    harness: string
+    harnessLabel: string
+    message: string
+    schema: Record<string, unknown>
+}
+
+export type FormValue = string | number | boolean | string[]
+
+export type FormReply =
+    | { action: 'accept'; content: Record<string, FormValue> }
+    | { action: 'decline' }
+    | { action: 'cancel' }
+
+export interface FormField {
+    name: string
+    label: string
+    description: string | null
+    required: boolean
+    kind: 'text' | 'number' | 'integer' | 'boolean' | 'choice' | 'multi'
+    format: string | null
+    choices: Array<{ value: string; label: string }>
+    pattern: string | null
+    minimum: number | null
+    maximum: number | null
+    minLength: number | null
+    maxLength: number | null
+    minItems: number | null
+    maxItems: number | null
+    defaultValue: FormValue | undefined
+}
+
+/** What the person entered: text as typed ('' is unset; booleans 'true'/'false'), picks as lists. */
+export type FormDraft = Record<string, string | string[]>
+
+const asRecord = (value: unknown): Record<string, unknown> | null => (
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+)
+const text = (value: unknown) => (typeof value === 'string' ? value : '')
+const numberOrNull = (value: unknown) => (typeof value === 'number' ? value : null)
+
+export function parseFormQuestion(value: unknown): FormQuestion | null {
+    const record = asRecord(value)
+    const schema = asRecord(record?.schema)
+    if (!record || !schema) return null
+    return {
+        harness: text(record.harness),
+        harnessLabel: text(record.harness_label) || text(record.harness) || 'The agent',
+        message: text(record.message),
+        schema,
+    }
+}
+
+const titledChoices = (options: unknown) => (Array.isArray(options) ? options : [])
+    .map(asRecord)
+    .filter((option): option is Record<string, unknown> => typeof option?.const === 'string')
+    .map((option) => ({ value: option.const as string, label: text(option.title) || (option.const as string) }))
+
+const plainChoices = (values: unknown) => (Array.isArray(values) ? values : [])
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => ({ value, label: value }))
+
+export function formFields(schema: Record<string, unknown>): FormField[] {
+    const required = Array.isArray(schema.required) ? schema.required : []
+    return Object.entries(asRecord(schema.properties) ?? {}).map(([name, raw]) => {
+        const property = asRecord(raw) ?? {}
+        const items = asRecord(property.items) ?? {}
+        const type = text(property.type)
+        const choices = type === 'array'
+            ? (items.anyOf ? titledChoices(items.anyOf) : plainChoices(items.enum))
+            : (property.oneOf ? titledChoices(property.oneOf) : plainChoices(property.enum))
+        const kind: FormField['kind'] = type === 'array' ? 'multi'
+            : type === 'number' || type === 'integer' || type === 'boolean' ? type
+                : choices.length > 0 ? 'choice' : 'text'
+        return {
+            name,
+            label: text(property.title).trim() || name,
+            description: text(property.description) || null,
+            required: required.includes(name),
+            kind,
+            format: text(property.format) || null,
+            choices,
+            pattern: text(property.pattern) || null,
+            minimum: numberOrNull(property.minimum),
+            maximum: numberOrNull(property.maximum),
+            minLength: numberOrNull(property.minLength),
+            maxLength: numberOrNull(property.maxLength),
+            minItems: numberOrNull(property.minItems),
+            maxItems: numberOrNull(property.maxItems),
+            defaultValue: property.default as FormValue | undefined,
+        }
+    })
+}
+
+/** The draft a form opens with: its defaults filled in, everything else unset. */
+export function initialDraft(fields: FormField[]): FormDraft {
+    return Object.fromEntries(fields.map((field) => {
+        const value = field.defaultValue
+        if (field.kind === 'multi') return [field.name, Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []]
+        return [field.name, value === undefined || Array.isArray(value) ? '' : String(value)]
+    }))
+}
+
+const isEmail = (value: string) => {
+    const at = value.indexOf('@')
+    return !/\s/.test(value) && at > 0 && at < value.length - 1 && value.indexOf('@', at + 1) < 0
+}
+
+const isDate = (value: string) => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+    if (!match) return false
+    const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+    return date.getUTCFullYear() === Number(match[1]) && date.getUTCMonth() === Number(match[2]) - 1 && date.getUTCDate() === Number(match[3])
+}
+
+const isDateTime = (value: string) => (
+    /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.test(value)
+    && isDate(value.slice(0, 10)) && !Number.isNaN(Date.parse(value))
+)
+
+const isUri = (value: string) => {
+    try {
+        new URL(value)
+        return true
+    } catch {
+        return false
+    }
+}
+
+const FORMAT_CHECKS: Record<string, (value: string) => boolean> = {
+    email: isEmail,
+    uri: isUri,
+    date: isDate,
+    'date-time': isDateTime,
+}
+
+/** The field a draft value fails, and why; null when it is valid. */
+function checkField(field: FormField, value: FormValue): string | null {
+    const { label } = field
+    if (field.kind === 'multi') {
+        const picks = value as string[]
+        if (field.minItems !== null && picks.length < field.minItems) return `${label} needs more choices.`
+        if (field.maxItems !== null && picks.length > field.maxItems) return `${label} has too many choices.`
+        return null
+    }
+    if (field.kind === 'number' || field.kind === 'integer') {
+        const number = value as number
+        if (Number.isNaN(number) || (field.kind === 'integer' && !Number.isInteger(number))) {
+            return field.kind === 'integer' ? `${label} must be a whole number.` : `${label} must be a number.`
+        }
+        if (field.minimum !== null && number < field.minimum) return `${label} is below its minimum.`
+        if (field.maximum !== null && number > field.maximum) return `${label} is above its maximum.`
+        return null
+    }
+    if (field.kind === 'choice') {
+        return field.choices.some((choice) => choice.value === value) ? null : `${label} must be one of its choices.`
+    }
+    if (field.kind !== 'text') return null
+    const entered = value as string
+    const length = [...entered].length
+    if (field.minLength !== null && length < field.minLength) return `${label} is too short.`
+    if (field.maxLength !== null && length > field.maxLength) return `${label} is too long.`
+    if (field.pattern) {
+        let pattern: RegExp | null = null
+        try {
+            pattern = new RegExp(field.pattern, 'u')
+        } catch {
+            // ponytail: a pattern JavaScript can't read is left to the backend's check.
+        }
+        if (pattern && !pattern.test(entered)) return `${label} does not match the required pattern.`
+    }
+    const check = field.format ? FORMAT_CHECKS[field.format] : undefined
+    if (check && !check(entered)) return `${label} must be a valid ${field.format}.`
+    return null
+}
+
+/**
+ * The accept reply a draft makes, or the first field it fails and why. Unset optional fields
+ * are omitted, never sent empty; false and zero are values.
+ */
+export function draftReply(fields: FormField[], draft: FormDraft): { reply: FormReply } | { field: string; error: string } {
+    const content: Record<string, FormValue> = {}
+    for (const field of fields) {
+        const entered = draft[field.name]
+        const unset = field.kind === 'multi' ? !entered?.length && !field.required : entered === undefined || entered === ''
+        if (unset) {
+            if (field.required) return { field: field.name, error: `${field.label} is required.` }
+            continue
+        }
+        const value: FormValue = field.kind === 'multi' ? [...(entered ?? [])]
+            : field.kind === 'boolean' ? entered === 'true'
+                : field.kind === 'number' || field.kind === 'integer' ? Number(entered)
+                    : entered as string
+        const error = checkField(field, value)
+        if (error) return { field: field.name, error }
+        content[field.name] = value
+    }
+    return { reply: { action: 'accept', content } }
+}
+
+export function parseFormReply(value: unknown): FormReply | null {
+    const record = asRecord(value)
+    if (record?.action === 'decline' || record?.action === 'cancel') return { action: record.action }
+    if (record?.action !== 'accept') return null
+    return { action: 'accept', content: (asRecord(record.content) ?? {}) as Record<string, FormValue> }
+}
+
+/** A reply as its labelled values, in the form's order. */
+export function replyLines(fields: FormField[], reply: FormReply): Array<{ label: string; value: string }> {
+    if (reply.action !== 'accept') return []
+    return fields
+        .filter((field) => field.name in reply.content)
+        .map((field) => {
+            const value = reply.content[field.name]
+            const shown = Array.isArray(value)
+                ? value.map((item) => field.choices.find((choice) => choice.value === item)?.label ?? item).join(', ') || 'None'
+                : typeof value === 'boolean' ? (value ? 'Yes' : 'No')
+                    : field.choices.find((choice) => choice.value === value)?.label ?? String(value)
+            return { label: field.label, value: shown }
+        })
+}
+
+export const REPLY_ACTION_LABELS: Record<FormReply['action'], string> = {
+    accept: 'Submitted',
+    decline: 'Declined',
+    cancel: 'Cancelled',
+}

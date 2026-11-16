@@ -2,6 +2,7 @@ import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { useCallback, useMemo, type SetStateAction } from 'react'
 import { ApiHttpError, fetchPipelineAnswerValidated } from '@/lib/attractorClient'
 import { useStore } from '@/store'
+import type { FormReply } from '@/lib/forms'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import type {
     PendingInterviewGate,
@@ -104,8 +105,8 @@ export function useRunTimeline({
         updateRunDetailSession(selectedRunTimelineId, patch)
     }, [selectedRunTimelineId, updateRunDetailSession])
 
-    const submitPendingGateAnswer = useCallback(async (gate: PendingInterviewGate, selectedValue: string, note?: string) => {
-        if (!selectedRunTimelineId || !gate.questionId || !selectedValue.trim()) {
+    const submitPendingGateAnswer = useCallback(async (gate: PendingInterviewGate, selectedValue: string, note?: string, form?: FormReply) => {
+        if (!selectedRunTimelineId || !gate.questionId || (!form && !selectedValue.trim())) {
             return
         }
         const session = useStore.getState().runDetailSessionsByRunId[selectedRunTimelineId]
@@ -122,7 +123,7 @@ export function useRunTimeline({
             },
         })
         try {
-            await fetchPipelineAnswerValidated(gate.runId ?? selectedRunTimelineId, gate.questionId, selectedValue, note)
+            await fetchPipelineAnswerValidated(gate.runId ?? selectedRunTimelineId, gate.questionId, selectedValue, note, form)
             if (!isCurrent()) return
             const current = useStore.getState().runDetailSessionsByRunId[selectedRunTimelineId]
             const nextFreeformAnswers = { ...current.freeformAnswersByGateId }
@@ -142,7 +143,7 @@ export function useRunTimeline({
             logUnexpectedRunError(err)
             patchTimelineSession({
                 pendingGateActionError: err instanceof ApiHttpError
-                    ? `Unable to submit answer (HTTP ${err.status})${err.detail ? `: ${err.detail}` : ''}.`
+                    ? `Unable to submit answer (HTTP ${err.status})${err.detail ? `: ${err.detail.replace(/\.$/, '')}` : ''}.`
                     : 'Unable to submit answer. Check connection/backend and retry.',
             })
         } finally {

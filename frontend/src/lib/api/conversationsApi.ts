@@ -13,6 +13,7 @@ import {
 } from './shared'
 import { notifyAttentionChanged } from './attentionApi'
 import { fetchWorkspaceJsonValidated, workspaceUrl } from './apiClient'
+import { parseFormQuestion, parseFormReply, type FormQuestion, type FormReply } from '@/lib/forms'
 
 /** An uploaded conversation file; sent user turns carry these references. */
 export interface ConversationAttachmentResponse {
@@ -101,6 +102,8 @@ export interface ConversationSegmentResponse {
         }>
         answers: Record<string, string>
         submitted_at?: string | null
+        form?: FormQuestion | null
+        reply?: FormReply | null
     } | null
     source?: {
         app_turn_id?: string | null
@@ -586,6 +589,8 @@ export function parseConversationSegmentResponse(value: unknown): ConversationSe
                     )
                     : {},
                 submitted_at: asOptionalNullableString(requestUserInput.submitted_at),
+                form: parseFormQuestion(requestUserInput.form),
+                reply: parseFormReply(requestUserInput.reply),
             }
             : null,
         source: source
@@ -1303,6 +1308,7 @@ export async function submitConversationRequestUserInputValidated(
     payload: {
         project_path: string
         answers: Record<string, string>
+        form?: FormReply
     },
 ): Promise<ConversationMutationAck> {
     return fetchWorkspaceJsonValidated(

@@ -1701,7 +1701,7 @@ impl Session {
             if self.abort_requested() {
                 return Err("Stopped.".to_string());
             }
-            if let Some(answers) = poll()? {
+            if let Some(answers) = crate::codergen::ClarificationReply::polled_answers(poll())? {
                 return Ok(crate::interaction::answer_text(&questions, &answers));
             }
             std::thread::sleep(std::time::Duration::from_millis(100));

@@ -171,6 +171,7 @@ fn agent_turn_requests_preserve_spark_payload_fields_across_serialization() {
 #[test]
 fn request_user_input_answer_requests_preserve_resume_context() {
     let answer_request = AgentRequestUserInputAnswerRequest {
+        form: None,
         conversation_id: "conversation-m7".to_string(),
         project_path: "/projects/m7".to_string(),
         request_id: "request-1".to_string(),

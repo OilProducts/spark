@@ -3,7 +3,9 @@ import { parseConversationSegmentResponse } from './conversationsApi'
 import type { ConversationSegmentResponse } from './conversationsApi'
 import { encodeFlowPath } from '@/lib/flowPaths'
 import type { PipelineContinuePayload, PipelineStartPayload } from '@/lib/pipelineStartPayload'
+import type { FormReply } from '@/lib/forms'
 import {
+    ApiHttpError,
     ApiSchemaError,
     asOptionalNullableString,
     asOptionalString,
@@ -686,6 +688,10 @@ export function parsePipelineAnswerResponse(
     endpoint = '/attractor/pipelines/{id}/questions/{qid}/answer',
 ): PipelineAnswerResponse {
     const record = expectObjectRecord(payload, endpoint)
+    // A refused answer leaves the question waiting; say why.
+    if (record.status === 'validation_error') {
+        throw new ApiHttpError(endpoint, 422, typeof record.error === 'string' ? record.error : null, payload)
+    }
     return {
         status: expectString(record.status, endpoint, 'status'),
         pipeline_id: expectString(record.pipeline_id, endpoint, 'pipeline_id'),
@@ -1114,6 +1120,7 @@ export async function fetchPipelineAnswerValidated(
     questionId: string,
     selectedValue: string,
     note?: string,
+    form?: FormReply,
 ): Promise<PipelineAnswerResponse> {
     const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/questions/${encodeURIComponent(questionId)}/answer`)
     const trimmedNote = note?.trim() ?? ''
@@ -1126,6 +1133,7 @@ export async function fetchPipelineAnswerValidated(
                 question_id: questionId,
                 selected_value: selectedValue,
                 ...(trimmedNote ? { note: trimmedNote } : {}),
+                ...(form ? { form } : {}),
             }),
         },
         '/attractor/pipelines/{id}/questions/{qid}/answer',

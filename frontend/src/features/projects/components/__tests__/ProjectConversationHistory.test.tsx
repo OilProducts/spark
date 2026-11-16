@@ -12,6 +12,7 @@ import { parseConversationPageResponse } from '@/lib/workspaceClient'
 import { conversationPage } from '@/test/conversationWire'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { TranscriptCopyButton } from '@/components/app/transcript/TranscriptCopyButton'
+import type { FormReply } from '@/lib/forms'
 import type {
     ConversationTimelineEntry,
     ProjectFlowLaunch,
@@ -72,7 +73,7 @@ const makeHistoryElement = (
         latestFlowLaunchId?: string | null
         onOpenFlowRun?: (request: { run_id?: string | null; flow_name: string }) => void
         onReviewFlowRunRequest?: (flowRunRequest: ProjectFlowRunRequest, disposition: 'approved' | 'rejected') => void | Promise<void>
-        onSubmitRequestUserInput?: (requestId: string, answers: Record<string, string>) => void | Promise<void>
+        onSubmitRequestUserInput?: (requestId: string, answers: Record<string, string>, form?: FormReply) => void | Promise<void>
         onReviewProposedPlan?: (proposedPlan: ProjectProposedPlan, disposition: 'approved' | 'rejected', reviewNote?: string | null) => void | Promise<void>
         pendingFlowRunRequestId?: string | null
         pendingProposedPlanId?: string | null
@@ -1072,6 +1073,46 @@ describe('ProjectConversationHistory', () => {
         expect(within(expiredCard).getByText('The request expired before this answer could be used. Send a new message to continue.')).toBeVisible()
         expect(within(expiredCard).getByText('Inline card')).toBeVisible()
         expect(within(expiredCard).queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
+    })
+
+    it('shows a harness form from the wire, sends its typed reply, then summarizes or expires it', async () => {
+        const user = userEvent.setup()
+        const at = '2026-04-17T12:00:00Z'
+        const form = {
+            harness: 'acp:writer', harness_label: 'Writer Agent', message: 'How should I publish?',
+            schema: { type: 'object', properties: { copies: { type: 'integer', title: 'Copies' }, draft: { type: 'boolean', title: 'Draft' } }, required: ['copies'] },
+        }
+        const entriesWith = (requestUserInput: Record<string, unknown>) => getConversationTimelineEntries(applyConversationPage(undefined, parseConversationPageResponse(conversationPage({
+            revision: 0, conversation_id: 'conversation-1', conversation_handle: 'thread-1', project_path: '/tmp/project',
+            chat_mode: 'chat', title: 'Chat', created_at: at, updated_at: at,
+            turns: [{ id: 'turn-assistant', role: 'assistant', content: '', timestamp: at, kind: 'message', status: 'running', artifact_id: null, position: 1 }],
+            segments: [{
+                id: 'form-segment', turn_id: 'turn-assistant', order: 1, kind: 'request_user_input', role: 'system', status: 'pending', timestamp: at,
+                updated_at: at, content: 'How should I publish?', artifact_id: null, error: null, source: null, tool_call: null,
+                request_user_input: { request_id: 'acp-form-1', questions: [], answers: {}, submitted_at: null, form, ...requestUserInput },
+            }],
+            flow_run_requests: [], flow_launches: [], proposed_plans: [],
+        })), 'window') ?? null)
+        const onSubmitRequestUserInput = vi.fn()
+        const { rerender } = renderHistory(entriesWith({ status: 'pending' }), { onSubmitRequestUserInput })
+
+        const card = screen.getByTestId('project-request-user-input-card-form-segment')
+        expect(within(card).getByText('Asked by Writer Agent')).toBeVisible()
+        await user.type(within(card).getByRole('spinbutton', { name: 'Copies' }), '0')
+        await user.selectOptions(within(card).getByRole('combobox', { name: 'Draft (optional)' }), 'No')
+        await user.click(within(card).getByRole('button', { name: 'Submit' }))
+        expect(onSubmitRequestUserInput).toHaveBeenCalledWith('acp-form-1', {}, { action: 'accept', content: { copies: 0, draft: false } })
+
+        rerender(makeHistoryElement(entriesWith({ status: 'answered', reply: { action: 'accept', content: { copies: 0, draft: false } } })))
+        const summary = screen.getByTestId('project-request-user-input-summary-form-segment')
+        expect(within(summary).getByText('Asked by Writer Agent · Submitted')).toBeVisible()
+        expect(within(summary).getByText('Copies').nextSibling).toHaveTextContent('0')
+        expect(within(summary).getByText('Draft').nextSibling).toHaveTextContent('No')
+
+        rerender(makeHistoryElement(entriesWith({ status: 'expired' })))
+        const expired = screen.getByTestId('project-request-user-input-expired-form-segment')
+        expect(within(expired).getByText('How should I publish? · No answer submitted')).toBeVisible()
+        expect(within(expired).queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
     })
 
     it('renders assistant markdown links as external anchors', () => {

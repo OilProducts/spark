@@ -3,10 +3,12 @@ import { useEffect, useRef } from 'react'
 import type { PendingInterviewGate, PendingInterviewGateGroup } from '../model/shared'
 import { pendingGateSemanticHint, formatTimestamp } from '../model/shared'
 import { formatRunDate } from '../model/runOverviewModel'
+import { FormQuestionFields } from '@/components/app/form-question'
 import { InlineError } from '@/components/app/inline-error'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import type { FormReply } from '@/lib/forms'
 import { useStore } from '@/store'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { focusRunHeading } from './RunHeaderBar'
@@ -20,7 +22,7 @@ interface RunQuestionsPanelProps {
     now: number
     onFreeformAnswerChange: (questionId: string, value: string) => void
     onGateNoteChange: (questionId: string, value: string) => void
-    onSubmitPendingGateAnswer: (gate: PendingInterviewGate, selectedValue: string, note?: string) => void
+    onSubmitPendingGateAnswer: (gate: PendingInterviewGate, selectedValue: string, note?: string, form?: FormReply) => void
     pendingGateActionError: string | null
     submittingGateIds: Record<string, boolean>
 }
@@ -136,7 +138,7 @@ export function RunQuestionsPanel({
                                         tabIndex={-1}
                                         className="flex max-w-[72ch] flex-col gap-3 rounded-xl border border-border bg-background p-4 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                     >
-                                        <p id={promptId} className="text-base font-medium leading-snug">{gate.prompt}</p>
+                                        {gate.form ? null : <p id={promptId} className="text-base font-medium leading-snug">{gate.prompt}</p>}
                                         {gate.details && (
                                             <div
                                                 data-testid="run-pending-human-gate-details"
@@ -144,6 +146,19 @@ export function RunQuestionsPanel({
                                             >
                                                 <ProjectConversationMarkdown content={gate.details} />
                                             </div>
+                                        )}
+                                        {questionId && gate.form && (
+                                            <FormQuestionFields
+                                                actionError={null}
+                                                draftKey={`run:${questionId}`}
+                                                form={gate.form}
+                                                isSubmitting={disabled}
+                                                testId={`run-pending-human-gate-form-${questionId}`}
+                                                onReply={(reply) => {
+                                                    answered.current = true
+                                                    onSubmitPendingGateAnswer(gate, '', undefined, reply)
+                                                }}
+                                            />
                                         )}
                                         {questionId && isFreeform && (
                                             <div className="flex flex-wrap items-center gap-2">

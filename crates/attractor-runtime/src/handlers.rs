@@ -1568,15 +1568,28 @@ impl RuntimeHandlerRunner {
         params: Value,
         interrupted: Arc<std::sync::atomic::AtomicBool>,
     ) -> std::result::Result<spark_agent_adapter::codergen::ClarificationPoll, String> {
+        use spark_agent_adapter::codergen::ClarificationReply;
         let paths = runtime
             .run_paths
             .clone()
             .ok_or("Clarification requires run storage")?;
-        let questions = params
-            .get("questions")
-            .and_then(Value::as_array)
-            .filter(|questions| !questions.is_empty())
-            .ok_or("Clarification requires questions")?;
+        // A harness form is one atomic question whose reply is typed.
+        let form = params.get("form").filter(|form| form.is_object()).cloned();
+        let form_question;
+        let questions = match &form {
+            Some(form) => {
+                spark_common::forms::check_schema(&form["schema"])?;
+                let message = form["message"].as_str().filter(|m| !m.trim().is_empty());
+                form_question =
+                    [json!({"id": "form", "question": message.unwrap_or("Fill in the form.")})];
+                &form_question[..]
+            }
+            None => params
+                .get("questions")
+                .and_then(Value::as_array)
+                .filter(|questions| !questions.is_empty())
+                .ok_or("Clarification requires questions")?,
+        };
         let mut ids = std::collections::BTreeSet::new();
         for question in questions {
             let id = question
@@ -1623,8 +1636,14 @@ impl RuntimeHandlerRunner {
                 ("agent_question_id".into(), json!(original_id)),
                 ("stage_index".into(), json!(runtime.stage_index)),
                 ("attempt".into(), json!(runtime.attempt)),
-                ("question_type".into(), json!("FREEFORM")),
+                (
+                    "question_type".into(),
+                    json!(if form.is_some() { "FORM" } else { "FREEFORM" }),
+                ),
             ]));
+            if let Some(form) = &form {
+                event.payload.insert("form".into(), form.clone());
+            }
             self.emit(runtime, event).map_err(|e| e.to_string())?;
             question_ids.push((question_id, original_id));
         }
@@ -1641,15 +1660,30 @@ impl RuntimeHandlerRunner {
                 return Err(format!("Run {status} while waiting for clarification"));
             }
             let events = crate::events::read_raw_events(&paths).map_err(|e| e.to_string())?;
-            let answers: BTreeMap<String, String> = question_ids
-                .iter()
-                .filter_map(|(id, original)| {
-                    gate_answer_in(events.iter(), id).map(|(answer, _)| (original.clone(), answer))
-                })
-                .collect();
-            if answers.len() != question_ids.len() {
-                return Ok(None);
-            }
+            let reply = if form.is_some() {
+                let Some(reply) = events.iter().find_map(|event| {
+                    (event.event_type == "InterviewCompleted"
+                        && event.payload.get("question_id").and_then(Value::as_str)
+                            == Some(question_ids[0].0.as_str()))
+                    .then(|| event.payload.get("form_reply").cloned())
+                    .flatten()
+                }) else {
+                    return Ok(None);
+                };
+                ClarificationReply::Form(serde_json::from_value(reply).map_err(|e| e.to_string())?)
+            } else {
+                let answers: BTreeMap<String, String> = question_ids
+                    .iter()
+                    .filter_map(|(id, original)| {
+                        gate_answer_in(events.iter(), id)
+                            .map(|(answer, _)| (original.clone(), answer))
+                    })
+                    .collect();
+                if answers.len() != question_ids.len() {
+                    return Ok(None);
+                }
+                ClarificationReply::Answers(answers)
+            };
             let still_waiting = events.iter().any(|event| {
                 event.event_type == "human_gate"
                     && event.payload.get("origin").and_then(Value::as_str)
@@ -1666,7 +1700,7 @@ impl RuntimeHandlerRunner {
                     .write_gate_run_status(&paths, &runtime.run_id, GateRunStatus::Running)
                     .map_err(|e| e.message)?;
             }
-            Ok(Some(answers))
+            Ok(Some(reply))
         }))
     }
 
