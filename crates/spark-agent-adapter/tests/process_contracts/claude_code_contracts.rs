@@ -1259,6 +1259,9 @@ fn claude_code_message_sent_mid_turn_folds_in_and_holds_the_turn_until_delivered
                 if event.kind == TurnStreamEventKind::ContentDelta
                     && !sent.swap(true, std::sync::atomic::Ordering::SeqCst)
                 {
+                    // Longer than one stdin line: refused at once, never sent.
+                    let oversized = "x".repeat((16 << 20) + 1);
+                    assert!(!backend().send_message(&path, &id, "note-0", &oversized));
                     assert!(backend().send_message(&path, &id, "note-1", "Also check the docs."));
                 }
             })),
@@ -1330,6 +1333,94 @@ fn claude_code_reports_a_mid_turn_message_the_stopped_turn_never_used() {
     // The receipt listing the queued message still counts as the interrupt.
     assert_eq!(output.final_assistant_text.as_deref(), Some("Working."));
     assert!(output.events.iter().all(|event| event.error.is_none()));
+}
+
+#[test]
+fn claude_code_answers_the_cli_and_terminates_while_the_sink_is_blocked() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("claude.log");
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "blocked-sink");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log_path);
+    let request = agent_request(temp.path());
+    let (path, id) = (
+        request.project_path.clone(),
+        request.conversation_id.clone(),
+    );
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let released = Mutex::new(released);
+    let turn = std::thread::spawn(move || {
+        ClaudeCodeBackend::new().run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |_event| {
+                let _ = released.lock().unwrap().recv();
+            })),
+        )
+    });
+    let log = || std::fs::read_to_string(&log_path).unwrap_or_default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // The sink still holds the first event when the permission request is answered.
+    while !log().contains("ANSWERED") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "unanswered: {}",
+            log()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(ClaudeCodeBackend::new().terminate(&path, &id));
+    let pid = log()
+        .lines()
+        .find_map(|line| line.strip_prefix("PID=").map(str::to_string))
+        .expect("pid");
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    while alive() {
+        assert!(std::time::Instant::now() < deadline, "{pid} still running");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // The turn returns only once the sink has every event.
+    assert!(!turn.is_finished());
+    drop(release);
+    let output = turn.join().unwrap().unwrap();
+    assert!(output
+        .raw_log_lines
+        .iter()
+        .any(|line| line.direction == "stdin" && line.line.contains("\"behavior\":\"allow\"")));
+}
+
+#[test]
+fn claude_code_invalid_utf8_on_stdout_fails_the_turn_without_resuming() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("claude.log");
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "invalid-utf8");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log_path);
+
+    let error = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .unwrap_err();
+
+    assert!(
+        error.message.starts_with("claude code stdout read failed"),
+        "{error:?}"
+    );
+    assert!(!error.retryable);
+    // Its session is known, yet a transport failure brings no second attempt.
+    let log = std::fs::read_to_string(log_path).unwrap();
+    assert_eq!(log.matches("-- invocation --").count(), 1, "{log}");
 }
 
 #[test]

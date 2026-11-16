@@ -1,11 +1,19 @@
-//! Per-turn stdio control state. No process or pending question survives a turn.
+//! Per-turn stdio control state, owned by the turn's connection worker. No
+//! process or pending question survives a turn.
 use super::*;
 use std::collections::BTreeSet;
-use std::process::{Child, ChildStdin};
-use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::time::Instant;
+
 use crate::agent::AgentRequestUserInputAnswerRequest;
+use crate::codex_app_server::json_len;
+use crate::stdio_transport::{
+    self, sleep_until, Blocking, Budget, Connection, End, Endpoints, Held, Incoming, Outgoing,
+    Refused, Status, Stop, LIMITS, PENDING_LIMIT,
+};
 
 const NO_QUESTION_HANDLER: &str =
     "No one can answer questions during this turn. Proceed on your best judgment and state the assumptions you made.";
@@ -13,9 +21,14 @@ const PLAN_SUBMITTED: &str =
     "Your plan was submitted to the user for review. Stop here; do not implement it.";
 const PLAN_MISSING: &str = "ExitPlanMode needs your plan in `plan`.";
 const CONTEXT_USAGE_TIMEOUT: Duration = Duration::from_secs(5);
+const INIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often a flow question's answer is looked for.
+const FLOW_POLL: Duration = Duration::from_millis(100);
+/// How long an exited process's stderr may take to end, for its tail.
+const STDERR_WAIT: Duration = Duration::from_secs(1);
 
 type Key = (String, String);
-type Registry = Mutex<BTreeMap<Key, Weak<Mutex<Control>>>>;
+type Registry = Mutex<BTreeMap<Key, Weak<Live>>>;
 fn registry() -> &'static Registry {
     static REGISTRY: OnceLock<Registry> = OnceLock::new();
     REGISTRY.get_or_init(Mutex::default)
@@ -31,14 +44,151 @@ pub(super) enum Questions {
     Flow(crate::codergen::ClarificationHandler),
 }
 
-pub(super) struct Control {
-    pub child: Child,
-    stdin: Option<Sender<String>>,
+/// A running turn as other threads reach it: commands its worker answers,
+/// and a stop that goes past the worker straight to the process group.
+pub(super) struct Live {
+    commands: UnboundedSender<(Command, Held)>,
+    budget: Budget,
+    stop: Stop,
+    /// The turn has ended or its process has exited.
+    closed: Arc<AtomicBool>,
+}
+
+type Reply = std::sync::mpsc::Sender<bool>;
+
+/// What another thread asks of a running turn; each is answered once.
+enum Command {
+    Interrupt(Reply),
+    Send {
+        message_id: String,
+        message: String,
+        reply: Reply,
+    },
+    Answer {
+        request_id: String,
+        answers: BTreeMap<String, String>,
+        reply: Reply,
+    },
+}
+
+impl Command {
+    fn refuse(self) {
+        let (Self::Interrupt(reply) | Self::Send { reply, .. } | Self::Answer { reply, .. }) = self;
+        let _ = reply.send(false);
+    }
+}
+
+/// What a turn's worker hands its caller, in order: events for the sink,
+/// then the turn itself.
+pub(super) enum Message {
+    /// Counts against the sink's queue until handled.
+    Event(TurnStreamEvent, Held),
+    Done(Box<Turn>, Outcome),
+}
+
+/// How one process's part of the turn ended.
+pub(super) enum Outcome {
+    Ended,
+    /// The turn failed and is not to be resumed.
+    Failed(String),
+    /// The process exited before the turn ended, with its exit status.
+    Exited(String),
+}
+
+/// Flow clarification work finished off the runtime.
+enum Completion {
+    /// The clarification handler took a question.
+    Asked {
+        id: String,
+        poll: Result<crate::codergen::ClarificationPoll, String>,
+    },
+    Polled {
+        id: String,
+        poll: crate::codergen::ClarificationPoll,
+        answers: Result<Option<BTreeMap<String, String>>, String>,
+    },
+}
+
+/// A flow question awaiting its answer.
+struct Clarification {
+    id: String,
+    /// Its event, sequenced once the handler has taken the question.
+    event: Option<TurnStreamEvent>,
+    /// Absent while the handler or a poll runs.
+    poll: Option<crate::codergen::ClarificationPoll>,
+}
+
+/// Starts the turn's process with its worker, which sends `content` as the
+/// prompt and hands back events for the sink (if `sink`), then the turn. The
+/// turn stays with the caller if the process cannot start.
+pub(super) fn start(
+    command: std::process::Command,
+    request: &AgentTurnRequest,
+    questions: Questions,
+    content: Value,
+    turn: &mut Turn,
+    sink: bool,
+) -> std::io::Result<(Connection, Arc<Live>, std::sync::mpsc::Receiver<Message>)> {
+    let (commands, received) = unbounded_channel();
+    let (completions, completed) = unbounded_channel();
+    let (messages, delivered) = std::sync::mpsc::channel();
+    let (hand_over, handed) = tokio::sync::oneshot::channel::<Turn>();
+    let closed = Arc::new(AtomicBool::new(false));
+    let work = match questions {
+        Questions::Flow(_) => Some(Blocking::spawn(&LIMITS)?),
+        _ => None,
+    };
+    let worker = Worker {
+        control: Control::new(request, questions, work, completions),
+        turn: Turn::default(),
+        messages,
+        sink: sink.then(|| Budget::new(&LIMITS)),
+        overflowed: false,
+        closed: Arc::clone(&closed),
+        exited: false,
+        initialized: false,
+    };
+    let connection = stdio_transport::launch(command, LIMITS, move |endpoints| async move {
+        if let Ok(turn) = handed.await {
+            worker
+                .run(endpoints, turn, content, received, completed)
+                .await;
+        }
+    })?;
+    if let Err(unstarted) = hand_over.send(std::mem::take(turn)) {
+        *turn = unstarted;
+    }
+    let live = Arc::new(Live {
+        commands,
+        budget: Budget::new(&LIMITS),
+        stop: connection.stop_handle(),
+        closed,
+    });
+    let mut entries = registry().lock().unwrap();
+    entries.retain(|_, entry| entry.strong_count() > 0);
+    entries.insert(
+        (
+            request.project_path.clone(),
+            request.conversation_id.clone(),
+        ),
+        Arc::downgrade(&live),
+    );
+    drop(entries);
+    Ok((connection, live, delivered))
+}
+
+struct Control {
+    stdin: Option<Outgoing>,
     questions: Questions,
     /// A plan-mode turn: `ExitPlanMode` submits the turn's plan.
     plan_mode: bool,
-    /// Flow clarifications awaiting answers, by request id.
-    clarifications: Vec<(String, crate::codergen::ClarificationPoll)>,
+    /// Flow clarifications awaiting answers.
+    clarifications: Vec<Clarification>,
+    /// Runs the flow's clarification handler and its polls in order.
+    work: Option<Blocking>,
+    completions: UnboundedSender<Completion>,
+    /// When flow answers are next looked for.
+    flow_due: Option<Instant>,
     enabled: bool,
     initialized: bool,
     pending: BTreeMap<String, Value>,
@@ -46,7 +196,7 @@ pub(super) struct Control {
     interrupt: Option<String>,
     interrupted: bool,
     /// Stop was requested; the next result ends the turn.
-    pub stopping: bool,
+    stopping: bool,
     /// Live non-ambient background tasks, from the last `background_tasks_changed`.
     tasks: usize,
     /// This process's prompt, by uuid. Unlike a mid-turn message it has no
@@ -57,36 +207,36 @@ pub(super) struct Control {
     prompt_queued: bool,
     /// Messages sent after the prompt whose uuid no result has confirmed
     /// yet, by uuid, with their caller's message id.
-    pub undelivered: BTreeMap<String, String>,
-    /// Messages written mid-turn, as `(message_id, message)`, not yet
-    /// reported. Recorded with the write, so the turn reports each before
-    /// any output read after it.
-    pub sent: Vec<(String, String)>,
+    undelivered: BTreeMap<String, String>,
     /// A result left only background tasks running and no main model turn
     /// has started since.
     idle: bool,
     /// The `get_context_usage` request sent after the final result, with
     /// when it gives up; the turn ends at its answer.
-    context_request: Option<(String, std::time::Instant)>,
+    context_request: Option<(String, Instant)>,
     /// `{used_tokens, window_tokens}` from the answered request.
-    pub context: Option<Value>,
-    pub ended: bool,
-    pub logs: Vec<AgentRawLogLine>,
+    context: Option<Value>,
+    ended: bool,
+    /// Why the turn failed; a failed turn is not resumed.
+    failure: Option<String>,
+    logs: Vec<AgentRawLogLine>,
 }
 
 impl Control {
-    pub fn register(
-        child: Child,
-        stdin: ChildStdin,
+    fn new(
         request: &AgentTurnRequest,
         questions: Questions,
-    ) -> Arc<Mutex<Self>> {
-        let control = Arc::new(Mutex::new(Self {
-            child,
-            stdin: Some(crate::agent::stdin_writer(stdin)),
+        work: Option<Blocking>,
+        completions: UnboundedSender<Completion>,
+    ) -> Self {
+        Self {
+            stdin: None,
             questions,
             plan_mode: plan_mode(request),
             clarifications: Vec::new(),
+            work,
+            completions,
+            flow_due: None,
             enabled: false,
             initialized: false,
             pending: BTreeMap::new(),
@@ -98,26 +248,16 @@ impl Control {
             prompt: None,
             prompt_queued: false,
             undelivered: BTreeMap::new(),
-            sent: Vec::new(),
             idle: false,
             context_request: None,
             context: None,
             ended: false,
+            failure: None,
             logs: Vec::new(),
-        }));
-        let mut entries = registry().lock().unwrap();
-        entries.retain(|_, entry| entry.strong_count() > 0);
-        entries.insert(
-            (
-                request.project_path.clone(),
-                request.conversation_id.clone(),
-            ),
-            Arc::downgrade(&control),
-        );
-        control
+        }
     }
 
-    pub fn interrupted_result(&self, message: &Value) -> bool {
+    fn interrupted_result(&self, message: &Value) -> bool {
         self.interrupted
             && message["type"] == "result"
             && matches!(
@@ -130,7 +270,7 @@ impl Control {
     /// such as a resumed session's own task notification, answers that
     /// command and not this turn. A result naming the prompt is its own; a
     /// stopping turn ends at any result.
-    pub fn foreign_result(&self, message: &Value) -> bool {
+    fn foreign_result(&self, message: &Value) -> bool {
         self.prompt_queued
             && !self.stopping
             && message["type"] == "result"
@@ -146,17 +286,17 @@ impl Control {
 
     /// The final result has arrived; the turn ends once the context usage
     /// request is answered or times out.
-    pub fn finished(&self) -> bool {
+    fn finished(&self) -> bool {
         self.ended || self.context_request.is_some()
     }
 
     /// Ends a turn still waiting on its context usage once it is overdue or
     /// the process has exited. Silent: the result's context window stands.
-    pub fn expire_context_request(&mut self, exited: bool) {
+    fn expire_context_request(&mut self, exited: bool) {
         if self
             .context_request
             .as_ref()
-            .is_some_and(|(_, deadline)| exited || std::time::Instant::now() >= *deadline)
+            .is_some_and(|(_, deadline)| exited || Instant::now() >= *deadline)
         {
             self.context_request = None;
             self.end();
@@ -174,22 +314,26 @@ impl Control {
         if !self.send(json!({"type": "control_request", "request_id": id, "request": {"subtype": "get_context_usage"}})) {
             return false;
         }
-        self.context_request = Some((id, std::time::Instant::now() + CONTEXT_USAGE_TIMEOUT));
+        self.context_request = Some((id, Instant::now() + CONTEXT_USAGE_TIMEOUT));
         true
     }
 
     /// Ends the turn: no more input, answers or interrupts reach the process.
-    pub fn end(&mut self) {
+    fn end(&mut self) {
         self.ended = true;
         self.one_shot();
     }
 
-    /// Closes stdin so the CLI ends at its result, as it does without control.
-    /// Pending questions are denied first: the CLI waits on every request.
-    pub fn one_shot(&mut self) {
+    /// Closes stdin, once the lines queued before it are written, so the CLI
+    /// ends at its result, as it does without control. Pending questions are
+    /// denied first: the CLI waits on every request.
+    fn one_shot(&mut self) {
         self.enabled = false;
         self.clarifications.clear();
         for id in std::mem::take(&mut self.pending).into_keys() {
+            if self.stdin.is_none() {
+                break;
+            }
             self.deny(
                 &id,
                 "No one can answer this question now; proceed with your best judgment.",
@@ -198,7 +342,15 @@ impl Control {
         self.stdin.take();
     }
 
-    pub fn log(&mut self, reason: &str) {
+    /// Drops every question and stdin without writing: the process can no
+    /// longer read them.
+    fn abandon(&mut self) {
+        self.stdin = None;
+        self.pending.clear();
+        self.one_shot();
+    }
+
+    fn log(&mut self, reason: &str) {
         tracing::warn!(reason, "Claude Code control traffic");
         self.logs.push(AgentRawLogLine {
             direction: "control".into(),
@@ -206,38 +358,58 @@ impl Control {
         });
     }
 
+    /// The first failure ends the turn; later ones only log.
+    fn fail(&mut self, reason: String) {
+        self.log(&reason);
+        self.failure.get_or_insert(reason);
+    }
+
     fn send(&mut self, message: Value) -> bool {
         let line = message.to_string();
-        let sent = self
-            .stdin
-            .as_ref()
-            .is_some_and(|stdin| stdin.send(line.clone()).is_ok());
-        if !sent {
-            self.log("stdin write failed");
-            self.one_shot();
-            return false;
+        let refused = match self.stdin.as_ref().map(|stdin| stdin.send(line.clone())) {
+            // Admitted: written in order behind earlier lines. A write that
+            // fails later is reported through the connection's status.
+            Some(Ok(_written)) => {
+                self.logs.push(AgentRawLogLine {
+                    direction: "stdin".into(),
+                    line,
+                });
+                return true;
+            }
+            Some(Err(refused)) => refused,
+            None => Refused::Closed,
+        };
+        match refused {
+            Refused::Closed => self.log("stdin write failed"),
+            Refused::Full => self.fail("claude code overloaded: its stdin queue is full".into()),
+            Refused::TooLarge => self.fail(format!(
+                "claude code input exceeds the {} MiB line limit",
+                LIMITS.frame_bytes >> 20
+            )),
         }
-        self.logs.push(AgentRawLogLine {
-            direction: "stdin".into(),
-            line,
-        });
-        true
+        // Nothing after it could reach the process in order.
+        self.abandon();
+        false
     }
 
     /// Writes a user message stamped with a uuid: the prompt, or a message
     /// after it, named by `message_id`, that holds the turn open until a
     /// result lists it as delivered.
-    pub fn send_user(&mut self, content: Value, message_id: Option<&str>) -> bool {
+    fn send_user(&mut self, content: Value, message_id: Option<&str>) -> bool {
         let uuid = Uuid::new_v4().to_string();
+        let message =
+            json!({"type": "user", "uuid": uuid, "message": {"role": "user", "content": content}});
+        // A live message longer than one line is refused unwritten.
+        if message_id.is_some() && json_len(&message) > LIMITS.frame_bytes {
+            return false;
+        }
         match message_id {
             Some(id) => {
                 self.undelivered.insert(uuid.clone(), id.to_string());
             }
             None => self.prompt = Some(uuid.clone()),
         }
-        let sent = self.send(
-            json!({"type": "user", "uuid": uuid, "message": {"role": "user", "content": content}}),
-        );
+        let sent = self.send(message);
         if !sent {
             self.undelivered.remove(&uuid);
         }
@@ -264,7 +436,7 @@ impl Control {
         }}))
     }
 
-    pub fn ingest(&mut self, message: &Value) -> Option<TurnStreamEvent> {
+    fn ingest(&mut self, message: &Value) -> Option<TurnStreamEvent> {
         let kind = message["type"].as_str().unwrap_or_default();
         if matches!(kind, "assistant" | "stream_event" | "user")
             && message["parent_tool_use_id"].is_null()
@@ -374,6 +546,7 @@ impl Control {
                     .filter(|id| self.seen.contains(*id))
                 {
                     self.pending.remove(id);
+                    self.clarifications.retain(|question| question.id != id);
                 } else {
                     self.log("unknown cancellation request");
                 }
@@ -463,44 +636,81 @@ impl Control {
                 return None;
             }
         };
-        if let Questions::Flow(handler) = &self.questions {
-            match handler(json!({"questions": questions, "agent_request_id": id})) {
-                Ok(poll) => self.clarifications.push((id.to_string(), poll)),
-                Err(reason) => {
-                    self.log(&reason);
-                    self.deny(id, &format!("{reason}. {NO_QUESTION_HANDLER}"));
-                    return None;
-                }
-            }
+        if self.pending.len() >= PENDING_LIMIT {
+            self.fail("claude code overloaded: its question list is full".into());
+            return None;
         }
-        self.pending.insert(id.to_string(), input.clone());
-        Some(stream_event(
+        let event = stream_event(
             TurnStreamEventKind::RequestUserInputRequested,
             message["session_id"].as_str(),
             "request_user_input_requested",
             |event| {
                 event.source.item_id = Some(id.to_string());
-                event.request_user_input = Some(json!({"request_id": id, "questions": questions}));
+                event.request_user_input =
+                    Some(json!({"request_id": id, "questions": questions.clone()}));
             },
-        ))
+        );
+        self.pending.insert(id.to_string(), input.clone());
+        let (Questions::Flow(handler), Some(work)) = (&self.questions, &self.work) else {
+            return Some(event);
+        };
+        // The handler records the question for the run, off the runtime; the
+        // question is raised once it has.
+        let payload = json!({"questions": questions, "agent_request_id": id});
+        let (handler, completions, key) = (
+            Arc::clone(handler),
+            self.completions.clone(),
+            id.to_string(),
+        );
+        let queued = work.run(json_len(&payload), move || {
+            let poll = handler(payload);
+            let _ = completions.send(Completion::Asked { id: key, poll });
+        });
+        if queued.is_err() {
+            self.fail("claude code overloaded: its clarification queue is full".into());
+            return None;
+        }
+        self.clarifications.push(Clarification {
+            id: id.to_string(),
+            event: Some(event),
+            poll: None,
+        });
+        None
     }
-}
 
-impl Control {
-    /// Delivers answered flow clarifications. Err once the run stops waiting
-    /// for them, such as on cancel.
-    pub fn poll_clarifications(&mut self) -> Result<(), String> {
-        let mut index = 0;
-        while index < self.clarifications.len() {
-            match (self.clarifications[index].1)()? {
-                Some(answers) => {
-                    let (id, _poll) = self.clarifications.remove(index);
-                    self.deliver(&id, &answers);
-                }
-                None => index += 1,
+    /// ponytail: a flow question's answer lives in the run record, which
+    /// another process writes, so each is polled every 100 ms while it waits,
+    /// at most one poll at a time. Removing this needs cross-process
+    /// notification.
+    fn poll_clarifications(&mut self, now: Instant) {
+        if self.clarifications.is_empty() {
+            self.flow_due = None;
+            return;
+        }
+        if !self.flow_due.is_some_and(|due| now >= due) {
+            return;
+        }
+        self.flow_due = Some(now + FLOW_POLL);
+        let Some(work) = &self.work else {
+            return;
+        };
+        let mut queued = Ok(());
+        for question in &mut self.clarifications {
+            let Some(mut poll) = question.poll.take() else {
+                continue;
+            };
+            let (id, completions) = (question.id.clone(), self.completions.clone());
+            queued = work.run(0, move || {
+                let answers = poll();
+                let _ = completions.send(Completion::Polled { id, poll, answers });
+            });
+            if queued.is_err() {
+                break;
             }
         }
-        Ok(())
+        if queued.is_err() {
+            self.fail("claude code overloaded: its clarification queue is full".into());
+        }
     }
 
     /// Allows a pending question with `updatedInput.answers`, keyed by the
@@ -529,6 +739,404 @@ impl Control {
         input["answers"] = Value::Object(by_prompt);
         self.pending.remove(id);
         self.allow(id, input)
+    }
+}
+
+/// One process's connection worker: the sole reader of its stdout and
+/// writer of its stdin, which sequences the turn's events and answers the
+/// CLI and other threads whether or not anyone is consuming them.
+struct Worker {
+    control: Control,
+    turn: Turn,
+    messages: std::sync::mpsc::Sender<Message>,
+    /// The sink's queue, if the caller has a sink.
+    sink: Option<Budget>,
+    /// The sink fell a full queue behind: it gets no more events.
+    overflowed: bool,
+    closed: Arc<AtomicBool>,
+    exited: bool,
+    /// system/init arrived, or the turn stopped waiting for it.
+    initialized: bool,
+}
+
+impl Worker {
+    async fn run(
+        mut self,
+        endpoints: Endpoints,
+        turn: Turn,
+        content: Value,
+        mut commands: UnboundedReceiver<(Command, Held)>,
+        mut completed: UnboundedReceiver<Completion>,
+    ) {
+        let Endpoints {
+            mut stdout,
+            stdin,
+            mut status,
+            stop,
+        } = endpoints;
+        self.turn = turn;
+        self.control.stdin = Some(stdin);
+        // The prompt travels over stdin so arbitrarily large composed prompts
+        // never hit argv limits.
+        self.control.send_user(content, None);
+        let init_deadline = Instant::now() + INIT_TIMEOUT;
+        while !self.control.ended && self.control.failure.is_none() {
+            let deadline = [
+                (!self.initialized).then_some(init_deadline),
+                self.control
+                    .context_request
+                    .as_ref()
+                    .map(|(_, deadline)| *deadline),
+                self.control.flow_due,
+            ]
+            .into_iter()
+            .flatten()
+            .min();
+            tokio::select! {
+                Some((command, _held)) = commands.recv() => self.command(command),
+                line = stdout.next() => match line {
+                    Some(line) => self.line(line.text),
+                    None => {
+                        if let Some(End::Failed(error)) = stdout.end() {
+                            let error = format!("claude code stdout read failed: {error}");
+                            self.control.fail(error);
+                        }
+                        break;
+                    }
+                },
+                Some(completion) = completed.recv() => self.completion(completion),
+                Ok(()) = status.changed() => {
+                    let status = status.borrow_and_update().clone();
+                    self.status(&status);
+                }
+                () = sleep_until(deadline) => {}
+            }
+            // Checked every round: continuous output must not hide an exit,
+            // a missing system/init or a deadline.
+            self.control.expire_context_request(self.exited);
+            if !self.initialized && Instant::now() >= init_deadline && !self.control.ended {
+                self.control
+                    .log("system/init timeout; using one-shot input");
+                self.control.one_shot();
+                self.initialized = true;
+            }
+            self.control.poll_clarifications(Instant::now());
+        }
+
+        // A stop whose end of output was read first still ends the turn.
+        let latest = status.borrow_and_update().clone();
+        self.status(&latest);
+        // Output ended while the context usage was pending: the turn is done.
+        self.control.expire_context_request(true);
+        // Answered after the turn completed, so it rides the turn's output.
+        if let (Some(context), Some(usage)) = (
+            self.control.context.take(),
+            self.turn.state.usage_payload.as_mut(),
+        ) {
+            usage["context"] = context;
+        }
+        self.turn.stopping |= self.control.stopping;
+        let ended = self.control.ended;
+        self.control.end();
+        // No more commands: every caller still waiting hears false.
+        self.closed.store(true, Ordering::SeqCst);
+        commands.close();
+        while let Ok((command, _held)) = commands.try_recv() {
+            command.refuse();
+        }
+        // Messages the turn ended without using, such as on Stop.
+        let not_delivered = std::mem::take(&mut self.control.undelivered)
+            .into_values()
+            .map(|message_id| {
+                stream_event(
+                    TurnStreamEventKind::Other("user_message_not_delivered".into()),
+                    self.turn.state.session_id.as_deref(),
+                    "user_message_not_delivered",
+                    |event| {
+                        event.source.item_id = Some(message_id);
+                        event.message =
+                            Some("Not sent: the turn ended before the agent read it.".into());
+                    },
+                )
+            })
+            .collect();
+        self.push(not_delivered);
+        // Stopped while idle: the last result, so far commentary, is final.
+        if ended && !self.turn.state.completed {
+            if let Some(result) = self.turn.state.result_payload.clone() {
+                let events = self.turn.state.ingest_result(&result, true);
+                self.push(events);
+            }
+        }
+        self.turn.raw_log_lines.append(&mut self.control.logs);
+        let exit = reap(&mut stdout, &mut status, &stop).await;
+        let outcome = if let Some(reason) = self.control.failure.take() {
+            // Not resumed: the failure was not the process's.
+            self.turn.stopping = true;
+            Outcome::Failed(reason)
+        } else if ended {
+            Outcome::Ended
+        } else {
+            // Its last words, unless a descendant holds stderr open.
+            let _ =
+                tokio::time::timeout(STDERR_WAIT, status.wait_for(|status| status.stderr_closed))
+                    .await;
+            Outcome::Exited(exit)
+        };
+        let _ = self
+            .messages
+            .send(Message::Done(Box::new(self.turn), outcome));
+    }
+
+    /// Sequences events: each goes to the sink's queue without waiting on
+    /// the sink, and into the turn's record.
+    fn push(&mut self, events: Vec<TurnStreamEvent>) {
+        let Self {
+            turn,
+            sink,
+            overflowed,
+            messages,
+            control,
+            ..
+        } = self;
+        turn.push(events, |event| {
+            let Some(sink) = sink.as_ref().filter(|_| !*overflowed) else {
+                return;
+            };
+            match sink.try_admit(json_len(event)) {
+                Some(held) => {
+                    let _ = messages.send(Message::Event(event.clone(), held));
+                }
+                None => {
+                    *overflowed = true;
+                    control.fail("claude code overloaded: its event queue is full".into());
+                }
+            }
+        });
+    }
+
+    fn line(&mut self, line: String) {
+        if line.trim().is_empty() {
+            return;
+        }
+        self.turn.raw_log_lines.push(AgentRawLogLine {
+            direction: "stdout".to_string(),
+            line: line.clone(),
+        });
+        let Ok(mut message) = serde_json::from_str::<Value>(&line) else {
+            self.control.log("malformed JSON on stdout");
+            return;
+        };
+        if message["type"] == "system" && message["subtype"] == "init" {
+            self.initialized = true;
+        }
+        // Kept in the raw log only: it neither ends the turn nor reports text
+        // or usage.
+        if self.control.foreign_result(&message) {
+            self.control
+                .log("result before the prompt started; waiting for the prompt's");
+            return;
+        }
+        // 2.1.220 reports an interrupted stream as an error result. Only an
+        // acknowledged interrupt with an explicit abort reason is normal
+        // completion; genuine execution errors remain errors.
+        if self.control.interrupted_result(&message) {
+            message["is_error"] = json!(false);
+            message["subtype"] = json!("success");
+            let (source, text) =
+                crate::events::latest_assistant_text(&self.turn.events).unwrap_or_default();
+            let item_id = source.item_id;
+            if item_id.is_some() {
+                self.turn.state.last_text_item_id = item_id;
+            }
+            message["result"] = json!(non_empty(&text).unwrap_or("Stopped."));
+        }
+        let request_event = self.control.ingest(&message);
+        let ended = self.control.finished();
+        let mut normalized = self.turn.state.ingest(&message, ended);
+        if let Some(mut event) = request_event {
+            event.source.app_thread_id = self.turn.state.session_id.clone();
+            normalized.push(event);
+        }
+        self.push(normalized);
+    }
+
+    fn command(&mut self, command: Command) {
+        match command {
+            Command::Interrupt(reply) => {
+                let interrupted = self.interrupt();
+                let _ = reply.send(interrupted);
+            }
+            Command::Send {
+                message_id,
+                message,
+                reply,
+            } => {
+                let sent = self.send_message(message_id, message);
+                let _ = reply.send(sent);
+            }
+            Command::Answer {
+                request_id,
+                answers,
+                reply,
+            } => {
+                // Flow clarifications are answered through the run, not the chat route.
+                let delivered = self.control.stdin.is_some()
+                    && !self.exited
+                    && !matches!(self.control.questions, Questions::Flow(_))
+                    && self.control.deliver(&request_id, &answers);
+                let _ = reply.send(delivered);
+            }
+        }
+    }
+
+    fn interrupt(&mut self) -> bool {
+        let control = &mut self.control;
+        if !control.enabled || self.exited {
+            return false;
+        }
+        // Only background tasks are left: no model turn to interrupt.
+        if control.idle {
+            control.end();
+            return true;
+        }
+        if control.stopping {
+            return true;
+        }
+        let id = Uuid::new_v4().to_string();
+        control.interrupt = Some(id.clone());
+        control.stopping = true;
+        control.send(
+            json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}}),
+        )
+    }
+
+    fn send_message(&mut self, message_id: String, message: String) -> bool {
+        let control = &mut self.control;
+        // Before init the CLI's control support is unknown, and a stopping turn
+        // would drop the message.
+        if !control.enabled || control.stopping || self.exited {
+            return false;
+        }
+        // The message starts model work that Stop must interrupt.
+        control.idle = false;
+        if !control.send_user(json!(message), Some(&message_id)) {
+            return false;
+        }
+        // Sequenced as it is admitted, before any output read after it; the
+        // reply never waits on the sink, which may be the caller.
+        let delivered = self
+            .turn
+            .state
+            .delivered_events(vec![(message_id, message)]);
+        self.push(delivered);
+        true
+    }
+
+    fn completion(&mut self, completion: Completion) {
+        let control = &mut self.control;
+        match completion {
+            Completion::Asked { id, poll } => {
+                // A question that expired meanwhile stays expired.
+                let Some(index) = control.clarifications.iter().position(|q| q.id == id) else {
+                    return;
+                };
+                match poll {
+                    Ok(poll) => {
+                        let question = &mut control.clarifications[index];
+                        question.poll = Some(poll);
+                        let event = question.event.take();
+                        control.flow_due.get_or_insert_with(Instant::now);
+                        if let Some(mut event) = event {
+                            event.source.app_thread_id = self.turn.state.session_id.clone();
+                            self.push(vec![event]);
+                        }
+                    }
+                    Err(reason) => {
+                        control.clarifications.remove(index);
+                        control.pending.remove(&id);
+                        control.log(&reason);
+                        control.deny(&id, &format!("{reason}. {NO_QUESTION_HANDLER}"));
+                    }
+                }
+            }
+            Completion::Polled { id, poll, answers } => {
+                let Some(index) = control.clarifications.iter().position(|q| q.id == id) else {
+                    return;
+                };
+                match answers {
+                    Ok(Some(answers)) => {
+                        control.clarifications.remove(index);
+                        control.deliver(&id, &answers);
+                    }
+                    Ok(None) => control.clarifications[index].poll = Some(poll),
+                    // The run stopped waiting for an answer; do not resume the session.
+                    Err(reason) => control.fail(reason),
+                }
+            }
+        }
+    }
+
+    fn status(&mut self, status: &Status) {
+        let control = &mut self.control;
+        // A forced stop: the process group is going, so nothing more is
+        // written, queued replies included.
+        if status.stop_requested && !control.ended {
+            control.stopping = true;
+            control.ended = true;
+            control.abandon();
+            self.closed.store(true, Ordering::SeqCst);
+        }
+        // Process death expires questions at once, though a descendant may
+        // hold stdout open; a late answer cannot revive them.
+        if status.exited.is_some() && !self.exited {
+            self.exited = true;
+            self.closed.store(true, Ordering::SeqCst);
+            control.pending.clear();
+            control.clarifications.clear();
+        }
+        // Kept out of the raw log: the process closing its stdin usually
+        // means it is exiting, which reports itself.
+        if let Some(error) = status
+            .write_failure
+            .as_ref()
+            .filter(|_| control.stdin.is_some())
+        {
+            tracing::warn!(error, "Claude Code stdin write failed");
+            control.abandon();
+            // Nothing more reaches the process, so no context usage answer will.
+            control.expire_context_request(true);
+        }
+    }
+}
+
+/// Waits for the ended process to exit on its own for `EXIT_GRACE`, then
+/// stops its group; its exit status. Output it writes meanwhile is dropped.
+async fn reap(
+    stdout: &mut Incoming,
+    status: &mut tokio::sync::watch::Receiver<Status>,
+    stop: &Stop,
+) -> String {
+    let grace = Instant::now() + EXIT_GRACE;
+    let mut stopped = false;
+    loop {
+        match status.borrow_and_update().exited.clone() {
+            Some(Ok(exit)) => return exit.to_string(),
+            Some(Err(error)) => return format!("wait failed: {error}"),
+            None => {}
+        }
+        tokio::select! {
+            changed = status.changed() => {
+                if changed.is_err() {
+                    return "unknown status".to_string();
+                }
+            }
+            Some(_) = stdout.next(), if stdout.end().is_none() => {}
+            () = sleep_until(Some(grace)), if !stopped => {
+                stop.stop();
+                stopped = true;
+            }
+        }
     }
 }
 
@@ -576,7 +1184,7 @@ fn normalized_questions(input: &Value) -> Result<Vec<Value>, &'static str> {
     Ok(normalized)
 }
 
-fn find(project_path: &str, conversation_id: &str) -> Option<Arc<Mutex<Control>>> {
+fn find(project_path: &str, conversation_id: &str) -> Option<Arc<Live>> {
     registry()
         .lock()
         .unwrap()
@@ -584,28 +1192,26 @@ fn find(project_path: &str, conversation_id: &str) -> Option<Arc<Mutex<Control>>
         .and_then(Weak::upgrade)
 }
 
-pub(super) fn interrupt(project_path: &str, conversation_id: &str) -> bool {
-    let Some(control) = find(project_path, conversation_id) else {
+/// Asks the conversation's running turn, unless its command queue is full;
+/// false once it has ended.
+fn ask(
+    project_path: &str,
+    conversation_id: &str,
+    bytes: usize,
+    command: impl FnOnce(Reply) -> Command,
+) -> bool {
+    let Some(live) = find(project_path, conversation_id) else {
         return false;
     };
-    let mut control = control.lock().unwrap();
-    if !control.enabled || !matches!(control.child.try_wait(), Ok(None)) {
+    let Some(held) = live.budget.try_admit(bytes) else {
         return false;
-    }
-    // Only background tasks are left: no model turn to interrupt.
-    if control.idle {
-        control.end();
-        return true;
-    }
-    if control.stopping {
-        return true;
-    }
-    let id = Uuid::new_v4().to_string();
-    control.interrupt = Some(id.clone());
-    control.stopping = true;
-    control.send(
-        json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}}),
-    )
+    };
+    let (reply, answered) = std::sync::mpsc::channel();
+    live.commands.send((command(reply), held)).is_ok() && answered.recv().unwrap_or(false)
+}
+
+pub(super) fn interrupt(project_path: &str, conversation_id: &str) -> bool {
+    ask(project_path, conversation_id, 0, Command::Interrupt)
 }
 
 pub(super) fn send_message(
@@ -614,61 +1220,52 @@ pub(super) fn send_message(
     message_id: &str,
     message: &str,
 ) -> bool {
-    let Some(control) = find(project_path, conversation_id) else {
-        return false;
-    };
-    let mut control = control.lock().unwrap();
-    // Before init the CLI's control support is unknown, and a stopping turn
-    // would drop the message.
-    if !control.enabled || control.stopping || !matches!(control.child.try_wait(), Ok(None)) {
+    // Longer than one line: refused before it is queued.
+    if message.len() > LIMITS.frame_bytes {
         return false;
     }
-    // The message starts model work that Stop must interrupt.
-    control.idle = false;
-    let sent = control.send_user(json!(message), Some(message_id));
-    if sent {
-        control
-            .sent
-            .push((message_id.to_string(), message.to_string()));
-    }
-    sent
+    ask(
+        project_path,
+        conversation_id,
+        message_id.len() + message.len(),
+        |reply| Command::Send {
+            message_id: message_id.to_string(),
+            message: message.to_string(),
+            reply,
+        },
+    )
 }
 
+/// Stops the process group directly; its worker sees the stop and ends the turn.
 pub(super) fn terminate(project_path: &str, conversation_id: &str) -> bool {
-    let Some(control) = find(project_path, conversation_id) else {
+    let Some(live) = find(project_path, conversation_id) else {
         return false;
     };
-    let mut control = control.lock().unwrap();
-    if control.ended || !matches!(control.child.try_wait(), Ok(None)) {
+    if live.closed.load(Ordering::SeqCst) {
         return false;
     }
-    control.stopping = true;
-    control.end();
-    let pid = control.child.id();
-    crate::local_environment::terminate_process_group(pid, Some(&mut control.child));
+    live.stop.stop();
     true
 }
 
 pub(super) fn answer(request: AgentRequestUserInputAnswerRequest) -> AgentTurnOutput {
-    let delivered = find(&request.project_path, &request.conversation_id).is_some_and(|control| {
-        let mut control = control.lock().unwrap();
-        if control.stdin.is_none() || !matches!(control.child.try_wait(), Ok(None)) {
-            return false;
-        }
-        // Flow clarifications are answered through the run, not the chat route.
-        if matches!(control.questions, Questions::Flow(_)) {
-            return false;
-        }
-        if request.request_user_input.as_ref().is_some_and(|payload| {
-            payload["status"] == "expired"
-                || payload["request_id"]
-                    .as_str()
-                    .is_some_and(|id| id != request.request_id)
-        }) {
-            return false;
-        }
-        control.deliver(&request.request_id, &request.answers)
+    let current = !request.request_user_input.as_ref().is_some_and(|payload| {
+        payload["status"] == "expired"
+            || payload["request_id"]
+                .as_str()
+                .is_some_and(|id| id != request.request_id)
     });
+    let delivered = current
+        && ask(
+            &request.project_path,
+            &request.conversation_id,
+            json_len(&request.answers),
+            |reply| Command::Answer {
+                request_id: request.request_id.clone(),
+                answers: request.answers.clone(),
+                reply,
+            },
+        );
     if delivered {
         AgentTurnOutput {
             events: vec![stream_event(

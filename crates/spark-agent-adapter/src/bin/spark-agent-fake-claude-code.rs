@@ -192,6 +192,24 @@ fn main() {
         std::io::stdin().read_to_string(&mut remaining).unwrap();
         assert!(remaining.is_empty(), "legacy must receive EOF after prompt");
     }
+    if mode == "blocked-sink" {
+        // Needs an answer while Spark's sink is blocked, then waits to be stopped.
+        append_log(&format!("PID={}", std::process::id()));
+        emit(
+            &mut out,
+            json!({"type": "control_request", "request_id": "permission-1", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "true"}}}),
+        );
+        assert_eq!(read_control()["response"]["response"]["behavior"], "allow");
+        append_log("ANSWERED");
+        drain_stdin();
+        return;
+    }
+    if mode == "invalid-utf8" {
+        out.write_all(b"\xff\xfe\n").unwrap();
+        out.flush().unwrap();
+        drain_stdin();
+        return;
+    }
     if mode.starts_with("malformed") {
         if mode == "malformed-json" {
             writeln!(out, "{{invalid").unwrap();
