@@ -701,11 +701,16 @@ mod tests {
         T: Send + 'static,
         Fut: Future<Output = T> + 'static,
     {
+        // macOS creates pipes and marks them close-on-exec in two steps, so a
+        // concurrent spawn can inherit another test's stdin and keep it open.
+        static SPAWNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let (result, received) = std_mpsc::channel();
+        let spawning = SPAWNING.lock().unwrap_or_else(|error| error.into_inner());
         let connection = launch(sh(script), limits, move |endpoints| async move {
             let _ = result.send(body(endpoints).await);
         })
         .expect("launch");
+        drop(spawning);
         (connection, received)
     }
 
