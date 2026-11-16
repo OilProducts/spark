@@ -90,10 +90,20 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const effortSelection = highlighted ? resolve({ ...highlighted, reasoning_effort: null }) : resolved
     const supported = effortSelection.efforts
     const allEfforts = [...new Set([...supported, ...(supported.length && value.reasoning_effort ? [value.reasoning_effort] : [])])]
-    // Session controls are a harness's own, so another provider starts without them.
-    const select = (selection: { provider: string | null; llm_profile: string | null; model: string | null }) => ({ ...value,
-        provider: selection.provider, llm_profile: selection.llm_profile, model: selection.model || null,
-        session_config: selection.provider === value.provider ? value.session_config : undefined })
+    // Session controls are a harness's own, so another provider starts without them. Another model
+    // keeps only the native controls it offers: the rest would stay saved, hidden, and fail its turns.
+    const select = (selection: { provider: string | null; llm_profile: string | null; model: string | null }) => {
+        const same = selection.provider === value.provider && selection.llm_profile === value.llm_profile && (selection.model || null) === value.model
+        const meta = resolve({ ...empty, ...selection }).meta
+        const keep = (current: string | null | undefined, offered?: string[]) => same || current == null || offered?.includes(current) ? current : null
+        const thinking = keep(value.thinking, meta?.supported_thinking)
+        return { ...value,
+            provider: selection.provider, llm_profile: selection.llm_profile, model: selection.model || null,
+            thinking, thinking_budget_tokens: thinking === value.thinking ? value.thinking_budget_tokens : null,
+            reasoning_mode: keep(value.reasoning_mode, meta?.supported_reasoning_modes),
+            reasoning_summary: keep(value.reasoning_summary, meta?.supported_reasoning_summaries),
+            session_config: selection.provider === value.provider ? value.session_config : undefined }
+    }
     const commit = (choice: typeof choices[number], close: boolean) => {
         setBudgetInput(null)
         onChange({ ...select(choice), reasoning_effort: value.reasoning_effort })

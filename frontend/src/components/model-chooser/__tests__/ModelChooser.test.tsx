@@ -299,6 +299,35 @@ it('gates native controls by capability, locks inheritance, and saves budgets an
     expect(screen.queryByRole('group', { name: 'Summary' })).not.toBeInTheDocument()
 })
 
+it('keeps only the native controls a newly chosen provider offers, so none stay saved but hidden', async () => {
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({
+        providers: { ...catalog.providers, 'acp:fake': { status: 'available', error: null, label: 'Fake ACP', setup_status: 'ready' } },
+        models: [
+            { ...catalog.models[0], supported_thinking: ['adaptive', 'budget'], supported_reasoning_modes: ['standard', 'pro'], supported_reasoning_summaries: ['auto', 'detailed'] },
+            { ...catalog.models[2], supported_thinking: ['budget'] },
+            { provider: 'acp:fake', id: '', display: 'Harness default', is_default: true, supported_reasoning_efforts: [] },
+        ],
+    })
+    const user = userEvent.setup(), onChange = vi.fn()
+    render(<Editor value={{ ...initial, model: 'discovered' }} onChange={onChange} />)
+    await user.click(await screen.findByRole('button', { name: /Model: Discovered/ }))
+    await user.click(within(screen.getByRole('group', { name: 'Thinking' })).getByRole('button', { name: 'Budget' }))
+    await user.click(within(screen.getByRole('group', { name: 'Mode' })).getByRole('button', { name: 'Pro' }))
+    await user.click(within(screen.getByRole('group', { name: 'Summary' })).getByRole('button', { name: 'Detailed' }))
+    const native = { ...initial, model: 'discovered', thinking: 'budget', thinking_budget_tokens: 1024, reasoning_mode: 'pro', reasoning_summary: 'detailed' }
+    expect(onChange).toHaveBeenLastCalledWith(native)
+
+    // Claude offers budget thinking only: that and its budget stay, the rest is cleared.
+    await user.click(screen.getByRole('option', { name: 'Claude' }))
+    expect(onChange).toHaveBeenLastCalledWith({ ...native, provider: 'claude-code', model: 'claude-discovered', reasoning_mode: null, reasoning_summary: null })
+    expect(within(screen.getByRole('group', { name: 'Thinking' })).getByRole('button', { name: 'Budget' })).toHaveAttribute('aria-pressed', 'true')
+
+    // The ACP harness offers none of them, so none is left for its turns to reject.
+    await user.click(screen.getByRole('option', { name: 'Harness default' }))
+    expect(onChange).toHaveBeenLastCalledWith({ ...initial, provider: 'acp:fake', model: null, thinking: null, thinking_budget_tokens: null, reasoning_mode: null, reasoning_summary: null })
+    for (const group of ['Thinking', 'Mode', 'Summary']) expect(screen.queryByRole('group', { name: group })).not.toBeInTheDocument()
+})
+
 it('notes a chosen model its provider no longer lists', async () => {
     const view = render(<Editor value={{ ...initial, model: 'retired' }} />)
     const button = await screen.findByRole('button', { name: 'Model: retired · Default effort' })
