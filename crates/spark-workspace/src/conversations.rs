@@ -2707,6 +2707,10 @@ impl WorkspaceConversationService {
             value.map(|value| non_empty_string(value).map(|value| value.to_lowercase()))
         };
         let text = |value: Option<&String>| value.map(|value| non_empty_string(value));
+        let provider = request
+            .llm_provider
+            .as_deref()
+            .or_else(|| current["llm_provider"].as_str());
         let approval = FlowRequestApproval {
             flow_name: approved_flow_name.clone(),
             model: request
@@ -2716,7 +2720,10 @@ impl WorkspaceConversationService {
                 .map(Some),
             llm_provider: lowercase(request.llm_provider.as_ref()),
             llm_profile: text(request.llm_profile.as_ref()),
-            reasoning_effort: lowercase(request.reasoning_effort.as_ref()),
+            reasoning_effort: request
+                .reasoning_effort
+                .as_ref()
+                .map(|value| non_empty_string(value).map(|value| launch_effort(provider, value))),
             execution_profile_id: text(request.execution_profile_id.as_ref()),
         };
         let approved = reviewed(
@@ -4056,10 +4063,21 @@ fn normalize_flow_run_payload_fields(
         llm_profile: llm_profile.and_then(non_empty_string),
         reasoning_effort: reasoning_effort
             .and_then(non_empty_string)
-            .map(|value| value.to_lowercase()),
+            .map(|value| launch_effort(llm_provider, value)),
         execution_profile_id: execution_profile_id.and_then(non_empty_string),
         node_overrides: node_overrides.filter(|overrides| !overrides.is_empty()),
     })
+}
+
+/// A flow launch's effort as its provider takes it: lowercase, except an ACP
+/// harness's opaque ID, or one whose provider the launch resolves later.
+fn launch_effort(provider: Option<&str>, effort: String) -> String {
+    match provider {
+        Some(provider) if !provider.trim().is_empty() && !HarnessIdentity::is_acp(provider) => {
+            effort.to_lowercase()
+        }
+        _ => effort,
+    }
 }
 
 fn shell_snapshot(conversation_id: &str, project_path: &str) -> Value {

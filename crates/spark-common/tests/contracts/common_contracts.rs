@@ -664,30 +664,36 @@ fn acp_configuration_generation_tracks_launch_settings_but_not_labels() {
 #[test]
 fn redacted_acp_environments_restore_only_from_the_same_registration() {
     let inheritance = spark_common::agent_settings::EnvironmentInheritancePolicy::default();
-    let registration = |token: &str| {
-        acp_config(
-            json!({"agent": {"name": "Agent", "executable": "agent", "env": {"TOKEN": token}}}),
-        )
-        .unwrap()
-    };
-    let live = registration("secret-sentinel");
-    let mut captured = live.clone();
-    captured.redact_acp_env();
-    assert!(captured.validate().is_ok());
-    assert!(!json!(captured).to_string().contains("secret-sentinel"));
-    let harness = &captured.acp_harnesses["agent"];
+    // A secret in the environment, or only in a declared channel's.
+    let registrations = [
+        |token: &str| json!({"name": "Agent", "executable": "agent", "env": {"TOKEN": token}}),
+        |token: &str| {
+            json!({"name": "Agent", "executable": "agent", "system_instructions": {"env": {
+                "PROMPT": {"json": {"key": token, "system": "{{instructions_file}}"}},
+            }}})
+        },
+    ];
+    for registration in registrations {
+        let config = |token: &str| acp_config(json!({"agent": registration(token)})).unwrap();
+        let live = config("secret-sentinel");
+        let mut captured = live.clone();
+        captured.redact_acp_env();
+        assert!(captured.validate().is_ok());
+        assert!(!json!(captured).to_string().contains("secret-sentinel"));
+        let harness = &captured.acp_harnesses["agent"];
 
-    let restored = harness
-        .clone()
-        .restore_env(Some(&live.acp_harnesses["agent"]), inheritance)
-        .unwrap();
-    assert_eq!(restored, live.acp_harnesses["agent"]);
-    let rotated = registration("rotated");
-    for current in [None, Some(&rotated.acp_harnesses["agent"])] {
-        let error = harness
+        let restored = harness
             .clone()
-            .restore_env(current, inheritance)
-            .unwrap_err();
-        assert!(error.contains("start the work again"), "{error}");
+            .restore_env(Some(&live.acp_harnesses["agent"]), inheritance)
+            .unwrap();
+        assert_eq!(restored, live.acp_harnesses["agent"]);
+        let rotated = config("rotated");
+        for current in [None, Some(&rotated.acp_harnesses["agent"])] {
+            let error = harness
+                .clone()
+                .restore_env(current, inheritance)
+                .unwrap_err();
+            assert!(error.contains("start the work again"), "{error}");
+        }
     }
 }

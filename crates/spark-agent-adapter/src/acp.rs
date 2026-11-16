@@ -235,6 +235,21 @@ fn live_harness(request: &AgentTurnRequest, harness_id: &str) -> Option<AcpHarne
     agents.acp_harnesses.get(harness_id).cloned()
 }
 
+/// The configuration generation a launch of `harness` records: its
+/// registration's, plus the values it inherits now, so a changed inherited
+/// environment starts fresh. Only this hash is kept, never the values.
+pub fn launch_generation(
+    harness: &AcpHarness,
+    inheritance: spark_common::agent_settings::EnvironmentInheritancePolicy,
+) -> String {
+    let inherited = crate::local_environment::inherited_environment(inheritance);
+    spark_common::project::sha256_hex(
+        json!([harness.generation(inheritance), inherited])
+            .to_string()
+            .as_bytes(),
+    )
+}
+
 /// Reasoning controls a turn may carry; ACP v1 has no portable equivalent.
 const REASONING_CONTROLS: [&str; 4] = [
     "thinking",
@@ -365,7 +380,7 @@ fn turn(
     let plan = Plan {
         harness_id: harness_id.to_string(),
         policy: harness.permission_policy,
-        generation: harness.generation(config.environment_inheritance),
+        generation: launch_generation(&harness, config.environment_inheritance),
         instructions_sha256: instructions
             .as_deref()
             .map(|text| spark_common::project::sha256_hex(text.as_bytes())),

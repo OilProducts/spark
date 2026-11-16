@@ -116,12 +116,7 @@ pub fn validate_provider(value: &str) -> Result<String, String> {
 pub fn validate_reasoning_effort(value: &str, provider: Option<&str>) -> Result<String, String> {
     let value = value.trim();
     let normalized = value.to_ascii_lowercase();
-    let acp = provider.is_some_and(|provider| {
-        matches!(
-            spark_common::agent_settings::HarnessIdentity::parse(provider),
-            Ok(Some(spark_common::agent_settings::HarnessIdentity::Acp(_)))
-        )
-    });
+    let acp = provider.is_some_and(spark_common::agent_settings::HarnessIdentity::is_acp);
     Ok(
         if !acp && matches!(normalized.as_str(), "low" | "medium" | "high" | "xhigh") {
             normalized

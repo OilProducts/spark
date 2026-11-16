@@ -604,15 +604,26 @@ fn acp_registration_secrets_reach_the_harness_but_not_chat_history() {
     let temp = tempfile::tempdir().unwrap();
     let (service, project) = acp_chat(
         temp.path(),
-        json!({"log_env": ["AGENT_TOKEN"], "updates": acp_answer("Done.")}),
+        json!({"log_env": ["AGENT_TOKEN", "FAKE_CHANNEL"], "updates": acp_answer("Done.")}),
     );
     let config = settings(temp.path()).config_dir.join("spark.toml");
     let mut document: toml::Value =
         toml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
-    document["agents"]["acp_harnesses"]["fake"]["env"]
+    let fake = document["agents"]["acp_harnesses"]["fake"]
+        .as_table_mut()
+        .unwrap();
+    fake["env"]
         .as_table_mut()
         .unwrap()
         .insert("AGENT_TOKEN".into(), "fake-secret-sentinel".into());
+    // Declared channels may hold secrets too, beside the instructions.
+    fake.insert(
+        "system_instructions".into(),
+        toml::Value::try_from(json!({"env": {"FAKE_CHANNEL": {"json": {
+            "api_key": "fake-channel-secret-sentinel", "system": "{{instructions}}",
+        }}}}))
+        .unwrap(),
+    );
     document["agents"]["acp_harnesses"]
         .as_table_mut()
         .unwrap()
@@ -621,6 +632,9 @@ fn acp_registration_secrets_reach_the_harness_but_not_chat_history() {
             toml::Value::try_from(json!({
                 "name": "Other", "executable": "other-agent",
                 "env": {"OTHER_TOKEN": "other-secret-sentinel"},
+                "system_instructions": {"env": {"OTHER_PROMPT": {
+                    "text": "other-channel-secret-sentinel {{instructions}}",
+                }}},
             }))
             .unwrap(),
         );
@@ -643,6 +657,10 @@ fn acp_registration_secrets_reach_the_harness_but_not_chat_history() {
     )
     .unwrap();
     assert_eq!(launch["env"]["AGENT_TOKEN"], "fake-secret-sentinel");
+    let channel: Value =
+        serde_json::from_str(launch["env"]["FAKE_CHANNEL"].as_str().unwrap()).unwrap();
+    assert_eq!(channel["api_key"], "fake-channel-secret-sentinel");
+    assert!(!channel["system"].as_str().unwrap().is_empty(), "{channel}");
     let reread = service.get_snapshot("acp-secrets", Some(&project)).unwrap();
     for response in [&snapshot, &reread] {
         assert!(
@@ -652,6 +670,56 @@ fn acp_registration_secrets_reach_the_harness_but_not_chat_history() {
     }
     assert_eq!(
         files_containing(temp.path(), "secret-sentinel", &["spark.toml", "acp.log"]),
+        Vec::<std::path::PathBuf>::new()
+    );
+}
+
+/// Spark restarted under other inherited values resets an ACP chat's
+/// session, explicitly; under the same values it continues it.
+#[test]
+fn a_restart_with_a_changed_inherited_environment_resets_acp_continuity() {
+    // No other test changes the environment meanwhile.
+    let _env = super::test_support::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    const PROBE: &str = "SPARK_ACP_RESTART_PROBE";
+    let temp = tempfile::tempdir().unwrap();
+    let (_, project) = acp_chat(temp.path(), json!({"updates": acp_answer("Hi.")}));
+    let config = settings(temp.path()).config_dir.join("spark.toml");
+    let mut document: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    document["agents"]
+        .as_table_mut()
+        .unwrap()
+        .insert("environment_inheritance".into(), "inherit_all".into());
+    std::fs::write(&config, toml::to_string(&document).unwrap()).unwrap();
+    let restart_and_chat = |value: &str| {
+        std::env::set_var(PROBE, value);
+        // A new service over the same stores, as after a restart.
+        let snapshot = crate::conversations(settings(temp.path()))
+            .execute_turn("acp-restart", acp_turn(&project, "Hi"))
+            .unwrap();
+        assert_eq!(
+            assistant_turn(&snapshot)["status"],
+            "complete",
+            "{snapshot}"
+        );
+        snapshot
+    };
+
+    restart_and_chat("inherited-one");
+    restart_and_chat("inherited-one");
+    let changed = restart_and_chat("inherited-two");
+    std::env::remove_var(PROBE);
+    assert_eq!(acp_received(temp.path(), "session/resume").len(), 1);
+    assert_eq!(acp_received(temp.path(), "session/new").len(), 2);
+    assert!(
+        changed.to_string().contains("continuity_reset"),
+        "{changed}"
+    );
+    // Only a hash of the inherited values is kept.
+    assert_eq!(
+        files_containing(temp.path(), "inherited-", &[]),
         Vec::<std::path::PathBuf>::new()
     );
 }

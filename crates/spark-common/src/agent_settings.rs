@@ -270,6 +270,12 @@ impl HarnessIdentity {
         }
     }
 
+    /// Whether `selector` names an ACP harness, whose reasoning effort IDs
+    /// are opaque and kept exactly, never lowercased.
+    pub fn is_acp(selector: &str) -> bool {
+        matches!(Self::parse(selector), Ok(Some(Self::Acp(_))))
+    }
+
     /// The owner a persisted runtime session is filed under.
     pub fn session_owner(&self) -> String {
         match self {
@@ -408,10 +414,16 @@ impl AcpHarness {
         live: Option<&AcpHarness>,
         inheritance: EnvironmentInheritancePolicy,
     ) -> Result<Self, String> {
+        let channel = self
+            .system_instructions
+            .iter()
+            .flat_map(|channel| channel.env.values().flat_map(EnvTemplate::strings));
         let Some(generation) = self
             .env
             .values()
-            .find_map(|value| value.strip_prefix(REDACTED_ENV))
+            .map(String::as_str)
+            .chain(channel)
+            .find_map(|value| Some(value.split_once(REDACTED_ENV)?.1))
         else {
             return Ok(self);
         };
@@ -424,14 +436,16 @@ impl AcpHarness {
     }
 }
 
-/// Stands in for an ACP environment value in captured settings, followed by
-/// its registration's generation: execution history keeps no values.
+/// Stands in for an ACP environment value or instruction-channel environment
+/// template in captured settings, followed by its registration's generation:
+/// execution history keeps no values.
 const REDACTED_ENV: &str = "spark-redacted:";
 
 impl SessionConfig {
-    /// Replaces ACP environment values, which may be secrets, so this can be
-    /// persisted; [`AcpHarness::restore_env`] takes them back from the live
-    /// registration with the same generation.
+    /// Replaces ACP environment values and instruction-channel environment
+    /// templates, which may hold secrets, so this can be persisted;
+    /// [`AcpHarness::restore_env`] takes them back from the live registration
+    /// with the same generation.
     pub fn redact_acp_env(&mut self) {
         for harness in self.acp_harnesses.values_mut() {
             let stand_in = format!(
@@ -440,6 +454,23 @@ impl SessionConfig {
             );
             for value in harness.env.values_mut() {
                 value.clone_from(&stand_in);
+            }
+            let templates = harness
+                .system_instructions
+                .iter_mut()
+                .flat_map(|channel| channel.env.values_mut());
+            for template in templates {
+                // The placeholders it used stay, so the captured channel is valid.
+                let used = [INSTRUCTIONS_PLACEHOLDER, INSTRUCTIONS_FILE_PLACEHOLDER]
+                    .into_iter()
+                    .filter(|placeholder| {
+                        template
+                            .strings()
+                            .iter()
+                            .any(|text| text.contains(placeholder))
+                    })
+                    .collect::<String>();
+                *template = EnvTemplate::Text(used + &stand_in);
             }
         }
     }
@@ -516,20 +547,29 @@ impl InstructionChannel {
     }
 
     fn templates(&self) -> Vec<&str> {
-        fn strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+        self.args
+            .iter()
+            .map(String::as_str)
+            .chain(self.env.values().flat_map(EnvTemplate::strings))
+            .collect()
+    }
+}
+
+impl EnvTemplate {
+    /// Its strings, each a template.
+    fn strings(&self) -> Vec<&str> {
+        fn walk<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
             match value {
                 serde_json::Value::String(text) => out.push(text),
-                serde_json::Value::Array(items) => items.iter().for_each(|item| strings(item, out)),
-                serde_json::Value::Object(map) => map.values().for_each(|item| strings(item, out)),
+                serde_json::Value::Array(items) => items.iter().for_each(|item| walk(item, out)),
+                serde_json::Value::Object(map) => map.values().for_each(|item| walk(item, out)),
                 _ => {}
             }
         }
-        let mut out = self.args.iter().map(String::as_str).collect::<Vec<_>>();
-        for template in self.env.values() {
-            match template {
-                EnvTemplate::Text(text) => out.push(text),
-                EnvTemplate::Json(value) => strings(value, &mut out),
-            }
+        let mut out = Vec::new();
+        match self {
+            Self::Text(text) => out.push(text.as_str()),
+            Self::Json(value) => walk(value, &mut out),
         }
         out
     }

@@ -555,7 +555,7 @@ fn saved(dir: &Path, request: &AgentTurnRequest, session_id: &str) -> AcpSession
             .unwrap()
             .to_string_lossy()
             .into_owned(),
-        configuration_generation: harness.generation(Default::default()),
+        configuration_generation: acp::launch_generation(&harness, Default::default()),
         instructions_sha256: None,
     }
 }
@@ -571,6 +571,10 @@ fn with_history(mut request: AgentTurnRequest, record: &AcpSessionRecord) -> Age
 
 #[test]
 fn acp_continuity_resumes_matching_sessions_and_resets_once_otherwise() {
+    // The inherited environment is part of a launch's identity.
+    let _env = super::test_support::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     // Resume: same session, no history re-sent.
     let dir = tempfile::tempdir().unwrap();
     let base = request(dir.path(), json!({"resume": true, "load": true}), json!({}));
@@ -833,6 +837,9 @@ fn acp_chat_cancel_settles_once_and_explicit_reasoning_controls_are_refused() {
 
 #[test]
 fn acp_chat_starts_fresh_when_the_inherited_environment_changes() {
+    let _env = super::test_support::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let script = json!({"resume": true, "updates": [chunk("agent_message_chunk", "Hi.")]});
     let mut first = request(dir.path(), script, json!({}));

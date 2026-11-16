@@ -182,6 +182,78 @@ fn legacy_pending_flow_run_requests_can_still_be_rejected_or_launched() {
     assert!(!failed["launch_error"].as_str().expect("error").is_empty());
 }
 
+/// An approval keeps an ACP harness's opaque effort ID through its launch;
+/// other providers' efforts stay lowercase.
+#[test]
+fn approvals_launch_with_an_acp_effort_id_exactly() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    write_native_execution_profile(&settings);
+    crate::install_named_flow(&settings, "ops/review", simple_flow());
+    seed_conversation_with_requests(
+        &settings,
+        project_path.to_str().expect("utf-8"),
+        "conversation-effort",
+        "complete",
+        json!([
+            pending_request(
+                "request-acp",
+                "conversation-effort",
+                &project_path,
+                Some("native")
+            ),
+            pending_request(
+                "request-api",
+                "conversation-effort",
+                &project_path,
+                Some("native")
+            ),
+        ]),
+    );
+    let service = crate::conversations(settings.clone());
+    let approve = |request_id: &str, provider: &str| {
+        service
+            .review_flow_run_request(
+                "conversation-effort",
+                request_id,
+                FlowRunRequestReviewRequest {
+                    project_path: project_path.to_string_lossy().into_owned(),
+                    disposition: "approved".to_string(),
+                    message: "Reviewed.".to_string(),
+                    llm_provider: Some(provider.to_string()),
+                    reasoning_effort: Some("High".to_string()),
+                    ..FlowRunRequestReviewRequest::default()
+                },
+            )
+            .expect("approved");
+        let snapshot = service
+            .get_snapshot(
+                "conversation-effort",
+                Some(project_path.to_str().expect("utf-8")),
+            )
+            .expect("snapshot");
+        let request = request_by_id(&snapshot, request_id).clone();
+        assert_eq!(request["status"], "launched", "{request}");
+        let record = attractor_runtime::RunStore::for_settings(&settings)
+            .read_run_bundle(request["run_id"].as_str().expect("run id"))
+            .expect("read run")
+            .and_then(|bundle| bundle.record)
+            .expect("record");
+        (request["reasoning_effort"].clone(), record.reasoning_effort)
+    };
+
+    assert_eq!(
+        approve("request-acp", "acp:fake"),
+        (json!("High"), Some("High".to_string()))
+    );
+    assert_eq!(
+        approve("request-api", "openai"),
+        (json!("high"), Some("high".to_string()))
+    );
+}
+
 /// A stale rejection that lands while an approval's launch runs cannot stop
 /// the run, which stays linked to its request.
 #[test]

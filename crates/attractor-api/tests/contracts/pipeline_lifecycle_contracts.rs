@@ -1379,36 +1379,64 @@ fn files_containing(root: &Path, needle: &str, except: &[&str]) -> Vec<std::path
     found
 }
 
-#[test]
-fn acp_registration_secrets_reach_flow_nodes_but_not_run_history() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
+/// A service whose agent nodes run for real, with `acp:fake` registered as
+/// the fake ACP agent running `script` and logging to `acp.log` under
+/// `root`; `more` follows its env table in spark.toml.
+fn fake_acp_service(
+    settings: &SparkSettings,
+    root: &Path,
+    mut script: serde_json::Value,
+    more: &str,
+) -> AttractorApiService {
     fs::create_dir_all(&settings.config_dir).unwrap();
-    let log = temp.path().join("acp.log");
-    let script = json!({"log": log, "log_env": ["AGENT_TOKEN"], "system_prompt": true,
-        "answers": [r#"{"decision": "done"}"#]});
+    script["log"] = json!(root.join("acp.log"));
     // JSON string literals are TOML basic strings.
     let text = |value: &str| json!(value).to_string();
     fs::write(
         settings.config_dir.join("spark.toml"),
         format!(
             "[agents.acp_harnesses.fake]\nname = 'Fake ACP'\nexecutable = {}\n\
-             env = {{ SPARK_FAKE_ACP = {}, AGENT_TOKEN = 'flow-secret-sentinel' }}\n\
-             [agents.acp_harnesses.other]\nname = 'Other'\nexecutable = 'other-agent'\n\
-             env = {{ OTHER_TOKEN = 'other-secret-sentinel' }}\n",
+             [agents.acp_harnesses.fake.env]\nSPARK_FAKE_ACP = {}\n{more}",
             text(FAKE_ACP),
             text(&script.to_string()),
         ),
     )
     .unwrap();
-
-    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+    AttractorApiService::new_with_runtime_handler_runner_factory(
         settings.clone(),
         std::sync::Arc::new(|| {
             attractor_runtime::RuntimeHandlerRunner::new()
                 .with_rust_llm_client(unified_llm_adapter::Client::new())
         }),
+    )
+}
+
+/// The fake's log under `root`: its launches, then what it received.
+fn acp_log(root: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(root.join("acp.log"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn acp_registration_secrets_reach_flow_nodes_but_not_run_history() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let service = fake_acp_service(
+        &settings,
+        temp.path(),
+        json!({"log_env": ["AGENT_TOKEN"], "system_prompt": true,
+            "answers": [r#"{"decision": "done"}"#]}),
+        "AGENT_TOKEN = 'flow-secret-sentinel'\n\
+         [agents.acp_harnesses.fake.system_instructions.env]\n\
+         FAKE_CHANNEL = { json = { api_key = 'flow-channel-secret-sentinel', system = '{{instructions}}' } }\n\
+         [agents.acp_harnesses.other]\nname = 'Other'\nexecutable = 'other-agent'\n\
+         env = { OTHER_TOKEN = 'other-secret-sentinel' }\n\
+         system_instructions = { env = { OTHER_PROMPT = { text = 'other-channel-secret-sentinel {{instructions}}' } } }\n",
     );
+
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-acp-secrets".to_string()),
@@ -1424,14 +1452,17 @@ fn acp_registration_secrets_reach_flow_nodes_but_not_run_history() {
         .unwrap();
     let record = bundle.record.unwrap();
     assert_eq!(record.status, "completed", "{record:?}");
-    let launch: serde_json::Value =
-        serde_json::from_str(fs::read_to_string(&log).unwrap().lines().next().unwrap()).unwrap();
-    assert_eq!(launch["env"]["AGENT_TOKEN"], "flow-secret-sentinel");
-    // The checkpoint keeps the registration, but not its values.
+    assert_eq!(
+        acp_log(temp.path())[0]["env"]["AGENT_TOKEN"],
+        "flow-secret-sentinel"
+    );
+    // The checkpoint keeps the registrations, but not their values.
     let captured = &bundle.checkpoint.unwrap().context["internal.execution_configuration_snapshot"]
         ["agents"]["acp_harnesses"];
     assert!(
-        captured["fake"]["env"]["AGENT_TOKEN"].is_string(),
+        captured["fake"]["env"]["AGENT_TOKEN"].is_string()
+            && captured["fake"]["system_instructions"]["env"]["FAKE_CHANNEL"].is_object()
+            && captured["other"]["system_instructions"]["env"]["OTHER_PROMPT"].is_object(),
         "{captured}"
     );
     assert!(!response.body.to_string().contains("secret-sentinel"));
@@ -1439,4 +1470,70 @@ fn acp_registration_secrets_reach_flow_nodes_but_not_run_history() {
         files_containing(temp.path(), "secret-sentinel", &["spark.toml", "acp.log"]),
         Vec::<std::path::PathBuf>::new()
     );
+}
+
+/// An ACP harness's opaque effort ID reaches it exactly, whether the launch
+/// request, the flow's defaults or the workspace defaults choose it.
+#[test]
+fn acp_effort_ids_reach_flow_nodes_exactly() {
+    let cases = [
+        (Some("acp:fake"), Some("High"), json!({}), ""),
+        (
+            Some("acp:fake"),
+            None,
+            json!({"reasoning_effort": "High"}),
+            "",
+        ),
+        (
+            None,
+            None,
+            json!({}),
+            "[models]\nprovider = 'acp:fake'\nreasoning_effort = 'High'\n",
+        ),
+    ];
+    for (provider, requested, defaults, more) in cases {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings = settings(temp.path());
+        let service = fake_acp_service(
+            &settings,
+            temp.path(),
+            json!({"answers": [r#"{"decision": "done"}"#], "config_options": [{
+                "id": "effort", "name": "Effort", "category": "thought_level", "type": "select",
+                "currentValue": "Low",
+                "options": [{"value": "Low", "name": "Low"}, {"value": "High", "name": "High"}],
+            }]}),
+            more,
+        );
+        let mut flow = simple_flow();
+        flow["defaults"] = defaults;
+        let response = service.start_pipeline(PipelineStartRequest {
+            wait: Some(true),
+            run_id: Some("run-acp-effort".to_string()),
+            flow_name: Some(crate::install_flow(&settings, flow)),
+            working_directory: temp.path().join("project").to_string_lossy().to_string(),
+            llm_provider: provider.map(str::to_string),
+            reasoning_effort: requested.map(str::to_string),
+            ..PipelineStartRequest::default()
+        });
+        assert_eq!(response.status_code, 200, "{}", response.body);
+        let record = RunStore::for_settings(&settings)
+            .read_run_bundle("run-acp-effort")
+            .unwrap()
+            .unwrap()
+            .record
+            .unwrap();
+        assert_eq!(record.status, "completed", "{more}: {record:?}");
+        assert_eq!(record.reasoning_effort.as_deref(), Some("High"));
+        let set = acp_log(temp.path())
+            .into_iter()
+            .find(|entry| entry["received"]["method"] == "session/set_config_option")
+            .expect("the effort is selected");
+        assert_eq!(
+            (
+                set["received"]["params"]["configId"].clone(),
+                set["received"]["params"]["value"].clone()
+            ),
+            (json!("effort"), json!("High"))
+        );
+    }
 }
