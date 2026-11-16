@@ -210,6 +210,36 @@ fn main() {
         drain_stdin();
         return;
     }
+    if mode == "closed-stdin" {
+        // Stops reading but keeps running with stdout open, so a live
+        // message's write fails.
+        append_log(&format!("PID={}", std::process::id()));
+        #[cfg(unix)]
+        drop(unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(0) });
+        emit(
+            &mut out,
+            json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Working."}}}),
+        );
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        return;
+    }
+    if mode == "flood" {
+        // Ordinary output past the sink's queue while a live message waits
+        // for a receipt that never comes.
+        let delta = |text: &str| {
+            json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}})
+        };
+        emit(&mut out, delta("Working."));
+        assert_eq!(read_control()["type"], "user");
+        for _ in 0..300 {
+            emit(&mut out, delta("."));
+        }
+        drain_stdin();
+        append_log("STDIN_CLOSED");
+        return;
+    }
     if mode.starts_with("malformed") {
         if mode == "malformed-json" {
             writeln!(out, "{{invalid").unwrap();

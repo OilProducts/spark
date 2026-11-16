@@ -1423,6 +1423,133 @@ fn claude_code_invalid_utf8_on_stdout_fails_the_turn_without_resuming() {
     assert_eq!(log.matches("-- invocation --").count(), 1, "{log}");
 }
 
+/// The turn's events as the sink sees them, with a sink that sends one live
+/// message at the first text delta and then waits for `released`.
+fn sink_sending_one_message(
+    path: String,
+    id: String,
+    released: std::sync::mpsc::Receiver<()>,
+) -> (AgentTurnEventSink, Arc<Mutex<Vec<TurnStreamEvent>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let events = seen.clone();
+    let released = Mutex::new(released);
+    let sink: AgentTurnEventSink = Arc::new(move |event: TurnStreamEvent| {
+        let first = event.kind == TurnStreamEventKind::ContentDelta
+            && !events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|seen: &TurnStreamEvent| seen.kind == TurnStreamEventKind::ContentDelta);
+        events.lock().unwrap().push(event);
+        if first {
+            assert!(ClaudeCodeBackend::new().send_message(&path, &id, "note-1", "Also this."));
+            let _ = released.lock().unwrap().recv();
+        }
+    });
+    (sink, seen)
+}
+
+fn not_delivered(events: &[TurnStreamEvent]) -> Vec<Option<String>> {
+    events
+        .iter()
+        .filter(|event| {
+            event.kind == TurnStreamEventKind::Other("user_message_not_delivered".into())
+        })
+        .map(|event| event.source.item_id.clone())
+        .collect()
+}
+
+#[test]
+fn claude_code_failed_stdin_write_ends_the_turn_and_settles_its_message() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("claude.log");
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "closed-stdin");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log_path);
+    let request = agent_request(temp.path());
+    let (_release, released) = std::sync::mpsc::channel();
+    drop(_release);
+    let (sink, seen) = sink_sending_one_message(
+        request.project_path.clone(),
+        request.conversation_id.clone(),
+        released,
+    );
+
+    let started = std::time::Instant::now();
+    let error = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(request, Some(sink))
+        .unwrap_err();
+
+    // The process outlives its stdin, which used to hold the turn open.
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert!(
+        error.message.starts_with("claude code stdin write failed"),
+        "{error:?}"
+    );
+    assert!(!error.retryable);
+    assert_eq!(
+        not_delivered(&seen.lock().unwrap()),
+        [Some("note-1".to_string())]
+    );
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert_eq!(log.matches("-- invocation --").count(), 1, "{log}");
+    let pid = log
+        .lines()
+        .find_map(|line| line.strip_prefix("PID="))
+        .expect("pid");
+    assert!(!std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success());
+}
+
+#[test]
+fn claude_code_overloaded_sink_still_gets_the_unused_message_accounting() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("claude.log");
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "flood");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log_path);
+    let request = agent_request(temp.path());
+    let (release, released) = std::sync::mpsc::channel();
+    let (sink, seen) = sink_sending_one_message(
+        request.project_path.clone(),
+        request.conversation_id.clone(),
+        released,
+    );
+    let turn = std::thread::spawn(move || {
+        ClaudeCodeBackend::new().run_agent_turn_with_event_sink(request, Some(sink))
+    });
+    // The overloaded turn ends, closing stdin, while the sink still waits.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !std::fs::read_to_string(&log_path)
+        .unwrap_or_default()
+        .contains("STDIN_CLOSED")
+    {
+        assert!(std::time::Instant::now() < deadline, "turn never ended");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    drop(release);
+
+    let error = turn.join().unwrap().unwrap_err();
+    assert!(
+        error.message.contains("its event queue is full"),
+        "{error:?}"
+    );
+    assert_eq!(
+        not_delivered(&seen.lock().unwrap()),
+        [Some("note-1".to_string())]
+    );
+}
+
 #[test]
 fn claude_code_crash_after_init_resumes_the_session_once() {
     let _lock = ENV_LOCK

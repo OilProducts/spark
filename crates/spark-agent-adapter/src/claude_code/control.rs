@@ -83,7 +83,9 @@ impl Command {
 pub(super) enum Message {
     /// Counts against the sink's queue until handled.
     Event(TurnStreamEvent, Held),
-    Done(Box<Turn>, Outcome),
+    /// With the events sequenced at teardown, which reach the sink after
+    /// everything queued, even past an overload.
+    Done(Box<Turn>, Outcome, Vec<TurnStreamEvent>),
 }
 
 /// How one process's part of the turn ended.
@@ -144,6 +146,7 @@ pub(super) fn start(
         messages,
         sink: sink.then(|| Budget::new(&LIMITS)),
         overflowed: false,
+        late: Vec::new(),
         closed: Arc::clone(&closed),
         exited: false,
         initialized: false,
@@ -219,6 +222,8 @@ struct Control {
     ended: bool,
     /// Why the turn failed; a failed turn is not resumed.
     failure: Option<String>,
+    /// Why stdin broke: nothing more reaches the process.
+    broken: Option<String>,
     logs: Vec<AgentRawLogLine>,
 }
 
@@ -253,6 +258,7 @@ impl Control {
             context: None,
             ended: false,
             failure: None,
+            broken: None,
             logs: Vec::new(),
         }
     }
@@ -380,7 +386,9 @@ impl Control {
             None => Refused::Closed,
         };
         match refused {
-            Refused::Closed => self.log("stdin write failed"),
+            // The writer stopped at a failed write, which the connection
+            // status reports.
+            Refused::Closed => {}
             Refused::Full => self.fail("claude code overloaded: its stdin queue is full".into()),
             Refused::TooLarge => self.fail(format!(
                 "claude code input exceeds the {} MiB line limit",
@@ -753,6 +761,8 @@ struct Worker {
     sink: Option<Budget>,
     /// The sink fell a full queue behind: it gets no more events.
     overflowed: bool,
+    /// Events sequenced at teardown, for the handover.
+    late: Vec<TurnStreamEvent>,
     closed: Arc<AtomicBool>,
     exited: bool,
     /// system/init arrived, or the turn stopped waiting for it.
@@ -780,7 +790,8 @@ impl Worker {
         // never hit argv limits.
         self.control.send_user(content, None);
         let init_deadline = Instant::now() + INIT_TIMEOUT;
-        while !self.control.ended && self.control.failure.is_none() {
+        while !self.control.ended && self.control.failure.is_none() && self.control.broken.is_none()
+        {
             let deadline = [
                 (!self.initialized).then_some(init_deadline),
                 self.control
@@ -860,24 +871,29 @@ impl Worker {
                 )
             })
             .collect();
-        self.push(not_delivered);
+        self.settle(not_delivered);
         // Stopped while idle: the last result, so far commentary, is final.
-        if ended && !self.turn.state.completed {
+        if ended && self.control.failure.is_none() && !self.turn.state.completed {
             if let Some(result) = self.turn.state.result_payload.clone() {
                 let events = self.turn.state.ingest_result(&result, true);
-                self.push(events);
+                self.settle(events);
             }
         }
         self.turn.raw_log_lines.append(&mut self.control.logs);
-        let exit = reap(&mut stdout, &mut status, &stop).await;
+        let (exit, by_itself) = reap(&mut stdout, &mut status, &stop).await;
         let outcome = if let Some(reason) = self.control.failure.take() {
             // Not resumed: the failure was not the process's.
             self.turn.stopping = true;
             Outcome::Failed(reason)
         } else if ended {
             Outcome::Ended
+        } else if let Some(error) = self.control.broken.take().filter(|_| !by_itself) {
+            // Alive with its stdin closed: not a crash, so not resumed.
+            self.turn.stopping = true;
+            Outcome::Failed(format!("claude code stdin write failed: {error}"))
         } else {
-            // Its last words, unless a descendant holds stderr open.
+            // Exited, or stdin broke as it died: its exit decides, as for
+            // any crash. Its last words, unless a descendant holds stderr open.
             let _ =
                 tokio::time::timeout(STDERR_WAIT, status.wait_for(|status| status.stderr_closed))
                     .await;
@@ -885,7 +901,18 @@ impl Worker {
         };
         let _ = self
             .messages
-            .send(Message::Done(Box::new(self.turn), outcome));
+            .send(Message::Done(Box::new(self.turn), outcome, self.late));
+    }
+
+    /// Records events sequenced at teardown for the handover rather than
+    /// the sink's queue.
+    fn settle(&mut self, events: Vec<TurnStreamEvent>) {
+        let (late, sink) = (&mut self.late, self.sink.is_some());
+        self.turn.push(events, |event| {
+            if sink {
+                late.push(event.clone());
+            }
+        });
     }
 
     /// Sequences events: each goes to the sink's queue without waiting on
@@ -1095,40 +1122,44 @@ impl Worker {
             control.pending.clear();
             control.clarifications.clear();
         }
-        // Kept out of the raw log: the process closing its stdin usually
-        // means it is exiting, which reports itself.
+        // A failed write: nothing more reaches the process. A turn whose
+        // result is in keeps it, losing only its context usage; any other
+        // ends here, settling its unused messages.
         if let Some(error) = status
             .write_failure
             .as_ref()
-            .filter(|_| control.stdin.is_some())
+            .filter(|_| control.broken.is_none())
         {
-            tracing::warn!(error, "Claude Code stdin write failed");
+            control.broken = Some(error.clone());
             control.abandon();
-            // Nothing more reaches the process, so no context usage answer will.
             control.expire_context_request(true);
+            if !control.ended {
+                control.log(&format!("stdin write failed: {error}"));
+            }
         }
     }
 }
 
 /// Waits for the ended process to exit on its own for `EXIT_GRACE`, then
-/// stops its group; its exit status. Output it writes meanwhile is dropped.
+/// stops its group; its exit status, and whether it exited by itself.
+/// Output it writes meanwhile is dropped.
 async fn reap(
     stdout: &mut Incoming,
     status: &mut tokio::sync::watch::Receiver<Status>,
     stop: &Stop,
-) -> String {
+) -> (String, bool) {
     let grace = Instant::now() + EXIT_GRACE;
     let mut stopped = false;
     loop {
         match status.borrow_and_update().exited.clone() {
-            Some(Ok(exit)) => return exit.to_string(),
-            Some(Err(error)) => return format!("wait failed: {error}"),
+            Some(Ok(exit)) => return (exit.to_string(), !stopped),
+            Some(Err(error)) => return (format!("wait failed: {error}"), !stopped),
             None => {}
         }
         tokio::select! {
             changed = status.changed() => {
                 if changed.is_err() {
-                    return "unknown status".to_string();
+                    return ("unknown status".to_string(), !stopped);
                 }
             }
             Some(_) = stdout.next(), if stdout.end().is_none() => {}

@@ -398,9 +398,12 @@ impl ClaudeCodeBackend {
                         sink(event);
                     }
                 }
-                control::Message::Done(done, ended) => {
+                control::Message::Done(done, ended, late) => {
                     *turn = *done;
                     outcome = Some(ended);
+                    if let Some(sink) = event_sink {
+                        late.into_iter().for_each(|event| sink(event));
+                    }
                     break;
                 }
             }
