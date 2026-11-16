@@ -58,6 +58,15 @@ fn run(
     request: &AgentTurnRequest,
     on_event: impl Fn(&TurnStreamEvent) + Send + Sync + 'static,
 ) -> (Result<AcpTurn, String>, Vec<TurnStreamEvent>) {
+    run_flow(request, None, on_event)
+}
+
+/// [`run`] for a flow node, whose forms go to `clarification`.
+fn run_flow(
+    request: &AgentTurnRequest,
+    clarification: Option<spark_agent_adapter::codergen::ClarificationHandler>,
+    on_event: impl Fn(&TurnStreamEvent) + Send + Sync + 'static,
+) -> (Result<AcpTurn, String>, Vec<TurnStreamEvent>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink: AgentTurnEventSink = {
         let seen = Arc::clone(&seen);
@@ -66,7 +75,8 @@ fn run(
             seen.lock().unwrap().push(event);
         })
     };
-    let result = acp::run_turn(request, "fake", Some(&sink)).map_err(|failure| failure.message);
+    let result = acp::run_turn(request, "fake", Some(&sink), clarification)
+        .map_err(|failure| failure.message);
     let seen = seen.lock().unwrap().clone();
     (result, seen)
 }
@@ -206,9 +216,10 @@ fn acp_turn_streams_updates_while_the_prompt_is_open_and_returns_them_once() {
 
     let initialize = &received(dir.path(), "initialize")[0];
     assert_eq!(initialize["protocolVersion"], 1);
-    assert!(
-        !initialize.to_string().contains("elicitation"),
-        "form elicitation is not advertised: {initialize}"
+    assert_eq!(
+        initialize["clientCapabilities"]["elicitation"],
+        json!({"form": {}}),
+        "only form elicitation is advertised: {initialize}"
     );
     let new = &received(dir.path(), "session/new")[0];
     assert!(new.get("systemPrompt").is_none());
@@ -1063,4 +1074,475 @@ fn acp_blocked_sink_keeps_cancellation_independent_and_fails_on_overload() {
     let error = result.err().expect("overloaded").message;
     assert!(error.contains("overloaded"), "{error}");
     assert!(seen.len() < 200, "the queue is bounded: {}", seen.len());
+}
+
+// ---- forms ----------------------------------------------------------------
+
+fn form_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "title": "Name", "minLength": 1},
+            "count": {"type": "integer", "minimum": 0},
+            "agree": {"type": "boolean", "default": true},
+            "color": {"type": "string", "enum": ["red", "green"]},
+            "tags": {"type": "array", "items": {"type": "string", "enum": ["a", "b"]}},
+        },
+        "required": ["name", "count", "agree"],
+    })
+}
+
+fn form(extra: Value) -> Value {
+    let mut form = json!({"params": {
+        "mode": "form",
+        "message": "Pick the details.",
+        "requestedSchema": form_schema(),
+    }});
+    form.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    form
+}
+
+fn typed_reply() -> spark_common::forms::FormReply {
+    serde_json::from_value(json!({
+        "action": "accept",
+        "content": {"name": "x", "count": 0, "agree": false, "tags": []},
+    }))
+    .unwrap()
+}
+
+/// Form requests the sink saw, as `(status, request)`.
+fn forms_seen(events: &[TurnStreamEvent]) -> Vec<(String, Value)> {
+    events
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::RequestUserInputRequested)
+        .map(|event| {
+            let request = event.request_user_input.clone().unwrap();
+            let status = request["status"].as_str().unwrap_or("pending").to_string();
+            (status, request)
+        })
+        .collect()
+}
+
+/// What Spark replied to the fake's request `id`.
+fn reply_to(dir: &Path, id: &str) -> Vec<Value> {
+    log(dir)
+        .into_iter()
+        .filter(|entry| entry["received"]["id"] == id && entry["received"].get("method").is_none())
+        .map(|entry| entry["received"].clone())
+        .collect()
+}
+
+#[test]
+fn acp_chat_form_reaches_its_live_turn_once_with_typed_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let request = request(dir.path(), json!({"forms": [form(json!({}))]}), json!({}));
+    let (project, conversation) = (
+        request.project_path.clone(),
+        request.conversation_id.clone(),
+    );
+    let delivered = Arc::new(Mutex::new(Vec::new()));
+    let (result, seen) = run(&request, {
+        let delivered = Arc::clone(&delivered);
+        move |event| {
+            let Some(asked) = &event.request_user_input else {
+                return;
+            };
+            let id = asked["request_id"].as_str().unwrap();
+            let mut delivered = delivered.lock().unwrap();
+            delivered.push(acp::answer(
+                &project,
+                &conversation,
+                "acp-form-stale",
+                typed_reply(),
+            ));
+            delivered.push(acp::answer(&project, &conversation, id, typed_reply()));
+            // A duplicate reply finds nothing pending.
+            delivered.push(acp::answer(
+                &project,
+                &conversation,
+                id,
+                spark_common::forms::FormReply::Decline,
+            ));
+        }
+    });
+    assert_eq!(
+        result.expect("answered turn").stop_reason,
+        StopReason::EndTurn
+    );
+    assert_eq!(*delivered.lock().unwrap(), [false, true, false]);
+    let forms = forms_seen(&seen);
+    assert_eq!(forms.len(), 1, "an answered form never expires: {forms:?}");
+    let (status, asked) = &forms[0];
+    assert_eq!(status, "pending");
+    assert!(asked["request_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("acp-form-"));
+    assert_eq!(asked["questions"], json!([]));
+    // The form shows people the Spark request ID their reply answers.
+    assert_eq!(
+        asked["form"],
+        json!({
+            "request_id": asked["request_id"],
+            "harness": "acp:fake",
+            "harness_label": "Fake ACP",
+            "message": "Pick the details.",
+            "schema": form_schema(),
+        })
+    );
+    let event = seen
+        .iter()
+        .find(|event| event.request_user_input.is_some())
+        .unwrap();
+    let correlation = event.details.as_ref().unwrap();
+    assert_eq!(correlation["session_id"], "fake-session");
+    assert_eq!(correlation["rpc_request_id"], "form-1");
+    assert!(correlation["connection"]
+        .as_str()
+        .is_some_and(|id| !id.is_empty()));
+    assert!(event.source.app_turn_id.is_some(), "tied to its prompt");
+    assert_eq!(
+        reply_to(dir.path(), "form-1"),
+        [json!({"jsonrpc": "2.0", "id": "form-1", "result": {
+            "action": "accept",
+            "content": {"name": "x", "count": 0, "agree": false, "tags": []},
+        }})],
+        "false, zero and an empty selection reach the harness as typed; omitted fields stay omitted"
+    );
+    let id = asked["request_id"].as_str().unwrap();
+    assert!(
+        !acp::answer(
+            &request.project_path,
+            &request.conversation_id,
+            id,
+            typed_reply()
+        ),
+        "an ended turn's form is never revived"
+    );
+}
+
+#[test]
+fn acp_pending_forms_expire_on_cancel_withdrawal_and_connection_loss() {
+    // An interrupt cancels the form with the harness, then the prompt.
+    let dir = tempfile::tempdir().unwrap();
+    let script = json!({"forms": [form(json!({}))], "await_cancel": "respond"});
+    let request = request(dir.path(), script, json!({}));
+    let (project, conversation) = (
+        request.project_path.clone(),
+        request.conversation_id.clone(),
+    );
+    let (result, seen) = run(&request, move |event| {
+        if event.request_user_input.is_some() && event.status.is_none() {
+            assert!(acp::interrupt(&project, &conversation));
+        }
+    });
+    assert_eq!(
+        result.expect("cancelled turn").stop_reason,
+        StopReason::Cancelled
+    );
+    assert_eq!(
+        reply_to(dir.path(), "form-1")[0]["result"],
+        json!({"action": "cancel"})
+    );
+    assert_eq!(received(dir.path(), "session/cancel").len(), 1);
+    let forms = forms_seen(&seen);
+    let statuses = forms
+        .iter()
+        .map(|(status, _)| status.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(statuses, ["pending", "expired"]);
+    assert_eq!(forms[0].1["request_id"], forms[1].1["request_id"]);
+
+    // The harness withdraws its own request.
+    let dir = tempfile::tempdir().unwrap();
+    let script = json!({"forms": [form(json!({"withdraw": true}))]});
+    let (result, seen) = run(&request_in(dir.path(), script), |_| {});
+    assert_eq!(
+        result.expect("finished turn").stop_reason,
+        StopReason::EndTurn
+    );
+    let statuses = forms_seen(&seen)
+        .into_iter()
+        .map(|(status, _)| status)
+        .collect::<Vec<_>>();
+    assert_eq!(statuses, ["pending", "expired"]);
+    assert!(reply_to(dir.path(), "form-1")[0].get("error").is_some());
+
+    // The connection is lost while the form waits.
+    let dir = tempfile::tempdir().unwrap();
+    let crash = dir.path().join("crash");
+    let script = json!({"forms": [form(json!({"exit": crash}))]});
+    let (result, seen) = run(&request_in(dir.path(), script), move |event| {
+        if event.request_user_input.is_some() {
+            std::fs::write(&crash, "").unwrap();
+        }
+    });
+    result.err().expect("a lost connection fails the turn");
+    let statuses = forms_seen(&seen)
+        .into_iter()
+        .map(|(status, _)| status)
+        .collect::<Vec<_>>();
+    assert_eq!(statuses, ["pending", "expired"]);
+}
+
+fn request_in(dir: &Path, script: Value) -> AgentTurnRequest {
+    request(dir, script, json!({}))
+}
+
+#[test]
+fn acp_sdk_shaped_form_is_asked_as_sent_and_answered_exactly() {
+    use agent_client_protocol::v1::schema::{
+        CreateElicitationResponse, ElicitationSchema, EnumOption, IntegerPropertySchema,
+        MultiSelectItems, MultiSelectPropertySchema, StringPropertySchema, TitledMultiSelectItems,
+    };
+    use spark_common::forms::check_reply;
+    let meta = serde_json::Map::from_iter([("origin".to_string(), json!("sdk"))]);
+    let option = |value: &str, title: &str| {
+        EnumOption::new(value, title)
+            .description(format!("About {title}"))
+            .meta(meta.clone())
+    };
+    let mut tags = MultiSelectPropertySchema::titled(Vec::new()).max_items(2);
+    tags.items = MultiSelectItems::Titled(
+        TitledMultiSelectItems::new(vec![option("a", "A"), option("b", "B")]).meta(meta.clone()),
+    );
+    let sdk = ElicitationSchema::new()
+        .property(
+            "plan",
+            StringPropertySchema::new()
+                .title("Plan")
+                .one_of(vec![option("free", "Free"), option("pro", "Pro")])
+                .meta(meta.clone()),
+            true,
+        )
+        .property(
+            "count",
+            IntegerPropertySchema::new()
+                .minimum(0)
+                .maximum(9_007_199_254_740_993),
+            true,
+        )
+        .property("tags", tags, false)
+        .property("note", StringPropertySchema::new(), false);
+    // What the SDK emits, plus the nulls it reads as omitted keywords.
+    let mut schema = serde_json::to_value(&sdk).unwrap();
+    for (field, key) in [
+        ("note", "minLength"),
+        ("note", "pattern"),
+        ("note", "format"),
+        ("note", "default"),
+        ("note", "enum"),
+        ("plan", "enum"),
+        ("plan", "description"),
+        ("count", "default"),
+        ("tags", "default"),
+        ("tags", "minItems"),
+    ] {
+        schema["properties"][field][key] = Value::Null;
+    }
+    schema["properties"]["plan"]["oneOf"][0]["description"] = Value::Null;
+    schema["properties"]["tags"]["items"]["anyOf"][1]["_meta"] = Value::Null;
+    serde_json::from_value::<ElicitationSchema>(schema.clone()).expect("the SDK reads it");
+
+    let dir = tempfile::tempdir().unwrap();
+    let params = json!({"mode": "form", "message": "Plan?", "requestedSchema": schema});
+    let request = request_in(dir.path(), json!({"forms": [{"params": params}]}));
+    let (project, conversation) = (
+        request.project_path.clone(),
+        request.conversation_id.clone(),
+    );
+    let answer = |count: Value| {
+        serde_json::from_value::<spark_common::forms::FormReply>(json!({
+            "action": "accept",
+            "content": {"plan": "pro", "count": count, "tags": ["b"]},
+        }))
+        .unwrap()
+    };
+    let delivered = Arc::new(Mutex::new(Vec::new()));
+    let (result, seen) = run(&request, {
+        let delivered = Arc::clone(&delivered);
+        move |event| {
+            let Some(asked) = &event.request_user_input else {
+                return;
+            };
+            let (id, asked) = (
+                asked["request_id"].as_str().unwrap(),
+                &asked["form"]["schema"],
+            );
+            // One past the declared maximum is refused, though both round to the same f64.
+            let over = answer(json!(9_007_199_254_740_994_u64));
+            assert!(check_reply(asked, &over)
+                .unwrap_err()
+                .contains("above its maximum"));
+            let reply = answer(json!(9_007_199_254_740_993_u64));
+            assert_eq!(check_reply(asked, &reply), Ok(()));
+            let sent = acp::answer(&project, &conversation, id, reply);
+            delivered.lock().unwrap().push(sent);
+        }
+    });
+    assert_eq!(
+        result.expect("answered turn").stop_reason,
+        StopReason::EndTurn
+    );
+    assert_eq!(*delivered.lock().unwrap(), [true]);
+    let forms = forms_seen(&seen);
+    assert_eq!(forms.len(), 1, "{forms:?}");
+    assert_eq!(forms[0].1["form"]["schema"], schema, "the original schema");
+    assert!(other(&seen, "warning").is_empty());
+    let replied = &reply_to(dir.path(), "form-1")[0]["result"];
+    assert_eq!(
+        replied.to_string(),
+        r#"{"action":"accept","content":{"plan":"pro","count":9007199254740993,"tags":["b"]}}"#
+    );
+    serde_json::from_value::<CreateElicitationResponse>(replied.clone())
+        .expect("the SDK reads the reply");
+}
+
+#[test]
+fn acp_unsupported_form_schemas_and_modes_are_refused_explicitly() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = json!({"params": {
+        "mode": "form",
+        "message": "Address?",
+        "requestedSchema": {"type": "object", "properties": {"address": {"type": "object"}}},
+    }});
+    let url = json!({"params": {
+        "mode": "url",
+        "message": "Sign in.",
+        "elicitationId": "e-1",
+        "url": "https://example.com/sign-in",
+    }});
+    let (result, seen) = run(
+        &request_in(dir.path(), json!({"forms": [nested, url]})),
+        |_| {},
+    );
+    assert_eq!(
+        result.expect("finished turn").stop_reason,
+        StopReason::EndTurn
+    );
+    for id in ["form-1", "form-2"] {
+        assert_eq!(reply_to(dir.path(), id)[0]["error"]["code"], -32602, "{id}");
+    }
+    assert!(forms_seen(&seen).is_empty(), "nothing is asked in part");
+    let warnings = other(&seen, "warning");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].message.as_deref().unwrap().contains("address"));
+}
+
+#[test]
+fn acp_flow_form_is_one_clarification_answered_through_its_handler() {
+    use spark_agent_adapter::codergen::{
+        ClarificationHandler, ClarificationPoll, ClarificationReply,
+    };
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let handler = |asked: Arc<Mutex<Vec<Value>>>, answer: Result<ClarificationReply, String>| {
+        Arc::new(move |params: Value| {
+            asked.lock().unwrap().push(params);
+            let (mut polls, answer) = (0, answer.clone());
+            Ok(Box::new(move || {
+                polls += 1;
+                match polls {
+                    1 => Ok(None),
+                    _ => answer.clone().map(Some),
+                }
+            }) as ClarificationPoll)
+        }) as ClarificationHandler
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let request = request_in(dir.path(), json!({"forms": [form(json!({}))]}));
+    let answer = Ok(ClarificationReply::Form(typed_reply()));
+    let (result, seen) = run_flow(&request, Some(handler(Arc::clone(&asked), answer)), |_| {});
+    assert_eq!(
+        result.expect("answered turn").stop_reason,
+        StopReason::EndTurn
+    );
+    let asked = asked.lock().unwrap().clone();
+    let (_, request_asked) = forms_seen(&seen).remove(0);
+    assert_eq!(
+        asked,
+        [json!({"agent_request_id": request_asked["request_id"], "form": request_asked["form"]})],
+        "the whole form is one clarification"
+    );
+    assert_eq!(
+        reply_to(dir.path(), "form-1")[0]["result"],
+        json!({"action": "accept", "content": {"name": "x", "count": 0, "agree": false, "tags": []}})
+    );
+
+    // A flow whose wait fails, such as a cancelled run, fails the turn.
+    let dir = tempfile::tempdir().unwrap();
+    let request = request_in(dir.path(), json!({"forms": [form(json!({}))]}));
+    let failed = Err("Run canceled while waiting for clarification".to_string());
+    let (result, _) = run_flow(&request, Some(handler(Arc::default(), failed)), |_| {});
+    let error = result.err().expect("failed wait");
+    assert!(error.contains("Run canceled while waiting"), "{error}");
+}
+
+#[test]
+fn acp_chat_form_answers_reach_only_the_live_turn_that_asked() {
+    use spark_agent_adapter::{
+        AgentRequestUserInputAnswerRequest, AgentTurnBackend, AgentTurnOutput,
+        RustLlmAgentTurnBackend,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let request = request(dir.path(), json!({"forms": [form(json!({}))]}), json!({}));
+    let answer = {
+        let (project, conversation) = (
+            request.project_path.clone(),
+            request.conversation_id.clone(),
+        );
+        move |request_id: &str| -> AgentTurnOutput {
+            let request: AgentRequestUserInputAnswerRequest = serde_json::from_value(json!({
+                "conversation_id": conversation,
+                "project_path": project,
+                "request_id": request_id,
+                "assistant_turn_id": "turn-assistant",
+                "form": typed_reply(),
+                "provider": "acp:fake",
+            }))
+            .unwrap();
+            RustLlmAgentTurnBackend::new(unified_llm_adapter::Client::new())
+                .answer_request_user_input(request)
+                .unwrap()
+        }
+    };
+    let delivered = Arc::new(Mutex::new(Vec::new()));
+    let (result, seen) = chat(request, {
+        let (delivered, answer) = (Arc::clone(&delivered), answer.clone());
+        move |event| {
+            if let Some(asked) = event
+                .request_user_input
+                .as_ref()
+                .filter(|_| event.status.is_none())
+            {
+                delivered
+                    .lock()
+                    .unwrap()
+                    .push(answer(asked["request_id"].as_str().unwrap()));
+            }
+        }
+    });
+    result.expect("answered chat turn");
+    let delivered = delivered.lock().unwrap().clone();
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(
+        delivered[0].events[0].source.raw_kind.as_deref(),
+        Some("request_user_input_answer_delivered")
+    );
+    assert_eq!(
+        reply_to(dir.path(), "form-1")[0]["result"]["action"],
+        "accept"
+    );
+    let (_, asked) = forms_seen(&seen).remove(0);
+    let stale = answer(asked["request_id"].as_str().unwrap());
+    assert_eq!(
+        stale
+            .thread_resume_failure
+            .and_then(|failure| failure.error_code)
+            .as_deref(),
+        Some("request_user_input_not_pending"),
+        "an ended turn's form is never answered from history"
+    );
 }

@@ -1731,7 +1731,7 @@ impl Worker {
             };
             let (key, completions) = (question.key, self.completions.clone());
             queued = work.run(0, move || {
-                let answers = poll();
+                let answers = crate::codergen::ClarificationReply::polled_answers(poll());
                 let _ = completions.send(Completion::Polled { key, poll, answers });
             });
             if queued.is_err() {

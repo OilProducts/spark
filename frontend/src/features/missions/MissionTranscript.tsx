@@ -19,6 +19,7 @@ import { describeRunRecovery, getRunRecoveryStatusPresentation } from '@/feature
 import { flowTitle, formatRunDate, runStatusKind } from '@/features/runs/model/runOverviewModel'
 import { STATUS_LABELS } from '@/features/runs/model/shared'
 import { retryConversationTurn, submitConversationRequestUserInput } from '@/features/projects/services/conversationArtifacts'
+import type { FormReply } from '@/lib/forms'
 import { cn } from '@/lib/utils'
 import { parseTurn, runKinds, runStatusLabel, type MissionRun } from './model/missionModel'
 
@@ -51,11 +52,11 @@ export function MissionTranscript({ conversation, project, runs, closed = false 
     const [submitting, setSubmitting] = useState<Record<string, boolean>>({})
     const [inputError, setInputError] = useState<string | null>(null)
     // The agent can ask through its own question tool mid-turn; the answer resumes that turn.
-    async function submitInput(requestId: string, answers: Record<string, string>) {
+    async function submitInput(requestId: string, answers: Record<string, string>, form?: FormReply) {
         setInputError(null)
         setSubmitting(current => ({ ...current, [requestId]: true }))
         try {
-            await submitConversationRequestUserInput(conversationId, requestId, { project_path: project, answers })
+            await submitConversationRequestUserInput(conversationId, requestId, { project_path: project, answers, form })
             reload()
         } catch (e) { setInputError(e instanceof Error ? e.message : String(e)) } finally {
             setSubmitting(current => { const next = { ...current }; delete next[requestId]; return next })

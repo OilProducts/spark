@@ -10,6 +10,7 @@ pub mod agent_settings;
 pub mod debug;
 pub mod error;
 pub mod events;
+pub mod forms;
 pub mod logging;
 pub mod paths;
 pub mod process;

@@ -4,7 +4,9 @@
 //! directory, the `log_env` variables and the contents of file arguments.
 //! `answers[n]` answers the log's nth prompt, across launches. `echo_env`
 //! variables are printed to stderr at startup and in every error, as a leaky
-//! harness would.
+//! harness would. `forms` are `elicitation/create` requests sent in turn
+//! during the prompt, each waiting for its reply unless it `exit`s or is
+//! `withdraw`n with `$/cancel_request`.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -28,6 +30,7 @@ fn main() {
             .unwrap_or("fake-session")
             .to_string(),
         script,
+        cancelled: false,
     };
     agent.startup();
     while let Some(message) = agent.read() {
@@ -40,6 +43,8 @@ struct Agent {
     log: Option<String>,
     lines: std::io::Lines<std::io::StdinLock<'static>>,
     session_id: String,
+    /// `session/cancel` arrived while a form waited.
+    cancelled: bool,
 }
 
 impl Agent {
@@ -234,6 +239,29 @@ impl Agent {
             self.update(&json!({"sessionUpdate": "agent_message_chunk",
                 "content": {"type": "text", "text": text}}));
         }
+        for (index, form) in script["forms"].as_array().into_iter().flatten().enumerate() {
+            let id = format!("form-{}", index + 1);
+            let mut params = form["params"].clone();
+            params["sessionId"] = json!(self.session_id);
+            self.send(json!({"jsonrpc": "2.0", "id": id, "method": "elicitation/create", "params": params}));
+            // Exits, as a crashed harness would, once the file `exit` names exists.
+            if let Some(exit) = form["exit"].as_str() {
+                while !std::path::Path::new(exit).exists() {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                std::process::exit(4);
+            }
+            if form["withdraw"].as_bool().unwrap_or(false) {
+                self.send(json!({"jsonrpc": "2.0", "method": "$/cancel_request", "params": {"requestId": id}}));
+            }
+            // The reply is logged as it is read.
+            while let Some(message) = self.read() {
+                self.cancelled |= message["method"] == "session/cancel";
+                if message["id"] == id && message.get("method").is_none() {
+                    break;
+                }
+            }
+        }
         if let Some(permission) = script.get("permission") {
             self.send(json!({
                 "jsonrpc": "2.0",
@@ -258,10 +286,9 @@ impl Agent {
             }
         }
         if let Some(on_cancel) = script["await_cancel"].as_str() {
-            while let Some(message) = self.read() {
-                if message["method"] == "session/cancel" {
-                    break;
-                }
+            while !self.cancelled {
+                let Some(message) = self.read() else { break };
+                self.cancelled = message["method"] == "session/cancel";
             }
             if on_cancel == "ignore" {
                 while self.read().is_some() {}

@@ -1056,7 +1056,7 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         ("session_resume", "supported"),
         ("pinned_instructions", "supported"),
         ("plan_mode", "unsupported"),
-        ("forms", "unsupported"),
+        ("forms", "supported"),
         ("per_prompt_usage", "unverified"),
     ] {
         assert_eq!(

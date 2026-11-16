@@ -414,6 +414,7 @@ fn commit_notices_name_ended_segments_and_settled_executions() {
             project_path,
             "decision",
             &BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
+            None,
         )
         .expect("answer");
     assert!(matches!(answer, Answer::Answered(_)), "{answer:?}");
@@ -602,6 +603,7 @@ fn a_question_only_return_waits_for_its_continuation_which_settles() {
             project_path,
             "decision",
             &BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
+            None,
         )
         .expect("answer");
     let Answer::Answered(answered) = answer else {
@@ -639,6 +641,119 @@ fn a_question_only_return_waits_for_its_continuation_which_settles() {
     assert_eq!(assistant["status"], "failed", "{assistant}");
     // Settled once: a late return changes nothing.
     assert!(!returned(Some(answered.segment_id)));
+}
+
+#[test]
+fn a_form_question_keeps_only_a_valid_typed_reply_and_expires_when_withdrawn() {
+    use spark_common::forms::FormReply;
+    let project_path = "/projects/commit-form";
+    let (_temp, repo) = setup(project_path);
+    start(&repo, "conversation-f", project_path, "Ask with a form");
+    let form = json!({"harness": "acp:fake", "harness_label": "Fake", "message": "Pick.",
+        "schema": {"type": "object", "properties": {
+            "count": {"type": "integer"}, "agree": {"type": "boolean"},
+            "note": {"type": "string", "enum": ["a", "bb"], "minLength": 2}},
+            "required": ["count", "agree"]}});
+    let ask = |request_id: &str, status: Option<&str>| {
+        let mut request = json!({"request_id": request_id, "questions": [], "form": form});
+        if let Some(status) = status {
+            request["status"] = json!(status);
+        }
+        record(
+            &repo,
+            "conversation-f",
+            project_path,
+            json!({"kind": "request_user_input_requested", "source": {"item_id": request_id},
+                "request_user_input": request}),
+        );
+    };
+    let answer = |request_id: &str, reply: Option<Value>| {
+        let reply = reply.map(|reply| serde_json::from_value::<FormReply>(reply).unwrap());
+        repo.answer_question(
+            "conversation-f",
+            project_path,
+            request_id,
+            &BTreeMap::from([("count".to_string(), "0".to_string())]),
+            reply.as_ref(),
+        )
+        .map(|(_, answer)| answer)
+    };
+    let asked = |request_id: &str| {
+        snapshot(&repo, "conversation-f")["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|segment| segment["request_user_input"]["request_id"] == request_id)
+            .cloned()
+            .unwrap()
+    };
+
+    ask("acp-form-1", None);
+    assert_eq!(asked("acp-form-1")["status"], "pending");
+    assert_eq!(asked("acp-form-1")["request_user_input"]["form"], form);
+    assert_eq!(asked("acp-form-1")["content"], "Pick.");
+    for invalid in [
+        None,
+        Some(json!({"action": "accept", "content": {"count": "0", "agree": false}})),
+        Some(json!({"action": "accept", "content": {"agree": false}})),
+        Some(json!({"action": "accept", "content": {"count": 0, "agree": false, "other": 1}})),
+        // A listed choice still has to meet the field's other constraints.
+        Some(json!({"action": "accept", "content": {"count": 0, "agree": false, "note": "a"}})),
+    ] {
+        assert!(
+            answer("acp-form-1", invalid.clone()).is_err(),
+            "{invalid:?}"
+        );
+        assert_eq!(asked("acp-form-1")["status"], "pending", "{invalid:?}");
+    }
+    let reply = json!({"action": "accept", "content": {"count": 0, "agree": false}});
+    let Answer::Answered(answered) = answer("acp-form-1", Some(reply.clone())).unwrap() else {
+        panic!("answered");
+    };
+    assert_eq!(answered.request["reply"], reply);
+    let persisted = asked("acp-form-1");
+    assert_eq!(persisted["status"], "complete");
+    assert_eq!(persisted["request_user_input"]["status"], "answered");
+    assert_eq!(
+        persisted["request_user_input"]["reply"], reply,
+        "kept as typed"
+    );
+    assert_eq!(persisted["request_user_input"]["answers"], json!({}));
+    assert_eq!(persisted["content"], "Accepted.\ncount: 0\nagree: false");
+    assert!(matches!(
+        answer("acp-form-1", Some(reply)).unwrap(),
+        Answer::Unchanged
+    ));
+    assert!(answer("acp-form-1", Some(json!({"action": "decline"}))).is_err());
+
+    // A form the turn withdraws expires, takes no reply and never revives.
+    ask("acp-form-2", None);
+    ask("acp-form-2", Some("expired"));
+    assert_eq!(
+        asked("acp-form-2")["request_user_input"]["status"],
+        "expired"
+    );
+    assert!(answer("acp-form-2", Some(json!({"action": "cancel"}))).is_err());
+    ask("acp-form-2", None);
+    assert_eq!(
+        asked("acp-form-2")["request_user_input"]["status"],
+        "expired"
+    );
+
+    // A question with string answers takes no form reply, and a form no answers.
+    record(
+        &repo,
+        "conversation-f",
+        project_path,
+        json!({"kind": "request_user_input_requested", "source": {"item_id": "input-1"},
+            "request_user_input": {"itemId": "input-1", "questions": [
+                {"id": "count", "header": "Count", "question": "How many?"}]}}),
+    );
+    assert!(answer("input-1", Some(json!({"action": "decline"}))).is_err());
+    assert!(matches!(
+        answer("input-1", None).unwrap(),
+        Answer::Answered(_)
+    ));
 }
 
 /// A steer the running turn accepted but ended without reading fails on the

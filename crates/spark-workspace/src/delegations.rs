@@ -491,6 +491,7 @@ pub fn cancel(settings: &SparkSettings, delegation_id: &str) -> WorkspaceResult<
 
 /// A run question takes `selected_value`; a conversation request takes
 /// `answers` by question ID, or `selected_value` when it asks one question.
+/// A question that carries a `form` takes only `form`: one typed reply.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DelegationAnswerRequest {
@@ -498,6 +499,8 @@ pub struct DelegationAnswerRequest {
     pub selected_value: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub answers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<spark_common::forms::FormReply>,
 }
 
 /// Forwards an answer to B once. A lost response is not replayed: the caller
@@ -1095,10 +1098,14 @@ fn conversation_view(
         .filter(|segment| segment["kind"] == "request_user_input" && segment["status"] == "pending")
         .map(|segment| {
             let request = &segment["request_user_input"];
-            json!({
+            let mut question = json!({
                 "question_id": request["request_id"].as_str().or(segment["id"].as_str()),
                 "questions": request["questions"],
-            })
+            });
+            if request["form"].is_object() {
+                question["form"] = request["form"].clone();
+            }
+            question
         })
         .collect();
     let review = items("proposed_plans")
@@ -1231,8 +1238,15 @@ pub fn answer_incoming(
             row.phase
         )));
     }
-    if request.selected_value.is_empty() == request.answers.is_empty() {
-        return Err(validation("Give exactly one of selected_value or answers."));
+    let given = [
+        !request.selected_value.is_empty(),
+        !request.answers.is_empty(),
+        request.form.is_some(),
+    ];
+    if given.into_iter().filter(|given| *given).count() != 1 {
+        return Err(validation(
+            "Give exactly one of selected_value, answers or form.",
+        ));
     }
     let unknown = || {
         WorkspaceError::NotFound(format!(
@@ -1241,7 +1255,7 @@ pub fn answer_incoming(
     };
     if row.target_kind == "run" {
         if !request.answers.is_empty() {
-            return Err(validation("A run question takes selected_value."));
+            return Err(validation("A run question takes selected_value or form."));
         }
         let api = conversations.runtime_api_service();
         let questions = api.list_pipeline_questions(&row.target_id).body;
@@ -1258,10 +1272,17 @@ pub fn answer_incoming(
             attractor_api::HumanAnswerRequest {
                 selected_value: request.selected_value,
                 note: String::new(),
+                form: request.form,
             },
         );
         let detail = response.body["detail"].to_string();
         return match response.status_code {
+            // A refused answer leaves the question open.
+            200..=299 if response.body["status"] == "validation_error" => Err(validation(
+                response.body["error"]
+                    .as_str()
+                    .unwrap_or("The answer was refused."),
+            )),
             200..=299 => Ok(response.body),
             404 => Err(WorkspaceError::NotFound(detail)),
             400 | 422 => Err(WorkspaceError::Validation(detail)),
@@ -1281,7 +1302,14 @@ pub fn answer_incoming(
                 && segment["request_user_input"]["request_id"] == question_id
         })
         .ok_or_else(unknown)?;
-    let answers = if request.answers.is_empty() {
+    if segment["request_user_input"]["form"].is_object() && request.form.is_none() {
+        return Err(validation(format!(
+            "Request {question_id} is a form: reply with form."
+        )));
+    }
+    let answers = if request.form.is_some() || !request.answers.is_empty() {
+        request.answers
+    } else {
         let questions = segment["request_user_input"]["questions"]
             .as_array()
             .cloned()
@@ -1296,8 +1324,6 @@ pub fn answer_incoming(
             question["id"].as_str().unwrap_or_default().to_string(),
             request.selected_value,
         )])
-    } else {
-        request.answers
     };
     conversations.submit_request_user_input_answer(
         &row.target_id,
@@ -1305,6 +1331,7 @@ pub fn answer_incoming(
         ConversationRequestUserInputAnswerRequest {
             project_path: row.project_path.clone(),
             answers,
+            form: request.form,
         },
     )?;
     Ok(json!({"question_id": question_id, "answered": true}))

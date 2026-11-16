@@ -17,6 +17,7 @@ use spark_agent_adapter::{
 use spark_common::agent_settings::HarnessIdentity;
 use spark_common::debug::{codex_jsonrpc_trace_enabled, CODEX_JSONRPC_TRACE_PATH_METADATA_KEY};
 use spark_common::events::{TurnStreamEvent, TurnStreamEventKind};
+use spark_common::forms::FormReply;
 use spark_common::project::normalize_project_path;
 use spark_common::segments::{
     append_bounded_tool_output, non_empty_string, remove_key, set_string_value, set_value,
@@ -131,6 +132,9 @@ pub struct ConversationRequestUserInputAnswerRequest {
     pub project_path: String,
     #[serde(default)]
     pub answers: BTreeMap<String, String>,
+    /// A form question's typed reply, in place of `answers`.
+    #[serde(default)]
+    pub form: Option<FormReply>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -2434,7 +2438,7 @@ impl WorkspaceConversationService {
         let project_path = normalize_project_path_or_400(&request.project_path)?;
         let lookup_id = non_empty_string(request_id)
             .ok_or_else(|| WorkspaceError::Validation("Request id is required.".to_string()))?;
-        if request.answers.is_empty() {
+        if request.answers.is_empty() && request.form.is_none() {
             return Err(WorkspaceError::Validation(
                 "Answers are required.".to_string(),
             ));
@@ -2449,7 +2453,13 @@ impl WorkspaceConversationService {
             .read_snapshot(conversation_id, Some(&project_path))?
             .ok_or_else(unknown)?;
         let answered = match repository
-            .answer_question(conversation_id, &project_path, &lookup_id, &request.answers)?
+            .answer_question(
+                conversation_id,
+                &project_path,
+                &lookup_id,
+                &request.answers,
+                request.form.as_ref(),
+            )?
             .1
         {
             Answer::Unknown => return Err(unknown()),
@@ -2535,6 +2545,7 @@ impl WorkspaceConversationService {
             request_id: answered.request_id.clone(),
             assistant_turn_id: answered.assistant_turn_id.clone(),
             answers: answer_strings,
+            form: request.form,
             request_user_input: Some(Value::Object(answered.request.clone())),
             history,
             provider: Some(effective_provider),

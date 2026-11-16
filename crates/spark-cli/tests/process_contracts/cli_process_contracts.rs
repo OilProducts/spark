@@ -1449,13 +1449,18 @@ fn process_json_flags_take_inline_json_a_file_or_stdin() {
         "--summary",
         "s",
     ];
-    let cases: [(&[&str], &str, &str); 4] = [
+    let cases: [(&[&str], &str, &str); 5] = [
         (&launch, "--context", "/launch_context/k"),
         (&launch, "--node-overrides", "/node_overrides/k"),
         (
             &["delegation", "answer", "d-1", "--question", "q1"],
             "--answers",
             "/answers/k",
+        ),
+        (
+            &["delegation", "answer", "d-1", "--question", "q1"],
+            "--form",
+            "/form/k",
         ),
         (&["trigger", "create", "--project", "/repo"], "--json", "/k"),
     ];

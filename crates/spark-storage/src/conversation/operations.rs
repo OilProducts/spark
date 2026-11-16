@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use spark_common::agent_settings::HarnessIdentity;
 use spark_common::events::{TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind};
+use spark_common::forms::FormReply;
 use spark_common::segments::{
     assistant_segment_id, continued_segment_id, event_text, finalize_segment,
     materialize_segment_for_event, non_empty_string, normalize_assistant_text, plan_segment_id,
@@ -605,15 +606,19 @@ impl ConversationRepository {
 
     /// Record answers to a pending question, found by request or question
     /// id. Returns what their delivery needs.
+    /// A form question takes `form`, its typed reply, checked against the
+    /// form's schema; other questions take `answers`. An invalid reply
+    /// changes nothing, so the question stays pending.
     pub fn answer_question(
         &self,
         conversation_id: &str,
         project_path: &str,
         lookup_id: &str,
         answers: &BTreeMap<String, String>,
+        form: Option<&FormReply>,
     ) -> Result<(Option<ConversationCommit>, Answer)> {
         self.operate(conversation_id, Some(project_path), Open::Existing, |op| {
-            op.answer_question(lookup_id, answers)
+            op.answer_question(lookup_id, answers, form)
         })
     }
 
@@ -1125,14 +1130,24 @@ impl Op<'_> {
                             .and_then(Value::as_str)
                             .map(str::to_string)
                     });
-                let answered = terminal.iter().any(|segment| {
-                    segment["status"] != "pending"
-                        && request_id.is_some()
+                let mut asked = terminal.into_iter().filter(|segment| {
+                    request_id.is_some()
                         && segment["request_user_input"]["request_id"].as_str()
                             == request_id.as_deref()
                 });
-                if !answered {
-                    self.materialize(turn_id, event, None)?;
+                let expired = event
+                    .request_user_input
+                    .as_ref()
+                    .is_some_and(|request| request["status"] == "expired");
+                match asked.next() {
+                    Some(segment) if segment["status"] != "pending" => {}
+                    // A live request the agent can no longer take, such as a
+                    // form whose prompt was cancelled.
+                    Some(segment) if expired => self.expire_request(segment)?,
+                    _ if expired => {}
+                    _ => {
+                        self.materialize(turn_id, event, None)?;
+                    }
                 }
             }
             TurnStreamEventKind::Other(_) => {
@@ -1713,6 +1728,7 @@ impl Op<'_> {
         &mut self,
         lookup_id: &str,
         answers: &BTreeMap<String, String>,
+        form: Option<&FormReply>,
     ) -> Result<Answer> {
         let Some(segment) = self.find_question(lookup_id)? else {
             return Ok(Answer::Unknown);
@@ -1721,11 +1737,25 @@ impl Op<'_> {
             .as_object()
             .cloned()
             .unwrap_or_default();
-        let normalized = normalize_answers(&request, answers)?;
+        let (key, normalized) = match (request.get("form"), form) {
+            (Some(asked), Some(reply)) => {
+                spark_common::forms::check_reply(&asked["schema"], reply).map_err(invalid)?;
+                ("reply", json!(reply))
+            }
+            (Some(_), None) => {
+                return Err(invalid("This request is a form: reply with an action."))
+            }
+            (None, Some(_)) => {
+                return Err(invalid("This request takes answers, not a form reply."))
+            }
+            (None, None) => (
+                "answers",
+                Value::Object(normalize_answers(&request, answers)?),
+            ),
+        };
         match request.get("status").and_then(Value::as_str) {
             Some(status @ ("answered" | "expired")) => {
-                let existing = request.get("answers").and_then(Value::as_object);
-                if existing.is_some_and(|existing| *existing == normalized) {
+                if request.get(key) == Some(&normalized) {
                     return Ok(Answer::Unchanged);
                 }
                 return Err(commit_rejected(
@@ -1748,7 +1778,7 @@ impl Op<'_> {
             .and_then(non_empty_string)
             .unwrap_or_else(|| lookup_id.to_string());
         let submitted_at = self.now.clone();
-        request.insert("answers".into(), Value::Object(normalized));
+        request.insert(key.into(), normalized);
         request.insert("submitted_at".into(), json!(submitted_at));
         request.insert("status".into(), json!("answered"));
         let mut answered = segment.clone();

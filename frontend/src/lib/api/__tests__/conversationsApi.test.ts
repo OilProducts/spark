@@ -10,9 +10,11 @@ import {
     parseConversationPageResponse,
     parseConversationResetResponse,
     parseConversationSummarySnapshotResponse,
+    submitConversationRequestUserInputValidated,
     type ConversationRow,
 } from '@/lib/api/conversationsApi'
 import { afterEach, vi } from 'vitest'
+import { draftReply, formFields } from '@/lib/forms'
 import { artifactRow, conversationBatch, conversationPage, conversationRow, segmentRow, summarySnapshot, tombstoneRow, turnRow } from '@/test/conversationWire'
 
 // The page a transcript-shaped fixture becomes, with its rows' payloads grouped by kind.
@@ -479,6 +481,27 @@ describe('conversationsApi parsing', () => {
         })
     })
 
+    it('parses a form request and its typed reply, and leaves a string reply unread', () => {
+        const form = { request_id: 'acp-form-1', harness: 'acp:x', harness_label: 'X Agent', message: 'Pick', schema: { type: 'object', properties: { n: { type: 'integer' } } } }
+        const parse = (requestUserInput: Record<string, unknown>) => parseConversationSnapshotResponse({
+            revision: 0, conversation_id: 'c', conversation_handle: 'h', project_path: '/p', chat_mode: 'chat', title: 'T',
+            created_at: '2026-04-16T18:00:00Z', updated_at: '2026-04-16T18:00:00Z', turns: [],
+            segments: [{
+                id: 's', turn_id: 't', order: 1, kind: 'request_user_input', role: 'system', status: 'complete',
+                timestamp: '2026-04-16T18:00:08Z', updated_at: '2026-04-16T18:00:08Z', content: 'Pick',
+                request_user_input: { request_id: 'acp-form-1', status: 'answered', questions: [], answers: {}, ...requestUserInput },
+            }],
+            event_log: [], flow_run_requests: [], flow_launches: [],
+        }).segments[0].request_user_input
+        expect(parse({ form, reply: { action: 'accept', content: { n: 0 } } })).toMatchObject({
+            questions: [],
+            form: { requestId: 'acp-form-1', harness: 'acp:x', harnessLabel: 'X Agent', message: 'Pick', schema: form.schema },
+            reply: { action: 'accept', content: { n: 0 } },
+        })
+        expect(parse({ form, reply: 'Accepted.' })).toMatchObject({ form: { message: 'Pick' }, reply: null })
+        expect(parse({})).toMatchObject({ form: null, reply: null })
+    })
+
     it('rejects a batch whose turn row has a numeric revision', () => {
         const row = turnRow('conversation-plan', {
             id: 'turn-assistant-1',
@@ -721,6 +744,19 @@ describe('conversation reads', () => {
         vi.stubGlobal('fetch', fetchMock)
         return fetchMock
     }
+
+    it('sends a form reply beside the string answers', async () => {
+        const fetchMock = respond(200, { generation: 'g', watermark: '1', start: '1', rows: [] })
+        await submitConversationRequestUserInputValidated('c', 'acp-form-1', { project_path: '/p', answers: {}, form: { action: 'decline' } }).catch(() => undefined)
+        const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>
+        expect(calls[0][0]).toBe('/workspace/api/conversations/c/request-user-input/acp-form-1/answer')
+        expect(JSON.parse(String(calls[0][1].body))).toEqual({ project_path: '/p', answers: {}, form: { action: 'decline' } })
+
+        const exact = draftReply(formFields({ type: 'object', properties: { n: { type: 'integer' } } }), { n: '9007199254740993' })
+        if (!('reply' in exact)) throw new Error(exact.error)
+        await submitConversationRequestUserInputValidated('c', 'acp-form-1', { project_path: '/p', answers: {}, form: exact.reply }).catch(() => undefined)
+        expect(String(calls[1][1].body)).toContain('"form":{"action":"accept","content":{"n":9007199254740993}}')
+    })
 
     it('requests the newest page, then the page before a cursor', async () => {
         const fetchMock = respond(200, conversationPage({ conversation_id: 'c 1', project_path: '/p', title: 'T', revision: 2, turns: [], segments: [] }))

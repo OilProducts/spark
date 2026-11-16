@@ -829,6 +829,7 @@ fn answer_request(
     request: &AgentTurnRequest,
 ) -> spark_agent_adapter::AgentRequestUserInputAnswerRequest {
     spark_agent_adapter::AgentRequestUserInputAnswerRequest {
+        form: None,
         conversation_id: request.conversation_id.clone(),
         project_path: request.project_path.clone(),
         request_id: "question-1".into(),

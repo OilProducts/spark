@@ -710,8 +710,32 @@ impl CodergenEvent {
 /// transcripts stream while a node is still executing.
 pub type CodergenEventSink = std::sync::Arc<dyn Fn(CodergenEvent) + Send + Sync>;
 
-pub type ClarificationPoll =
-    Box<dyn FnMut() -> Result<Option<BTreeMap<String, String>>, String> + Send>;
+/// A flow clarification's answer: one per question ID, or a form's typed
+/// reply as one atomic answer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClarificationReply {
+    Answers(BTreeMap<String, String>),
+    Form(spark_common::forms::FormReply),
+}
+
+impl ClarificationReply {
+    /// The answers questions take; a form reply answers none.
+    pub fn answers(self) -> Result<BTreeMap<String, String>, String> {
+        match self {
+            Self::Answers(answers) => Ok(answers),
+            Self::Form(_) => Err("A form reply cannot answer questions.".to_string()),
+        }
+    }
+
+    /// Questions' answers from a poll, once there are any.
+    pub fn polled_answers(
+        polled: Result<Option<Self>, String>,
+    ) -> Result<Option<BTreeMap<String, String>>, String> {
+        polled.and_then(|reply| reply.map(Self::answers).transpose())
+    }
+}
+
+pub type ClarificationPoll = Box<dyn FnMut() -> Result<Option<ClarificationReply>, String> + Send>;
 pub type ClarificationHandler =
     std::sync::Arc<dyn Fn(Value) -> Result<ClarificationPoll, String> + Send + Sync>;
 /// Reports whether the node's run has been canceled.

@@ -1,8 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react'
+import { FormQuestionFields, FormReplySummary } from '@/components/app/form-question'
 import { InlineError } from '@/components/app/inline-error'
 import { statusTextClassName } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import type { FormReply } from '@/lib/forms'
 import type { ConversationTimelineEntry } from '../model/types'
 
 type RequestUserInputEntry = Extract<ConversationTimelineEntry, { kind: 'request_user_input' }>
@@ -12,7 +14,7 @@ interface ProjectConversationRequestUserInputCardProps {
     entry: RequestUserInputEntry
     formatConversationTimestamp: (value: string) => string
     isSubmitting: boolean
-    onSubmitRequestUserInput: (requestId: string, answers: Record<string, string>) => void | Promise<void>
+    onSubmitRequestUserInput: (requestId: string, answers: Record<string, string>, form?: FormReply) => void | Promise<void>
 }
 
 const cardClassName = 'w-full max-w-[72ch] rounded-xl border border-border px-4 py-3 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring'
@@ -83,6 +85,11 @@ export function ProjectConversationRequestUserInputCard({
                 <p className="text-xs font-medium text-muted-foreground">
                     Answered request
                 </p>
+                {entry.requestUserInput.form && entry.requestUserInput.reply ? (
+                    <div className="mt-2">
+                        <FormReplySummary form={entry.requestUserInput.form} reply={entry.requestUserInput.reply} />
+                    </div>
+                ) : null}
                 <div className="mt-2 space-y-2">
                     {entry.requestUserInput.questions.map((question) => {
                         const answer = entry.requestUserInput.answers[question.id] ?? ''
@@ -117,6 +124,18 @@ export function ProjectConversationRequestUserInputCard({
                 <p className="mt-2 text-sm text-foreground">
                     The request expired before this answer could be used. Send a new message to continue.
                 </p>
+                {entry.requestUserInput.form ? (
+                    <div className="mt-2">
+                        {entry.requestUserInput.reply ? (
+                            <FormReplySummary form={entry.requestUserInput.form} reply={entry.requestUserInput.reply} />
+                        ) : (
+                            <p className="text-sm text-muted-foreground">
+                                {entry.requestUserInput.form.message || 'Form'} · No answer submitted
+                                {entry.requestUserInput.form.requestId ? ` · Request ID: ${entry.requestUserInput.form.requestId}` : ''}
+                            </p>
+                        )}
+                    </div>
+                ) : null}
                 <div className="mt-2 space-y-2">
                     {entry.requestUserInput.questions.map((question) => {
                         const answer = entry.requestUserInput.answers[question.id] ?? ''
@@ -133,6 +152,34 @@ export function ProjectConversationRequestUserInputCard({
                 <p className="mt-2 text-xs text-muted-foreground">
                     {formatConversationTimestamp(entry.requestUserInput.submittedAt ?? entry.timestamp)}
                 </p>
+            </div>
+        )
+    }
+
+    const form = entry.requestUserInput.form
+    if (form) {
+        return (
+            <div
+                data-testid={`project-request-user-input-card-${entry.id}`}
+                ref={cardRef}
+                tabIndex={-1}
+                className={cardClassName}
+            >
+                <p className={`mb-2 text-xs font-medium ${statusTextClassName('warning')}`}>
+                    Needs input
+                </p>
+                <FormQuestionFields
+                    actionError={actionError}
+                    draftKey={entry.id}
+                    form={form}
+                    isSubmitting={isSubmitting}
+                    testId={`project-request-user-input-form-${entry.requestUserInput.requestId}`}
+                    onReply={(reply) => {
+                        answeringRef.current = true
+                        void onSubmitRequestUserInput(entry.requestUserInput.requestId, {}, reply)
+                    }}
+                />
+                <p className="mt-2 text-xs text-muted-foreground">{formatConversationTimestamp(entry.timestamp)}</p>
             </div>
         )
     }

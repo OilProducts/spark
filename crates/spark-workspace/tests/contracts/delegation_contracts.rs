@@ -834,3 +834,177 @@ fn request_digest_ignores_key_order() {
         request_digest("/p", "flow", &reversed)
     );
 }
+
+/// The live turn a delegated chat's form answer reaches: it records the answer.
+#[derive(Default)]
+struct FormTaker(std::sync::Mutex<Vec<spark_agent_adapter::AgentRequestUserInputAnswerRequest>>);
+impl spark_agent_adapter::AgentTurnBackend for FormTaker {
+    fn run_turn(
+        &self,
+        _request: spark_agent_adapter::AgentTurnRequest,
+    ) -> Result<AgentTurnOutput, spark_agent_adapter::AgentError> {
+        unreachable!("only answers reach this agent")
+    }
+    fn answer_request_user_input(
+        &self,
+        request: spark_agent_adapter::AgentRequestUserInputAnswerRequest,
+    ) -> Result<AgentTurnOutput, spark_agent_adapter::AgentError> {
+        self.0.lock().unwrap().push(request);
+        let delivered = spark_common::events::TurnStreamEvent::new(
+            spark_common::events::TurnStreamEventKind::Other(
+                "request_user_input_answer_delivered".into(),
+            ),
+        )
+        .unwrap();
+        Ok(AgentTurnOutput {
+            events: vec![delivered],
+            ..AgentTurnOutput::default()
+        })
+    }
+}
+
+/// Answers question `question` of delegation `id` as its owner would.
+fn answer(home: &Home, id: &str, question: &str, request: Value) -> Result<Value, WorkspaceError> {
+    answer_with(&home.service(), id, question, request)
+}
+
+fn answer_with(
+    service: &WorkspaceConversationService,
+    id: &str,
+    question: &str,
+    request: Value,
+) -> Result<Value, WorkspaceError> {
+    delegations::answer_incoming(
+        service,
+        id,
+        question,
+        serde_json::from_value(request).unwrap(),
+    )
+}
+
+fn refused(result: Result<Value, WorkspaceError>, reason: &str) {
+    match result {
+        Err(WorkspaceError::Validation(error)) => assert!(error.contains(reason), "{error}"),
+        other => panic!("expected a refusal with {reason:?}, got {other:?}"),
+    }
+}
+
+#[test]
+fn b_shows_a_delegated_form_and_takes_only_its_one_typed_reply() {
+    let home = Home::new();
+    let form = json!({"request_id": "acp-form-1", "harness": "acp:x", "harness_label": "X",
+        "message": "Pick.", "schema": {"type": "object", "properties": {
+            "count": {"type": "integer"}, "agree": {"type": "boolean"}}, "required": ["count"]}});
+
+    // A conversation's form.
+    home.seed_chat("chat-form", "amber-form", "chat", "complete", json!([{
+        "id": "segment-form", "turn_id": "turn-assistant", "order": 1,
+        "kind": "request_user_input", "role": "assistant", "status": "pending",
+        "timestamp": "2026-01-01T00:00:01Z", "updated_at": "2026-01-01T00:00:01Z", "content": "Pick.",
+        "request_user_input": {"request_id": "acp-form-1", "status": "pending", "questions": [], "form": form}
+    }]));
+    home.launched(&id(1), "conversation", "chat-form");
+    assert_eq!(
+        home.state(&id(1))["questions"],
+        json!([{"question_id": "acp-form-1", "questions": [], "form": form}])
+    );
+    for (request, reason) in [
+        (json!({"selected_value": "3"}), "is a form: reply with form"),
+        (
+            json!({"answers": {"count": "3"}}),
+            "is a form: reply with form",
+        ),
+        (
+            json!({"form": {"action": "accept", "content": {}}}),
+            "count is required.",
+        ),
+        (
+            json!({"form": {"action": "accept", "content": {"count": "3"}}}),
+            "whole number",
+        ),
+        (
+            json!({"selected_value": "3", "form": {"action": "decline"}}),
+            "exactly one",
+        ),
+    ] {
+        refused(answer(&home, &id(1), "acp-form-1", request), reason);
+    }
+    assert_eq!(
+        home.state(&id(1))["questions"][0]["question_id"],
+        "acp-form-1"
+    );
+    let reply = json!({"action": "accept", "content": {"count": 0, "agree": false}});
+    let agent = Arc::new(FormTaker::default());
+    let service = crate::conversations_with_backend(home.settings.clone(), agent.clone());
+    answer_with(&service, &id(1), "acp-form-1", json!({"form": reply})).unwrap();
+    let reached = agent.0.lock().unwrap();
+    assert_eq!(
+        serde_json::to_value(&reached[0].form).unwrap(),
+        reply,
+        "the agent gets the typed reply"
+    );
+    let snapshot = home
+        .repository()
+        .read_snapshot("chat-form", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        snapshot["segments"][0]["request_user_input"]["reply"],
+        reply
+    );
+    assert_eq!(home.state(&id(1))["questions"], json!([]));
+
+    // A flow run's form.
+    let store = RunStore::for_settings(&home.settings);
+    let mut record = RunRecord::new("run-form", &home.project);
+    record.status = "waiting".into();
+    let paths = store
+        .create_run(CreateRunRequest {
+            record,
+            ..Default::default()
+        })
+        .unwrap();
+    let active = attractor_runtime::clarification::ActiveClarification::new(&paths).unwrap();
+    let mut gate = attractor_runtime::human_gate_pending_event(
+        "run-form",
+        "form-q",
+        "work",
+        "Flow",
+        "Pick.",
+        None,
+        vec![],
+    );
+    gate.payload.extend([
+        ("origin".to_string(), json!("agent_clarification")),
+        ("clarification_id".to_string(), json!(active.id)),
+        ("agent_request_id".to_string(), json!("acp-form-1")),
+        ("question_type".to_string(), json!("FORM")),
+        ("form".to_string(), form.clone()),
+    ]);
+    store.append_event(&paths, gate).unwrap();
+    home.launched(&id(2), "run", "run-form");
+    let asked = home.state(&id(2))["questions"][0].clone();
+    assert_eq!(
+        (&asked["question_id"], &asked["form"]),
+        (&json!("form-q"), &form)
+    );
+    for (request, reason) in [
+        (json!({"selected_value": "3"}), "This question is a form"),
+        (
+            json!({"form": {"action": "accept", "content": {"agree": true}}}),
+            "count is required.",
+        ),
+    ] {
+        refused(answer(&home, &id(2), "form-q", request), reason);
+    }
+    assert_eq!(home.state(&id(2))["questions"][0]["question_id"], "form-q");
+    answer(
+        &home,
+        &id(2),
+        "form-q",
+        json!({"form": {"action": "decline"}}),
+    )
+    .unwrap();
+    assert_eq!(home.state(&id(2))["questions"], json!([]));
+    drop(active);
+}

@@ -1330,7 +1330,9 @@ pub fn normalize_request_user_input_payload(payload: &Value) -> Option<Map<Strin
                 .unwrap_or(false),
         }));
     }
-    if questions.is_empty() {
+    // A form question carries its form, and its reply once answered, as asked.
+    let form = object.get("form").filter(|form| form.is_object());
+    if questions.is_empty() && form.is_none() {
         return None;
     }
     let answers = object
@@ -1348,6 +1350,12 @@ pub fn normalize_request_user_input_payload(payload: &Value) -> Option<Map<Strin
     );
     output.insert("questions".to_string(), Value::Array(questions));
     output.insert("answers".to_string(), Value::Object(answers));
+    if let Some(form) = form {
+        output.insert("form".to_string(), form.clone());
+        if let Some(reply) = object.get("reply").filter(|reply| reply.is_object()) {
+            output.insert("reply".to_string(), reply.clone());
+        }
+    }
     for key in ["app_thread_id", "app_turn_id"] {
         if let Some(value) = object
             .get(key)
@@ -1379,6 +1387,14 @@ pub fn request_user_input_segment_content(request: &Map<String, Value>) -> Strin
 }
 
 pub fn request_user_input_prompt_summary(request: &Map<String, Value>) -> String {
+    if let Some(message) = request
+        .get("form")
+        .and_then(|form| form["message"].as_str())
+        .map(normalize_assistant_text)
+        .filter(|message| !message.is_empty())
+    {
+        return message;
+    }
     let prompts = request
         .get("questions")
         .and_then(Value::as_array)
@@ -1400,6 +1416,14 @@ pub fn request_user_input_prompt_summary(request: &Map<String, Value>) -> String
 }
 
 pub fn request_user_input_answer_summary(request: &Map<String, Value>) -> String {
+    if let (Some(form), Some(reply)) = (
+        request.get("form"),
+        request.get("reply").and_then(|reply| {
+            serde_json::from_value::<crate::forms::FormReply>(reply.clone()).ok()
+        }),
+    ) {
+        return crate::forms::reply_summary(&form["schema"], &reply);
+    }
     let answers = request
         .get("answers")
         .and_then(Value::as_object)

@@ -1,3 +1,4 @@
+import type { FormQuestion } from '@/lib/forms'
 export interface TokenUsageBucket {
     input_tokens: number
     cached_input_tokens: number
@@ -200,6 +201,8 @@ export interface PendingInterviewGate {
     questionId: string | null
     questionType: 'MULTIPLE_CHOICE' | 'YES_NO' | 'CONFIRMATION' | 'FREEFORM' | null
     options: PendingQuestionOption[]
+    /** A harness's typed form, answered as one reply instead of an option. */
+    form?: FormQuestion | null
 }
 
 export interface PendingQuestionSnapshot {
@@ -211,6 +214,7 @@ export interface PendingQuestionSnapshot {
     prompt: string
     questionType: 'MULTIPLE_CHOICE' | 'YES_NO' | 'CONFIRMATION' | 'FREEFORM' | null
     options: PendingQuestionOption[]
+    form?: FormQuestion | null
     /** When the question was asked; empty when the API didn't say. */
     askedAt: string
 }

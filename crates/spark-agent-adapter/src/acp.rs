@@ -17,16 +17,19 @@ use std::time::Duration;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::v1::schema::{
-    CancelNotification, ContentBlock, ContentChunk, Implementation, InitializeRequest,
-    LoadSessionRequest, NewSessionRequest, PermissionOptionKind, PromptResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
-    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOptions,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, SystemPrompt,
+    CancelNotification, ClientCapabilities, ContentBlock, ContentChunk, ElicitationCapabilities,
+    ElicitationFormCapabilities, Implementation, InitializeRequest, LoadSessionRequest,
+    NewSessionRequest, PermissionOptionKind, PromptResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigOptionValue, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, StopReason, SystemPrompt,
 };
 use agent_client_protocol::v1::{ActiveSession, ConnectionTo, SessionMessage, SessionSetup};
-use agent_client_protocol::{Agent, Client, ErrorCode, Lines};
-use futures_util::FutureExt as _;
+use agent_client_protocol::{Agent, Client, Dispatch, ErrorCode, Lines, Raw, Responder};
+use futures_util::future::BoxFuture;
+use futures_util::stream::FuturesUnordered;
+use futures_util::{FutureExt as _, StreamExt as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::agent_settings::{
@@ -35,13 +38,17 @@ use spark_common::agent_settings::{
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
-use tokio::sync::mpsc::{error::TrySendError, Receiver, Sender};
+use spark_common::forms::FormReply;
+use tokio::sync::mpsc::{
+    error::TrySendError, Receiver, Sender, UnboundedReceiver, UnboundedSender,
+};
 use tokio::time::Instant;
 
 use crate::agent::{
     AgentRawLogLine, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
     AGENT_INSTRUCTIONS_METADATA_KEY,
 };
+use crate::codergen::{ClarificationHandler, ClarificationReply};
 use crate::codex_app_server::json_len;
 use crate::history::HistoryTurn;
 use crate::stdio_transport::{
@@ -55,6 +62,10 @@ pub const ACP_SESSION_METADATA_KEY: &str = "spark.runtime.acp.session";
 pub const ACP_SESSION_ESTABLISHED: &str = "session_established";
 /// How long a cancelled prompt may take to settle before its process is stopped.
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
+/// How often a flow's form checks for its answer.
+const FORM_POLL: Duration = Duration::from_millis(100);
+/// How long a chat answer waits for the turn to take it.
+const FORM_DELIVERY: Duration = Duration::from_secs(5);
 /// Bound on retained diagnostics (unknown updates, policy refusals).
 const MAX_LOG_LINES: usize = 200;
 const MAX_LOG_LINE_BYTES: usize = 2_000;
@@ -111,6 +122,17 @@ struct Live {
     stop: Mutex<Option<Stop>>,
     terminated: AtomicBool,
     closed: AtomicBool,
+    /// Replies for the turn's pending forms.
+    replies: UnboundedSender<FormAnswer>,
+}
+
+/// A reply for one of a turn's pending forms, by its Spark request ID, and
+/// where to say whether the harness got it.
+struct FormAnswer {
+    request_id: String,
+    /// A flow's failed wait fails the turn.
+    reply: Result<FormReply, String>,
+    delivered: Option<std::sync::mpsc::Sender<bool>>,
 }
 
 fn registry() -> &'static Mutex<HashMap<Key, Weak<Live>>> {
@@ -147,6 +169,27 @@ impl Drop for Registered {
 pub fn interrupt(project_path: &str, conversation_id: &str) -> bool {
     find(project_path, conversation_id)
         .is_some_and(|live| !matches!(live.interrupts.try_send(()), Err(TrySendError::Closed(_))))
+}
+
+/// Sends `reply` to the harness waiting on the running turn's form
+/// `request_id`. False when no such form is pending: it was answered, or its
+/// prompt, connection or turn has ended, and a stored request never revives it.
+pub fn answer(
+    project_path: &str,
+    conversation_id: &str,
+    request_id: &str,
+    reply: FormReply,
+) -> bool {
+    let Some(live) = find(project_path, conversation_id) else {
+        return false;
+    };
+    let (delivered, received) = std::sync::mpsc::channel();
+    let answer = FormAnswer {
+        request_id: request_id.to_string(),
+        reply: Ok(reply),
+        delivered: Some(delivered),
+    };
+    live.replies.send(answer).is_ok() && received.recv_timeout(FORM_DELIVERY).unwrap_or(false)
 }
 
 /// Stops the turn's process group directly.
@@ -186,6 +229,10 @@ struct Finished {
 /// What the worker needs, fixed before launch.
 struct Plan {
     harness_id: String,
+    /// The registration's display name, shown with the forms it asks.
+    harness_label: String,
+    /// A flow's: forms go to it instead of waiting for a chat answer.
+    clarification: Option<ClarificationHandler>,
     policy: AcpPermissionPolicy,
     cwd: PathBuf,
     generation: String,
@@ -234,14 +281,16 @@ enum Selector {
 }
 
 /// Runs one primary prompt with `harness_id`'s registration, as captured in
-/// the request's execution settings.
+/// the request's execution settings. A flow passes its `clarification`
+/// handler; a chat's forms wait for [`answer`].
 pub fn run_turn(
     request: &AgentTurnRequest,
     harness_id: &str,
     sink: Option<&AgentTurnEventSink>,
+    clarification: Option<ClarificationHandler>,
 ) -> Result<AcpTurn, AcpFailure> {
     let mut seen = AcpFailure::default();
-    let result = turn(request, harness_id, sink, &mut seen);
+    let result = turn(request, harness_id, sink, clarification, &mut seen);
     result.map_err(|message| AcpFailure { message, ..seen })
 }
 
@@ -580,7 +629,7 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
         ("plan_mode".to_string(), unsupported("No read-only mode is verified for ACP harnesses; a harness mode named plan carries no such guarantee.")),
         ("steering".to_string(), unsupported("ACP v1 has no portable way to accept a message during a prompt, so messages wait for the next turn.")),
         ("child_intervention".to_string(), unsupported("Spark cannot intervene in an ACP harness's child work.")),
-        ("forms".to_string(), unsupported("Typed form questions from ACP harnesses are not supported yet.")),
+        ("forms".to_string(), Capability::new("supported", "Spark advertises form elicitation and answers it in chats and flows; a schema it cannot show is refused.")),
         ("per_prompt_usage".to_string(), Capability::new("unverified", "Counted only when the harness reports usage on a prompt's response; otherwise unknown.")),
     ]);
     let probed = match probed {
@@ -703,6 +752,7 @@ fn turn(
     request: &AgentTurnRequest,
     harness_id: &str,
     sink: Option<&AgentTurnEventSink>,
+    clarification: Option<ClarificationHandler>,
     seen: &mut AcpFailure,
 ) -> Result<AcpTurn, String> {
     let config = crate::config::captured_session_config(&request.metadata)?.unwrap_or_default();
@@ -827,6 +877,8 @@ fn turn(
     let earlier = crate::attachments::history_attachments(&request.history);
     let plan = Plan {
         harness_id: harness_id.to_string(),
+        harness_label: harness.name.clone(),
+        clarification,
         policy: harness.permission_policy,
         generation: launch_generation(&harness, config.environment_inheritance),
         instructions_sha256: instructions
@@ -845,11 +897,13 @@ fn turn(
     };
 
     let (interrupts, interrupted) = tokio::sync::mpsc::channel(1);
+    let (replies, answered) = tokio::sync::mpsc::unbounded_channel();
     let live = Arc::new(Live {
         interrupts,
         stop: Mutex::new(None),
         terminated: AtomicBool::new(false),
         closed: AtomicBool::new(false),
+        replies: replies.clone(),
     });
     let key = (
         request.project_path.clone(),
@@ -875,7 +929,7 @@ fn turn(
         overflowed: AtomicBool::new(false),
     };
     let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
-        drive(endpoints, plan, out, interrupted)
+        drive(endpoints, plan, out, interrupted, (replies, answered))
     })
     .map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -1119,7 +1173,13 @@ fn outgoing(stdin: Outgoing) -> impl futures_util::Sink<String, Error = std::io:
     })
 }
 
-async fn drive(endpoints: Endpoints, plan: Plan, out: Out, interrupts: Receiver<()>) {
+async fn drive(
+    endpoints: Endpoints,
+    plan: Plan,
+    out: Out,
+    interrupts: Receiver<()>,
+    (replies, answered): (UnboundedSender<FormAnswer>, UnboundedReceiver<FormAnswer>),
+) {
     let Endpoints {
         stdout,
         stdin,
@@ -1135,7 +1195,9 @@ async fn drive(endpoints: Endpoints, plan: Plan, out: Out, interrupts: Receiver<
         .v1()
         .name("spark")
         .connect_with(transport, async |cx| {
-            Ok(Turn::new(&plan, &out, stop).run(cx, interrupts).await)
+            Ok(Turn::new(&plan, &out, stop, replies)
+                .run(cx, interrupts, answered)
+                .await)
         })
         .await
         .unwrap_or_else(|error| Err(describe(&error)));
@@ -1169,6 +1231,28 @@ struct Turn<'a> {
     out: &'a Out,
     stop: Stop,
     translate: Translate,
+    /// This launch's connection, which every form it asks is tied to.
+    connection: String,
+    /// Forms the harness waits on, by Spark request ID.
+    forms: HashMap<String, PendingForm>,
+    /// Where a flow's answered forms come back.
+    replies: UnboundedSender<FormAnswer>,
+}
+
+/// A harness's `elicitation/create` waiting for its reply.
+struct PendingForm {
+    responder: Responder<Value, Raw>,
+    /// The question as asked, for its expiry.
+    request: Value,
+    /// Tells a flow's wait the form is no longer pending.
+    gone: Arc<AtomicBool>,
+}
+
+/// Withdraws every form still pending on any exit, such as a lost connection.
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        self.expire_forms();
+    }
 }
 
 type Session = ActiveSession<'static, Agent>;
@@ -1182,12 +1266,15 @@ struct Ready {
 }
 
 impl<'a> Turn<'a> {
-    fn new(plan: &'a Plan, out: &'a Out, stop: Stop) -> Self {
+    fn new(plan: &'a Plan, out: &'a Out, stop: Stop, replies: UnboundedSender<FormAnswer>) -> Self {
         Self {
             plan,
             out,
             stop,
             translate: Translate::new(&plan.harness_id),
+            connection: uuid::Uuid::new_v4().to_string(),
+            forms: HashMap::new(),
+            replies,
         }
     }
 
@@ -1195,6 +1282,7 @@ impl<'a> Turn<'a> {
         mut self,
         cx: ConnectionTo<Agent>,
         mut interrupts: Receiver<()>,
+        answered: UnboundedReceiver<FormAnswer>,
     ) -> Result<Finished, String> {
         // An interrupt before the prompt is sent skips the prompt.
         let ready = tokio::select! {
@@ -1219,7 +1307,8 @@ impl<'a> Turn<'a> {
         session
             .send_prompt(text)
             .map_err(|error| format!("session/prompt failed: {}", describe(&error)))?;
-        self.prompt(&mut session, interrupts, record, reset).await
+        self.prompt(&mut session, interrupts, answered, record, reset)
+            .await
     }
 
     /// Initializes, then resumes, loads or creates the session and applies
@@ -1230,7 +1319,10 @@ impl<'a> Turn<'a> {
         let init = cx
             .send_request(
                 InitializeRequest::new(ProtocolVersion::V1)
-                    .client_info(Implementation::new("spark", env!("CARGO_PKG_VERSION"))),
+                    .client_info(Implementation::new("spark", env!("CARGO_PKG_VERSION")))
+                    .client_capabilities(ClientCapabilities::new().elicitation(
+                        ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()),
+                    )),
             )
             .block_task()
             .await
@@ -1473,11 +1565,12 @@ impl<'a> Turn<'a> {
     }
 
     /// Runs the primary prompt to its response, servicing updates, permission
-    /// requests and interrupts meanwhile.
+    /// requests, forms and interrupts meanwhile.
     async fn prompt(
         mut self,
         session: &mut Session,
         mut interrupts: Receiver<()>,
+        mut answered: UnboundedReceiver<FormAnswer>,
         record: AcpSessionRecord,
         reset: Option<String>,
     ) -> Result<Finished, String> {
@@ -1486,13 +1579,32 @@ impl<'a> Turn<'a> {
         let mut cancelled = false;
         let mut cancel_deadline = None;
         let mut forced = false;
+        // Forms the harness withdrew with `$/cancel_request`.
+        let mut withdrawn = FuturesUnordered::<BoxFuture<'static, String>>::new();
         loop {
             tokio::select! {
                 update = session.read_update() => match update {
                     Ok(SessionMessage::Message(dispatch)) => {
+                        let dispatch = match dispatch.into_raw() {
+                            Dispatch::Request(request, responder)
+                                if request.method() == "elicitation/create" =>
+                            {
+                                if let Some((request_id, cancellation)) =
+                                    self.elicit(request.params(), responder)
+                                {
+                                    withdrawn.push(Box::pin(async move {
+                                        cancellation.cancelled().await;
+                                        request_id
+                                    }));
+                                }
+                                self.out.overloaded()?;
+                                continue;
+                            }
+                            dispatch => dispatch,
+                        };
                         let (translate, out, plan) = (&mut self.translate, self.out, &self.plan);
                         let policy = plan.policy;
-                        MatchDispatch::new(dispatch.into_raw())
+                        MatchDispatch::new(dispatch)
                             .if_notification(async |notification: SessionNotification| {
                                 if let SessionUpdate::ConfigOptionUpdate(update) = &notification.update {
                                     plan.acknowledge(&update.config_options);
@@ -1542,8 +1654,16 @@ impl<'a> Turn<'a> {
                     Ok(_) => {}
                     Err(error) => return Err(describe(&error)),
                 },
+                Some(answer) = answered.recv() => self.deliver(answer)?,
+                Some(request_id) = withdrawn.next(), if !withdrawn.is_empty() => {
+                    // Dropping the responder sends the cancelled request's error.
+                    if let Some(PendingForm { request, gone, .. }) = self.forms.remove(&request_id) {
+                        self.expired(request, gone);
+                    }
+                }
                 Some(()) = interrupts.recv(), if !cancelled => {
                     cancelled = true;
+                    self.expire_forms();
                     cancel_deadline = Some(Instant::now() + CANCEL_GRACE);
                     connection
                         .send_notification(CancelNotification::new(session_id.clone()))
@@ -1559,6 +1679,156 @@ impl<'a> Turn<'a> {
         }
     }
 
+    /// Asks the user a harness's form: a flow through its clarification
+    /// handler, a chat as a pending question [`answer`] replies to. Returns
+    /// the pending form's Spark request ID and its cancellation, or `None`
+    /// when the request was refused: only form mode is advertised, and a
+    /// schema Spark cannot show fails explicitly rather than in part.
+    fn elicit(
+        &mut self,
+        params: &Value,
+        responder: Responder<Value, Raw>,
+    ) -> Option<(String, agent_client_protocol::RequestCancellation)> {
+        let refuse = |responder: Responder<Value, Raw>, message: String| {
+            let error = agent_client_protocol::Error::new(ErrorCode::INVALID_PARAMS, message);
+            let _ = responder.respond_with_error(error);
+        };
+        if params["mode"] != "form" {
+            refuse(responder, "Spark supports only form elicitation".into());
+            return None;
+        }
+        let schema = &params["requestedSchema"];
+        if let Err(reason) = spark_common::forms::check_schema(schema) {
+            let message = format!(
+                "ACP harness {} asked for a form Spark cannot show: {reason}",
+                self.plan.harness_id
+            );
+            self.out.event(self.translate.event(
+                TurnStreamEventKind::Other("warning".into()),
+                "elicitation_unsupported",
+                |event| event.message = Some(message.clone()),
+            ));
+            self.translate.log(message.clone());
+            refuse(responder, message);
+            return None;
+        }
+        let request_id = format!("acp-form-{}", uuid::Uuid::new_v4());
+        // The form names its Spark request ID, so a person sees which request they answer.
+        let form = json!({
+            "request_id": request_id,
+            "harness": HarnessIdentity::Acp(self.plan.harness_id.clone()).selector(),
+            "harness_label": self.plan.harness_label,
+            "message": params["message"],
+            "schema": schema,
+        });
+        let request = json!({"request_id": request_id, "questions": [], "form": form});
+        let correlation = json!({
+            "connection": self.connection,
+            "session_id": params["sessionId"],
+            "tool_call_id": params["toolCallId"],
+            "rpc_request_id": responder.raw_id(),
+        });
+        self.out.event(self.translate.event(
+            TurnStreamEventKind::RequestUserInputRequested,
+            "elicitation_requested",
+            |event| {
+                event.request_user_input = Some(request.clone());
+                event.source.item_id = Some(request_id.clone());
+                event.details = Some(correlation);
+            },
+        ));
+        let gone = Arc::new(AtomicBool::new(false));
+        if let Some(handler) = self.plan.clarification.clone() {
+            let (replies, gone, request_id) =
+                (self.replies.clone(), Arc::clone(&gone), request_id.clone());
+            // Polled off the worker, which keeps servicing the connection.
+            std::thread::spawn(move || {
+                let waited = (|| {
+                    let mut poll = handler(json!({"agent_request_id": request_id, "form": form}))?;
+                    while !gone.load(Ordering::SeqCst) {
+                        match poll()? {
+                            Some(ClarificationReply::Form(reply)) => return Ok(Some(reply)),
+                            Some(ClarificationReply::Answers(_)) => {
+                                return Err("a form was answered with question answers".to_string())
+                            }
+                            None => std::thread::sleep(FORM_POLL),
+                        }
+                    }
+                    Ok(None)
+                })();
+                if let Some(reply) = waited.transpose() {
+                    let _ = replies.send(FormAnswer {
+                        request_id,
+                        reply,
+                        delivered: None,
+                    });
+                }
+            });
+        }
+        let cancellation = responder.cancellation();
+        self.forms.insert(
+            request_id.clone(),
+            PendingForm {
+                responder,
+                request,
+                gone,
+            },
+        );
+        Some((request_id, cancellation))
+    }
+
+    /// Sends a reply to its pending form. A reply for no pending form, being
+    /// stale or a duplicate, is refused and changes nothing.
+    fn deliver(&mut self, answer: FormAnswer) -> Result<(), String> {
+        let FormAnswer {
+            request_id,
+            reply,
+            delivered,
+        } = answer;
+        let Some(form) = self.forms.remove(&request_id) else {
+            if let Some(delivered) = delivered {
+                let _ = delivered.send(false);
+            }
+            return Ok(());
+        };
+        form.gone.store(true, Ordering::SeqCst);
+        let reply = reply.map_err(|error| format!("the form's answer failed: {error}"))?;
+        let sent = form.responder.respond(json!(reply)).is_ok();
+        if let Some(delivered) = delivered {
+            let _ = delivered.send(sent);
+        }
+        Ok(())
+    }
+
+    /// Cancels every pending form with the harness and expires its question.
+    fn expire_forms(&mut self) {
+        for (_, form) in std::mem::take(&mut self.forms) {
+            let PendingForm {
+                responder,
+                request,
+                gone,
+            } = form;
+            let _ = responder.respond(json!(FormReply::Cancel));
+            self.expired(request, gone);
+        }
+    }
+
+    /// Reports a form that can no longer be answered.
+    fn expired(&mut self, mut request: Value, gone: Arc<AtomicBool>) {
+        gone.store(true, Ordering::SeqCst);
+        request["status"] = json!("expired");
+        let request_id = request["request_id"].as_str().map(str::to_string);
+        self.out.event(self.translate.event(
+            TurnStreamEventKind::RequestUserInputRequested,
+            "elicitation_expired",
+            |event| {
+                event.request_user_input = Some(request);
+                event.source.item_id = request_id;
+                event.status = Some("expired".into());
+            },
+        ));
+    }
+
     fn finish(
         &mut self,
         stop_reason: StopReason,
@@ -1567,6 +1837,7 @@ impl<'a> Turn<'a> {
         reset: Option<String>,
         forced: bool,
     ) -> Finished {
+        self.expire_forms();
         let end_turn = stop_reason == StopReason::EndTurn;
         for event in self.translate.close(end_turn) {
             self.out.event(event);

@@ -105,3 +105,39 @@ it('moves focus on from a sent answer to the next question, then to the run\'s h
   rerender(panel([]))
   expect(screen.getByRole('heading', { name: 'Run' })).toHaveFocus()
 })
+
+it('answers a harness form gate with one typed reply, or declines it', async () => {
+  const user = userEvent.setup()
+  const gate: PendingInterviewGate = {
+    eventId: 'question:form', questionId: 'form', runId: 'run', origin: 'agent_clarification',
+    sequence: 1, receivedAt: '2026-09-08T00:00:00Z', nodeId: 'work', stageIndex: 1,
+    sourceScope: 'root', sourceParentNodeId: null, sourceFlowName: null,
+    prompt: 'Pick a size', details: null, questionType: null, options: [],
+    form: {
+      requestId: 'acp-form-9', harness: 'acp:writer', harnessLabel: 'Writer Agent', message: 'Pick a size',
+      schema: { type: 'object', properties: { size: { type: 'string', title: 'Size', enum: ['s', 'm'] }, rush: { type: 'boolean', title: 'Rush' } }, required: ['size'] },
+    },
+  }
+  const submit = vi.fn()
+  render(<RunQuestionsPanel
+    confirmedQuestionIds={['form']}
+    freeformAnswersByGateId={{}} gateNotesByGateId={{}}
+    groupedPendingInterviewGates={[{ key: 'root', heading: 'This run', gates: [gate] }]} now={Date.now()}
+    onFreeformAnswerChange={vi.fn()} onGateNoteChange={vi.fn()}
+    onSubmitPendingGateAnswer={submit} pendingGateActionError={null} submittingGateIds={{}}
+  />)
+  expect(screen.getByRole('form', { name: 'Pick a size' })).toBeInTheDocument()
+  expect(screen.getByText('Asked by Writer Agent')).toBeInTheDocument()
+  // The form's own Spark request ID, not the run question's ID, names what is being answered.
+  expect(screen.getByText('acp-form-9').parentElement).toHaveTextContent('Request ID: acp-form-9')
+  expect(screen.queryByRole('textbox')).toBeNull()
+  await user.click(screen.getByRole('button', { name: 'Submit' }))
+  expect(submit).not.toHaveBeenCalled()
+  expect(screen.getByRole('combobox', { name: 'Size' })).toHaveAttribute('aria-invalid', 'true')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Size' }), 'm')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Rush (optional)' }), 'No')
+  await user.click(screen.getByRole('button', { name: 'Submit' }))
+  expect(submit).toHaveBeenLastCalledWith(gate, '', undefined, { action: 'accept', content: { size: 'm', rush: false } })
+  await user.click(screen.getByRole('button', { name: 'Decline' }))
+  expect(submit).toHaveBeenLastCalledWith(gate, '', undefined, { action: 'decline' })
+})

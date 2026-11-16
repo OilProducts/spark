@@ -2165,6 +2165,7 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
             "conversation-input",
             "decision",
             ConversationRequestUserInputAnswerRequest {
+                form: None,
                 project_path: "/projects/input".to_string(),
                 answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
             },
@@ -2266,6 +2267,7 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
             "conversation-input",
             "input-1",
             ConversationRequestUserInputAnswerRequest {
+                form: None,
                 project_path: "/projects/input".to_string(),
                 answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
             },
@@ -2283,6 +2285,7 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
             "conversation-input",
             "decision",
             ConversationRequestUserInputAnswerRequest {
+                form: None,
                 project_path: "/projects/input".to_string(),
                 answers: BTreeMap::from([("decision".to_string(), "Reject".to_string())]),
             },
@@ -2295,6 +2298,7 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
             "conversation-input",
             "missing",
             ConversationRequestUserInputAnswerRequest {
+                form: None,
                 project_path: "/projects/input".to_string(),
                 answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
             },
@@ -2341,6 +2345,7 @@ fn an_answer_recorded_while_its_question_only_call_returns_is_continued() {
             "conversation-answer-race",
             "decision",
             ConversationRequestUserInputAnswerRequest {
+                form: None,
                 project_path: "/projects/answer-race".to_string(),
                 answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
             },
@@ -2496,6 +2501,7 @@ fn request_user_input_live_delivery_keeps_assistant_turn_streaming_until_origina
             "conversation-input-live",
             "decision",
             ConversationRequestUserInputAnswerRequest {
+                form: None,
                 project_path: "/projects/input-live".to_string(),
                 answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
             },
@@ -2592,6 +2598,7 @@ fn request_user_input_live_request_is_answerable_before_original_turn_finishes()
             "conversation-input-live-pending",
             "decision",
             ConversationRequestUserInputAnswerRequest {
+                form: None,
                 project_path: "/projects/input-live-pending".to_string(),
                 answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
             },
@@ -2698,6 +2705,7 @@ fn request_user_input_answers_expire_when_backend_lifecycle_cannot_resume() {
             "conversation-input-expired",
             "decision",
             ConversationRequestUserInputAnswerRequest {
+                form: None,
                 project_path: "/projects/input-expired".to_string(),
                 answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
             },
@@ -2737,6 +2745,7 @@ fn request_user_input_answers_expire_when_backend_lifecycle_cannot_resume() {
             "conversation-input-expired",
             "input-1",
             ConversationRequestUserInputAnswerRequest {
+                form: None,
                 project_path: "/projects/input-expired".to_string(),
                 answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
             },
@@ -2757,6 +2766,7 @@ fn request_user_input_answers_expire_when_backend_lifecycle_cannot_resume() {
             "conversation-input-expired",
             "decision",
             ConversationRequestUserInputAnswerRequest {
+                form: None,
                 project_path: "/projects/input-expired".to_string(),
                 answers: BTreeMap::from([("decision".to_string(), "Reject".to_string())]),
             },
@@ -2799,6 +2809,7 @@ fn request_user_input_answer_backend_errors_return_error_without_expiring_reques
             "conversation-input-backend-error",
             "decision",
             ConversationRequestUserInputAnswerRequest {
+                form: None,
                 project_path: "/projects/input-backend-error".to_string(),
                 answers: BTreeMap::from([("decision".to_string(), "Approve".to_string())]),
             },
@@ -3924,6 +3935,7 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
                     &id,
                     "question-1",
                     ConversationRequestUserInputAnswerRequest {
+                        form: None,
                         project_path: project.clone(),
                         answers: BTreeMap::from([("question-1".into(), "Blue".into())]),
                     },
@@ -3957,6 +3969,7 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
                     &id,
                     "question-1",
                     ConversationRequestUserInputAnswerRequest {
+                        form: None,
                         project_path: project.clone(),
                         answers: BTreeMap::from([("question-1".into(), "Blue".into())]),
                     },

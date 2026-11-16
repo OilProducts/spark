@@ -460,11 +460,15 @@ pub struct PipelineMetadataUpdateRequest {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HumanAnswerRequest {
+    #[serde(default)]
     pub selected_value: String,
     /// Optional free-text note carried alongside the selected route; surfaced
     /// to downstream nodes as the `human.gate.note` context value.
     #[serde(default)]
     pub note: String,
+    /// A form question's typed reply, which replaces `selected_value`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<spark_common::forms::FormReply>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2935,7 +2939,24 @@ impl AttractorApiService {
                 json!({"detail": "Unknown question for pipeline"}),
             );
         };
-        let answer = request.selected_value.trim();
+        let answer = match (question.get("form"), &request.form) {
+            (Some(form), Some(reply)) => {
+                if let Err(error) = spark_common::forms::check_reply(&form["schema"], reply) {
+                    return validation_error_response(error);
+                }
+                spark_common::forms::reply_summary(&form["schema"], reply)
+            }
+            (Some(_), None) => {
+                return validation_error_response("This question is a form: reply with an action.");
+            }
+            (None, Some(_)) => {
+                return validation_error_response(
+                    "This question takes an answer, not a form reply.",
+                );
+            }
+            (None, None) => request.selected_value.trim().to_string(),
+        };
+        let answer = answer.as_str();
         if answer.is_empty() {
             return validation_error_response("selected_value is required.");
         }
@@ -2976,6 +2997,9 @@ impl AttractorApiService {
             answer.to_string(),
             note,
         );
+        if let Some(reply) = &request.form {
+            event.payload.insert("form_reply".to_string(), json!(reply));
+        }
         if question.get("origin").and_then(Value::as_str) == Some("agent_clarification") {
             for key in [
                 "origin",
@@ -4217,6 +4241,7 @@ fn pending_question_payload(event: &RawRuntimeEvent, pipeline_id: &str) -> Optio
         "origin",
         "clarification_id",
         "question_type",
+        "form",
         "agent_request_id",
         "agent_question_id",
         "stage_index",

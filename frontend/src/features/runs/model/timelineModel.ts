@@ -1,3 +1,4 @@
+import { parseFormQuestion } from '@/lib/forms'
 import { ApiHttpError } from '@/lib/attractorClient'
 import type {
     PendingInterviewGate,
@@ -607,7 +608,7 @@ const pendingInterviewGateDedupeKey = (
  */
 const enrichPendingInterviewGate = (
     gate: PendingInterviewGate,
-    source: Pick<PendingInterviewGate, 'questionId' | 'questionType' | 'options' | 'runId' | 'origin'>,
+    source: Pick<PendingInterviewGate, 'questionId' | 'questionType' | 'options' | 'runId' | 'origin' | 'form'>,
 ): PendingInterviewGate => (
     gate.questionId || !source.questionId
         ? gate
@@ -616,6 +617,7 @@ const enrichPendingInterviewGate = (
             questionId: source.questionId,
             questionType: source.questionType,
             options: source.options.length > 0 ? source.options : gate.options,
+            form: gate.form ?? source.form,
             runId: gate.runId ?? source.runId,
             origin: gate.origin ?? source.origin,
         }
@@ -669,6 +671,7 @@ const toPendingInterviewGateFromEvent = (event: TimelineEventEntry): PendingInte
         questionId,
         questionType,
         options,
+        form: parseFormQuestion(event.payload.form),
     }
 }
 
@@ -746,6 +749,7 @@ const mergePendingInterviewGatesWithSnapshots = (
         const questionIdMatch = pendingGates.find((gate) => gate.questionId === question.questionId)
         if (questionIdMatch) {
             questionIdMatch.runId = question.runId
+            questionIdMatch.form ??= question.form
             continue
         }
         const dedupeKey = pendingInterviewGateDedupeKey('root', null, null, question.nodeId, question.prompt)
@@ -777,6 +781,7 @@ const mergePendingInterviewGatesWithSnapshots = (
             questionId: question.questionId,
             questionType: question.questionType,
             options: question.options,
+            form: question.form,
         })
         nextSequence += 1
     }

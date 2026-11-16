@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import type { ModelSettings } from '@/lib/api/settingsApi'
+import type { FormReply } from '@/lib/forms'
 import {
     ConversationResetError,
     compareRevisions,
@@ -351,7 +352,7 @@ export function useProjectsHomeController() {
         }
     }, [activeConversationId, activeProjectPath, setPanelError])
 
-    const onSubmitRequestUserInput = useCallback(async (requestId: string, answers: Record<string, string>) => {
+    const onSubmitRequestUserInput = useCallback(async (requestId: string, answers: Record<string, string>, form?: FormReply) => {
         if (!activeConversationId || !activeProjectPath) {
             return
         }
@@ -367,6 +368,7 @@ export function useProjectsHomeController() {
                 {
                     project_path: activeProjectPath,
                     answers,
+                    form,
                 },
             )
             applyConversationBatch(activeProjectPath, activeConversationId, ack.changes, 'mutation', 'request-user-input-answer')

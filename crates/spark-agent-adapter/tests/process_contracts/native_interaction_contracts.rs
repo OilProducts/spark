@@ -245,6 +245,7 @@ fn native_chat_question_is_asked_and_answered_through_the_live_turn() {
 
     let delivered = backend
         .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            form: None,
             conversation_id: "native-chat-question".to_string(),
             project_path: std::env::temp_dir().to_string_lossy().to_string(),
             request_id: "ask-1".to_string(),
@@ -288,7 +289,12 @@ fn native_node_clarification_is_answered_through_the_flow_handler() {
         Ok(Box::new(move || {
             // The node waits until the run delivers the answer.
             polls += 1;
-            Ok((polls > 2).then(|| BTreeMap::from([("question-1".into(), "b.rs".into())])))
+            Ok((polls > 2).then(|| {
+                spark_agent_adapter::codergen::ClarificationReply::Answers(BTreeMap::from([(
+                    "question-1".into(),
+                    "b.rs".into(),
+                )]))
+            }))
         })
             as spark_agent_adapter::codergen::ClarificationPoll)
     }));
