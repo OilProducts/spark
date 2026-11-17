@@ -328,7 +328,7 @@ fn playbooks_are_packaged() {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
-        ["bug-report.md"]
+        ["bug-report.md", "software-change.md"]
     );
 }
 
