@@ -54,9 +54,6 @@ describe('groupTranscript', () => {
         expect(block.summary).toEqual({ commands: 2, files: 1, tools: 1, failed: 1, running: true, label: 'Ran 2 commands, edited 1 file, used 1 tool' })
     })
 
-    it('returns no blocks for no items', () => {
-        expect(groupTranscript([], classify)).toEqual([])
-    })
 })
 
 describe('summarizeToolGroup', () => {

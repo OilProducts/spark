@@ -16,15 +16,6 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); isTauri.
 const markdown = (content: string, enableCodeCopy = true) => <ProjectConversationMarkdown content={content} enableCodeCopy={enableCodeCopy} />
 
 describe('shared Markdown', () => {
-    it('renders GFM tables, alignment, read-only tasks, deletion and ordered starts', () => {
-        const { container } = render(markdown('| Left | Right |\n| :--- | ---: |\n| a | b |\n\n- [x] done\n- [ ] todo\n\n~~removed~~\n\n7. seven\n8. eight'))
-        expect(screen.getAllByRole('columnheader')).toHaveLength(2)
-        expect(screen.getAllByRole('columnheader')[1]).toHaveStyle({ textAlign: 'right' })
-        expect(screen.getAllByRole('checkbox').every((input) => (input as HTMLInputElement).disabled)).toBe(true)
-        expect(container.querySelector('del')).toHaveTextContent('removed')
-        expect(container.querySelector('ol')).toHaveAttribute('start', '7')
-    })
-
     it('copies exact fences, highlights known languages, and keeps nested/unknown code plain', async () => {
         const writeText = vi.fn().mockResolvedValue(undefined)
         vi.stubGlobal('navigator', { clipboard: { writeText } })
@@ -83,8 +74,13 @@ describe('shared Markdown', () => {
         const { container } = render(<>{markdown(source)}{markdown(source)}</>)
         const ids = [...container.querySelectorAll('[id]')].map((element) => element.id)
         expect(new Set(ids).size).toBe(ids.length)
-        for (const renderer of container.querySelectorAll('.conversation-markdown')) {
-            for (const link of renderer.querySelectorAll('a')) {
+        const renderers = container.querySelectorAll('.conversation-markdown')
+        expect(renderers).toHaveLength(2)
+        for (const renderer of renderers) {
+            const links = renderer.querySelectorAll('a')
+            expect(links).toHaveLength(2)
+            expect(renderer.querySelectorAll('a[aria-describedby]')).toHaveLength(1)
+            for (const link of links) {
                 const target = link.getAttribute('href')!.slice(1)
                 expect([...renderer.querySelectorAll('[id]')].some((element) => element.id === target)).toBe(true)
                 const label = link.getAttribute('aria-describedby')

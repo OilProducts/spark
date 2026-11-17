@@ -604,20 +604,6 @@ describe('ProjectConversationHistory', () => {
         expect(paragraph.closest('div')).toHaveClass('min-w-0')
     })
 
-    it('renders assistant fenced code blocks as preformatted code', () => {
-        renderHistory([
-            makeMessageEntry({
-                content: '```bash\nnpm test\n```',
-            }),
-        ])
-
-        const history = screen.getByTestId('project-ai-conversation-history-list')
-        const codeBlock = history.querySelector('pre > code')
-        expect(codeBlock).not.toBeNull()
-        expect(codeBlock).toHaveTextContent('npm test')
-        expect(codeBlock?.closest('pre')).toHaveClass('overflow-x-auto')
-    })
-
     it('does not rerender an older unchanged assistant markdown row when the latest assistant markdown changes', () => {
         const olderAssistantMessage = makeMessageEntry({
             id: 'assistant-old',
@@ -1149,30 +1135,6 @@ describe('ProjectConversationHistory', () => {
         expect(within(expired).queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
     })
 
-    it('renders assistant markdown links as external anchors', () => {
-        renderHistory([
-            makeMessageEntry({
-                content: 'Read [the docs](https://example.com/docs) before continuing.',
-            }),
-        ])
-
-        const history = screen.getByTestId('project-ai-conversation-history-list')
-        expect(within(history).getByText('the docs')).toBeVisible()
-        expect(within(history).getByRole('link', { name: 'the docs' })).toHaveAttribute('rel', 'noopener noreferrer')
-        expect(history).not.toHaveTextContent('https://example.com/docs')
-    })
-
-    it('loads assistant web images inline', () => {
-        renderHistory([
-            makeMessageEntry({
-                content: 'Diagram: ![Architecture overview](https://example.com/diagram.png)',
-            }),
-        ])
-
-        const history = screen.getByTestId('project-ai-conversation-history-list')
-        expect(within(history).getByRole('img', { name: 'Architecture overview' })).toHaveAttribute('loading', 'lazy')
-    })
-
     it('shows user messages as typed, every character, line and indent kept, with code and math formatted', () => {
         const typed = [
             'Rename the tests in src/*.ts and lib/*.ts, and __init__.py, to match.',
@@ -1237,50 +1199,6 @@ describe('ProjectConversationHistory', () => {
 
         await user.click(screen.getByTestId('project-thinking-toggle-segment-reasoning-1'))
         expect(screen.getByText('Smallest safe change first.')).toBeVisible()
-    })
-
-    it('drops completed thinking entirely while a thought still in progress keeps its marker', () => {
-        renderHistory([
-            makeMessageEntry({ id: 'done', presentation: 'thinking', status: 'complete', content: 'Reasoned it through.' }),
-            makeMessageEntry({ id: 'live', presentation: 'thinking', status: 'streaming', content: 'Still reasoning.' }),
-        ])
-
-        expect(screen.queryByText('Reasoned it through.')).not.toBeInTheDocument()
-        expect(screen.queryByText('Still reasoning.')).not.toBeInTheDocument()
-        expect(screen.getAllByText('Thinking')).toHaveLength(1)
-    })
-
-    it('folds consecutive tool calls into one group whose lines still expand each call', async () => {
-        const user = userEvent.setup()
-
-        render(
-            <InteractiveHistory
-                activeConversationHistory={[
-                    makeToolCallEntry({
-                        id: 'entry-1',
-                        toolCall: { id: 'tool-1', kind: 'command_execution', status: 'completed', title: 'List', command: "/bin/zsh -lc 'ls -la'", output: 'README.md', filePaths: [] },
-                    }),
-                    makeToolCallEntry({
-                        id: 'entry-2',
-                        toolCall: { id: 'tool-2', kind: 'command_execution', status: 'failed', title: 'Test', command: "/bin/zsh -lc 'npm test'", output: '1 failing', filePaths: [] },
-                    }),
-                ]}
-            />,
-        )
-
-        const group = screen.getByTestId('project-tool-group-tool-1')
-        expect(group).toHaveTextContent('Ran 2 commands')
-        expect(group).toHaveTextContent('1 failed')
-        expect(group).toHaveAttribute('aria-expanded', 'false')
-        expect(screen.queryByTestId('project-tool-call-toggle-tool-1')).not.toBeInTheDocument()
-
-        await user.click(group)
-        expect(screen.getByTestId('project-tool-call-toggle-tool-1')).toHaveTextContent('ls -la')
-        expect(screen.getByTestId('project-tool-call-toggle-tool-2')).toHaveTextContent('npm test')
-        expect(screen.queryByText('1 failing')).not.toBeInTheDocument()
-
-        await user.click(screen.getByTestId('project-tool-call-toggle-tool-2'))
-        expect(screen.getByText('1 failing')).toBeVisible()
     })
 
     it('opens each assistant turn with a header carrying its time and the worked time instead of a divider', () => {

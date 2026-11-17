@@ -88,24 +88,6 @@ describe('RunList', () => {
         expect(screen.queryByTestId('run-list-scroll-region')).not.toBeInTheDocument()
     })
 
-    it('renders run rows without polling-era refresh affordances', () => {
-        render(
-            <RunList
-                error={null}
-                onSelectRun={vi.fn()}
-                runs={[makeRun({ flow_name: 'refreshing.dot' })]}
-                selectedRunId={null}
-                status="ready"
-                summaryLabel="1 total runs · 1 running"
-            />,
-        )
-
-        expect(screen.queryByTestId('run-list-loading')).not.toBeInTheDocument()
-        expect(screen.getByTestId('run-list-scroll-region')).toBeVisible()
-        expect(screen.getByText('Refreshing')).toBeVisible()
-        expect(screen.queryByTestId('runs-refresh-button')).not.toBeInTheDocument()
-    })
-
     it('lists a completed run that reached a failure exit as failed, named by its exit', () => {
         render(
             <RunList

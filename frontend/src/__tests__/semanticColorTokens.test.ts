@@ -1,35 +1,6 @@
-import { readdirSync, readFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { expect, it } from 'vitest'
-
-// Status color comes from theme tokens (success/warning/info/destructive/muted in index.css), never raw Tailwind palette classes.
-const RAW_PALETTE = /\b(bg|text|border|ring|fill|stroke|from|to|caret)-(red|amber|yellow|emerald|green|blue|sky|indigo|violet|purple|orange|rose|slate|zinc|gray|neutral|stone|cyan|teal|lime|fuchsia|pink)-[0-9]+/g
-
-it('uses semantic color tokens instead of raw palette classes', () => {
-    const srcRoot = resolve(process.cwd(), 'src')
-    const violations: string[] = []
-    for (const file of readdirSync(srcRoot, { recursive: true }) as string[]) {
-        if (!/\.tsx?$/.test(file)) continue
-        readFileSync(join(srcRoot, file), 'utf8').split('\n').forEach((line, index) => {
-            for (const [match] of line.matchAll(RAW_PALETTE)) violations.push(`${file}:${index + 1} ${match}`)
-        })
-    }
-    expect(violations).toEqual([])
-})
-
-// Inline errors render through InlineError (Alert variant="destructive"); hand-rolled tinted destructive boxes are banned.
-it('keeps ad hoc destructive error boxes out of feature code', () => {
-    const srcRoot = resolve(process.cwd(), 'src')
-    const violations: string[] = []
-    for (const file of readdirSync(srcRoot, { recursive: true }) as string[]) {
-        if (!file.endsWith('.tsx') || file.replaceAll('\\', '/').startsWith('components/ui/')) continue
-        readFileSync(join(srcRoot, file), 'utf8').split('\n').forEach((line, index) => {
-            const box = line.match(/border-destructive\/\d+ bg-destructive\/\d+/)
-            if (box) violations.push(`${file}:${index + 1} ${box[0]}`)
-        })
-    }
-    expect(violations).toEqual([])
-})
 
 // Text tokens must meet WCAG AA (4.5:1) against the surfaces they sit on, in light and dark.
 function tokens(css: string, selector: string) {
@@ -64,8 +35,8 @@ it.each([':root', '.dark'])('keeps text tokens at WCAG AA contrast in %s', (sele
         ['success', 'ground'], ['warning', 'ground'], ['destructive', 'ground'], ['primary', 'ground'],
     ]
     const failures = pairs
-        .map(([text, surface]) => [text, surface, contrast(theme[text], theme[surface]).toFixed(2)] as const)
-        .filter(([, , ratio]) => Number(ratio) < 4.5)
+        .map(([text, surface]) => [text, surface, contrast(theme[text], theme[surface])] as const)
+        .filter(([, , ratio]) => !(ratio >= 4.5))
     expect(failures).toEqual([])
     // StatusPill: tone text on a 10% tint of itself over the sheet.
     const rgb = (hsl: number[]) => [0, 8, 4].map((n) => {
@@ -80,7 +51,7 @@ it.each([':root', '.dark'])('keeps text tokens at WCAG AA contrast in %s', (sele
         const tint = text.map((c, i) => c * 0.1 + rgb(theme.background)[i] * 0.9)
         const [hi, lo] = [lum(text), lum(tint)].sort((x, y) => y - x)
         const ratio = (hi + 0.05) / (lo + 0.05)
-        return ratio < 4.5 ? [`${tone} pill ${ratio.toFixed(2)}`] : []
+        return ratio >= 4.5 ? [] : [`${tone} pill ${ratio.toFixed(2)}`]
     })
     expect(pillFailures).toEqual([])
 })

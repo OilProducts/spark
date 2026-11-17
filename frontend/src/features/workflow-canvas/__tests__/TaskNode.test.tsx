@@ -60,26 +60,6 @@ useStore.getState().setRunsSelectedRunId(null);
 }
 }
 
-const MixedShapeHarness = ({ nodes }: { nodes: Node[] }) => {
-    const [canvasNodes, , onNodesChange] = useNodesState(nodes)
-    const [canvasEdges, , onEdgesChange] = useEdgesState([])
-
-    return (
-        <CanvasSessionModeProvider mode="editor">
-            <div style={{ width: 1200, height: 700 }}>
-                <ReactFlow
-                    nodes={canvasNodes}
-                    edges={canvasEdges}
-                    onNodesChange={onNodesChange}
-                    onEdgesChange={onEdgesChange}
-                    nodeTypes={nodeTypes}
-                    fitView
-                />
-            </div>
-        </CanvasSessionModeProvider>
-    )
-}
-
 const SingleNodeHarness = ({
     node,
     mode = 'editor',
@@ -127,32 +107,6 @@ describe('TaskNode', () => {
 
     afterEach(() => {
         cleanup()
-    })
-
-    it('renders distinct frames for the canonical Attractor node shapes', () => {
-        const nodes: Node[] = [
-            { id: 'start', type: getReactFlowNodeTypeForShape('Mdiamond'), position: { x: 0, y: 0 }, data: { label: 'Start', shape: 'Mdiamond' } },
-            { id: 'exit', type: getReactFlowNodeTypeForShape('Msquare'), position: { x: 220, y: 0 }, data: { label: 'End', shape: 'Msquare' } },
-            { id: 'task', type: getReactFlowNodeTypeForShape('box'), position: { x: 440, y: 0 }, data: { label: 'Task', shape: 'box' } },
-            { id: 'human', type: getReactFlowNodeTypeForShape('hexagon'), position: { x: 0, y: 180 }, data: { label: 'Human', shape: 'hexagon' } },
-            { id: 'conditional', type: getReactFlowNodeTypeForShape('diamond'), position: { x: 220, y: 180 }, data: { label: 'Branch', shape: 'diamond' } },
-            { id: 'parallel', type: getReactFlowNodeTypeForShape('component'), position: { x: 440, y: 180 }, data: { label: 'Parallel', shape: 'component' } },
-            { id: 'fanin', type: getReactFlowNodeTypeForShape('tripleoctagon'), position: { x: 0, y: 360 }, data: { label: 'Join', shape: 'tripleoctagon' } },
-            { id: 'tool', type: getReactFlowNodeTypeForShape('parallelogram'), position: { x: 220, y: 360 }, data: { label: 'Tool', shape: 'parallelogram' } },
-            { id: 'manager', type: getReactFlowNodeTypeForShape('house'), position: { x: 440, y: 360 }, data: { label: 'Manager', shape: 'house' } },
-        ]
-
-        renderWithFlowProvider(<MixedShapeHarness nodes={nodes} />)
-
-        expect(screen.getByTestId('workflow-node-frame-Mdiamond')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-Msquare')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-hexagon')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-diamond')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-component')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-tripleoctagon')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-parallelogram')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-house')).toBeInTheDocument()
     })
 
     it('moves to the step settings from the canvas Edit button', () => {

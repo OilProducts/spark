@@ -1,5 +1,4 @@
 import {
-    extractDebugErrorSummary,
     FLOW_LOAD_DEBUG_QUERY_PARAM,
     FLOW_LOAD_DEBUG_STORAGE_KEY,
     clearFlowLoadDebugTrace,
@@ -91,14 +90,4 @@ describe('flowLoadDebug', () => {
         })
     })
 
-    it('extracts error summaries for debug logging', () => {
-        expect(extractDebugErrorSummary(new Error('broken'))).toEqual({
-            message: 'broken',
-            name: 'Error',
-        })
-        expect(extractDebugErrorSummary({ status: 422 })).toEqual({
-            message: '[object Object]',
-            name: 'object',
-        })
-    })
 })

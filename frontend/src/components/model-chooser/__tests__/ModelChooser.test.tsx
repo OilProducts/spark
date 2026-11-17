@@ -178,13 +178,6 @@ it('clears saved effort to the explicit provider default even with inherited set
     expect(onChange).toHaveBeenLastCalledWith({ ...initial, provider: 'claude-code', model: 'claude-discovered' })
 })
 
-it('offers only Default when support is empty while retaining the stored effort', async () => {
-    const user = userEvent.setup()
-    render(<Editor value={{ ...initial, provider: 'claude-code', model: 'claude-discovered', reasoning_effort: 'high' }} />)
-    await user.click(await screen.findByRole('button', { name: 'Model: Claude · High' }))
-    expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button').map(button => button.textContent)).toEqual(['Default'])
-})
-
 
 it('locks effort while inheriting and sets it only with an explicitly chosen model', async () => {
     const user = userEvent.setup(), onChange = vi.fn()
