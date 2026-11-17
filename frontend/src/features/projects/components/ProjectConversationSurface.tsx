@@ -80,7 +80,7 @@ const MODEL_SOURCES = {
 } as const
 
 /** The chat sheet: header, scrolling transcript and the composer. ViewLayout supplies the sheet itself. */
-// The chat's ID is how flows and the spark command's --conversation option reach it: kept a click away, not in the title line.
+// The chat's ID is how flows and the spark command's --conversation option reach it: shown in the title line and copied with a click.
 function CopyChatId({ handle }: { handle: string }) {
     const [copied, setCopied] = useState(false)
     return (
@@ -99,7 +99,7 @@ function CopyChatId({ handle }: { handle: string }) {
             className="ml-1 inline-flex shrink-0 items-center gap-1 rounded-sm px-1 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
             {copied ? <Check aria-hidden="true" className="size-3.5" /> : <Hash aria-hidden="true" className="size-3.5" />}
-            <span className="text-xs">{copied ? 'Copied' : 'Copy ID'}</span>
+            <span className="font-mono text-xs">{copied ? 'Copied' : handle}</span>
         </button>
     )
 }

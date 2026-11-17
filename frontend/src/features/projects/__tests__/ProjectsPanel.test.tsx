@@ -905,6 +905,8 @@ describe('ProjectsPanel', () => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Thinking')
     })
     expect(screen.getByTestId('chat-handle')).toHaveAccessibleName('Copy chat ID amber-otter')
+    expect(screen.getByTestId('chat-handle')).toHaveTextContent('amber-otter')
+    expect(screen.getByTestId('chats-chat-row-meta')).toHaveTextContent(/^amber-otter · /)
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Can I interrupt?')
 

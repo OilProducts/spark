@@ -173,11 +173,13 @@ export function ProjectsSidebar({
                                                 selected={isActiveConversation}
                                                 aria-label={`Open thread ${conversation.title}`}
                                                 title={conversation.title}
-                                                trailing={conversation.standing_role ? <StandingRoleChip state={conversation.standing_role.state} /> : (
-                                                    <span className="transition-opacity group-hover/thread:opacity-0 group-focus-within/thread:opacity-0">
+                                                meta={(
+                                                    <span data-testid="chats-chat-row-meta">
+                                                        {conversation.conversation_handle ? <><span className="font-mono">{conversation.conversation_handle}</span> · </> : null}
                                                         {formatConversationAgeShort(conversation.updated_at)}
                                                     </span>
                                                 )}
+                                                trailing={conversation.standing_role ? <StandingRoleChip state={conversation.standing_role.state} /> : null}
                                                 className="py-1.5 pl-7 pr-8"
                                             />
                                             {conversation.standing_role ? null : <button
