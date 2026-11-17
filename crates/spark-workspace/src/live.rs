@@ -956,6 +956,7 @@ fn public_run_record(record: attractor_core::RunRecord) -> Value {
         "reasoning_effort": record.reasoning_effort,
         "started_at": record.started_at,
         "ended_at": record.ended_at,
+        "idle_ms": record.idle_ms,
         "project_path": record.project_path,
         "git_branch": record.git_branch,
         "git_commit": record.git_commit,

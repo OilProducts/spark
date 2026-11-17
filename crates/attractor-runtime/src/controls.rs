@@ -317,6 +317,7 @@ impl RuntimeControls {
         record.execution_lock = request.execution_lock.clone();
         record.started_at = crate::events::utc_timestamp();
         record.ended_at = None;
+        record.idle_ms = None;
         record.continued_from_run_id = Some(source_record.run_id.clone());
         record.continued_from_node = Some(start_node.to_string());
         record.continued_from_flow_mode = Some(mode.clone());

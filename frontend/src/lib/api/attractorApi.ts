@@ -309,6 +309,8 @@ export interface RunRecordResponse {
     reasoning_effort?: string | null
     started_at: string
     ended_at?: string | null
+    /** Milliseconds it sat stopped before its retries, which its duration leaves out. */
+    idle_ms?: number
     last_error?: string
     token_usage?: number | null
     token_usage_breakdown?: TokenUsageBreakdownResponse | null
@@ -856,6 +858,7 @@ function parseRunRecord(
         reasoning_effort: asOptionalNullableString(record.reasoning_effort),
         started_at: typeof record.started_at === 'string' ? record.started_at : '',
         ended_at: asOptionalNullableString(record.ended_at),
+        idle_ms: typeof record.idle_ms === 'number' ? record.idle_ms : undefined,
         last_error: asOptionalString(record.last_error),
         token_usage: typeof record.token_usage === 'number'
             ? record.token_usage

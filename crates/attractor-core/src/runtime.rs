@@ -157,6 +157,10 @@ pub struct RunRecord {
     pub started_at: String,
     #[serde(default)]
     pub ended_at: Option<String>,
+    /// Milliseconds the run sat stopped before its retries: not run time,
+    /// so its duration leaves them out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_ms: Option<u64>,
     #[serde(default)]
     pub project_path: String,
     #[serde(default)]

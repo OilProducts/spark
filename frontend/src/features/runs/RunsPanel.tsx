@@ -636,7 +636,7 @@ export function RunsPanel() {
                                 graphPane={graphColumn ? undefined : graphCard}
                                 statusRow={{
                                     ...STATUS_ROWS[statusKind],
-                                    detail: formatDuration(selectedRun.started_at, selectedRun.ended_at, selectedRun.status, now),
+                                    detail: formatDuration(selectedRun.started_at, selectedRun.ended_at, selectedRun.status, now, selectedRun.idle_ms),
                                 }}
                                 contextKeyCount={contextError
                                     ? null

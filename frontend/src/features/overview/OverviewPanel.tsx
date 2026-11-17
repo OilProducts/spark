@@ -148,7 +148,7 @@ const distinctFlowTitle = (item: Started & { kind: 'run' }) => {
 const openItem = (item: Started) => (item.kind === 'run' ? openRun(item.id) : openMission(item.id, item.mission.project_path))
 const itemProject = (item: Started) => (item.kind === 'run' ? item.run.project_path : item.mission.project_path)
 const itemDuration = (item: Started) => (item.kind === 'run'
-    ? formatDuration(item.run.started_at, item.run.ended_at)
+    ? formatDuration(item.run.started_at, item.run.ended_at, undefined, undefined, item.run.idle_ms)
     : formatDuration(missionTime(item.mission.started_at), missionTime(item.mission.closed?.at)))
 
 /** Pick up where you left off: the chat you were last in, what needs you, what finished, and what to start. */
@@ -352,7 +352,7 @@ export function OverviewPanel() {
                                         />
                                     </span>
                                     {item.kind === 'run' ? (
-                                        <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground" title="Running for">{formatDuration(item.run.started_at, null, 'running', now)}</span>
+                                        <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground" title="Running for">{formatDuration(item.run.started_at, null, 'running', now, item.run.idle_ms)}</span>
                                     ) : null}
                                     <span className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{when(item.at, now)}</span>
                                 </li>

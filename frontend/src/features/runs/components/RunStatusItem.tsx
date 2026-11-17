@@ -145,7 +145,7 @@ export function RunStatusItem({
 }: RunStatusItemProps) {
     const rootVisits = visits.filter((visit) => visit.parentKey === null)
     const lastVisit = rootVisits.at(-1) ?? null
-    const duration = formatDuration(run.started_at, run.ended_at, run.status, now)
+    const duration = formatDuration(run.started_at, run.ended_at, run.status, now, run.idle_ms)
     const link = (visit: RunVisit | null | undefined) => (visit ? <VisitLink visit={visit} onSelect={onSelectVisit} /> : null)
 
     let heading: string

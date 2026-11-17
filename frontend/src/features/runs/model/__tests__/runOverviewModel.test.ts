@@ -12,7 +12,7 @@ import {
   runMatchesSearch,
   runStatusKind,
 } from '../runOverviewModel'
-import { canContinueRun, canRetryRun, formatRunStatusLabel } from '../shared'
+import { canContinueRun, canRetryRun, formatDuration, formatRunStatusLabel } from '../shared'
 import type { RunVisit, VisitOutcome } from '../visitModel'
 
 const visit = (nodeId: string, number: number, outcome: VisitOutcome, updates: Record<string, unknown> | null = null): RunVisit => ({
@@ -203,5 +203,14 @@ describe('an unreadable run', () => {
     expect(canContinueRun('unreadable')).toBe(false)
     expect(canRetryRun('unreadable')).toBe(false)
     expect(formatRunStatusLabel({ status: 'unreadable', outcome: null, outcome_reason_code: null })).toBe('Unreadable')
+  })
+})
+
+describe('formatDuration', () => {
+  it('leaves out the time a run sat stopped before its retry, finished or still running', () => {
+    const start = '2026-03-03T07:00:00Z'
+    expect(formatDuration(start, '2026-03-03T07:09:23Z', 'completed')).toBe('9m 23s')
+    expect(formatDuration(start, '2026-03-03T07:09:23Z', 'completed', undefined, 9 * 60_000 + 21_000)).toBe('2s')
+    expect(formatDuration(start, null, 'running', Date.parse('2026-03-03T07:10:00Z'), 9 * 60_000)).toBe('1m 00s')
   })
 })

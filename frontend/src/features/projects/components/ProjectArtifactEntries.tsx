@@ -130,7 +130,7 @@ function FlowArtifactCard({
                 ) : artifact.summary}
                 tone={run ? runRecordTone(run) : presentation.tone}
                 status={run ? formatRunStatusLabel(run) : presentation.label}
-                duration={run ? formatDuration(run.started_at, run.ended_at, run.status) : undefined}
+                duration={run ? formatDuration(run.started_at, run.ended_at, run.status, undefined, run.idle_ms) : undefined}
             />
             <div className="space-y-2 px-3 pb-3 text-xs text-muted-foreground">
                 <p>
@@ -320,7 +320,7 @@ export function ProjectRunRecoveryEntry({
                 ) : label}
                 tone={liveRun ? runRecordTone(liveRun) : presentation.tone}
                 status={liveRun ? formatRunStatusLabel(liveRun) : presentation.label}
-                duration={liveRun ? formatDuration(liveRun.started_at, liveRun.ended_at, liveRun.status) : undefined}
+                duration={liveRun ? formatDuration(liveRun.started_at, liveRun.ended_at, liveRun.status, undefined, liveRun.idle_ms) : undefined}
             />
             <div className="space-y-2 px-3 pb-3 text-xs text-muted-foreground">
                 <p>

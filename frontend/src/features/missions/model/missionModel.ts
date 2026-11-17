@@ -118,7 +118,7 @@ export function joinRuns(roster: RosterEntry[], runs: RunRecord[], now = Date.no
         const run = byId.get(entry.run_id)
         // The roster knows about human gates; the run record's own status is fresher otherwise.
         const status = entry.status === 'waiting' ? 'waiting' : run?.status ?? entry.status
-        const duration = run ? formatDuration(run.started_at, run.ended_at, run.status, now) : formatDuration(missionTime(entry.launched_at), null, status, now)
+        const duration = run ? formatDuration(run.started_at, run.ended_at, run.status, now, run.idle_ms) : formatDuration(missionTime(entry.launched_at), null, status, now)
         return {
             runId: entry.run_id,
             title: run?.title?.trim() || entry.summary || (run ? runFlowTitle(run) : flowTitle(entry.flow_name)),

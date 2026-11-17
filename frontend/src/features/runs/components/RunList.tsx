@@ -204,7 +204,7 @@ export function RunList({
         const flowPart = title === runFlowTitle(run) ? null : runFlowTitle(run)
         const metaParts = [
             underDay ? formatRunTime(run.started_at) : formatRunDate(run.started_at, now),
-            formatDuration(run.started_at, run.ended_at, run.status, now),
+            formatDuration(run.started_at, run.ended_at, run.status, now, run.idle_ms),
         ].filter((value): value is string => Boolean(value) && value !== '—')
         // Short enough for the trailing slot, which never truncates (the meta line does).
         const lock = run.execution_lock?.state === 'holding'
@@ -355,7 +355,7 @@ export function RunList({
                                 tone={runRecordTone(run)}
                                 onClick={() => onSelectRun(run)}
                                 title={<span data-testid="run-history-row-title" title={`${runTitle(run)} · ${run.run_id}`}>{formatRunTime(run.started_at, true) || runTitle(run)}</span>}
-                                meta={<span data-testid="run-history-row-meta">{formatDuration(run.started_at, run.ended_at, run.status, now)}</span>}
+                                meta={<span data-testid="run-history-row-meta">{formatDuration(run.started_at, run.ended_at, run.status, now, run.idle_ms)}</span>}
                             />
                         ))}
                         {more > 0 ? (

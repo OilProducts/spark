@@ -85,7 +85,7 @@ export function RunHeaderBar({
     const commit = run.git_commit?.trim()
     const facts = [
         when,
-        formatDuration(run.started_at, run.ended_at, run.status, now),
+        formatDuration(run.started_at, run.ended_at, run.status, now, run.idle_ms),
         // A run with no model work yet, such as tools only, has no tokens to report.
         ...(typeof tokens === 'number' && tokens > 0 ? [`${formatCompactCount(tokens)} tokens${run.token_usage_breakdown?.coverage === 'partial' ? ' (partial)' : ''}`] : []),
         ...(commit ? [commit.slice(0, 7)] : []),
