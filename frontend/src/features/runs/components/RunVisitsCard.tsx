@@ -537,8 +537,8 @@ function RunVisitView({
                             </span>
                         ) : null}
                     </div>
-                    {/* A step's own notes are Markdown, as its agent wrote them; an error reads as written. */}
-                    {failure && visit.outcome === 'completed' && !failure.detail ? (
+                    {/* A step's own notes are Markdown, as its agent wrote them; a person's gate note and an error read as written. */}
+                    {failure && visit.outcome === 'completed' && !failure.detail && visit.kind !== 'human_gate' ? (
                         <div data-testid="run-visit-reason" className="max-w-[72ch] text-sm text-foreground">
                             <ProjectConversationMarkdown content={failure.summary} keepLineBreaks />
                         </div>
@@ -878,6 +878,7 @@ function RunJournal({ journal, flowNodes, timelineError }: {
     // A run that fails with its step's error repeats the step's detail; it shows once, under the step.
     const shownDetails = new Set<string>()
     let previousDay = ''
+    let afterCancel = false
     return (
         <section data-testid="run-journal-panel" className="flex flex-col gap-3">
             <h2 className="text-base font-semibold text-foreground">Journal</h2>
@@ -889,7 +890,8 @@ function RunJournal({ journal, flowNodes, timelineError }: {
                     const day = valid ? JOURNAL_DAY.format(date) : ''
                     const startsDay = day !== previousDay
                     previousDay = day
-                    const [line, ...more] = journalEntrySummary(event, nodeLabel).split('\n')
+                    afterCancel ||= event.type === 'CancelRequested'
+                    const [line, ...more] = journalEntrySummary(event, nodeLabel, afterCancel).split('\n')
                     const detail = more.join('\n')
                     const repeated = shownDetails.has(detail)
                     if (detail) shownDetails.add(detail)

@@ -147,13 +147,8 @@ describe('describeFailure', () => {
 describe('runTitle', () => {
   it('uses the generated title, else the first launch input, else the flow title', () => {
     expect(runTitle({ title: 'Tighten the review loop', flow_name: 'implement-change.yaml' })).toBe('Tighten the review loop')
-    expect(runTitle({
-      title: null,
-      flow_name: 'software-development/implement-change.yaml',
-      launch_context: { 'context.request.artifact_path': 'changes/CR-1/request.md', 'context.request.validation_command': 'just test' },
-    })).toBe('changes/CR-1/request.md')
-    expect(runTitle({ title: '  ', flow_name: 'Implement Task', launch_context: null })).toBe('Implement Task')
-    // The runs list carries only the first input.
+    expect(runTitle({ title: '  ', flow_name: 'Implement Task' })).toBe('Implement Task')
+    // The run records its first input in its flow's order.
     expect(runTitle({ flow_name: 'merge-change.yaml', first_launch_input: 'changes/CR-2/request.md' })).toBe('changes/CR-2/request.md')
     // A flow's own title names it, as its run header does.
     expect(runTitle({ flow_name: 'release-check.yaml', flow_title: 'Release readiness' })).toBe('Release readiness')

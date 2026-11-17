@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::context::INTERNAL_PIPELINE_RETRY_RUN_ID_KEY;
 use crate::error::RuntimeStorageError;
 use crate::events::{
-    cancel_requested_event, log_event, pipeline_paused_event, pipeline_retry_started_event,
+    cancel_requested_event, pipeline_paused_event, pipeline_retry_started_event,
     runtime_status_event,
 };
 use crate::records::{
@@ -762,13 +762,6 @@ impl RuntimeControls {
                 None,
                 None,
                 Some("cancel_requested_by_user".to_string()),
-            ),
-        )?;
-        self.store.append_event(
-            &bundle.paths,
-            log_event(
-                run_id,
-                "[System] Cancel requested. Stopping after current node.",
             ),
         )?;
         Ok(RuntimeControlStatus {

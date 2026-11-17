@@ -214,6 +214,10 @@ pub struct RunRecord {
     /// The launched flow's own title, so a run names its flow as the flow does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow_title: Option<String>,
+    /// The first launch input given, in the flow's declared order, cut to a
+    /// line: what names a run that has no title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_launch_input: Option<String>,
     /// Utility-generated title of a root run. Written once, after launch;
     /// deliberately absent from the record writer's known fields so a stale
     /// in-memory record written later keeps the stored title.

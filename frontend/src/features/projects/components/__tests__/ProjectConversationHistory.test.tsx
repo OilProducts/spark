@@ -430,14 +430,21 @@ describe('ProjectConversationHistory', () => {
                 '[Inbox: 2 events delivered asynchronously. Run reports, triggers and messages from other conversations concern earlier or outside work; they are not new requests from the user.]',
                 '[event evt-1 from run-7]\nRun run-7 (release-check, "Ship 3.1.0") ended completed.',
                 '[event evt-2 from conversation-9]\nMessage from conversation thread-9 (Planner), project /tmp/project:\nPlease rebase first.',
+                '[event evt-3 from run-8]\nRun run-8 (release-check, "Ship 3.1.1") ended canceled: aborted_by_user.',
+                '[event evt-4 from run-9]\nRun run-9 (release-check, "Ship 3.1.2") ended failed: tool exited with code 2; stderr: lint failed in src/a.ts.',
             ].join('\n\n'),
         })], { onOpenFlowRun })
 
         const events = screen.getAllByTestId('project-inbox-event')
-        expect(events).toHaveLength(2)
+        expect(events).toHaveLength(4)
         expect(events[0]).toHaveTextContent('Ship 3.1.0 ended · Completed')
         expect(events[1]).toHaveTextContent('Message from conversation thread-9 (Planner), project /tmp/project:')
         expect(events[1]).toHaveTextContent('Please rebase first.')
+        // A cancel needs no reason; a failure's reads in plain words, in full under its line.
+        expect(events[2]).toHaveTextContent('Ship 3.1.1 ended · Canceled')
+        expect(events[2]).not.toHaveTextContent('aborted_by_user')
+        expect(events[3]).toHaveTextContent('Ship 3.1.2 ended · Failed')
+        expect(events[3]).toHaveTextContent('The command failed (exit code 2).')
         expect(screen.queryByText(/\[Inbox:|evt-1/)).toBeNull()
         expect(screen.queryByText('You:')).toBeNull()
         expect(screen.getByTestId('message-delivery')).toHaveTextContent('Sent into the running turn')

@@ -22,7 +22,7 @@ export const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
     mission: 'Mission needs you',
 }
 
-type AttentionRun = Pick<RunRecord, 'run_id' | 'title' | 'flow_name' | 'flow_title' | 'launch_context' | 'first_launch_input'>
+type AttentionRun = Pick<RunRecord, 'run_id' | 'title' | 'flow_name' | 'flow_title' | 'first_launch_input'>
 
 /**
  * What an item is called: a run waiting at a gate takes the title the Runs list gives it,

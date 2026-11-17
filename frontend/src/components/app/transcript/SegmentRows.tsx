@@ -463,6 +463,11 @@ export function EventLine({
     )
 }
 
+/** An event line's detail under it, in full: a run's failure reason, a question, a message's text. */
+export function EventDetail({ children }: { children: ReactNode }) {
+    return <p className="ml-6.5 whitespace-pre-wrap border-l border-border pl-3 text-sm text-muted-foreground [overflow-wrap:anywhere]">{children}</p>
+}
+
 /**
  * A launched run as a bordered card: run icon, kicker ("Launched run · Implement
  * Change"), the title (pass the surface's own link), and live status with duration.

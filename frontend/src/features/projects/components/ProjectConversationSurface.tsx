@@ -162,8 +162,8 @@ export function ProjectConversationSurface({
     return (
         <div
             data-testid="project-ai-conversation-surface"
-            // A narrow viewport stacks the chat list above; the chat still fills one screen so it opens at its latest message with the composer in reach.
-            className={cn('flex min-h-0 flex-col', isNarrowViewport ? 'h-[calc(100dvh-3.25rem)]' : 'h-full')}
+            // A narrow viewport stacks the chat list above; the chat still fills the view's height so it opens at its latest message with the composer in reach.
+            className={cn('flex min-h-0 flex-col', isNarrowViewport ? 'h-[100cqh]' : 'h-full')}
         >
             <header className="flex items-center justify-between gap-x-6 border-b border-border px-6 py-4">
                 <div className="min-w-0 flex-1">

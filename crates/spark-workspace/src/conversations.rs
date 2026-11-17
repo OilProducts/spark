@@ -3844,8 +3844,10 @@ impl WorkspaceConversationService {
 
     /// Stores a utility-generated title on a root run from its flow's title
     /// and goal, the launch request's summary, and its labelled launch inputs.
-    /// Returns the updated record, or `None` when utility inference is off or
-    /// the run already has a title.
+    /// With utility inference off or failing, the summary's first line is the
+    /// title, so a run reads as the request that launched it. Returns the
+    /// updated record, or `None` when no title was stored or the run already
+    /// has one.
     pub fn generate_run_title(
         &self,
         run_id: &str,
@@ -3897,12 +3899,17 @@ impl WorkspaceConversationService {
                 truncate_text(&value, TITLE_INPUT_CHARS)
             ));
         }
-        let Some(text) =
-            crate::utility::utility_complete(&self.settings, RUN_TITLE_INSTRUCTIONS, &input)?
-        else {
-            return Ok(None);
+        let generated =
+            crate::utility::utility_complete(&self.settings, RUN_TITLE_INSTRUCTIONS, &input)
+                .and_then(|text| text.as_deref().map(clean_generated_title).transpose());
+        let title = match (
+            generated,
+            request.and_then(|request| clean_generated_title(request).ok()),
+        ) {
+            (Ok(Some(title)), _) | (_, Some(title)) => title,
+            (Ok(None), None) => return Ok(None),
+            (Err(error), None) => return Err(error),
         };
-        let title = clean_generated_title(&text)?;
         store
             .update_run_record(run_id, |record| {
                 record.title.get_or_insert(title);

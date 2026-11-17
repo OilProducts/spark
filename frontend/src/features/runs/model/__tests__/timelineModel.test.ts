@@ -102,6 +102,49 @@ describe('timelineModel', () => {
     expect(journalEntriesShown([asked, delivered])).toEqual([asked, delivered])
   })
 
+  it('tells a canceled run as canceled: its stopped branches, its end, and no status echoes', () => {
+    const entry = (sequence: number, rawType: string, payload: Record<string, unknown>, severity = 'info') => toTimelineEvent({
+      id: `journal-${sequence}`, sequence, emitted_at: '2026-07-08T10:00:00Z', kind: 'other', raw_type: rawType,
+      summary: rawType === 'CancelRequested' ? 'Cancel requested' : `server ${rawType}`, severity, source_scope: 'root', node_id: payload.node_id ?? null,
+      payload: { type: rawType, source_scope: 'root', ...payload },
+    })!
+    const labels: Record<string, string> = { lint: 'Lint check', unit: 'Unit check', checks: 'Checks' }
+    const nodeLabel = (nodeId: string) => labels[nodeId] ?? nodeId
+    const journal = [
+      entry(1, 'runtime', { status: 'running' }),
+      entry(2, 'PipelineStarted', { node_id: 'flow' }),
+      entry(3, 'ParallelBranchStarted', { node_id: 'checks', branch: 'lint' }),
+      entry(4, 'ParallelBranchNodeStarted', { node_id: 'checks', branch: 'lint', branch_node_id: 'lint' }),
+      entry(5, 'ParallelBranchNodeStarted', { node_id: 'checks', branch: 'lint', branch_node_id: 'lint_fix' }),
+      entry(6, 'CancelRequested', { status: 'cancel_requested' }, 'warning'),
+      entry(7, 'runtime', { status: 'cancel_requested' }, 'warning'),
+      entry(8, 'ParallelBranchNodeCompleted', { node_id: 'checks', branch: 'lint', branch_node_id: 'lint_fix', outcome: 'error' }),
+      entry(9, 'ParallelBranchCompleted', { node_id: 'checks', branch: 'lint', success: false }),
+      entry(10, 'ParallelCompleted', { node_id: 'checks', success_count: 0, failure_count: 2 }),
+      entry(11, 'runtime', { status: 'canceled', last_error: 'aborted_by_user' }, 'warning'),
+      entry(12, 'PipelineFailed', { error: 'aborted_by_user' }, 'warning'),
+    ]
+    let afterCancel = false
+    const lines = journalEntriesShown(journal).map((event) => {
+      afterCancel ||= event.type === 'CancelRequested'
+      return journalEntrySummary(event, nodeLabel, afterCancel)
+    })
+    expect(lines).toEqual([
+      'Run started',
+      'Parallel branch Lint check started',
+      'lint_fix started',
+      'Cancel requested',
+      'lint_fix stopped by the cancel',
+      'Parallel branch Lint check stopped by the cancel',
+      'Parallel fan-out stopped (0 of 2 branches finished)',
+      'Run canceled',
+    ])
+    // Without its lifecycle event beside it, the status entry is the record and reads plainly.
+    expect(journalEntriesShown([journal[10]]).map((event) => journalEntrySummary(event, nodeLabel))).toEqual(['Run canceled'])
+    // A raw event of the end is a warning, not an error.
+    expect(toTimelineEvent({ type: 'PipelineFailed', sequence: 1, emitted_at: '2026-07-08T10:00:00Z', error: 'aborted_by_user' })?.severity).toBe('warning')
+  })
+
   it('derives pending interview gates from live events and fallback question snapshots', () => {
     const timeoutEvent = toTimelineEvent({
       type: 'human_gate',

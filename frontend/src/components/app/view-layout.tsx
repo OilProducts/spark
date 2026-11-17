@@ -127,7 +127,8 @@ export function ViewLayout({
         <div
             data-testid={`${view}-view`}
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={`flex h-full min-h-0 ${isNarrowViewport ? 'flex-col overflow-y-auto' : 'flex-row'}`}
+            // Stacked, the view scrolls and its sheet is at least the view's height (`cqh`), whatever sits above the view, such as a notice.
+            className={`flex h-full min-h-0 ${isNarrowViewport ? 'flex-col overflow-y-auto [container-type:size]' : 'flex-row'}`}
         >
             <aside
                 ref={panelRef}
@@ -176,7 +177,7 @@ export function ViewLayout({
                 <div hidden={hidden} className="min-h-0 flex-1 overflow-y-auto px-2 pb-4" onClick={revealPickedRow}>{panel}</div>
             </aside>
             {children == null ? null : (
-                <Sheet ref={sheetRef} data-testid="view-main" className={isNarrowViewport ? 'min-h-[calc(100dvh-3.25rem)]' : 'ml-0'}>
+                <Sheet ref={sheetRef} data-testid="view-main" className={isNarrowViewport ? 'min-h-[100cqh]' : 'ml-0'}>
                     <ShowListContext.Provider value={showList}>{children}</ShowListContext.Provider>
                 </Sheet>
             )}

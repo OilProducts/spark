@@ -141,6 +141,7 @@ export interface PipelineStatusResponse {
     pipeline_id: string
     run_id: string
     title?: string | null
+    first_launch_input?: string | null
     status: string
     outcome?: 'success' | 'failure' | null
     outcome_reason_code?: string | null

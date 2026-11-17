@@ -34,6 +34,7 @@ const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
     root_run_id: overrides.root_run_id ?? null,
     title: overrides.title ?? null,
     launch_context: overrides.launch_context ?? null,
+    first_launch_input: overrides.first_launch_input ?? null,
     execution_lock: overrides.execution_lock ?? null,
 })
 
@@ -152,6 +153,7 @@ describe('RunList', () => {
             status: 'failed',
             flow_name: 'merge-change.yaml',
             launch_context: { 'context.request.artifact_path': 'changes/CR-1/request.md' },
+            first_launch_input: 'changes/CR-1/request.md',
         })
         render(
             <RunList

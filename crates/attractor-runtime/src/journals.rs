@@ -1,6 +1,9 @@
 use attractor_core::{JournalEntry, RawRuntimeEvent};
 use serde_json::Value;
 
+/// The failure reason the runtime records for a run a user canceled.
+const CANCEL_REASON: &str = "aborted_by_user";
+
 pub fn journal_entries_from_events(events: &[RawRuntimeEvent]) -> Vec<JournalEntry> {
     let mut entries = events
         .iter()
@@ -122,6 +125,12 @@ fn journal_severity(raw_type: &str, event: &RawRuntimeEvent) -> String {
         }
         return "info".to_string();
     }
+    // A canceled run's end is the cancel a user asked for, not an error.
+    if raw_type == "PipelineFailed"
+        && string_payload(event, "error").as_deref() == Some(CANCEL_REASON)
+    {
+        return "warning".to_string();
+    }
     if matches!(raw_type, "PipelineFailed" | "StageFailed") {
         return "error".to_string();
     }
@@ -199,7 +208,13 @@ fn journal_summary(
         }
         "PipelineCompleted" => pipeline_completed_summary(event, node_id, &source_prefix),
         "PipelineFailed" => string_payload(event, "error")
-            .map(|error| format!("{source_prefix}Pipeline failed: {error}"))
+            .map(|error| {
+                if error == CANCEL_REASON {
+                    format!("{source_prefix}Pipeline canceled")
+                } else {
+                    format!("{source_prefix}Pipeline failed: {error}")
+                }
+            })
             .unwrap_or_else(|| format!("{source_prefix}Pipeline failed")),
         "PipelineRetryStarted" => {
             let retry_node = string_payload(event, "current_node")

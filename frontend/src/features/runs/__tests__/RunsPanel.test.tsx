@@ -99,6 +99,7 @@ const makeRun = (overrides: Partial<Record<string, unknown>> = {}) => ({
   child_invocation_index: (overrides.child_invocation_index as number | null | undefined) ?? null,
   execution_lock: (overrides.execution_lock as Record<string, unknown> | null | undefined) ?? null,
   launch_context: (overrides.launch_context as Record<string, unknown> | null | undefined) ?? null,
+  first_launch_input: (overrides.first_launch_input as string | null | undefined) ?? null,
 })
 
 const makeJournalEntry = (
@@ -1442,6 +1443,7 @@ describe('RunsPanel', () => {
       project_path: '/tmp/project-one',
       working_directory: '/tmp/project-one/worktree',
       launch_context: { 'context.topic': 'original topic', 'context.legacy': 'old value' },
+      first_launch_input: 'original topic',
     })
     const fetchMock = installRerunFetchMock(selectedRun)
 

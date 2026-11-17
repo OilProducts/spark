@@ -5,7 +5,7 @@ import { buildRunsHash } from '@/app/runsRouting'
 import { InlineError } from '@/components/app/inline-error'
 import { SectionHeading } from '@/components/app/section-heading'
 import { statusTextClassName } from '@/components/app/status'
-import { EventLine, MessageRow, RunCard, ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
+import { EventDetail, EventLine, MessageRow, RunCard, ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
 import { Transcript } from '@/components/app/transcript/Transcript'
 import { OlderMessagesControl } from '@/features/projects/components/ProjectConversationHistory'
 import { ProjectConversationRequestUserInputCard } from '@/features/projects/components/ProjectConversationRequestUserInputCard'
@@ -16,7 +16,7 @@ import {
 } from '@/features/projects/model/projectsHomeState'
 import type { ConversationTimelineEntry } from '@/features/projects/model/types'
 import { describeRunRecovery, getRunRecoveryStatusPresentation } from '@/features/projects/model/presentation'
-import { flowTitle, formatRunDate, runStatusKind } from '@/features/runs/model/runOverviewModel'
+import { describeFailure, flowTitle, formatRunDate, isCancelReason, runStatusKind } from '@/features/runs/model/runOverviewModel'
 import { STATUS_LABELS } from '@/features/runs/model/shared'
 import { retryConversationTurn, submitConversationRequestUserInput } from '@/features/projects/services/conversationArtifacts'
 import type { FormReply } from '@/lib/forms'
@@ -136,13 +136,15 @@ export function MissionTranscript({ conversation, project, runs, closed = false 
                 case 'result': {
                     const kind = runStatusKind(event.status, false)
                     const Icon = kind === 'completed' ? Check : kind === 'waiting' ? CircleHelp : X
+                    // Why it ended, in plain words and in full under the line; a cancel says so already.
+                    const reason = event.error && !isCancelReason(event.error) ? describeFailure(event.error).summary : ''
                     return <li key={key}><EventLine data-testid="mission-event" icon={<Icon className={statusTextClassName(runKinds[kind].tone)} />} at={at}>
-                        <RunLink runId={event.runId}>{title(event.runId, event.summary || flowTitle(event.flowName))}</RunLink> {event.status === 'waiting' ? 'is waiting on a recovery decision' : `ended · ${STATUS_LABELS[event.status] || event.status}`}{event.error && `: ${event.error}`}
-                    </EventLine></li>
+                        <RunLink runId={event.runId}>{title(event.runId, event.summary || flowTitle(event.flowName))}</RunLink> {event.status === 'waiting' ? 'is waiting on a recovery decision' : `ended · ${STATUS_LABELS[event.status] || event.status}`}
+                    </EventLine>{reason ? <EventDetail>{reason}</EventDetail> : null}</li>
                 }
                 case 'question': return <li key={key}><EventLine data-testid="mission-event" icon={<CircleHelp className={statusTextClassName('warning')} />} at={at}>
-                    {event.runId ? <RunLink runId={event.runId}>{title(event.runId, flowTitle(event.flowName))}</RunLink> : flowTitle(event.flowName)} asked “{event.prompt}”
-                </EventLine></li>
+                    {event.runId ? <RunLink runId={event.runId}>{title(event.runId, flowTitle(event.flowName))}</RunLink> : flowTitle(event.flowName)} asked
+                </EventLine><EventDetail>{event.prompt}</EventDetail></li>
                 // What the runtime told the agent (a trigger fired, the mission was edited) is an event, not prose; the full text is the tooltip.
                 case 'event': return <li key={key}><EventLine data-testid="mission-event" icon={event.text.startsWith('Trigger fired') ? <Zap /> : <Pencil />} at={at} title={event.text}>{event.text.split('\n')[0]}</EventLine></li>
                 default: return <MessageRow key={key} entry={{ ...entry, id: key, content: event.text }} enableCopy formatConversationTimestamp={formatTime} />

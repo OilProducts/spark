@@ -21,9 +21,9 @@ import {
 import { Transcript, type TranscriptExpansionState } from '@/components/app/transcript/Transcript'
 import { SheetEmpty } from '@/components/app/view-layout'
 import { Check, CircleHelp, Inbox, MessageSquare, X, Zap } from 'lucide-react'
-import { EventLine, MessageRow, messageDelivery } from '@/components/app/transcript/SegmentRows'
+import { EventDetail, EventLine, MessageRow, messageDelivery } from '@/components/app/transcript/SegmentRows'
 import { isInboxBatch, parseTurn, runKinds } from '@/features/missions/model/missionModel'
-import { flowTitle, runStatusKind } from '@/features/runs/model/runOverviewModel'
+import { describeFailure, flowTitle, isCancelReason, runStatusKind } from '@/features/runs/model/runOverviewModel'
 import { STATUS_LABELS } from '@/features/runs/model/shared'
 import { statusTextClassName } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
@@ -56,15 +56,23 @@ function InboxEventRows({ entry, onOpenFlowRun }: { entry: MessageEntry; onOpenF
         case 'result': {
             const kind = runStatusKind(event.status, false)
             const Icon = kind === 'completed' ? Check : kind === 'waiting' ? CircleHelp : X
-            return <li key={key}><EventLine data-testid="project-inbox-event" icon={<Icon className={statusTextClassName(runKinds[kind].tone)} />} at={at} title={event.error || undefined}>
-                {runLink(event.runId, event.flowName, event.summary || flowTitle(event.flowName))}{' '}
-                {event.status === 'waiting' ? 'is waiting on a recovery decision' : `ended · ${STATUS_LABELS[event.status] || event.status}`}{event.error && `: ${event.error}`}
-            </EventLine></li>
+            // Why it ended, in plain words and in full under the line; a cancel says so already.
+            const reason = event.error && !isCancelReason(event.error) ? describeFailure(event.error).summary : ''
+            return <li key={key} data-testid="project-inbox-event">
+                <EventLine icon={<Icon className={statusTextClassName(runKinds[kind].tone)} />} at={at}>
+                    {runLink(event.runId, event.flowName, event.summary || flowTitle(event.flowName))}{' '}
+                    {event.status === 'waiting' ? 'is waiting on a recovery decision' : `ended · ${STATUS_LABELS[event.status] || event.status}`}
+                </EventLine>
+                {reason ? <EventDetail>{reason}</EventDetail> : null}
+            </li>
         }
         case 'question':
-            return <li key={key}><EventLine data-testid="project-inbox-event" icon={<CircleHelp className={statusTextClassName('warning')} />} at={at} title={event.prompt}>
-                {event.runId ? runLink(event.runId, event.flowName, flowTitle(event.flowName)) : flowTitle(event.flowName)} asked “{event.prompt}”
-            </EventLine></li>
+            return <li key={key} data-testid="project-inbox-event">
+                <EventLine icon={<CircleHelp className={statusTextClassName('warning')} />} at={at}>
+                    {event.runId ? runLink(event.runId, event.flowName, flowTitle(event.flowName)) : flowTitle(event.flowName)} asked
+                </EventLine>
+                <EventDetail>{event.prompt}</EventDetail>
+            </li>
         case 'reply':
             return <MessageRow key={key} entry={{ ...entry, id: key, content: event.text }} enableCopy formatConversationTimestamp={formatCardTime} />
         case 'start':
@@ -75,7 +83,7 @@ function InboxEventRows({ entry, onOpenFlowRun }: { entry: MessageEntry; onOpenF
             const body = rest.join('\n').trim()
             return <li key={key} data-testid="project-inbox-event">
                 <EventLine icon={event.kind === 'event' && first.startsWith('Trigger fired') ? <Zap /> : <Inbox />} at={at} title={event.text}>{first}</EventLine>
-                {body ? <p className="ml-6.5 whitespace-pre-wrap border-l border-border pl-3 text-sm text-muted-foreground [overflow-wrap:anywhere]">{body}</p> : null}
+                {body ? <EventDetail>{body}</EventDetail> : null}
             </li>
         }
         }

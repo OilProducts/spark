@@ -156,6 +156,24 @@ describe('Overview last chat', () => {
     })
 })
 
+describe('Overview last chat, before the projects list', () => {
+    it('keeps loading, not "No chats yet", while chats wait on the projects they belong to', async () => {
+        reset()
+        const initialRegistry = useStore.getState().projectRegistry
+        const initialCache = useStore.getState().homeConversationCache
+        onTestFinished(() => { chats = []; useStore.setState({ projectRegistry: initialRegistry, homeConversationCache: initialCache }) })
+        act(() => { useStore.setState({ projectRegistry: {} }) })
+        chats = [{ conversation_id: 'chat-1', project_path: '/work/app', title: 'Ship the fix', created_at: '', updated_at: new Date().toISOString(), revision: 1, launched_run_ids: [] }]
+        render(<OverviewPanel />)
+        await waitFor(() => expect(Object.keys(useStore.getState().homeConversationCache.summariesByProjectPath)).toContain('/work/app'))
+        expect(screen.getByText('Loading chats…')).toBeInTheDocument()
+        expect(screen.queryByText('No chats yet.')).toBeNull()
+
+        act(() => { useStore.getState().hydrateProjectRegistry([{ directoryPath: '/work/app', displayName: 'app', isDefault: false, isFavorite: false, lastAccessedAt: null }]) })
+        await waitFor(() => expect(screen.getByTestId('overview-last-chat-title').textContent).toBe('Ship the fix'))
+    })
+})
+
 describe('Overview needs you seen', () => {
     it('keeps shown attention seen when the Overview is left before attention loads', () => {
         window.localStorage.clear()

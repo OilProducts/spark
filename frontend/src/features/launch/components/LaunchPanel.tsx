@@ -451,7 +451,7 @@ export function LaunchPanel({
                     <p data-testid="launch-panel-disabled-reason" className="min-w-0 flex-1 text-xs text-muted-foreground">{executeDisabledReason}</p>
                 ) : hasTextBox && !launchInputsCollapsed ? (
                     // In a text box Enter starts a new line, so the way to run from there is said.
-                    <p data-testid="launch-panel-run-shortcut" className="min-w-0 flex-1 text-xs text-muted-foreground">
+                    <p data-testid="launch-panel-run-shortcut" className="min-w-0 flex-1 text-xs text-muted-foreground pointer-coarse:hidden">
                         <kbd className="font-sans font-medium text-foreground">{RUN_SHORTCUT_LABEL}</kbd> runs from any field
                     </p>
                 ) : null}

@@ -69,18 +69,6 @@ export function formatCompactCount(value: number): string {
     return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value).replace('K', 'k')
 }
 
-// ponytail: inputs come in key order, not the flow's declared order; read the
-// flow's launch inputs if the first key often isn't the telling one.
-const firstLaunchInput = (run: Pick<RunRecord, 'launch_context' | 'first_launch_input'>): string | null => {
-    for (const value of Object.values(run.launch_context ?? {})) {
-        const text = typeof value === 'string' ? value.trim() : ''
-        if (text) {
-            return text.split('\n')[0].slice(0, 160)
-        }
-    }
-    return run.first_launch_input?.trim() || null
-}
-
 /** The trigger that started a run, from the launch context Spark gives every run a trigger starts. */
 export function runTrigger(run: Pick<RunRecord, 'launch_context'>): { id: string; name: string } | null {
     const value = run.launch_context?.['context.spark_trigger']
@@ -89,15 +77,10 @@ export function runTrigger(run: Pick<RunRecord, 'launch_context'>): { id: string
     return typeof id === 'string' && id ? { id, name: typeof name === 'string' && name ? name : id } : null
 }
 
-/** The run's generated title, else the first launch input it was given, else its flow title. */
-export function runTitle(run: Pick<RunRecord, 'title' | 'flow_name' | 'flow_title' | 'launch_context' | 'first_launch_input'>): string {
-    const title = run.title?.trim()
-    if (title) {
-        return title
-    }
-    const input = firstLaunchInput(run)
-    return input ?? runFlowTitle(run)
-}
+/** The run's title, else the first launch input it was given in its flow's order, else its flow title. */
+export const runTitle = (run: Pick<RunRecord, 'title' | 'flow_name' | 'flow_title' | 'first_launch_input'>): string => (
+    run.title?.trim() || run.first_launch_input?.trim() || runFlowTitle(run)
+)
 
 // The runtime's error text is the only record of what failed: a backend,
 // container or usage-limit failure means the infrastructure failed, not the work.
@@ -190,6 +173,9 @@ const FAILURE_WORDINGS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
     [/^no_matching_route/, () => 'The step’s decision matched none of its routes.'],
     [/^stage_failed$/, () => 'The step failed without giving a reason.'],
 ]
+
+/** Whether a run's failure reason is the runtime's record that a user canceled it. */
+export const isCancelReason = (reason: unknown): boolean => reason === 'aborted_by_user'
 
 /** A failure reason in plain words, with the runtime's own text as the detail when it was reworded. */
 export function describeFailure(reason: string): { summary: string; detail: string | null } {

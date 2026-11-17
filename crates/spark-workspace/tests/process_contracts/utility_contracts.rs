@@ -646,38 +646,26 @@ fn root_run_gets_a_generated_title_in_the_background() {
     );
 }
 
-#[cfg(unix)]
-#[test]
-fn runs_stay_untitled_when_utility_is_off_or_fails_and_child_runs_get_no_call() {
-    let _env = claude_env();
-
-    // Off: no utility model.
-    let (temp, settings) = fixture();
-    let (service, _updates) = run_service_with_updates(settings.clone());
-    let run_id = launch(&service, temp.path());
-    assert!(service.generate_run_title(&run_id, None).unwrap().is_none());
-    assert_eq!(stored_run_title(&settings, &run_id), None);
-
-    // Failing: launch succeeds, one call, nothing stored.
-    let (temp, settings) = fixture();
-    let calls = fake_claude(&settings, "ignored", "0", 1);
-    let (service, _updates) = run_service_with_updates(settings.clone());
-    let run_id = launch(&service, temp.path());
+fn wait_for_stored_title(settings: &SparkSettings, run_id: &str) -> Option<String> {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while call_count(&calls) == 0 && Instant::now() < deadline {
+    loop {
+        let title = stored_run_title(settings, run_id);
+        if title.is_some() || Instant::now() > deadline {
+            return title;
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(call_count(&calls), 1);
-    assert_eq!(stored_run_title(&settings, &run_id), None);
+}
 
-    // Child: no utility call.
-    let (temp, settings) = fixture();
-    let calls = fake_claude(&settings, "Child title", "0", 0);
-    let store = attractor_runtime::RunStore::for_settings(&settings);
-    let mut record = attractor_core::RunRecord::new("child-run", temp.path().to_string_lossy());
-    record.parent_run_id = Some("parent-run".into());
-    store
+fn create_untitled_run(
+    settings: &SparkSettings,
+    project: &Path,
+    run_id: &str,
+    parent: Option<&str>,
+) {
+    let mut record = attractor_core::RunRecord::new(run_id, project.to_string_lossy());
+    record.parent_run_id = parent.map(str::to_string);
+    attractor_runtime::RunStore::for_settings(settings)
         .create_run(attractor_runtime::CreateRunRequest {
             record,
             checkpoint: None,
@@ -686,6 +674,44 @@ fn runs_stay_untitled_when_utility_is_off_or_fails_and_child_runs_get_no_call() 
             flow_files: None,
         })
         .unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn without_a_generated_title_the_launch_summary_names_the_run_and_child_runs_get_no_call() {
+    let _env = claude_env();
+
+    // Off: no utility model, so the request's summary is the title.
+    let (temp, settings) = fixture();
+    let (service, _updates) = run_service_with_updates(settings.clone());
+    let run_id = launch(&service, temp.path());
+    assert_eq!(
+        wait_for_stored_title(&settings, &run_id).as_deref(),
+        Some("Repair the staging deploy")
+    );
+    // No summary either: the run stays untitled.
+    create_untitled_run(&settings, temp.path(), "plain-run", None);
+    assert!(service
+        .generate_run_title("plain-run", None)
+        .unwrap()
+        .is_none());
+    assert_eq!(stored_run_title(&settings, "plain-run"), None);
+
+    // Failing: launch succeeds after one call, and the summary is the title.
+    let (temp, settings) = fixture();
+    let calls = fake_claude(&settings, "ignored", "0", 1);
+    let (service, _updates) = run_service_with_updates(settings.clone());
+    let run_id = launch(&service, temp.path());
+    assert_eq!(
+        wait_for_stored_title(&settings, &run_id).as_deref(),
+        Some("Repair the staging deploy")
+    );
+    assert_eq!(call_count(&calls), 1);
+
+    // Child: no utility call.
+    let (temp, settings) = fixture();
+    let calls = fake_claude(&settings, "Child title", "0", 0);
+    create_untitled_run(&settings, temp.path(), "child-run", Some("parent-run"));
     let (service, _updates) = run_service_with_updates(settings.clone());
     assert!(service
         .generate_run_title("child-run", None)
