@@ -235,6 +235,33 @@ describe('HistoryRoutingController', () => {
         expect(useStore.getState().runsListSession.missingRunId).toBeNull()
     })
 
+    it('adds no entry when a desktop\'s Runs opens a run by itself, so Back leaves Runs', async () => {
+        useStore.setState({ viewMode: 'overview' })
+        render(<HistoryRoutingController />)
+        const start = window.history.length
+        await act(async () => useStore.getState().setViewMode('runs'))
+        expect(window.history.length).toBe(start + 1)
+        await act(async () => useStore.getState().setRunsSelectedRunId('run-relevant'))
+        expect(window.history.length).toBe(start + 1)
+        expect(window.location.hash).toBe(buildRunsHash('run-relevant'))
+
+        act(() => window.history.back())
+        await waitFor(() => expect(useStore.getState().viewMode).toBe('overview'))
+    })
+
+    it('on a phone, adds an entry for a run picked from the list, so Back returns to the list', async () => {
+        window.innerWidth = 390
+        useStore.setState({ viewMode: 'runs' })
+        render(<HistoryRoutingController />)
+        const start = window.history.length
+        await act(async () => useStore.getState().setRunsSelectedRunId('run-picked'))
+        expect(window.history.length).toBe(start + 1)
+
+        act(() => window.history.back())
+        await waitFor(() => expect(selectSelectedRunId(useStore.getState())).toBeNull())
+        expect(window.location.hash).toBe('#/runs')
+    })
+
     it('keeps the URL true when a confirmation holds a move', async () => {
         useStore.setState({ viewMode: 'overview' })
         render(<HistoryRoutingController />)

@@ -1102,8 +1102,10 @@ describe('App shell behavior', () => {
     expect(screen.getByTestId('trigger-row-trigger-gone')).toHaveAttribute('data-unregistered-target', 'true')
 
     await user.click(screen.getByTestId('activity-runs'))
-    expect(await screen.findByText('Review One')).toBeVisible()
-    expect(screen.getByText('Review Two')).toBeVisible()
+    // The run list; the run the view opens repeats its title in its header.
+    const runList = within(await screen.findByTestId('run-list-panel'))
+    expect(await runList.findByText('Review One')).toBeVisible()
+    expect(runList.getByText('Review Two')).toBeVisible()
     const runListRequests = fetchMock.mock.calls.map(([request]) => resolveRequestUrl(request as RequestInfo | URL)).filter((url) => url.includes('/attractor/runs'))
     expect(runListRequests.length).toBeGreaterThan(0)
     expect(runListRequests.some((url) => url.includes('project_path='))).toBe(false)
@@ -2053,15 +2055,17 @@ describe('App shell behavior', () => {
 
     render(<App />)
 
+    // The run list; the run the view opens repeats its title in its header.
+    const runList = () => within(screen.getByTestId('run-list-panel'))
     await waitFor(() => {
-      expect(screen.getByText('Review One')).toBeVisible()
+      expect(runList().getByText('Review One')).toBeVisible()
     })
 
     await user.selectOptions(screen.getByTestId('runs-project-filter'), '/tmp/project-two')
     await waitFor(() => {
-      expect(screen.getByText('Review Two')).toBeVisible()
+      expect(runList().getByText('Review Two')).toBeVisible()
     })
-    expect(screen.queryByText('Review One')).not.toBeInTheDocument()
+    expect(runList().queryByText('Review One')).not.toBeInTheDocument()
     const runTwoCard = within(screen.getByTestId('run-list-scroll-region'))
       .getByText('Review Two')
       .closest('[data-testid="run-history-row"]')
@@ -2237,7 +2241,7 @@ describe('App shell behavior', () => {
     render(<App />)
 
     await waitFor(() => {
-      expect(screen.getByText('Review Session')).toBeVisible()
+      expect(within(screen.getByTestId('run-list-scroll-region')).getByText('Review Session')).toBeVisible()
     })
 
     const runRow = within(screen.getByTestId('run-list-scroll-region'))
@@ -2427,7 +2431,7 @@ describe('App shell behavior', () => {
     render(<App />)
 
     await waitFor(() => {
-      expect(screen.getByText('Review Hidden')).toBeVisible()
+      expect(within(screen.getByTestId('run-list-scroll-region')).getByText('Review Hidden')).toBeVisible()
     })
 
     const selectedRunRow = within(screen.getByTestId('run-list-scroll-region'))

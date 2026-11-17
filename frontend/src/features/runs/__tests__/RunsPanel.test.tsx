@@ -247,6 +247,9 @@ const installControllableEventSource = () => {
   }
 }
 
+// The run list; the open run's header repeats its title and project.
+const runList = () => within(screen.getByTestId('run-list-panel'))
+
 // Run facts live collapsed at the end of the status item.
 const openRunFacts = async () => {
   fireEvent.click(await screen.findByTestId('run-visit-item-status'))
@@ -470,18 +473,18 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Project One')).toBeVisible()
-      expect(screen.getByText('Project Two')).toBeVisible()
+      expect(runList().getByText('Project One')).toBeVisible()
+      expect(runList().getByText('Project Two')).toBeVisible()
     })
     expect(screen.getAllByTestId('run-history-row-project').map((label) => label.textContent?.replace(' · ', ''))).toEqual(['project-one', 'project-two'])
     expect(screen.queryByTestId('runs-scope-all-projects')).not.toBeInTheDocument()
     expect(screen.queryByTestId('runs-scope-active-project')).not.toBeInTheDocument()
 
     await user.selectOptions(screen.getByTestId('runs-project-filter'), '/tmp/project-two')
-    expect(screen.queryByText('Project One')).not.toBeInTheDocument()
-    expect(screen.getByText('Project Two')).toBeVisible()
+    expect(runList().queryByText('Project One')).not.toBeInTheDocument()
+    expect(runList().getByText('Project Two')).toBeVisible()
     await user.selectOptions(screen.getByTestId('runs-project-filter'), '')
-    expect(screen.getByText('Project One')).toBeVisible()
+    expect(runList().getByText('Project One')).toBeVisible()
   })
 
   it('renders execution lock holders and groups queued attempts by lock identity', async () => {
@@ -574,7 +577,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Project One')).toBeVisible()
+      expect(runList().getByText('Project One')).toBeVisible()
       expect(latestSourceMatching('/workspace/api/live/events')).toBeTruthy()
     })
 
@@ -774,11 +777,11 @@ describe('RunsPanel', () => {
     expect(scrollRegion).toHaveClass('flex-1')
     expect(scrollRegion).toHaveClass('overflow-y-auto')
 
-    expect(screen.queryByRole('button', { name: 'Open' })).not.toBeInTheDocument()
-    expect(screen.queryAllByRole('button', { name: 'Cancel' })).toHaveLength(0)
+    expect(within(runListPanel).queryByRole('button', { name: 'Open' })).not.toBeInTheDocument()
+    expect(within(runListPanel).queryAllByRole('button', { name: 'Cancel' })).toHaveLength(0)
     expect(screen.queryByText('history table')).not.toBeInTheDocument()
 
-    const selectedRunCard = screen.getByText('Selected').closest('[data-testid="run-history-row"]')
+    const selectedRunCard = runList().getByText('Selected').closest('[data-testid="run-history-row"]')
     expect(selectedRunCard).not.toBeNull()
     await user.click(selectedRunCard!)
 
@@ -1111,14 +1114,14 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
+      expect(runList().getByText('Selected')).toBeVisible()
     })
 
     // The active run sorts into the Running group ahead of Recent history, so
     // find its card by content rather than index.
     expect(screen.getByTestId('run-list-group-running')).toBeVisible()
     expect(screen.getByTestId('run-list-group-recent')).toBeVisible()
-    const selectedCard = screen
+    const selectedCard = runList()
       .getByText('Selected')
       .closest('[data-testid="run-history-row"]')
     expect(selectedCard).not.toBeNull()
@@ -1244,7 +1247,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
+      expect(runList().getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
@@ -1456,7 +1459,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('original topic')).toBeVisible()
+      expect(runList().getByText('original topic')).toBeVisible()
     })
     await user.click(screen.getByTestId('run-history-row'))
 
@@ -1530,7 +1533,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
+      expect(runList().getByText('Selected')).toBeVisible()
     })
     await user.click(screen.getByTestId('run-history-row'))
     await user.click(await screen.findByTestId('run-graph-toggle'))
@@ -1603,7 +1606,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Ad-hoc Content Flow')).toBeVisible()
+      expect(runList().getByText('Ad-hoc Content Flow')).toBeVisible()
     })
     await user.click(screen.getByTestId('run-history-row'))
     await user.click(await screen.findByTestId('run-graph-toggle'))
@@ -1644,7 +1647,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
+      expect(runList().getByText('Selected')).toBeVisible()
     })
     await user.click(screen.getByTestId('run-history-row'))
 
@@ -1737,7 +1740,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
+      expect(runList().getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
@@ -1848,8 +1851,8 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Failure')).toBeVisible()
-      expect(screen.getByText('Lineage')).toBeVisible()
+      expect(runList().getByText('Failure')).toBeVisible()
+      expect(runList().getByText('Lineage')).toBeVisible()
     })
 
     await user.click(screen.getAllByTestId('run-history-row')[0]!)
@@ -2019,7 +2022,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
+      expect(runList().getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
@@ -2143,7 +2146,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
+      expect(runList().getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
@@ -2313,7 +2316,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
+      expect(runList().getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
@@ -2422,7 +2425,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
+      expect(runList().getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
@@ -2668,10 +2671,10 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
+      expect(runList().getByText('Selected')).toBeVisible()
     })
 
-    const selectedRunCard = screen.getByText('Selected').closest('[data-testid="run-history-row"]')
+    const selectedRunCard = runList().getByText('Selected').closest('[data-testid="run-history-row"]')
     expect(selectedRunCard).toBeTruthy()
     await user.click(selectedRunCard!)
 
@@ -2723,7 +2726,7 @@ describe('RunsPanel', () => {
       expect(countDetailFetches(selectedRun.run_id, resource)).toBe(1)
     })
 
-    const otherRunCard = screen.getByText('Other').closest('[data-testid="run-history-row"]')
+    const otherRunCard = runList().getByText('Other').closest('[data-testid="run-history-row"]')
     expect(otherRunCard).toBeTruthy()
     await user.click(otherRunCard!)
 
@@ -2863,8 +2866,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
-      expect(sourcesMatching(liveEventsUrl)).toHaveLength(1)
+      expect(runList().getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
@@ -3172,10 +3174,10 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
+      expect(runList().getByText('Selected')).toBeVisible()
     })
 
-    const selectedRunCard = screen.getByText('Selected').closest('[data-testid="run-history-row"]')
+    const selectedRunCard = runList().getByText('Selected').closest('[data-testid="run-history-row"]')
     expect(selectedRunCard).toBeTruthy()
     await user.click(selectedRunCard!)
 
@@ -3204,7 +3206,7 @@ describe('RunsPanel', () => {
       'Child flow implement-milestone.dot via Run Milestone: Plan Current started',
     )
 
-    const otherRunCard = screen.getByText('Other').closest('[data-testid="run-history-row"]')
+    const otherRunCard = runList().getByText('Other').closest('[data-testid="run-history-row"]')
     expect(otherRunCard).toBeTruthy()
     await user.click(otherRunCard!)
 
@@ -3213,7 +3215,7 @@ describe('RunsPanel', () => {
       expect(initialReplaySource?.readyState).toBe(ReplayEventSource.CLOSED)
     })
 
-    const reselectedRunCard = screen.getByText('Selected').closest('[data-testid="run-history-row"]')
+    const reselectedRunCard = runList().getByText('Selected').closest('[data-testid="run-history-row"]')
     expect(reselectedRunCard).toBeTruthy()
     await user.click(reselectedRunCard!)
 
@@ -3602,10 +3604,10 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected')).toBeVisible()
+      expect(runList().getByText('Selected')).toBeVisible()
     })
 
-    const selectedRunCard = screen.getByText('Selected').closest('[data-testid="run-history-row"]')
+    const selectedRunCard = runList().getByText('Selected').closest('[data-testid="run-history-row"]')
     expect(selectedRunCard).toBeTruthy()
     await user.click(selectedRunCard!)
 
@@ -3623,11 +3625,11 @@ describe('RunsPanel', () => {
       newestSequence: 4,
     })
 
-    const otherRunCard = screen.getByText('Other').closest('[data-testid="run-history-row"]')
+    const otherRunCard = runList().getByText('Other').closest('[data-testid="run-history-row"]')
     expect(otherRunCard).toBeTruthy()
     await user.click(otherRunCard!)
 
-    const reselectedRunCard = screen.getByText('Selected').closest('[data-testid="run-history-row"]')
+    const reselectedRunCard = runList().getByText('Selected').closest('[data-testid="run-history-row"]')
     expect(reselectedRunCard).toBeTruthy()
     await user.click(reselectedRunCard!)
 
@@ -3674,5 +3676,92 @@ describe('RunsPanel', () => {
     await user.click(within(screen.getByTestId('runs-load-error')).getByRole('button', { name: 'Try again' }))
     expect(await screen.findByText('No runs yet')).toBeVisible()
     expect(screen.queryByTestId('runs-load-error')).toBeNull()
+  })
+
+  describe('with no run picked', () => {
+    const finishedLate = makeRun({ run_id: 'finished-late', flow_name: 'finished-late.dot', started_at: '2026-03-22T00:20:00Z', ended_at: '2026-03-22T00:40:00Z' })
+    const finishedEarly = makeRun({ run_id: 'finished-early', flow_name: 'finished-early.dot', status: 'failed', outcome: 'failure', started_at: '2026-03-22T00:30:00Z', ended_at: '2026-03-22T00:35:00Z' })
+    const activeOld = makeRun({ run_id: 'active-old', status: 'running', outcome: null, started_at: '2026-03-22T00:00:00Z', ended_at: null })
+    const activeNew = makeRun({ run_id: 'active-new', status: 'running', outcome: null, started_at: '2026-03-22T00:10:00Z', ended_at: null })
+    const waiting = makeRun({ run_id: 'waiting', status: 'waiting', outcome: null, project_path: '/tmp/project-two', started_at: '2026-03-21T00:00:00Z', ended_at: null })
+    const selected = () => selectSelectedRunId(useStore.getState())
+    beforeEach(() => {
+      vi.mocked(global.fetch).mockImplementation(() => new Promise<Response>(() => {}))
+    })
+
+    it('opens a run waiting on you, else the newest active run, else the latest to finish, of those the list shows', () => {
+      const state = useStore.getState()
+      state.updateRunsListSession({ status: 'ready', projectFilter: '/tmp/project-one', runs: [finishedEarly, finishedLate, activeNew, activeOld, waiting] })
+      render(<DialogProvider><RunsPanel /></DialogProvider>)
+      // The run waiting in another project is filtered out.
+      expect(selected()).toBe('active-new')
+
+      act(() => state.updateRunsListSession({ projectFilter: null }))
+      expect(selected()).toBe('active-new')
+      act(() => state.setRunsSelectedRunId(null))
+      expect(selected()).toBe('waiting')
+
+      act(() => {
+        state.updateRunsListSession({ runs: [finishedEarly, finishedLate] })
+        state.setRunsSelectedRunId(null)
+      })
+      expect(selected()).toBe('finished-late')
+
+      // A state filter narrows the choice too, and stays.
+      act(() => {
+        state.updateRunsListSession({ runs: [finishedEarly, finishedLate, waiting], statusFilter: 'failed' })
+        state.setRunsSelectedRunId(null)
+      })
+      expect(selected()).toBe('finished-early')
+      expect(useStore.getState().runsListSession.statusFilter).toBe('failed')
+    })
+
+    it('never replaces a run restored from last time, even while it loads, or one you picked', () => {
+      const state = useStore.getState()
+      state.updateRunsListSession({ status: 'loading' })
+      state.setRunsSelectedRunId('restored')
+      render(<DialogProvider><RunsPanel /></DialogProvider>)
+      expect(screen.getByTestId('run-selection-restoring-state')).toBeVisible()
+      act(() => state.updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting] }))
+      expect(selected()).toBe('restored')
+
+      fireEvent.click(runList().getByText('Finished Late'))
+      expect(selected()).toBe('finished-late')
+      act(() => state.updateRunsListSession({ runs: [activeNew, finishedLate, waiting] }, 'live'))
+      expect(selected()).toBe('finished-late')
+
+      // A run that turns out to be gone keeps its notice; the sheet asks for a pick, with no button.
+      act(() => state.clearRunDetailSession('finished-late'))
+      expect(selected()).toBeNull()
+      expect(screen.getByTestId('run-missing')).toBeVisible()
+      expect(screen.getByTestId('run-selection-empty-state')).toHaveTextContent('No run selectedPick a run from the list to see its progress and results.')
+      expect(screen.queryByTestId('runs-empty-run-flow-button')).toBeNull()
+    })
+
+    it('on a phone, opens on the list', () => {
+      window.innerWidth = 390
+      window.dispatchEvent(new Event('resize'))
+      try {
+        useStore.getState().updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting] })
+        render(<DialogProvider><RunsPanel /></DialogProvider>)
+        expect(selected()).toBeNull()
+      } finally {
+        window.innerWidth = 1024
+        window.dispatchEvent(new Event('resize'))
+      }
+    })
+
+    it('offers to start a run when there are none, and says when the project filter leaves none', () => {
+      const state = useStore.getState()
+      state.updateRunsListSession({ status: 'ready', runs: [] })
+      render(<DialogProvider><RunsPanel /></DialogProvider>)
+      expect(screen.getByText('No runs yet')).toBeVisible()
+      expect(screen.getByTestId('runs-empty-run-flow-button')).toBeVisible()
+
+      act(() => state.updateRunsListSession({ runs: [waiting], projectFilter: '/tmp/project-one' }))
+      expect(selected()).toBeNull()
+      expect(screen.getByTestId('run-selection-empty-state')).toHaveTextContent('No runs match the project filter.')
+      expect(screen.queryByTestId('runs-empty-run-flow-button')).toBeNull()
+    })
   })
 })

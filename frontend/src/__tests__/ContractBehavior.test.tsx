@@ -2183,8 +2183,10 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(screen.getByText('Alpha thread')).toBeVisible()
 
     await user.click(screen.getByTestId('activity-runs'))
-    expect(await screen.findByText('Alpha')).toBeVisible()
-    expect(screen.getByText('Beta')).toBeVisible()
+    // The run list; the run the view opens repeats its project in its header.
+    const runList = within(await screen.findByTestId('run-list-panel'))
+    expect(await runList.findByText('Alpha')).toBeVisible()
+    expect(runList.getByText('Beta')).toBeVisible()
     expect(fetchMock.mock.calls.map(([request]) => requestUrl(request as RequestInfo | URL)).filter((url) => url.includes('/attractor/runs')).every((url) => !url.includes('project_path='))).toBe(true)
   })
 

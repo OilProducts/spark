@@ -60,7 +60,8 @@ const placeKey = (place: Place) =>
     [place.view, place.runId, place.projectPagePath, place.projectPath, place.flow, place.triggerId, place.missionId, place.roleId].join('\n')
 
 /**
- * Whether moving between two places adds a history entry. In Triggers only a move from a trigger
+ * Whether moving between two places adds a history entry. In Runs on a desktop, opening a run
+ * when none is open doesn't: the view opens one by itself. In Triggers only a move from a trigger
  * the list still has to another trigger does: the list picks or drops a trigger by itself when
  * none is picked or the picked one goes, and an entry for that would bounce Back straight off.
  * A phone opens Triggers on the list and picks none itself, so a trigger picked there is the
@@ -70,6 +71,8 @@ export function addsEntry(state: AppState, from: Place, to: Place): boolean {
     if (placeKey(from) === placeKey(to)) return false
     // A run that isn't there closes itself; its link's entry is rewritten, so Back doesn't reopen it.
     if (from.runId && !to.runId && to.view === 'runs' && state.runsListSession.missingRunId === from.runId) return false
+    // A desktop's Runs, like its Triggers, opens a run by itself when none is open.
+    if (from.view === 'runs' && to.view === 'runs' && !from.runId && to.runId && window.innerWidth > NARROW_VIEWPORT_MAX_WIDTH) return false
     if (from.view !== 'triggers' || to.view !== 'triggers') return true
     if (!from.triggerId && to.triggerId && window.innerWidth <= NARROW_VIEWPORT_MAX_WIDTH) return true
     return Boolean(to.triggerId) && state.triggersSession.triggers.some((trigger) => triggerKey(trigger) === from.triggerId)
