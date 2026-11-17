@@ -298,20 +298,24 @@ describe('buildRunVisits', () => {
       { id: 'typecheck', index: 1, status: 'error', error: { node: 'typecheck', reason: 'tsc exited 2' } },
     ]
     const executions = [
-      execution('fan_out', 0, { status: 'error', failure_reason: 'branch typecheck failed', context_updates: { 'parallel.results': results } }),
+      execution('fan_out', 0, { status: 'error', failure_reason: 'branch typecheck (index 1) failed at typecheck: tsc exited 2', context_updates: { 'parallel.results': results } }),
       execution('typecheck', 0, { status: 'error', failure_reason: 'tsc exited 2' }),
     ]
+    // The branch error that ended the fork the run failed on is the run's failure, as the graph says.
     const visits = build({ journal, executions, runStatus: 'failed' })
     expect(visits.map((visit) => [visit.label, visit.outcome])).toEqual([
       ['Fan out', 'failed'],
       ['Lint', 'interrupted'],
-      ['Typecheck', 'error'],
+      ['Typecheck', 'failed'],
     ])
 
     // Without a status of its own, the failing branch takes its error from the fork's results.
     const [, lint, typecheck] = build({ journal, executions: executions.slice(0, 1), runStatus: 'failed' })
-    expect([typecheck.outcome, typecheck.reason]).toEqual(['error', 'tsc exited 2'])
+    expect([typecheck.outcome, typecheck.reason]).toEqual(['failed', 'tsc exited 2'])
     expect([lint.outcome, lint.reason]).toEqual(['interrupted', null])
+
+    // A run that went on past the fork keeps the branch's error an error.
+    expect(build({ journal: [...journal, ...stage('done', 1)], executions, runStatus: 'completed' })[2].outcome).toBe('error')
   })
 
   it('nests parallel branches under their fan-out visit, one visit per invocation with its execution', () => {

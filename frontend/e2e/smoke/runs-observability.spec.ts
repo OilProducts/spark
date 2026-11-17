@@ -991,7 +991,6 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await expect(page.getByTestId('run-visit-next')).toHaveText('Implement 2')
   await expect(page.locator('[data-testid="run-visit-write"][data-key="context.review.required_changes"]')).toContainText('Add a regression test for the loop.')
   await expect(page.locator('[data-testid="run-visit-write"][data-key="context.review.approved"]')).toContainText('cleared')
-  await expect(page.getByTestId('run-visit-system-writes')).toHaveText('1 system key written')
   await page.screenshot({ path: screenshotPath('08d-runs-panel-visit-view.png'), fullPage: true })
 
   // The picker jumps between this node's visits.

@@ -218,7 +218,7 @@ const timelineSummaryFromEvent = (
     if (type === 'PipelineFailed') {
         const error = asTrimmedString(payload.error)
         if (isCancelReason(error)) return `${sourcePrefix}Run canceled`
-        return error ? `${sourcePrefix}Run failed: ${failureLines(error)}` : `${sourcePrefix}Run failed`
+        return error ? `${sourcePrefix}Run failed: ${failureLines(error, (id) => nodeLabel(id, sourceScope))}` : `${sourcePrefix}Run failed`
     }
     if (type === 'PipelinePaused') {
         return `${sourcePrefix}Run paused at ${step(asTrimmedString(payload.current_node) ?? nodeId, 'checkpoint')}`
@@ -238,14 +238,15 @@ const timelineSummaryFromEvent = (
     }
     if (type === 'StageTransition') {
         // A decision ID reads as the canvas labels its route: `ready_for_review` as "ready for review".
-        const decision = asTrimmedString(payload.decision)?.replace(/_/g, ' ') ?? 'unknown'
+        // A fork's move to its join carries no decision.
+        const decision = asTrimmedString(payload.decision)?.replace(/_/g, ' ')
         const target = step(asTrimmedString(payload.target), 'unknown')
         const visit = asFiniteNumber(payload.visit)
-        return `${sourcePrefix}${node} → ${target} on ${decision}${visit !== null && visit > 1 ? ` (visit ${visit})` : ''}`
+        return `${sourcePrefix}${node} → ${target}${decision ? ` on ${decision}` : ''}${visit !== null && visit > 1 ? ` (visit ${visit})` : ''}`
     }
     if (type === 'StageFailed') {
         const error = asTrimmedString(payload.error)
-        return error ? `${sourcePrefix}${node} failed: ${failureLines(error)}` : `${sourcePrefix}${node} failed`
+        return error ? `${sourcePrefix}${node} failed: ${failureLines(error, (id) => nodeLabel(id, sourceScope))}` : `${sourcePrefix}${node} failed`
     }
     if (type === 'StageRetrying') {
         const attempt = asFiniteNumber(payload.attempt)
@@ -328,8 +329,8 @@ const timelineSummaryFromEvent = (
 }
 
 // A failure in plain words first; the runtime's own text, such as a command's output, on the lines after.
-const failureLines = (error: string): string => {
-    const { summary, detail } = describeFailure(error)
+const failureLines = (error: string, nodeLabel: (nodeId: string) => string): string => {
+    const { summary, detail } = describeFailure(error, nodeLabel)
     return detail ? `${summary}\n${detail}` : summary
 }
 

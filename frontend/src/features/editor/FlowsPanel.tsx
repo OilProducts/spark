@@ -50,6 +50,7 @@ function useFlowCatalogPanel() {
     const activeFlowRef = useRef(activeFlow)
     const isMountedRef = useRef(true)
     const refreshRequestIdRef = useRef(0)
+    const listLoadedRef = useRef(false)
     activeFlowRef.current = activeFlow
 
     // Titles and descriptions; only the latest request's answer shows.
@@ -96,6 +97,7 @@ function useFlowCatalogPanel() {
             }
             setFlows(data)
             setLoadFailed(false)
+            listLoadedRef.current = true
 
             const selectedFlow = activeFlowRef.current
             if (selectedFlow && !data.includes(selectedFlow)) {
@@ -121,6 +123,12 @@ function useFlowCatalogPanel() {
             isMountedRef.current = false
         }
     }, [activeProjectPath])
+
+    // A flow opened from elsewhere that the list lacks, such as a run's flow made since it loaded, is listed as it opens.
+    useEffect(() => {
+        if (activeFlow && listLoadedRef.current && !flows.includes(activeFlow)) void refreshFlows()
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- only a newly opened flow refreshes
+    }, [activeFlow])
 
     // A save can retitle the open flow, so its title is read afresh; a flow listed with errors that
     // now saves has been fixed, so the whole list is.

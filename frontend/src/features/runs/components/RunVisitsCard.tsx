@@ -25,6 +25,7 @@ import {
     formatVisitErrorKind,
     humanizeNodeId,
     parallelBranchResults,
+    parseBranchFailure,
     visitContextWrites,
     visitKey,
     visitDurationMs,
@@ -452,7 +453,7 @@ function RunVisitView({
     const prompt = visitPrompt(visit, prompts)
     const entries = useMemo(() => visitTranscriptEntries(visit, segments), [visit, segments])
     const hasThinking = entries.some(isThinkingEntry)
-    const { writes, systemCount } = visitContextWrites(visit)
+    const { writes } = visitContextWrites(visit)
     const duration = formatVisitDuration(visitDurationMs(visit, now))
     const errorKind = formatVisitErrorKind(visit)
     const branchResults = parallelBranchResults(visit)
@@ -461,7 +462,10 @@ function RunVisitView({
     const returned = visit.outcome !== 'running' && visit.outcome !== 'waiting'
     // A tool's notes are its stdout, which shows once, under its command.
     const reason = visit.kind === 'tool' && visit.reason === visitToolResult(visit).output ? null : visit.reason
-    const failure = reason ? describeFailure(reason) : null
+    // A fork's error names the branch that ended it; its branch list says which and why.
+    const failure = reason && !(branchResults.length > 0 && parseBranchFailure(reason))
+        ? describeFailure(reason, (nodeId) => visits.find((candidate) => candidate.nodeId === nodeId)?.label ?? humanizeNodeId(nodeId))
+        : null
     const headerMeta = [visit.count > 1 ? `Visit ${visit.number} of ${visit.count}` : null, duration || null]
         .filter((part): part is string => part !== null)
         .join(' · ')
@@ -606,11 +610,6 @@ function RunVisitView({
                             ))}
                         </ul>
                     ) : null}
-                    {systemCount > 0 ? (
-                        <p data-testid="run-visit-system-writes" className="text-xs text-muted-foreground">
-                            {systemCount} system {systemCount === 1 ? 'key' : 'keys'} written
-                        </p>
-                    ) : null}
                 </Well>
             ) : null}
 
@@ -729,7 +728,8 @@ function RunVisitView({
 
 const BRANCH_STATUS: Record<string, { label: string; tone: StatusTone }> = {
     completed: { label: 'Completed', tone: 'success' },
-    error: { label: 'Error', tone: 'destructive' },
+    // An error the run went past, as its step in Steps says it.
+    error: { label: VISIT_OUTCOME_LABELS.error, tone: OUTCOME_TONES.error },
     terminal_result: { label: 'Reached an exit', tone: 'warning' },
     // Its fork or the user's cancel stopped it, as its step in Steps says.
     canceled: { label: 'Interrupted', tone: 'warning' },
@@ -766,14 +766,18 @@ function BranchResults({ results, branchVisits, onSelectVisit }: {
             {results.map((branch) => {
                 const branchVisit = branchVisits.find((candidate) => candidate.nodeId === branch.id) ?? null
                 const name = branchVisit?.label ?? humanizeNodeId(branch.id)
-                const status = BRANCH_STATUS[branch.status] ?? { label: branch.status, tone: 'muted' as StatusTone }
                 const error = branch.error
                 const terminal = branch.terminal
+                const errorVisit = error ? branchVisits.find((candidate) => candidate.nodeId === (error.node ?? branch.id)) : undefined
+                // The branch error that ended the run is a failure, as its step in Steps says.
+                const status = errorVisit?.outcome === 'failed' ? { label: VISIT_OUTCOME_LABELS.failed, tone: OUTCOME_TONES.failed }
+                    : BRANCH_STATUS[branch.status] ?? { label: branch.status, tone: 'muted' as StatusTone }
                 const failure = error?.reason ? describeFailure(error.reason) : null
-                // Its error's kind and where, as a step's view says them: "runtime error at tsc · 2 attempts".
+                // Its error's kind and, past the branch's first step, where: "runtime error at Tsc · 2 attempts".
+                const at = error?.node && error.node !== branch.id ? `at ${errorVisit?.label ?? humanizeNodeId(error.node)}` : null
                 const evidence = error
                     ? [
-                        [formatVisitErrorKind({ failureKind: error.kind }), error.node ? `at ${error.node}` : null].filter(Boolean).join(' '),
+                        [formatVisitErrorKind({ failureKind: error.kind }), at].filter(Boolean).join(' '),
                         error.attempts !== null ? `${error.attempts} ${error.attempts === 1 ? 'attempt' : 'attempts'}` : null,
                     ].filter(Boolean).join(' · ')
                     : terminal

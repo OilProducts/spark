@@ -201,12 +201,34 @@ describe('RunStatusItem', () => {
     expect(screen.queryByTestId('run-output-commit')).not.toBeInTheDocument()
   })
 
+  it("says which branch ended a fan-out in plain words, with its output, and doesn't list it again as an earlier error", () => {
+    const reason = 'tool exited with unmapped code 2; stderr: TS2322'
+    const branch = (fork: string, number: number, outcome: VisitOutcome) => visit('typecheck', number, outcome, {
+      key: `${fork}-typecheck`, parentKey: fork, kind: 'tool', reason, number, count: 2,
+      status: { context_updates: { 'context.tool.output': 'Found 1 error.', 'context.tool.exit_code': 2 } },
+    })
+    const forkReason = `branch typecheck (index 0) failed at typecheck: ${reason}`
+    // The fork failed, was retried and failed again the same way.
+    renderStatus(run({ status: 'failed', last_error: forkReason }), [
+      visit('checks', 1, 'error', { kind: 'parallel', reason: forkReason, count: 2 }),
+      branch('checks-1', 1, 'error'),
+      visit('checks', 2, 'failed', { kind: 'parallel', reason: forkReason, number: 2, count: 2 }),
+      branch('checks-2', 2, 'failed'),
+    ])
+    expect(screen.getByTestId('run-status-failure')).toHaveTextContent(/^The Typecheck branch failed\. The command failed \(exit code 2\)\.$/)
+    expect(screen.getByTestId('run-status-failure-detail')).toHaveTextContent(/^TS2322$/)
+    expect(screen.getByTestId('run-status-failure-output')).toHaveTextContent('Found 1 error.')
+    const rows = within(screen.getByTestId('run-status-did-not-pass')).getAllByTestId('run-status-did-not-pass-row')
+    expect(rows.map((row) => row.textContent)).toEqual(['Checks 1: the same error as above', 'Typecheck 1: the same error as above'])
+  })
+
   it("shows the end of a failed command's stdout beside its stderr, where a test runner names what failed", () => {
     const stdout = [...Array.from({ length: 500 }, (_, index) => `test case_${index} ... ok`), '---- contracts::broken stdout ----', "thread 'contracts::broken' panicked", 'test result: FAILED. 500 passed; 1 failed'].join('\n')
     renderStatus(run({ status: 'failed', last_error: 'tool exited with unmapped code 101; stderr: error: test failed' }), [
       visit('validate', 1, 'failed', { kind: 'tool', status: { context_updates: { 'context.tool.output': stdout, 'context.tool.exit_code': 101 } } }),
     ])
-    expect(screen.getByTestId('run-status-failure-detail')).toHaveTextContent('stderr: error: test failed')
+    // The summary says the command failed; its stderr is the detail.
+    expect(screen.getByTestId('run-status-failure-detail')).toHaveTextContent(/^error: test failed$/)
     const output = screen.getByTestId('run-status-failure-output')
     expect(output).toHaveTextContent(/^Output.*contracts::broken.*test result: FAILED\. 500 passed; 1 failed$/)
     expect(output).not.toHaveTextContent('case_0 ')
@@ -748,7 +770,7 @@ describe('RunVisitsCard returned evidence', () => {
     expect(within(returned).getByTestId('run-visit-reason')).toHaveTextContent('response named no declared decision')
   })
 
-  it("leads a runtime failure with plain words and keeps the kind and the runtime's text as detail", () => {
+  it("leads a runtime failure with plain words and keeps the kind and the command's stderr as detail", () => {
     const reason = 'tool exited with unmapped code 1; stderr: lint broke'
     const returned = openOnly([visit('lint', 1, 'failed', {
       kind: 'tool', failureKind: 'runtime', reason,
@@ -756,7 +778,7 @@ describe('RunVisitsCard returned evidence', () => {
     })])
     expect(within(returned).getByTestId('run-visit-reason')).toHaveTextContent(/^The command failed \(exit code 1\)\.$/)
     expect(within(returned).getByTestId('run-visit-error-kind')).toHaveTextContent(/^runtime error$/)
-    expect(within(returned).getByTestId('run-visit-reason-detail')).toHaveTextContent(reason)
+    expect(within(returned).getByTestId('run-visit-reason-detail')).toHaveTextContent(/^lint broke$/)
   })
 
   it("shows a tool's stdout once, under its command", () => {
@@ -846,16 +868,18 @@ describe('RunVisitsCard returned evidence', () => {
     expect(branches.map((branch) => branch.getAttribute('data-status'))).toEqual(['completed', 'error', 'terminal_result', 'canceled'])
     // A branch reads as its step's name, which opens that step; one never started is named from its ID.
     expect(branches[0]).toHaveTextContent(/^Run the linterCompleted$/)
-    // Its error's kind reads as a step's does, in the evidence, with no bare runtime line under it.
-    expect(within(branches[1]).getByTestId('run-visit-branch-evidence')).toHaveTextContent(/^runtime error at tsc · 2 attempts$/)
+    // Its error's kind reads as a step's does, in the evidence, with no bare runtime line under it,
+    // and where past its first step by that step's name.
+    expect(within(branches[1]).getByTestId('run-visit-branch-evidence')).toHaveTextContent(/^runtime error at Tsc · 2 attempts$/)
+    expect(branches[1]).toHaveTextContent(/^TypecheckError/)
     expect(within(branches[1]).getByTestId('run-visit-branch-reason')).toHaveTextContent('tsc exited 2')
     expect(within(branches[1]).queryByTestId('run-visit-branch-reason-detail')).toBeNull()
     expect(branches[2]).toHaveTextContent('Reached an exit')
     expect(within(branches[2]).getByTestId('run-visit-branch-evidence')).toHaveTextContent('result blocked · failure · from judge')
     // A canceled branch reads as its step does in Steps.
     expect(branches[3]).toHaveTextContent(/^DocsInterrupted$/)
-    // parallel.results is runtime bookkeeping, so it is counted, not listed, among the writes.
-    expect(within(returned).getByTestId('run-visit-system-writes')).toHaveTextContent('1 system key written')
+    // parallel.results is runtime bookkeeping, so it is not among the writes.
+    expect(within(returned).queryByTestId('run-visit-writes')).toBeNull()
     fireEvent.click(within(branches[0]).getByTestId('run-visit-branch-open'))
     expect(screen.getByTestId('run-visit-view')).toHaveAttribute('data-visit-key', 'lint-branch')
     // Focus follows to the opened step instead of falling to the page.

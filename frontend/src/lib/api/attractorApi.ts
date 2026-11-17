@@ -172,6 +172,7 @@ export interface PipelineStatusResponse {
     }
     started_at?: string
     ended_at?: string | null
+    idle_ms?: number
     continued_from_run_id?: string | null
     continued_from_node?: string | null
     continued_from_flow_mode?: string | null

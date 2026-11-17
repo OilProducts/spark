@@ -266,6 +266,18 @@ describe('Editor sidebar manual refresh', () => {
         expect(screen.getByRole('button', { name: 'alpha.dot' })).toBeVisible()
     })
 
+    it('lists a flow opened from elsewhere that was made since the list loaded', async () => {
+        fetchFlowListMock.mockResolvedValueOnce(['alpha.dot']).mockResolvedValueOnce(['alpha.dot', 'lint-only.dot'])
+
+        renderWithFlowProvider(<SidebarHarness />)
+
+        expect(await screen.findByRole('button', { name: 'alpha.dot' })).toBeVisible()
+        useStore.setState({ activeFlow: 'lint-only.dot' })
+        expect(await screen.findByRole('button', { name: 'lint-only.dot' })).toBeVisible()
+        expect(useStore.getState().activeFlow).toBe('lint-only.dot')
+        expect(fetchFlowListMock).toHaveBeenCalledTimes(2)
+    })
+
     it('lists the active project flows and reloads them when the project changes', async () => {
         fetchFlowListMock.mockResolvedValueOnce(['alpha.dot']).mockResolvedValueOnce(['gamma.dot'])
 

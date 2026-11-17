@@ -33,7 +33,7 @@ import {
     runFailureMessage,
     type RunStatusKind,
 } from '../model/runOverviewModel'
-import { formatVisitDuration, visitContextWrites, visitDurationMs, visitToolResult, type RunVisit, type VisitFlowNode } from '../model/visitModel'
+import { formatVisitDuration, humanizeNodeId, parseBranchFailure, visitContextWrites, visitDurationMs, visitToolResult, type RunVisit, type VisitFlowNode } from '../model/visitModel'
 
 type ViewArtifact = (entry: { path: string; viewable: boolean }) => void
 
@@ -147,6 +147,7 @@ export function RunStatusItem({
     const lastVisit = rootVisits.at(-1) ?? null
     const duration = formatDuration(run.started_at, run.ended_at, run.status, now, run.idle_ms)
     const link = (visit: RunVisit | null | undefined) => (visit ? <VisitLink visit={visit} onSelect={onSelectVisit} /> : null)
+    const nodeLabel = (nodeId: string) => flowNodes[nodeId]?.label ?? humanizeNodeId(nodeId)
 
     let heading: string
     let meta: ReactNode
@@ -158,11 +159,13 @@ export function RunStatusItem({
         body = question
     } else if (kind === 'failed') {
         const infrastructure = classifyRunFailure(run) === 'infrastructure'
-        const failure = describeFailure(runFailureMessage(run))
+        const failure = describeFailure(runFailureMessage(run), nodeLabel)
         const failedVisit = [...rootVisits].reverse().find((visit) => visit.outcome === 'failed')
         const stoppedIn = failedVisit ?? lastVisit
+        // A fork fails with the branch step whose error ended it.
+        const cause = failedVisit ? visits.find((visit) => visit.parentKey === failedVisit.key && visit.outcome === 'failed') ?? failedVisit : null
         // A command's error carries only its stderr; a test runner names what failed on stdout, so its end shows too.
-        const output = failedVisit?.kind === 'tool' ? visitToolResult(failedVisit).output : null
+        const output = cause?.kind === 'tool' ? visitToolResult(cause).output : null
         // The header's badge already says Failed; this section says why.
         heading = 'Why it failed'
         meta = (
@@ -283,6 +286,7 @@ export function RunStatusItem({
     // A failed run's own error is shown above; an earlier visit that hit the same error says so
     // instead of repeating it.
     const failureMessage = kind === 'failed' ? runFailureMessage(run) : null
+    const failureCause = parseBranchFailure(failureMessage)?.reason.trim() ?? null
     return (
         <article data-testid="run-status-item" data-status-kind={kind} className="flex flex-col gap-5 pb-6">
             <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -296,8 +300,8 @@ export function RunStatusItem({
                     <ul className="flex flex-col gap-1.5 text-sm">
                         {didNotPass.map((visit) => {
                             const reason = visit.reason?.trim() || null
-                            const sameAsAbove = reason !== null && reason === failureMessage
-                            const failure = reason && !sameAsAbove ? describeFailure(reason) : null
+                            const sameAsAbove = reason !== null && (reason === failureMessage || reason === failureCause)
+                            const failure = reason && !sameAsAbove ? describeFailure(reason, nodeLabel) : null
                             return (
                                 <li key={visit.key} data-testid="run-status-did-not-pass-row" className="max-w-[72ch]">
                                     {link(visit)}

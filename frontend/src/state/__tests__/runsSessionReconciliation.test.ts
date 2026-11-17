@@ -2,6 +2,8 @@ import { beforeEach, expect, it } from 'vitest'
 import { useStore } from '@/store'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { selectSelectedRunId, selectSelectedRunSession } from '../runsSessionSelectors'
+import { toRunRecord } from '../runRecordReconciliation'
+import { parsePipelineStatusResponse } from '@/lib/api/attractorApi'
 
 const record = (runId = 'a', patch: Partial<RunRecord> = {}): RunRecord => ({
     run_id: runId, flow_name: 'flow.yaml', status: 'running', working_directory: '/a',
@@ -38,6 +40,15 @@ it('honors omitted versus null live fields and never manufactures records from p
     expect(selectSelectedRunSession(useStore.getState())?.record?.token_usage).toBeNull()
     state.reconcileRunRecord('a', 'journal', { current_node: 'done' })
     expect(selectSelectedRunSession(useStore.getState())?.record?.current_node).toBe('done')
+})
+
+it('keeps the time a retried run sat stopped from its status and live summaries', () => {
+    const state = useStore.getState()
+    const status = parsePipelineStatusResponse({ pipeline_id: 'a', ...record('a', { status: 'failed', idle_ms: 88_588 }) })
+    state.reconcileRunRecord('a', 'status', toRunRecord(status))
+    expect(selectSelectedRunSession(useStore.getState())?.record?.idle_ms).toBe(88_588)
+    state.reconcileRunRecord('a', 'live', record('a', { idle_ms: 90_000 }))
+    expect(selectSelectedRunSession(useStore.getState())?.record?.idle_ms).toBe(90_000)
 })
 
 it('rolls back only unchanged optimistic fields in both snapshots', () => {

@@ -451,6 +451,11 @@ export function buildRunVisits({
             visit.reason ??= error.reason
             visit.failureKind ??= error.kind
         }
+        // The branch error that ended a fork the run failed on is the run's failure too.
+        const cause = draft.parent.visit.outcome === 'failed' ? parseBranchFailure(draft.parent.visit.reason) : null
+        if (visit.outcome === 'error' && cause?.index === draft.branchIndex && cause.node === visit.nodeId) {
+            visit.outcome = 'failed'
+        }
     })
 
     // Where each visit went next, and whether that went back to a node that
@@ -615,6 +620,12 @@ const asRecord = (value: unknown): Record<string, unknown> | null => (
 )
 
 /** The branch results a fan-out visit wrote, in declared order; empty for any other visit. */
+/** A fork's error naming the branch that ended it: "branch checks (index 0) failed at tsc: <reason>". */
+export function parseBranchFailure(text: string | null | undefined): { branch: string; index: number; node: string; reason: string } | null {
+    const match = text?.trim().match(/^branch (\S+) \(index (\d+)\) failed at (\S+): ([\s\S]*)$/)
+    return match ? { branch: match[1], index: Number(match[2]), node: match[3], reason: match[4] } : null
+}
+
 export function parallelBranchResults(visit: Pick<RunVisit, 'status'>): ParallelBranchResult[] {
     const results = asRecord(visit.status?.context_updates)?.['parallel.results']
     if (!Array.isArray(results)) {

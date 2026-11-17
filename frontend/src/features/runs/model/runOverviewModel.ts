@@ -1,5 +1,5 @@
 import type { RunRecord } from './shared'
-import { isSystemContextKey, type RunVisit } from './visitModel'
+import { humanizeNodeId, isSystemContextKey, parseBranchFailure, type RunVisit } from './visitModel'
 
 // What the Runs page says about a run as a whole: its title, how it failed,
 // which visits didn't pass, and its context with each key's history.
@@ -177,13 +177,25 @@ const FAILURE_WORDINGS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
 /** Whether a run's failure reason is the runtime's record that a user canceled it. */
 export const isCancelReason = (reason: unknown): boolean => reason === 'aborted_by_user'
 
-/** A failure reason in plain words, with the runtime's own text as the detail when it was reworded. */
-export function describeFailure(reason: string): { summary: string; detail: string | null } {
+/**
+ * A failure reason in plain words, with the runtime's own text as the detail when it was reworded:
+ * a command's stderr alone when it has one. A fork's error names its branch's step by `nodeLabel`.
+ */
+export function describeFailure(
+    reason: string,
+    nodeLabel: (nodeId: string) => string = humanizeNodeId,
+): { summary: string; detail: string | null } {
     const text = reason.trim()
+    const branch = parseBranchFailure(text)
+    if (branch) {
+        const cause = describeFailure(branch.reason, nodeLabel)
+        const where = branch.node === branch.branch ? '' : ` at ${nodeLabel(branch.node)}`
+        return { summary: `The ${nodeLabel(branch.branch)} branch failed${where}. ${cause.summary}`, detail: cause.detail }
+    }
     for (const [pattern, words] of FAILURE_WORDINGS) {
         const match = text.match(pattern)
         if (match) {
-            return { summary: words(match), detail: text }
+            return { summary: words(match), detail: text.match(/^tool [^;]*; stderr: ([\s\S]+)$/)?.[1] ?? text }
         }
     }
     return { summary: text, detail: null }

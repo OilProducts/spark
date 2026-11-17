@@ -126,15 +126,24 @@ describe('classifyRunFailure', () => {
 
 describe('describeFailure', () => {
   it.each([
-    ['tool exited with unmapped code 1; stderr: lint broke', 'The command failed (exit code 1).'],
-    ['tool exited with code 2 instead of 0 with a JSON verdict decision', 'The command failed (exit code 2).'],
-    ['tool returned undeclared decision "maybe"', 'The command’s output did not name a decision this step can take.'],
-    ['codergen backend failed: codex app-server error: codex app-server turn timed out waiting for activity', 'The agent could not run: it stopped responding.'],
-    ['codergen backend failed: usage limit reached', 'The agent could not run: its usage limit was reached.'],
-    ['codergen backend failed: codex app-server exited unexpectedly', 'The agent could not run.'],
-    ['stage_failed', 'The step failed without giving a reason.'],
-  ])('rewords %s and keeps it as the detail', (reason, summary) => {
-    expect(describeFailure(reason)).toEqual({ summary, detail: reason })
+    ['tool exited with unmapped code 1; stderr: lint broke', 'The command failed (exit code 1).', 'lint broke'],
+    ['tool exited with code 2 instead of 0 with a JSON verdict decision', 'The command failed (exit code 2).', null],
+    ['tool returned undeclared decision "maybe"', 'The command’s output did not name a decision this step can take.', null],
+    ['codergen backend failed: codex app-server error: codex app-server turn timed out waiting for activity', 'The agent could not run: it stopped responding.', null],
+    ['codergen backend failed: usage limit reached', 'The agent could not run: its usage limit was reached.', null],
+    ['codergen backend failed: codex app-server exited unexpectedly', 'The agent could not run.', null],
+    ['stage_failed', 'The step failed without giving a reason.', null],
+  ])('rewords %s and keeps its stderr, else the text, as the detail', (reason, summary, stderr) => {
+    expect(describeFailure(reason)).toEqual({ summary, detail: stderr ?? reason })
+  })
+
+  it("names a fork's failing branch by its step and says its error plainly", () => {
+    const labels: Record<string, string> = { checks: 'Checks', typecheck: 'Typecheck', tsc: 'Run tsc' }
+    const label = (id: string) => labels[id] ?? id
+    expect(describeFailure('branch typecheck (index 0) failed at typecheck: tool exited with unmapped code 2; stderr: TS2322', label))
+      .toEqual({ summary: 'The Typecheck branch failed. The command failed (exit code 2).', detail: 'TS2322' })
+    expect(describeFailure('branch checks (index 1) failed at tsc: tsc exited 2', label))
+      .toEqual({ summary: 'The Checks branch failed at Run tsc. tsc exited 2', detail: null })
   })
 
   it("keeps a flow's or tool's own words as they are", () => {
