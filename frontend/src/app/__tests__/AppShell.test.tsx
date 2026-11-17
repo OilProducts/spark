@@ -477,7 +477,7 @@ const openChat = async (user: ReturnType<typeof userEvent.setup>, projectPath: s
   if (within(group).getByTestId('chats-project-toggle').getAttribute('aria-expanded') !== 'true') {
     await user.click(within(group).getByTestId('chats-project-toggle'))
   }
-  await user.click(await within(group).findByRole('button', { name: `Open thread ${title}` }))
+  await user.click(await within(group).findByRole('button', { name: title }))
 }
 
 const openProjectPage = async (user: ReturnType<typeof userEvent.setup>, projectPath: string) => {
@@ -1076,7 +1076,7 @@ describe('App shell behavior', () => {
     // Other projects' chats sit in their own collapsed groups.
     const projectTwo = screen.getAllByTestId('chats-project-group').find((group) => group.dataset.projectPath === '/tmp/project-two')!
     await user.click(within(projectTwo).getByTestId('chats-project-toggle'))
-    await user.click(await within(projectTwo).findByRole('button', { name: 'Open thread Thread two' }))
+    await user.click(await within(projectTwo).findByRole('button', { name: 'Thread two' }))
 
     await waitFor(() => {
       expect(useStore.getState().activeProjectPath).toBe('/tmp/project-two')
@@ -1169,7 +1169,7 @@ describe('App shell behavior', () => {
     render(<App />)
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Open thread Thread home' })).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Thread home' })).toBeVisible()
       expect(screen.getByText('Existing assistant reply')).toBeVisible()
     })
 
@@ -1179,7 +1179,7 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('activity-chats'))
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Open thread Thread home' })).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Thread home' })).toBeVisible()
     })
     expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Need follow-up')
     expect(screen.queryByTestId('project-thread-list-loading')).not.toBeInTheDocument()
@@ -2821,7 +2821,7 @@ describe('App shell behavior', () => {
     expect(within(editorFlowTree).getByText('Team')).toBeVisible()
     expect(within(editorFlowTree).getByText('Review')).toBeVisible()
 
-    await user.click(within(editorFlowTree).getByRole('button', { name: NESTED_LINEAR_FLOW_NAME }))
+    await user.click(editorFlowTree.querySelector<HTMLElement>(`[data-flow-name="${NESTED_LINEAR_FLOW_NAME}"]`)!)
 
     await waitFor(() => {
       expect(screen.getByTestId('editor-mode-toggle')).toBeVisible()

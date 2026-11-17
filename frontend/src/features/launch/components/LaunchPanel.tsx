@@ -235,9 +235,11 @@ export function LaunchPanel({
                     event.stopPropagation()
                     onClose()
                 }
-                // Enter in a one-line field runs, as it submits a form; multi-line fields keep Enter for new lines.
-                if (event.key === 'Enter' && !event.defaultPrevented && !event.nativeEvent.isComposing
-                    && event.target instanceof HTMLInputElement && !['checkbox', 'radio', 'button', 'submit', 'reset', 'file'].includes(event.target.type)) {
+                // Enter in a one-line field runs, as it submits a form; text areas keep Enter for new lines
+                // and run on Ctrl+Enter or ⌘Enter.
+                const runs = (event.target instanceof HTMLInputElement && !['checkbox', 'radio', 'button', 'submit', 'reset', 'file'].includes(event.target.type))
+                    || (event.target instanceof HTMLTextAreaElement && (event.ctrlKey || event.metaKey))
+                if (event.key === 'Enter' && !event.defaultPrevented && !event.nativeEvent.isComposing && runs) {
                     event.preventDefault()
                     void requestStart()
                 }

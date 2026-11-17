@@ -1320,6 +1320,13 @@ describe('ProjectConversationHistory', () => {
         expect(card).not.toHaveTextContent('Open run')
         await user.click(openRun)
         expect(onOpenFlowRun).toHaveBeenCalledWith(expect.objectContaining({ run_id: 'run-launch-456' }))
+        expect(screen.getByTestId('project-flow-launch-view-result-button')).toBeVisible()
+
+        // A run still going has no result to view yet.
+        act(() => useStore.setState((state) => ({
+            runsListSession: { ...state.runsListSession, runs: state.runsListSession.runs.map((run) => ({ ...run, status: 'running', ended_at: null })) },
+        })))
+        expect(screen.queryByTestId('project-flow-launch-view-result-button')).not.toBeInTheDocument()
     })
 
     it('renders run recoveries from a conversation page as cards that open the resulting run and show a failure', async () => {

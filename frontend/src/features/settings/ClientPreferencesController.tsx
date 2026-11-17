@@ -79,6 +79,7 @@ export function ClientPreferencesController() {
     const retry = () => window.dispatchEvent(new Event('spark:preferences-retry'))
     return (
         <AppNotice
+            key={`${error.kind}:${error.message}`}
             data-testid="client-preferences-error"
             title={error.kind === 'save' ? 'Couldn’t save your preferences' : undefined}
             actions={error.kind === 'save' ? (

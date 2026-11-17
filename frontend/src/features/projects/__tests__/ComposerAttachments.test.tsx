@@ -334,7 +334,7 @@ describe('composer attachments', () => {
     fireEvent.paste(input(), { clipboardData: { files: [png()], types: ['Files'] } })
     await waitForUploads(1)
 
-    await user.click(await screen.findByRole('button', { name: /Open thread Chat B/i }))
+    await user.click(await screen.findByRole('button', { name: 'Chat B' }))
     await waitFor(() => expect(pendingAttachments()).toHaveLength(0))
     await user.type(input(), 'Only text here')
     await user.click(sendButton())
@@ -344,7 +344,7 @@ describe('composer attachments', () => {
       body: { project_path: PROJECT, message: 'Only text here', client_turn_id: expect.stringMatching(/^turn-/), chat_mode: null },
     })
 
-    await user.click(screen.getByRole('button', { name: /Open thread Chat A/i }))
+    await user.click(screen.getByRole('button', { name: 'Chat A' }))
     await waitForUploads(1)
     expect(server.uploads[0]!.conversationId).toBe('chat-a')
   })

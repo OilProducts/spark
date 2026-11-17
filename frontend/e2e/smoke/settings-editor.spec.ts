@@ -387,7 +387,7 @@ const openChat = async (page: Page, project: string, title: string) => {
     await page.getByTestId('activity-chats').click()
     const group = chatsGroup(page, project)
     if (await group.getByTestId('chats-project-toggle').getAttribute('aria-expanded') !== 'true') await group.getByTestId('chats-project-toggle').click()
-    await group.getByRole('button', { name: new RegExp(`Open thread ${title}`) }).click()
+    await group.getByRole('button', { name: title, exact: true }).click()
 }
 const openProjectPage = async (page: Page, project: string) => {
     await page.getByTestId('activity-chats').click()

@@ -4271,7 +4271,7 @@ describe('ProjectsPanel', () => {
       expect(useStore.getState().homeConversationSessionsById['conversation-thread-a']?.scrollTop).toBe(120)
     })
 
-    await user.click(await screen.findByRole('button', { name: /Open thread Planning thread/i }))
+    await user.click(await screen.findByRole('button', { name: 'Planning thread' }))
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('This is the planning thread history.')
@@ -4286,7 +4286,7 @@ describe('ProjectsPanel', () => {
       expect(useStore.getState().homeConversationSessionsById['conversation-thread-b']?.scrollTop).toBe(260)
     })
 
-    await user.click(await screen.findByRole('button', { name: /Open thread Design thread/i }))
+    await user.click(await screen.findByRole('button', { name: 'Design thread' }))
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Discuss the design changes.')
@@ -4429,7 +4429,7 @@ describe('ProjectsPanel', () => {
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Follow up on thread A.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
-    await user.click(await screen.findByRole('button', { name: /Open thread Planning thread/i }))
+    await user.click(await screen.findByRole('button', { name: 'Planning thread' }))
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('This is the planning thread history.')
@@ -4493,7 +4493,7 @@ describe('ProjectsPanel', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Open thread Planning thread/i })).toHaveAttribute('aria-current', 'true')
+      expect(screen.getByRole('button', { name: 'Planning thread' })).toHaveAttribute('aria-current', 'true')
     })
     expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('This is the planning thread history.')
     expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Response for thread A.')
@@ -4660,14 +4660,14 @@ describe('ProjectsPanel', () => {
       })
       renderProjectsPanel()
       const projectGroup = () => screen.getAllByTestId('chats-project-group').find((group) => group.dataset.projectPath === projectPath)!
-      await within(projectGroup()).findByRole('button', { name: 'Open thread Existing thread' })
+      await within(projectGroup()).findByRole('button', { name: 'Existing thread' })
 
       await user.click(within(projectGroup()).getByTestId('chats-project-new-chat'))
 
       expect(useStore.getState().projectSessionsByPath[projectPath]?.conversationId).toBeNull()
       expect(screen.getByTestId('chat-title')).toHaveTextContent('New chat')
       expect(screen.getByText('New chat in empty-thread-project')).toBeVisible()
-      expect(within(projectGroup()).getAllByRole('button', { name: /^Open thread/ })).toHaveLength(1)
+      expect(within(projectGroup()).getAllByTestId('chats-chat-row')).toHaveLength(1)
       expect(settingsRequests).toEqual([])
     })
   })
@@ -4963,7 +4963,7 @@ describe('ProjectsPanel', () => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Draft the implementation plan.')
     })
 
-    await user.click(await screen.findByRole('button', { name: /Open thread Chat thread/i }))
+    await user.click(await screen.findByRole('button', { name: 'Chat thread' }))
 
     await waitFor(() => {
       expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('chat')
@@ -4972,7 +4972,7 @@ describe('ProjectsPanel', () => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Answer directly.')
     })
 
-    await user.click(screen.getByRole('button', { name: /Open thread Planning thread/i }))
+    await user.click(screen.getByRole('button', { name: 'Planning thread' }))
 
     await waitFor(() => {
       expect(threadAFetchCount).toBe(2)
@@ -5689,7 +5689,7 @@ describe('ProjectsPanel', () => {
       expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('High')
     })
 
-    await user.click(await screen.findByRole('button', { name: /Open thread Mini model thread/i }))
+    await user.click(await screen.findByRole('button', { name: 'Mini model thread' }))
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(/gpt-5.4.mini/i)

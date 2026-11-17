@@ -3,7 +3,7 @@ import { expect, it } from 'vitest'
 import type { AttentionItem } from '@/lib/api/attentionApi'
 
 import { activityDots } from '../ActivityBar'
-import { attentionTimes } from '../useAttention'
+import { attentionFlow, attentionTimes } from '../useAttention'
 import { formatRunDate, formatRunTime } from '@/features/runs/model/runOverviewModel'
 
 const item = (kind: AttentionItem['kind']): AttentionItem => ({ kind, id: kind, title: '', project_path: '/p', updated_at: '' })
@@ -32,4 +32,10 @@ it('times repeated items of one title that share a minute to the second, and oth
     expect(timeOf(items[0])).toBe(formatRunTime(items[0].updated_at, true))
     expect(timeOf(items[2])).toBe(formatRunDate(items[2].updated_at, now))
     expect(timeOf(items[3])).toBe(formatRunDate(items[3].updated_at, now))
+})
+
+it("names a waiting run's flow by its declared title once the run is loaded", () => {
+    const gate: AttentionItem = { kind: 'run_gate', id: 'g', run_id: 'run-1', title: 'Ship 1.2', flow_name: 'release-check', project_path: '/p', updated_at: '' }
+    expect(attentionFlow(gate, [])).toBe('Release Check')
+    expect(attentionFlow(gate, [{ run_id: 'run-1', title: 'Ship 1.2', flow_name: 'release-check', flow_title: 'Release readiness' }])).toBe('Release readiness')
 })

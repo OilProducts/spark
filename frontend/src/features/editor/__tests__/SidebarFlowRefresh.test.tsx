@@ -322,18 +322,18 @@ describe('Flows panel layer badges', () => {
 
         await user.type(search, 'BUILD night')
         expect(audit).toBeVisible()
-        expect(screen.queryByRole('button', { name: 'team/release' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'release' })).not.toBeInTheDocument()
 
         await user.clear(search)
         await user.type(search, 'team/rel')
-        expect(screen.getByRole('button', { name: 'team/release' })).toBeVisible()
+        expect(screen.getByRole('button', { name: 'release' })).toBeVisible()
         expect(screen.queryByRole('button', { name: 'Nightly audit (nightly-audit)' })).not.toBeInTheDocument()
 
         await user.type(search, 'x')
         expect(screen.getByTestId('flow-list-search-empty')).toHaveTextContent('No flows match the search.')
         await user.clear(search)
         expect(screen.queryByTestId('flow-list-search-empty')).not.toBeInTheDocument()
-        expect(screen.getByRole('button', { name: 'team/release' })).toBeVisible()
+        expect(screen.getByRole('button', { name: 'release' })).toBeVisible()
     })
 
     it('marks only customized bundled flows; the project heading already marks the project\'s own', async () => {

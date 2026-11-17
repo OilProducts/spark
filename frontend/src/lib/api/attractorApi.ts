@@ -146,6 +146,7 @@ export interface PipelineStatusResponse {
     outcome_reason_code?: string | null
     outcome_reason_message?: string | null
     flow_name?: string
+    flow_title?: string | null
     working_directory?: string
     project_path?: string
     git_branch?: string | null

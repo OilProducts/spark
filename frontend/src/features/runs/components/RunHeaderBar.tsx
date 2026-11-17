@@ -1,4 +1,5 @@
-import { useEffect, useId } from 'react'
+import { useEffect, useId, useState } from 'react'
+import { CircleHelp } from 'lucide-react'
 
 import { StatusPill } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
@@ -23,6 +24,9 @@ import { normalizeProjectPath } from '@/lib/projectPaths'
 // status item.
 
 const CANCELING_STATUSES = new Set(['cancel_requested', 'abort_requested'])
+
+// Whether the recovery buttons' explanations show, kept as you move between runs.
+let actionsHelpShown = false
 
 // The run whose heading takes focus when it shows: a launched run's detail loads after its launcher closes.
 let headingFocusRunId: string | null = null
@@ -67,6 +71,7 @@ export function RunHeaderBar({
     const inactive = canContinueRun(run.status)
     const retry = canRetryRun(run.status)
     const helpId = useId()
+    const [helpShown, setHelpShown] = useState(actionsHelpShown)
     useEffect(() => {
         if (headingFocusRunId !== run.run_id) return
         headingFocusRunId = null
@@ -136,9 +141,9 @@ export function RunHeaderBar({
                         </span>
                     ) : null}
                 </p>
-                {/* The recovery buttons' explanations, visible without hovering; each button is described by its sentence. */}
+                {/* The recovery buttons' explanations, shown by the ? button; each button is always described by its sentence. */}
                 {inactive ? (
-                    <p data-testid="run-header-actions-help" className="text-xs text-muted-foreground">
+                    <p id={`${helpId}-help`} data-testid="run-header-actions-help" className={helpShown ? 'text-xs text-muted-foreground' : 'sr-only'}>
                         {retry ? <><span id={`${helpId}-retry`}>Retry picks up from the failed step.</span>{' '}</> : null}
                         <span id={`${helpId}-continue`}>
                             {selectedVisitLabel
@@ -201,6 +206,22 @@ export function RunHeaderBar({
                         size="sm"
                     >
                         Re-run
+                    </Button>
+                ) : null}
+                {inactive ? (
+                    <Button
+                        type="button"
+                        data-testid="run-header-actions-help-toggle"
+                        aria-label="What these buttons do"
+                        title="What these buttons do"
+                        aria-expanded={helpShown}
+                        aria-controls={`${helpId}-help`}
+                        onClick={() => { actionsHelpShown = !helpShown; setHelpShown(!helpShown) }}
+                        variant="ghost"
+                        size="icon-sm"
+                        className="text-muted-foreground"
+                    >
+                        <CircleHelp />
                     </Button>
                 ) : null}
             </div>

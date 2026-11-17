@@ -1,5 +1,6 @@
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import App from '@/App'
+import { UNREACHABLE_MESSAGE } from '@/lib/fetchSpark'
 import { HomeSessionController, RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { LaunchPanel, type LaunchPanelProps } from '@/features/launch'
@@ -661,7 +662,8 @@ describe('Frontend contract behavior', () => {
     await expect(fetchPipelineStatusValidated('run-504')).rejects.toMatchObject<ApiHttpError>({
       endpoint: '/attractor/pipelines/{id}',
       status: 504,
-      detail: 'Gateway timeout',
+      detail: null,
+      message: UNREACHABLE_MESSAGE,
     })
 
     vi.stubGlobal(
@@ -2163,7 +2165,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     })
     const beta = screen.getAllByTestId('chats-project-group').find((group) => group.dataset.projectPath === '/tmp/project-beta')!
     await user.click(within(beta).getByTestId('chats-project-toggle'))
-    await user.click(await within(beta).findByRole('button', { name: 'Open thread Beta thread' }))
+    await user.click(await within(beta).findByRole('button', { name: 'Beta thread' }))
 
     await waitFor(() => {
       expect(screen.getByTestId('chat-project')).toHaveTextContent('project-beta')

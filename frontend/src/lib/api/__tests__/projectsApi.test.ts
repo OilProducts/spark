@@ -85,3 +85,14 @@ describe('projectsApi parsing', () => {
     } })).toThrow()
   })
 })
+
+describe('HTTP errors', () => {
+  it('words a proxy gateway error as Spark being unreachable, and keeps a plain-text reason otherwise', async () => {
+    const { extractHttpError } = await import('@/lib/api/shared')
+    const { UNREACHABLE_MESSAGE } = await import('@/lib/fetchSpark')
+    const gateway = await extractHttpError(new Response('Error: connect ECONNREFUSED 127.0.0.1:8000', { status: 502 }), '/workspace/api/projects')
+    expect(gateway.message).toBe(UNREACHABLE_MESSAGE)
+    const other = await extractHttpError(new Response('disk full', { status: 500 }), '/workspace/api/projects')
+    expect(other.message).toBe('Disk full')
+  })
+})

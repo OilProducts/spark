@@ -109,10 +109,12 @@ export function LaunchInputsForm({
                                     ) : null}
                                 </div>
                                 {entry.type === 'string' ? (
-                                    <Input
+                                    // Text may be a sentence or a bug report: one row that grows with its lines.
+                                    <Textarea
                                         {...common}
                                         onChange={(event) => onInputChange(entry, event.target.value)}
-                                        className="h-8 text-sm"
+                                        rows={1}
+                                        className="max-h-72 min-h-8 px-2 py-1.5 text-sm"
                                     />
                                 ) : entry.type === 'string[]' ? (
                                     <Textarea

@@ -1,11 +1,11 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
 import { useState, type ComponentProps } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
 import type { PipelineResultResponse } from '@/lib/attractorClient'
-import type { RunRecord } from '../../model/shared'
+import type { RunRecord, TimelineEventEntry } from '../../model/shared'
 import { buildRunContextOverview, runStatusKind } from '../../model/runOverviewModel'
 import { visitKey, type RunVisit, type VisitOutcome } from '../../model/visitModel'
 import { RunContextItem } from '../RunContextItem'
@@ -181,10 +181,22 @@ describe('RunStatusItem', () => {
     expect(earlier).toHaveTextContent('Implement: the same error as above')
     expect(earlier).not.toHaveTextContent('exited unexpectedly')
     expect(screen.getByTestId('run-status-failure-kind')).toHaveAttribute('data-kind', 'infrastructure')
+    expect(screen.queryByTestId('run-status-failure-output')).toBeNull()
     fireEvent.click(within(screen.getByTestId('run-status-stopped-in')).getByTestId('run-visit-link'))
     expect(onSelectVisit).toHaveBeenCalledWith(stopped)
     // A failed run's commit is where it started, so it isn't an output.
     expect(screen.queryByTestId('run-output-commit')).not.toBeInTheDocument()
+  })
+
+  it("shows the end of a failed command's stdout beside its stderr, where a test runner names what failed", () => {
+    const stdout = [...Array.from({ length: 500 }, (_, index) => `test case_${index} ... ok`), '---- contracts::broken stdout ----', "thread 'contracts::broken' panicked", 'test result: FAILED. 500 passed; 1 failed'].join('\n')
+    renderStatus(run({ status: 'failed', last_error: 'tool exited with unmapped code 101; stderr: error: test failed' }), [
+      visit('validate', 1, 'failed', { kind: 'tool', status: { context_updates: { 'context.tool.output': stdout, 'context.tool.exit_code': 101 } } }),
+    ])
+    expect(screen.getByTestId('run-status-failure-detail')).toHaveTextContent('stderr: error: test failed')
+    const output = screen.getByTestId('run-status-failure-output')
+    expect(output).toHaveTextContent(/^Output.*contracts::broken.*test result: FAILED\. 500 passed; 1 failed$/)
+    expect(output).not.toHaveTextContent('case_0 ')
   })
 
   it("shows a long failure output's last lines, where its error is, until asked for all", () => {
@@ -715,6 +727,56 @@ describe('RunVisitsCard returned evidence', () => {
     expect(within(returned).queryByTestId('run-visit-reason')).toBeNull()
     expect(screen.getByTestId('run-visit-tool')).toHaveTextContent('42 passed')
     expect(screen.getAllByText('42 passed')).toHaveLength(1)
+  })
+
+  it("opens a failed command's output at its end, where the error is, and reaches it from the keyboard", () => {
+    vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockReturnValue(900)
+    const tool = (outcome: VisitOutcome, exitCode: number) => visit('check', 1, outcome, {
+      kind: 'tool', status: { context_updates: { 'context.tool.output': 'line 1\nline 2', 'context.tool.exit_code': exitCode } },
+    })
+    openOnly([tool('failed', 101)])
+    const output = screen.getByRole('region', { name: 'Command output' })
+    expect(output).toHaveAttribute('tabindex', '0')
+    expect(output.scrollTop).toBe(900)
+    cleanup()
+
+    openOnly([tool('completed', 0)])
+    expect(screen.getByTestId('run-visit-tool-output').scrollTop).toBe(0)
+    vi.restoreAllMocks()
+  })
+
+  it("shows a failure's output once in the journal, under the step, when the run fails with the same error", () => {
+    const error = `tool exited with unmapped code 101; stderr: ${Array.from({ length: 20 }, (_, index) => `line ${index}`).join('\n')}`
+    const entry = (sequence: number, type: string, payload: Record<string, unknown>): TimelineEventEntry => ({
+      id: `event-${sequence}`, sequence, type, category: 'lifecycle', severity: 'error', nodeId: 'validate', stageIndex: 1,
+      summary: type, receivedAt: '2026-09-29T10:00:00Z', sourceScope: 'root', sourceParentNodeId: null, sourceFlowName: null, payload,
+    })
+    render(
+      <SelectingVisitsCard
+        visits={[]}
+        flowNodes={{ validate: { label: 'Validate', kind: 'tool', readsContext: [], command: null } }}
+        segments={[]}
+        prompts={[]}
+        journal={[entry(1, 'StageFailed', { error }), entry(2, 'PipelineFailed', { error })]}
+        now={0}
+        isNarrowViewport={false}
+        isLive={false}
+        timelineError={null}
+        onOpenRun={vi.fn()}
+        statusRow={{ label: 'Failed' }}
+        contextKeyCount={0}
+        renderStatus={() => null}
+        renderContext={() => null}
+        artifactEntries={[]}
+        onViewArtifact={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByTestId('run-journal-toggle'))
+    const [stepFailed, runFailed] = screen.getAllByTestId('run-journal-row')
+    expect(stepFailed).toHaveTextContent('Validate failed: The command failed (exit code 101).')
+    expect(stepFailed).toHaveTextContent('line 19')
+    expect(runFailed).toHaveTextContent(/Run failed: The command failed \(exit code 101\)\.$/)
+    expect(runFailed).not.toHaveTextContent('line 19')
   })
 
   it('lists each fan-out branch with failed, terminal-result and canceled evidence', () => {

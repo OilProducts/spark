@@ -5,7 +5,7 @@ import { RunCard } from "@/components/app/transcript/SegmentRows"
 import type { StatusTone } from "@/components/app/status"
 import { Well } from "@/components/app/well"
 import { flowTitle, runFlowTitle } from "@/features/runs/model/runOverviewModel"
-import { formatDuration, formatRunStatusLabel, runRecordTone } from "@/features/runs/model/shared"
+import { formatDuration, formatRunStatusLabel, runHasEnded, runRecordTone } from "@/features/runs/model/shared"
 import type { PipelineResultResponse } from "@/lib/attractorClient"
 import { useStore } from "@/store"
 import { loadPipelineResult } from "../services/conversationArtifacts"
@@ -166,7 +166,8 @@ function FlowArtifactCard({
                 {artifact.run_id ? (
                     <div className="flex flex-wrap items-center gap-2">
                         <span>Run: <span className="font-mono text-foreground">{artifact.run_id}</span></span>
-                        <ProjectFlowResultPreview runId={artifact.run_id} />
+                        {/* A run still going has no result yet. */}
+                        {run && !runHasEnded(run.status) ? null : <ProjectFlowResultPreview runId={artifact.run_id} />}
                     </div>
                 ) : null}
             </div>
@@ -335,7 +336,7 @@ export function ProjectRunRecoveryEntry({
                 {resultRunId ? (
                     <div className="flex flex-wrap items-center gap-2">
                         <span>Run: <span className="font-mono text-foreground">{resultRunId}</span></span>
-                        <ProjectFlowResultPreview runId={resultRunId} />
+                        {run && !runHasEnded(run.status) ? null : <ProjectFlowResultPreview runId={resultRunId} />}
                     </div>
                 ) : null}
             </div>

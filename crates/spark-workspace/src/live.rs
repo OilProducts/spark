@@ -947,6 +947,7 @@ fn public_run_record(record: attractor_core::RunRecord) -> Value {
         "run_id": record.run_id,
         "title": record.title,
         "flow_name": record.flow_name,
+        "flow_title": record.flow_title,
         "status": record.status,
         "outcome": record.outcome,
         "outcome_reason_code": record.outcome_reason_code,

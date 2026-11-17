@@ -443,8 +443,13 @@ export function TriggersPanel() {
           ) : null}
       </div>
       {nothingPicked && !isNarrowViewport ? (
-        <SheetEmpty icon={Zap} title="No trigger selected" className="h-auto flex-1">
-          Triggers start flows on a schedule, on events, or from webhooks. Select one or create a new one.
+        <SheetEmpty
+          icon={Zap}
+          title={visibleTriggers.length ? 'No trigger selected' : 'No triggers yet'}
+          className="h-auto flex-1"
+          action={<Button type="button" variant="outline" size="sm" onClick={openCreateForm}><Plus aria-hidden="true" />Create a trigger</Button>}
+        >
+          Triggers start flows on a schedule, on events, or from webhooks.{visibleTriggers.length ? ' Select one or create a new one.' : ''}
         </SheetEmpty>
       ) : null}
     </section>

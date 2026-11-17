@@ -28,6 +28,8 @@ type ProjectsSidebarProps = {
     onSelectConversationThread: (projectPath: string, conversationId: string) => void
     onDeleteConversationThread: (projectPath: string, conversationId: string, title: string) => void | Promise<void>
     formatConversationAgeShort: (value: string) => string
+    /** The project list couldn't load (the chat area says why); it keeps retrying. */
+    loadFailed?: boolean
 }
 
 /** A standing role's state, shown on its pinned row in place of the age. */
@@ -57,6 +59,7 @@ export function ProjectsSidebar({
     onSelectConversationThread,
     onDeleteConversationThread,
     formatConversationAgeShort,
+    loadFailed,
 }: ProjectsSidebarProps) {
     const projectRegistry = useStore((state) => state.projectRegistry)
     const projectPagePath = useStore((state) => state.projectPagePath)
@@ -72,7 +75,9 @@ export function ProjectsSidebar({
 
     return (
         <ul data-testid="project-thread-list" aria-label="Chats by project" className="flex flex-col gap-1.5">
-            {groups.length === 0 ? (
+            {groups.length === 0 && loadFailed ? (
+                <li><InlineError dense>Couldn’t load projects. Spark keeps trying.</InlineError></li>
+            ) : groups.length === 0 ? (
                 <li>
                     <Empty className="py-4 text-xs">
                         <EmptyHeader>
@@ -171,8 +176,7 @@ export function ProjectsSidebar({
                                                 data-standing-role={conversation.standing_role?.name}
                                                 onClick={() => onSelectConversationThread(projectPath, conversation.conversation_id)}
                                                 selected={isActiveConversation}
-                                                aria-label={`Open thread ${conversation.title}`}
-                                                // The ID and age are read as the row's description, so its name stays the visible title.
+                                                // The row's name is its visible title; the ID and age are read as its description.
                                                 aria-describedby={`chat-row-meta-${conversation.conversation_id}`}
                                                 title={conversation.title}
                                                 meta={(

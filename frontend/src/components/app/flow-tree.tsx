@@ -137,8 +137,8 @@ function FlowTreeNodeRow({
         <div className="group relative">
             <Button
                 type="button"
-                aria-label={`${title ? `${title} (${node.path})` : node.path}${error ? ', has errors' : ''}`}
-                // The badge and description are read as the row's description, so its name stays the visible title.
+                // The row's name is its visible title (and, for a titled flow, its file); the badge and
+                // description or error are read as its description.
                 aria-describedby={[indicator && `${detailId}-badge`, (error || description) && `${detailId}-text`].filter(Boolean).join(' ') || undefined}
                 // The row truncates its title and description; the tooltip has them in full.
                 title={[title, node.path, error ?? description].filter(Boolean).join('\n')}
@@ -158,7 +158,7 @@ function FlowTreeNodeRow({
                     {/* The indicator wraps under the name only when both don't fit, so the name keeps the row's width. */}
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                         <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                            <span className="min-w-0 max-w-full truncate">{title ?? node.name}</span>
+                            <span className="min-w-0 max-w-full truncate">{title ?? node.name}{title ? <>{' '}<span className="sr-only">({node.path})</span></> : null}</span>
                             {indicator ? <span id={`${detailId}-badge`} aria-hidden className="contents">{indicator}</span> : null}
                         </span>
                         {error ? (

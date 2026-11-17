@@ -27,12 +27,12 @@ describe('FlowTree', () => {
     expect(within(flowTree).getByTestId('flow-indicator')).toBeVisible()
 
     await user.click(within(flowTree).getByRole('button', { name: 'Team' }))
-    expect(within(flowTree).queryByRole('button', { name: 'team/review/nested.dot' })).not.toBeInTheDocument()
+    expect(within(flowTree).queryByRole('button', { name: 'nested.dot' })).not.toBeInTheDocument()
 
     await user.click(within(flowTree).getByRole('button', { name: 'Team' }))
     expect(within(flowTree).getByText('Review')).toBeVisible()
 
-    await user.click(within(flowTree).getByRole('button', { name: 'team/review/nested.dot' }))
+    await user.click(within(flowTree).getByRole('button', { name: 'nested.dot' }))
     expect(onSelectFlow).toHaveBeenCalledWith('team/review/nested.dot')
   })
 
@@ -50,7 +50,7 @@ describe('FlowTree', () => {
     expect(within(project).getByRole('button', { name: 'nightly-audit' })).toBeVisible()
     expect(within(project).getByText('Team')).toBeVisible()
     expect(within(screen.getByRole('region', { name: 'Bundled with Spark' })).getByText('Examples')).toBeVisible()
-    await user.click(within(project).getByRole('button', { name: 'team/release' }))
+    await user.click(within(project).getByRole('button', { name: 'release' }))
     expect(onSelectFlow).toHaveBeenCalledWith('team/release')
 
     // Named for its project when given; a flow with a title shows it, its description under it.

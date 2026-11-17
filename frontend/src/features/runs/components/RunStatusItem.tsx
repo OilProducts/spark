@@ -33,7 +33,7 @@ import {
     runFailureMessage,
     type RunStatusKind,
 } from '../model/runOverviewModel'
-import { formatVisitDuration, visitContextWrites, visitDurationMs, type RunVisit, type VisitFlowNode } from '../model/visitModel'
+import { formatVisitDuration, visitContextWrites, visitDurationMs, visitToolResult, type RunVisit, type VisitFlowNode } from '../model/visitModel'
 
 type ViewArtifact = (entry: { path: string; viewable: boolean }) => void
 
@@ -159,7 +159,10 @@ export function RunStatusItem({
     } else if (kind === 'failed') {
         const infrastructure = classifyRunFailure(run) === 'infrastructure'
         const failure = describeFailure(runFailureMessage(run))
-        const stoppedIn = [...rootVisits].reverse().find((visit) => visit.outcome === 'failed') ?? lastVisit
+        const failedVisit = [...rootVisits].reverse().find((visit) => visit.outcome === 'failed')
+        const stoppedIn = failedVisit ?? lastVisit
+        // A command's error carries only its stderr; a test runner names what failed on stdout, so its end shows too.
+        const output = failedVisit?.kind === 'tool' ? visitToolResult(failedVisit).output : null
         // The header's badge already says Failed; this section says why.
         heading = 'Why it failed'
         meta = (
@@ -174,6 +177,12 @@ export function RunStatusItem({
                         {failure.summary}
                     </p>
                     {failure.detail ? <FailureDetail data-testid="run-status-failure-detail" className="mt-1">{failure.detail}</FailureDetail> : null}
+                    {output ? (
+                        <div data-testid="run-status-failure-output" className="mt-2">
+                            <p className="text-xs font-semibold text-muted-foreground">Output</p>
+                            <FailureDetail>{output}</FailureDetail>
+                        </div>
+                    ) : null}
                 </div>
                 <p data-testid="run-status-stopped-in" className="text-sm text-muted-foreground">
                     {stoppedIn ? <>Stopped in {link(stoppedIn)} after {duration}.</> : <>Stopped after {duration}.</>}

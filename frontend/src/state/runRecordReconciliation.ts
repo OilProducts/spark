@@ -6,6 +6,7 @@ export function toRunRecord(status: PipelineStatusResponse): RunRecord {
         run_id: status.run_id,
         title: status.title ?? null,
         flow_name: status.flow_name || '',
+        flow_title: status.flow_title ?? null,
         status: status.status,
         outcome: status.outcome ?? null,
         outcome_reason_code: status.outcome_reason_code ?? null,

@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { Fragment, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { ArrowRight, ChevronRight, CircleHelp, Minus, Undo2, Workflow, X, type LucideIcon } from 'lucide-react'
 
 import type { RunExecutionPrompt, RunTranscriptSegment } from '@/lib/api/attractorApi'
@@ -809,6 +809,12 @@ function RunSteerForm({ runId, nodeId, running }: { runId: string; nodeId: strin
 
 function ToolWork({ visit, command }: { visit: RunVisit; command: string | null }) {
     const { output, exitCode } = visitToolResult(visit)
+    // A failed command's error is at the end of its output, so the pane opens there.
+    const failed = visit.outcome === 'failed' || visit.outcome === 'error' || Boolean(exitCode)
+    const outputRef = useRef<HTMLPreElement | null>(null)
+    useLayoutEffect(() => {
+        if (failed && outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
+    }, [failed, output])
     return (
         <div data-testid="run-visit-tool" className="space-y-3 text-sm">
             {/* The section heading names the command; its output is labelled and drawn differently,
@@ -825,7 +831,16 @@ function ToolWork({ visit, command }: { visit: RunVisit; command: string | null 
                         ) : null}
                     </div>
                     {output ? (
-                        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted px-3 py-2 font-mono text-xs text-foreground/90">{output}</pre>
+                        <pre
+                            ref={outputRef}
+                            data-testid="run-visit-tool-output"
+                            role="region"
+                            aria-label="Command output"
+                            tabIndex={0}
+                            className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted px-3 py-2 font-mono text-xs text-foreground/90 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                            {output}
+                        </pre>
                     ) : null}
                 </div>
             ) : null}
@@ -838,12 +853,11 @@ function ToolWork({ visit, command }: { visit: RunVisit; command: string | null 
 
 // The journal names the day once and each entry by its time of day, as the run list does.
 // An entry's first line is its news; an error's further lines, such as a command's output, are detail.
-function JournalEntryText({ text, className }: { text: string; className?: string }) {
-    const [line, ...more] = text.split('\n')
+function JournalEntryText({ line, detail, className }: { line: string; detail: string; className?: string }) {
     return (
         <div className="flex min-w-0 flex-col gap-1">
             <span className={cn('break-words', className)}>{line}</span>
-            {more.length > 0 ? <FailureDetail>{more.join('\n')}</FailureDetail> : null}
+            {detail ? <FailureDetail>{detail}</FailureDetail> : null}
         </div>
     )
 }
@@ -860,6 +874,8 @@ function RunJournal({ journal, flowNodes, timelineError }: {
         (scope === 'root' ? flowNodes[nodeId]?.label : null) ?? humanizeNodeId(nodeId)
     )
     const entries = journalEntriesShown(journal)
+    // A run that fails with its step's error repeats the step's detail; it shows once, under the step.
+    const shownDetails = new Set<string>()
     let previousDay = ''
     return (
         <section data-testid="run-journal-panel" className="flex flex-col gap-3">
@@ -872,6 +888,10 @@ function RunJournal({ journal, flowNodes, timelineError }: {
                     const day = valid ? JOURNAL_DAY.format(date) : ''
                     const startsDay = day !== previousDay
                     previousDay = day
+                    const [line, ...more] = journalEntrySummary(event, nodeLabel).split('\n')
+                    const detail = more.join('\n')
+                    const repeated = shownDetails.has(detail)
+                    if (detail) shownDetails.add(detail)
                     return (
                         <Fragment key={event.id}>
                             {startsDay && day ? (
@@ -882,7 +902,8 @@ function RunJournal({ journal, flowNodes, timelineError }: {
                                     {valid ? formatRunTime(event.receivedAt) : '—'}
                                 </span>
                                 <JournalEntryText
-                                    text={journalEntrySummary(event, nodeLabel)}
+                                    line={line}
+                                    detail={repeated ? '' : detail}
                                     className={event.severity === 'error' ? 'text-destructive' : event.severity === 'warning' ? 'text-warning' : undefined}
                                 />
                             </li>

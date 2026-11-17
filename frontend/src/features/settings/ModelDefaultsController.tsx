@@ -30,6 +30,7 @@ export function ModelDefaultsController() {
     }, [])
     return error ? (
         <AppNotice
+            key={error}
             data-testid="model-defaults-error"
             title="Couldn’t load the default model"
             actions={<Button type="button" variant="outline" size="xs" onClick={() => window.dispatchEvent(new Event('spark:model-defaults-retry'))}>Try again</Button>}

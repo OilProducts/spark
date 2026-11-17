@@ -203,7 +203,7 @@ useStore.getState().setRunsSelectedRunId(null);
     expect(screen.queryByTestId('execution-launch-input-error-context.topic')).toBeNull()
   })
 
-  it('hands focus to the first required input once loaded, and runs on Enter in a one-line field', async () => {
+  it('hands focus to the first required input once loaded, keeps Enter for new lines, and runs on Ctrl+Enter', async () => {
     const fetchMock = installLaunchFetchMock({
       inputs: [
         { key: 'context.notes', label: 'Notes', type: 'string' },
@@ -216,10 +216,13 @@ useStore.getState().setRunsSelectedRunId(null);
     const version = await screen.findByTestId('execution-launch-input-context.version')
     await waitFor(() => expect(version).toHaveFocus())
     await waitFor(() => expect(screen.getByTestId('launch-panel-start-button')).toBeEnabled())
-    await user.keyboard('1.4.0{Enter}')
+    await user.keyboard('1.4.0{Enter}rc')
+    expect(version).toHaveValue('1.4.0\nrc')
+    expect(onLaunched).not.toHaveBeenCalled()
+    await user.keyboard('{Control>}{Enter}{/Control}')
 
     await waitFor(() => expect(onLaunched).toHaveBeenCalledWith('run-123', false))
-    expect(startedPipelinePayload(fetchMock)).toMatchObject({ launch_context: { 'context.version': '1.4.0' } })
+    expect(startedPipelinePayload(fetchMock)).toMatchObject({ launch_context: { 'context.version': '1.4.0\nrc' } })
   })
 
   it('closes on Escape from inside the panel', async () => {

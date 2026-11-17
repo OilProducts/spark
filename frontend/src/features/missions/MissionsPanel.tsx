@@ -257,7 +257,12 @@ export function MissionsPanel({ active }: { active: boolean }) {
                         setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)
                 : missing
                     ? <SheetEmpty icon={Target} title="Mission not found">The linked mission isn’t here. It may have been deleted, or its project removed.</SheetEmpty>
-                    : <SheetEmpty icon={Target} title={active && missions.length ? 'No mission selected' : 'No missions yet'}>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with New.'}</SheetEmpty>}
+                    : <SheetEmpty icon={Target} title={active && missions.length ? 'No mission selected' : 'No missions yet'}
+                        action={<ProjectPicker heading="New mission in" testId="empty-new-mission-project-picker" defaultProjectPath={defaultProjectChoice(registry)} onPick={path => open(null, null, path)}>
+                            <Button type="button" variant="outline" size="sm" disabled={busy}><Plus aria-hidden="true" />Start a mission</Button>
+                        </ProjectPicker>}>
+                        {active && missions.length ? 'Pick a mission, or start a new one.' : 'A mission keeps a goal and the runs that work toward it together.'}
+                    </SheetEmpty>}
         </section>}
     </ViewLayout>
 }
