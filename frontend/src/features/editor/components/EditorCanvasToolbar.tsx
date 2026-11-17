@@ -76,13 +76,16 @@ export function EditorCanvasToolbar({
 
     return (
         // One row, even on a phone (the zoom buttons drop there); should it still overflow, the actions wrap rather than scroll out of sight.
+        // ponytail: beside the inspector (1024 to 1280px windows) the layout, lock, zoom and minimap buttons give way to
+        // the flow's name and come back as it closes; gather them in a More menu if they're missed there.
         <div
             data-testid="editor-canvas-toolbar"
             aria-label="Canvas toolbar"
-            className="@container flex min-h-11 shrink-0 flex-wrap items-center gap-x-1 gap-y-2 border-b bg-background px-2 py-1.5 @2xl:gap-x-1.5 @2xl:px-3"
+            className="@container/canvas-toolbar flex min-h-11 shrink-0 flex-wrap items-center gap-x-1 gap-y-2 border-b bg-background px-2 py-1.5 @2xl:gap-x-1.5 @2xl:px-3"
         >
             {title ? (
-                <h2 data-testid="editor-open-flow-title" title={title} className="mr-1.5 hidden max-w-[12rem] truncate text-sm font-semibold text-foreground @xl:block @6xl:max-w-[20rem]">
+                // Up to its whole name in the room the controls leave, never so little that it is gone.
+                <h2 data-testid="editor-open-flow-title" title={title} className="mr-1.5 min-w-16 max-w-max flex-[1_1_0%] truncate text-sm font-semibold text-foreground">
                     {title}
                 </h2>
             ) : null}
@@ -115,8 +118,8 @@ export function EditorCanvasToolbar({
 
             {canEditLayout ? (
                 <>
-                    <Separator orientation="vertical" className="data-[orientation=vertical]:h-5" />
-                    <div role="group" aria-label="Layout" className="flex shrink-0 items-center gap-0.5">
+                    <Separator orientation="vertical" className="data-[orientation=vertical]:h-5 lg:@max-xl:hidden" />
+                    <div role="group" aria-label="Layout" className="flex shrink-0 items-center gap-0.5 lg:@max-xl:hidden">
                         <Button type="button" size="icon-sm" variant="ghost" aria-label="Auto-arrange layout" title="Auto-arrange layout" onClick={onArrange}>
                             <LayoutDashboard aria-hidden="true" />
                         </Button>

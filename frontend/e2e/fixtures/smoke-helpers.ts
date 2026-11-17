@@ -289,4 +289,4 @@ export const pageTurns = (page: Json): Json[] => (page.turn_ids ?? [])
 
 /** A flow's row in the Flows list. Its Delete button's name also contains the flow's name, so that button is left out. */
 export const flowRow = (page: Page, flowName: string) =>
-    page.getByRole('button', { name: flowName }).and(page.locator(':not([aria-label^="Delete "])'))
+    page.locator(`button[data-flow-name="${flowName}"]`)

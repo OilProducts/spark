@@ -196,8 +196,9 @@ export function RunVisitsCard({
     }
 
     // On a phone the details lead (a question to answer, a result, why it failed); the steps follow.
+    // Under the graph they scroll with it as one column, so they get its full height to read in.
     const details = (
-        <div ref={detailsRef} data-testid="run-visit-details" className={cn('min-w-0 flex-1', isNarrowViewport ? 'order-first scroll-mt-16' : 'min-h-0 overflow-y-auto')}>
+        <div ref={detailsRef} data-testid="run-visit-details" className={cn('min-w-0 flex-1', isNarrowViewport ? 'order-first scroll-mt-16' : graphPane ? 'shrink-0' : 'min-h-0 overflow-y-auto')}>
             {showJournal ? (
                 <RunJournal journal={journal} flowNodes={flowNodes} timelineError={timelineError} />
             ) : selected === 'status' ? (
@@ -397,7 +398,7 @@ export function RunVisitsCard({
                 </div>
             </Well>
             {graphPane ? (
-                <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5">
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto">
                     <div data-testid="run-graph-pane" className="flex h-[45%] min-h-64 shrink-0 flex-col">{graphPane}</div>
                     {details}
                 </div>

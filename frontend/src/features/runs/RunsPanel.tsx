@@ -31,7 +31,7 @@ import { buildRunNodeStatuses } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
 import { buildRunContextOverview, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
 import type { StatusTone } from '@/components/app/status'
-import { SheetEmpty, ViewLayout } from '@/components/app/view-layout'
+import { ListBackLink, SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
 import { Play, Plus, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -500,6 +500,7 @@ export function RunsPanel() {
             {/* The view header sits at the top of the sheet, under one hairline. */}
             {selectedRun && (
                 <div className={`border-b border-border ${isNarrowViewport ? 'px-4 py-3' : 'px-6 py-4'}`}>
+                    {isNarrowViewport ? <div className="mb-2"><ListBackLink>All runs</ListBackLink></div> : null}
                     <RunHeaderBar
                         run={selectedRun}
                         now={now}

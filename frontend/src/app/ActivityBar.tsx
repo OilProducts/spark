@@ -3,6 +3,7 @@ import { Bell, GitBranch, House, MessageSquare, Network, Play, Settings, Target,
 
 import { useStore, type ViewMode } from "@/store"
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
+import { revealList } from '@/components/app/view-layout'
 import type { AttentionItem } from "@/lib/api/attentionApi"
 import { useOverviewUnread } from '@/features/overview/hooks/useOverviewUnread'
 import { ATTENTION_KIND_LABELS, attentionFlow, attentionTimes, attentionTitle, openAttentionItem, openTrigger, refreshAttention, useAttentionFailed, useAttentionItems } from './useAttention'
@@ -257,7 +258,11 @@ export function ActivityBar() {
                 data-activity-mode={mode}
                 aria-label={dot ? `${label} (${DOT_LABELS[dot]})` : label}
                 aria-current={isActive ? 'page' : undefined}
-                onClick={() => setViewMode(mode)}
+                // Stacked, a second tap on the shown view goes back up to its list.
+                onClick={() => {
+                    setViewMode(mode)
+                    if (isActive && isNarrowViewport) revealList()
+                }}
                 onKeyDown={(event) => onKeyDown(event, mode)}
                 className={cn(ITEM_CLASS, 'transition-colors aria-[current=page]:border-border aria-[current=page]:bg-background aria-[current=page]:text-primary')}
             >

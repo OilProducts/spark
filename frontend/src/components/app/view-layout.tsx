@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ComponentProps, type ComponentType, type MouseEvent, type ReactNode } from 'react'
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { createContext, useContext, useEffect, useRef, useState, type ComponentProps, type ComponentType, type MouseEvent, type ReactNode } from 'react'
+import { ArrowLeft, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -31,6 +31,23 @@ const REVEAL_SELECTION_EVENT = 'spark:reveal-selection'
 
 /** Marks the next view's selection as just picked, so a narrow layout scrolls to it even if it was already selected. */
 export const revealSelection = () => window.dispatchEvent(new Event(REVEAL_SELECTION_EVENT))
+
+const REVEAL_LIST_EVENT = 'spark:reveal-list'
+
+/** Stacked, scrolls the shown view back up to its list, as a second tap on the view's icon does. */
+export const revealList = () => window.dispatchEvent(new Event(REVEAL_LIST_EVENT))
+
+const ShowListContext = createContext<() => void>(() => {})
+
+/** Stacked, a link at the top of what was picked, back up to the view's list and onto the picked row. */
+export function ListBackLink({ children }: { children: ReactNode }) {
+    return (
+        <Button type="button" variant="link" size="sm" className="h-auto shrink-0 p-0 text-muted-foreground" onClick={useContext(ShowListContext)}>
+            <ArrowLeft aria-hidden="true" />
+            {children}
+        </Button>
+    )
+}
 
 /**
  * A view's side panel (on the ground) beside its sheet, narrower below 1280px so the sheet keeps
@@ -72,6 +89,11 @@ export function ViewLayout({
         }
     }, [panelHidden])
     const sheetRef = useRef<HTMLDivElement | null>(null)
+    const panelRef = useRef<HTMLElement | null>(null)
+    const showList = () => {
+        panelRef.current?.scrollIntoView({ block: 'start' })
+        panelRef.current?.querySelector<HTMLElement>('[aria-current="true"]')?.focus()
+    }
     // A pick made while this view is hidden (such as Continue on Overview opening a chat) scrolls
     // once the view shows; each pick scrolls once, so the list stays reachable afterwards. A pick
     // from another view counts even when it picks what is already selected.
@@ -86,8 +108,14 @@ export function ViewLayout({
     }, [isNarrowViewport, selected, viewMode])
     useEffect(() => {
         const reveal = () => { scrolledTo.current = null }
+        // A hidden view has no box, so only the shown one scrolls.
+        const toList = () => panelRef.current?.scrollIntoView({ block: 'start' })
         window.addEventListener(REVEAL_SELECTION_EVENT, reveal)
-        return () => window.removeEventListener(REVEAL_SELECTION_EVENT, reveal)
+        window.addEventListener(REVEAL_LIST_EVENT, toList)
+        return () => {
+            window.removeEventListener(REVEAL_SELECTION_EVENT, reveal)
+            window.removeEventListener(REVEAL_LIST_EVENT, toList)
+        }
     }, [])
     // Tapping the row already shown brings its sheet back into view too.
     const revealPickedRow = (event: MouseEvent) => {
@@ -102,6 +130,7 @@ export function ViewLayout({
             className={`flex h-full min-h-0 ${isNarrowViewport ? 'flex-col overflow-y-auto' : 'flex-row'}`}
         >
             <aside
+                ref={panelRef}
                 data-testid="side-panel"
                 data-hidden={hidden ? 'true' : undefined}
                 aria-label={`${title} panel`}
@@ -148,7 +177,7 @@ export function ViewLayout({
             </aside>
             {children == null ? null : (
                 <Sheet ref={sheetRef} data-testid="view-main" className={isNarrowViewport ? 'min-h-[calc(100dvh-3.25rem)]' : 'ml-0'}>
-                    {children}
+                    <ShowListContext.Provider value={showList}>{children}</ShowListContext.Provider>
                 </Sheet>
             )}
         </div>
