@@ -1592,7 +1592,7 @@ describe('RunsPanel', () => {
       project_path: '/tmp/project-one',
       working_directory: '/tmp/project-one/worktree',
     })
-    installRerunFetchMock(selectedRun)
+    const fetchMock = installRerunFetchMock(selectedRun)
 
     act(() => {
       useStore.getState().registerProject('/tmp/project-one')
@@ -1611,6 +1611,17 @@ describe('RunsPanel', () => {
     const openButton = await screen.findByTestId('run-graph-open-in-editor-button')
     await waitFor(() => expect(openButton).toBeDisabled())
     expect(openButton).toHaveAttribute('title', "This run's flow is not in its project's flows.")
+
+    // The flow is created in the editor meanwhile; back on Runs, the run's flow opens.
+    const base = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => (
+      resolveRequestUrl(input).split('?')[0].endsWith('/attractor/api/flows') && (init?.method ?? 'GET') === 'GET'
+        ? jsonResponse(['selected.dot', 'Ad-hoc Content Flow'])
+        : base(input, init)
+    ))
+    act(() => useStore.getState().setViewMode('editor'))
+    act(() => useStore.getState().setViewMode('runs'))
+    await waitFor(() => expect(screen.getByTestId('run-graph-open-in-editor-button')).toBeEnabled())
   })
 
   it('notes when a run predates launch-input recording', async () => {

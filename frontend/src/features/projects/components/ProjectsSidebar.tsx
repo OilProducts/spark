@@ -91,9 +91,12 @@ export function ProjectsSidebar({
                 const missing = isFolderMissing(project)
                 const expanded = expandedByPath[projectPath] ?? Boolean(project.isDefault || projectPath === activeProjectPath)
                 const status = conversationSummariesStatusByProjectPath[projectPath] ?? 'idle'
-                // Standing roles stay pinned above the recent chats.
+                // Standing roles stay pinned above the recent chats; an older chat opened elsewhere,
+                // such as from search, joins them so the open chat always has its row.
                 const ordinaryChats = chats.filter((chat) => !chat.standing_role)
-                const recentChats = [...chats.filter((chat) => chat.standing_role), ...ordinaryChats.slice(0, RECENT_CHATS_PER_PROJECT)]
+                const shownOrdinaryChats = ordinaryChats.filter((chat, index) => index < RECENT_CHATS_PER_PROJECT
+                    || (projectPath === activeProjectPath && chat.conversation_id === activeConversationId))
+                const recentChats = [...chats.filter((chat) => chat.standing_role), ...shownOrdinaryChats]
                 return (
                     <li
                         key={projectPath}
@@ -203,7 +206,7 @@ export function ProjectsSidebar({
                                         </li>
                                     )
                                 })}
-                                {ordinaryChats.length > RECENT_CHATS_PER_PROJECT ? (
+                                {ordinaryChats.length > shownOrdinaryChats.length ? (
                                     <li>
                                         <Button
                                             type="button"
@@ -213,7 +216,7 @@ export function ProjectsSidebar({
                                             onClick={() => openProjectPage(projectPath)}
                                             className="ml-7 text-muted-foreground"
                                         >
-                                            {ordinaryChats.length - RECENT_CHATS_PER_PROJECT} more
+                                            {ordinaryChats.length - shownOrdinaryChats.length} more
                                         </Button>
                                     </li>
                                 ) : null}

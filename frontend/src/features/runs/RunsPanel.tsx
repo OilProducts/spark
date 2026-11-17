@@ -142,7 +142,8 @@ export function RunsPanel() {
     const isSelectedRunLive = selectedRun ? !runHasEnded(selectedRun.status) : false
     // The editor opens a run's flow from the run's own project.
     const runProjectPath = selectedRun?.project_path ?? null
-    const flowCatalog = useFlowCatalog(runProjectPath, Boolean(selectedRunId))
+    // Reloaded as each run opens and as Runs is shown again, so a flow created meanwhile opens in the editor.
+    const flowCatalog = useFlowCatalog(runProjectPath, isRunsView ? selectedRunId : null)
     const selectedRunTimelineId = selectedRun?.run_id ?? null
     const {
         artifactDownloadHref,

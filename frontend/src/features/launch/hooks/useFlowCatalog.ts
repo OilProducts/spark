@@ -7,12 +7,16 @@ export interface FlowCatalogState {
     isLoaded: boolean
 }
 
-export function useFlowCatalog(projectPath: string | null, enabled = true): FlowCatalogState {
+/**
+ * A project's flow names. Loads while `reloadKey` is set and again whenever it changes, so a flow
+ * created since the last load is found; the last list stays shown while the next one loads.
+ */
+export function useFlowCatalog(projectPath: string | null, reloadKey: string | null): FlowCatalogState {
     const [catalog, setCatalog] = useState<{ projectPath: string | null; flows: string[] } | null>(null)
     const isLoaded = catalog !== null && catalog.projectPath === projectPath
 
     useEffect(() => {
-        if (!enabled || isLoaded) {
+        if (reloadKey === null) {
             return
         }
         let cancelled = false
@@ -23,14 +27,15 @@ export function useFlowCatalog(projectPath: string | null, enabled = true): Flow
                 }
             })
             .catch(() => {
+                // A failed reload keeps the list it had for this project.
                 if (!cancelled) {
-                    setCatalog({ projectPath, flows: [] })
+                    setCatalog((current) => (current?.projectPath === projectPath ? current : { projectPath, flows: [] }))
                 }
             })
         return () => {
             cancelled = true
         }
-    }, [enabled, isLoaded, projectPath])
+    }, [reloadKey, projectPath])
 
     return { flows: isLoaded ? catalog.flows : [], isLoaded }
 }

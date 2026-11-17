@@ -40,7 +40,6 @@ const visit = (nodeId: string, number: number, outcome: VisitOutcome, extra: Par
   outcome,
   decision: null,
   failureKind: null,
-  tolerable: null,
   reason: null,
   status: null,
   next: null,
@@ -90,7 +89,6 @@ describe('RunStatusItem', () => {
     const review = visit('review', 1, 'error', {
       reason: 'Missing a test.',
       failureKind: 'runtime',
-      tolerable: true,
       status: { status: 'error', failure_kind: 'runtime', tolerable: true, context_updates: { 'context.review.required_changes': 'Add a test.', 'internal.retry': 1 } },
     })
     const { onSelectVisit, onViewArtifact } = renderStatus(
@@ -183,7 +181,7 @@ describe('RunStatusItem', () => {
     const error = 'codergen backend failed: codex app-server exited unexpectedly'
     const { onSelectVisit } = renderStatus(
       run({ status: 'failed', last_error: error }),
-      [visit('start', 1, 'completed'), visit('implement', 2, 'error', { reason: error, failureKind: 'runtime', tolerable: true }), stopped],
+      [visit('start', 1, 'completed'), visit('implement', 2, 'error', { reason: error, failureKind: 'runtime' }), stopped],
     )
 
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Why it failed')
@@ -247,6 +245,17 @@ describe('RunStatusItem', () => {
     for (const id of ['project', 'spec', 'plan', 'lock']) {
       expect(screen.queryByTestId(`run-fact-${id}`)).not.toBeInTheDocument()
     }
+  })
+
+  it('counts finished visits as the Steps list counts them, branches included', () => {
+    renderStatus(run({ status: 'running', ended_at: null }), [
+      visit('start', 1, 'completed'),
+      visit('fan_out', 2, 'running', { kind: 'parallel' }),
+      visit('lint', 2, 'completed', { key: 'lint-branch', parentKey: 'fan_out-2' }),
+      visit('unit', 2, 'running', { key: 'unit-branch', parentKey: 'fan_out-2' }),
+    ])
+    expect(screen.getByTestId('run-status-running')).toHaveTextContent('Now in Unit.')
+    expect(screen.getByTestId('run-status-finished-count')).toHaveTextContent(/^2 of 4 visits finished so far\./)
   })
 
   it('shows the pending question and the visit that asked it', () => {
@@ -441,12 +450,12 @@ describe('RunVisitsCard', () => {
     expect(screen.getByText('context item focused on context.review.findings')).toBeVisible()
   })
 
-  it('marks a sent-back visit generically from its next node, numbers repeated visits, and switches visits from the control', () => {
+  it('marks a looped-back visit generically from its next node, numbers repeated visits, and switches visits from the control', () => {
     const evaluate1 = visit('evaluate', 2, 'completed', {
-      number: 1, count: 2, reason: 'Missing a test.', next: { key: 'implement-3', loopBack: true }, decision: 'revise',
+      number: 1, count: 2, reason: 'Missing a test.', next: { key: 'implement-3', loopBack: true, retry: false }, decision: 'revise',
       status: { status: 'completed', decision: 'revise', context_updates: { 'context.review.approved': null, 'context.review.notes': 'Add one.' } },
     })
-    const implement2 = visit('implement', 3, 'completed', { number: 2, count: 2, next: { key: 'evaluate-4', loopBack: false } })
+    const implement2 = visit('implement', 3, 'completed', { number: 2, count: 2, next: { key: 'evaluate-4', loopBack: false, retry: false } })
     const evaluate2 = visit('evaluate', 4, 'completed', { number: 2, count: 2, startedAt: '2026-09-29T10:00:00Z', endedAt: '2026-09-29T10:07:43Z' })
     const onToggleGraph = vi.fn()
     render(
@@ -484,10 +493,10 @@ describe('RunVisitsCard', () => {
 
     const rows = screen.getAllByTestId('run-visit-row')
     expect(rows.map((row) => within(row).getByTestId('run-visit-row-count').textContent)).toEqual(['1', '2', '2'])
-    // Only the visit that was sent back carries a mark, in the warning tone, with a second line.
+    // Only the visit that looped back carries a mark, muted as a loop is ordinary, with a second line.
     expect(rows[0].querySelector('[data-mark]')).toHaveAttribute('data-mark', 'loop_back')
-    expect(rows[0].querySelector('[data-mark]')).toHaveClass('text-warning')
-    expect(within(rows[0]).getByTestId('run-visit-row-sent-back')).toHaveTextContent('Sent back to Implement')
+    expect(rows[0].querySelector('[data-mark]')).toHaveClass('text-muted-foreground')
+    expect(within(rows[0]).getByTestId('run-visit-row-next-note')).toHaveTextContent('Looped back to Implement')
     expect(rows[1].querySelector('[data-mark]')).toBeNull()
     expect(rows[2].querySelector('[data-mark]')).toBeNull()
     expect(within(rows[2]).getByText('7m 43s')).toBeVisible()
@@ -500,7 +509,7 @@ describe('RunVisitsCard', () => {
     expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveAttribute('data-tone', 'success')
     expect(within(returned).getByTestId('run-visit-decision')).toHaveTextContent('Decision revise')
     expect(within(returned).queryByTestId('run-visit-reason-detail')).toBeNull()
-    expect(returned).toHaveTextContent('Sent back to')
+    expect(returned).toHaveTextContent('Looped back to')
     expect(screen.getByTestId('run-visit-next')).toHaveTextContent('Implement 2')
     expect(screen.getByTestId('run-visit-reason')).toHaveTextContent('Missing a test.')
     const [cleared, written] = screen.getAllByTestId('run-visit-write')
@@ -516,7 +525,7 @@ describe('RunVisitsCard', () => {
 
     fireEvent.click(rows[0])
     const picker = screen.getByTestId('run-visit-picker')
-    expect(within(picker).getByRole('button', { name: 'Visit 1 of 2, sent back' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(picker).getByRole('button', { name: 'Visit 1 of 2, looped back' })).toHaveAttribute('aria-pressed', 'true')
     fireEvent.click(within(picker).getByRole('button', { name: 'Visit 2 of 2' }))
     expect(rows[2]).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByTestId('run-visit-view')).toHaveTextContent('Visit 2 of 2 · 7m 43s')
@@ -711,15 +720,30 @@ describe('RunVisitsCard returned evidence', () => {
     return screen.getByTestId('run-visit-returned')
   }
 
+  it('tells a retried visit from a loop: a muted note, no loop mark, and "Retried as" its next attempt', () => {
+    const returned = openOnly([
+      visit('check', 1, 'error', { number: 1, count: 2, failureKind: 'runtime', reason: 'tsc exited 2', next: { key: 'check-2', loopBack: false, retry: true } }),
+      visit('check', 2, 'completed', { key: 'check-2', number: 2, count: 2 }),
+    ])
+    const [first] = screen.getAllByTestId('run-visit-row')
+    expect(first.querySelector('[data-mark]')).toHaveAttribute('data-mark', 'error')
+    expect(within(first).getByTestId('run-visit-row-next-note')).toHaveTextContent(/^Retried$/)
+    expect(returned).toHaveTextContent('Retried as')
+    expect(returned).not.toHaveTextContent('Looped back')
+    expect(within(returned).getByTestId('run-visit-next')).toHaveTextContent('Check 2')
+    expect(screen.getByRole('button', { name: 'Visit 1 of 2, retried' })).toBeInTheDocument()
+  })
+
   it('shows an error status with its kind and no decision', () => {
     const returned = openOnly([visit('validate', 1, 'error', {
-      failureKind: 'contract', tolerable: false, reason: 'response named no declared decision',
+      failureKind: 'contract', reason: 'response named no declared decision',
       status: { status: 'error', decision: null, failure_kind: 'contract', tolerable: false },
     })])
     expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveTextContent('Error')
     expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveAttribute('data-tone', 'warning')
-    // Tolerance is a fork's concern, so a visit outside one doesn't state it.
-    expect(within(returned).getByTestId('run-visit-reason-detail')).toHaveTextContent(/^contract error$/)
+    // The kind sits beside the status in plain words, not as a line of runtime text of its own.
+    expect(within(returned).getByTestId('run-visit-error-kind')).toHaveTextContent(/^contract error$/)
+    expect(within(returned).queryByTestId('run-visit-reason-detail')).toBeNull()
     expect(within(returned).queryByTestId('run-visit-decision')).toBeNull()
     expect(within(returned).getByTestId('run-visit-reason')).toHaveTextContent('response named no declared decision')
   })
@@ -727,11 +751,12 @@ describe('RunVisitsCard returned evidence', () => {
   it("leads a runtime failure with plain words and keeps the kind and the runtime's text as detail", () => {
     const reason = 'tool exited with unmapped code 1; stderr: lint broke'
     const returned = openOnly([visit('lint', 1, 'failed', {
-      kind: 'tool', failureKind: 'runtime', tolerable: true, reason,
+      kind: 'tool', failureKind: 'runtime', reason,
       status: { status: 'error', failure_kind: 'runtime', tolerable: true, failure_reason: reason },
     })])
     expect(within(returned).getByTestId('run-visit-reason')).toHaveTextContent(/^The command failed \(exit code 1\)\.$/)
-    expect(within(returned).getByTestId('run-visit-reason-detail')).toHaveTextContent(`runtime error: ${reason}`)
+    expect(within(returned).getByTestId('run-visit-error-kind')).toHaveTextContent(/^runtime error$/)
+    expect(within(returned).getByTestId('run-visit-reason-detail')).toHaveTextContent(reason)
   })
 
   it("shows a tool's stdout once, under its command", () => {
@@ -814,16 +839,17 @@ describe('RunVisitsCard returned evidence', () => {
       { id: 'docs', index: 3, status: 'canceled', started: false, context: {}, route_trace: [], decisions: [], notes: '' },
     ]
     const returned = openOnly([visit('fan_out', 1, 'error', {
-      kind: 'parallel', failureKind: 'runtime', tolerable: false,
+      kind: 'parallel', failureKind: 'runtime',
       status: { status: 'error', failure_kind: 'runtime', tolerable: false, context_updates: { 'parallel.results': results } },
     }), visit('lint', 1, 'completed', { key: 'lint-branch', label: 'Run the linter', parentKey: 'fan_out-1' })])
     const branches = within(returned).getAllByTestId('run-visit-branch')
     expect(branches.map((branch) => branch.getAttribute('data-status'))).toEqual(['completed', 'error', 'terminal_result', 'canceled'])
     // A branch reads as its step's name, which opens that step; one never started is named from its ID.
     expect(branches[0]).toHaveTextContent(/^Run the linterCompleted$/)
-    expect(within(branches[1]).getByTestId('run-visit-branch-evidence')).toHaveTextContent(/^at tsc · 2 attempts$/)
+    // Its error's kind reads as a step's does, in the evidence, with no bare runtime line under it.
+    expect(within(branches[1]).getByTestId('run-visit-branch-evidence')).toHaveTextContent(/^runtime error at tsc · 2 attempts$/)
     expect(within(branches[1]).getByTestId('run-visit-branch-reason')).toHaveTextContent('tsc exited 2')
-    expect(within(branches[1]).getByTestId('run-visit-branch-reason-detail')).toHaveTextContent(/^runtime error, not tolerable$/)
+    expect(within(branches[1]).queryByTestId('run-visit-branch-reason-detail')).toBeNull()
     expect(branches[2]).toHaveTextContent('Reached an exit')
     expect(within(branches[2]).getByTestId('run-visit-branch-evidence')).toHaveTextContent('result blocked · failure · from judge')
     // A canceled branch reads as its step does in Steps.

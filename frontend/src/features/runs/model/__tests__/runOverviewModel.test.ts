@@ -30,7 +30,6 @@ const visit = (nodeId: string, number: number, outcome: VisitOutcome, updates: R
   outcome,
   decision: null,
   failureKind: null,
-  tolerable: null,
   reason: null,
   status: updates ? { status: 'completed', decision: 'done', context_updates: updates } : null,
   next: null,

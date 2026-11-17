@@ -41,15 +41,20 @@ import { useRunActions, type SteerResult } from '../hooks/useRunActions'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { FailureDetail } from './RunStatusItem'
 
-// Colour marks exceptions: a completed visit carries no icon, a visit that was sent
-// back a warning return arrow, an error a warning cross, a failure a destructive cross.
+// Colour marks exceptions: a completed visit carries no icon, an error a warning cross, a
+// failure a destructive cross. A loop is how a flow works, not a problem: its return arrow is muted.
 const MARKS: Record<VisitMark, { Icon: LucideIcon; label: string; tone: StatusTone }> = {
     error: { Icon: X, label: 'Error', tone: 'warning' },
     failed: { Icon: X, label: 'Failed', tone: 'destructive' },
     interrupted: { Icon: Minus, label: 'Interrupted', tone: 'warning' },
     waiting: { Icon: CircleHelp, label: 'Waiting on a question', tone: 'warning' },
-    loop_back: { Icon: Undo2, label: 'Sent back', tone: 'warning' },
+    loop_back: { Icon: Undo2, label: 'Looped back', tone: 'muted' },
 }
+
+/** How a visit led to the next one, when that was not simply the next step. */
+const nextNote = (visit: RunVisit, next: RunVisit | null): string | null => (
+    !next ? null : visit.next?.retry ? 'Retried' : visit.next?.loopBack ? `Looped back to ${next.label}` : null
+)
 
 const OUTCOME_TONES: Record<RunVisit['outcome'], StatusTone> = {
     completed: 'success',
@@ -346,9 +351,7 @@ export function RunVisitsCard({
                         const Mark = mark ? MARKS[mark] : null
                         // Where a loop-back went is generic: the model marks a visit whose next node
                         // first ran no later than this one, whatever the nodes are called.
-                        const sentBackTo = visit.next?.loopBack
-                            ? visits.find((candidate) => candidate.key === visit.next?.key) ?? null
-                            : null
+                        const note = nextNote(visit, visits.find((candidate) => candidate.key === visit.next?.key) ?? null)
                         return (
                             <button
                                 key={visit.key}
@@ -364,12 +367,12 @@ export function RunVisitsCard({
                                 onClick={() => pick(visit)}
                                 className={cn(
                                     railRowClass(isSelected),
-                                    sentBackTo ? 'items-start py-1.5' : 'min-h-8 py-1',
+                                    note ? 'items-start py-1.5' : 'min-h-8 py-1',
                                     visit.parentKey && 'pl-6',
                                     visit.nodeId === selectedNodeId && !isSelected && 'bg-background/40',
                                 )}
                             >
-                                <span className={cn('flex w-3.5 shrink-0 justify-center', sentBackTo && 'mt-[3px]')} data-testid="run-visit-row-marks">
+                                <span className={cn('flex w-3.5 shrink-0 justify-center', note && 'mt-[3px]')} data-testid="run-visit-row-marks">
                                     {Mark ? (
                                         <span
                                             data-mark={mark}
@@ -393,9 +396,9 @@ export function RunVisitsCard({
                                             {visit.count > 1 ? visit.number : ''}
                                         </span>
                                     </span>
-                                    {sentBackTo ? (
-                                        <span data-testid="run-visit-row-sent-back" className="break-words text-xs font-normal text-warning">
-                                            Sent back to {sentBackTo.label}
+                                    {note ? (
+                                        <span data-testid="run-visit-row-next-note" className="break-words text-xs font-normal text-muted-foreground">
+                                            {note}
                                         </span>
                                     ) : null}
                                 </span>
@@ -409,7 +412,7 @@ export function RunVisitsCard({
             </Well>
             {graphPane ? (
                 <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto">
-                    <div data-testid="run-graph-pane" className="flex h-[45%] min-h-80 shrink-0 flex-col">{graphPane}</div>
+                    <div data-testid="run-graph-pane" className="flex h-[60%] min-h-96 shrink-0 flex-col">{graphPane}</div>
                     {details}
                 </div>
             ) : details}
@@ -451,8 +454,7 @@ function RunVisitView({
     const hasThinking = entries.some(isThinkingEntry)
     const { writes, systemCount } = visitContextWrites(visit)
     const duration = formatVisitDuration(visitDurationMs(visit, now))
-    // Only a fork tolerates errors, so tolerance is said only of a branch's visit.
-    const errorKind = formatVisitErrorKind(visit.parentKey === null ? { ...visit, tolerable: null } : visit)
+    const errorKind = formatVisitErrorKind(visit)
     const branchResults = parallelBranchResults(visit)
     const branchVisits = visits.filter((candidate) => candidate.parentKey === visit.key)
     const outcomeLabel = VISIT_OUTCOME_LABELS[visit.outcome]
@@ -510,7 +512,7 @@ function RunVisitView({
                                 key: candidate.key,
                                 pressed: candidate === visit,
                                 onPress: () => onSelectVisit(candidate),
-                                'aria-label': `Visit ${candidate.number} of ${candidate.count}${candidate.next?.loopBack ? ', sent back' : ''}`,
+                                'aria-label': `Visit ${candidate.number} of ${candidate.count}${candidate.next?.loopBack ? ', looped back' : candidate.next?.retry ? ', retried' : ''}`,
                                 className: 'flex-none tabular-nums',
                                 label: (
                                     <>
@@ -536,6 +538,7 @@ function RunVisitView({
                     <div className="flex flex-wrap items-center gap-2.5">
                         <SectionHeading as="h3">Returned</SectionHeading>
                         {outcomePill}
+                        {errorKind ? <span data-testid="run-visit-error-kind" className="text-sm text-muted-foreground">{errorKind}</span> : null}
                         {visit.decision ? (
                             <span data-testid="run-visit-decision" className="text-sm text-muted-foreground">
                                 {/* A decision reads as its route is labelled, as a gate offered it; the ID stays a hover away. */}
@@ -547,7 +550,7 @@ function RunVisitView({
                         ) : null}
                         {next ? (
                             <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
-                                {visit.next?.loopBack ? 'Sent back to' : 'Next'}
+                                {visit.next?.retry ? 'Retried as' : visit.next?.loopBack ? 'Looped back to' : 'Next'}
                                 <ArrowRight aria-hidden="true" className="size-3.5" />
                                 <button
                                     type="button"
@@ -569,11 +572,9 @@ function RunVisitView({
                     ) : failure ? (
                         <p data-testid="run-visit-reason" className="max-w-[72ch] whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{failure.summary}</p>
                     ) : null}
-                    {/* The error's kind and the runtime's own words are for whoever debugs the flow. */}
-                    {errorKind || failure?.detail ? (
-                        <FailureDetail data-testid="run-visit-reason-detail" className="max-w-[72ch]">
-                            {[errorKind, failure?.detail].filter(Boolean).join(': ')}
-                        </FailureDetail>
+                    {/* The runtime's own words are for whoever debugs the flow. */}
+                    {failure?.detail ? (
+                        <FailureDetail data-testid="run-visit-reason-detail" className="max-w-[72ch]">{failure.detail}</FailureDetail>
                     ) : null}
                     {branchResults.length > 0 ? (
                         <BranchResults results={branchResults} branchVisits={branchVisits} onSelectVisit={onSelectVisit} />
@@ -768,11 +769,11 @@ function BranchResults({ results, branchVisits, onSelectVisit }: {
                 const status = BRANCH_STATUS[branch.status] ?? { label: branch.status, tone: 'muted' as StatusTone }
                 const error = branch.error
                 const terminal = branch.terminal
-                const errorKind = error ? formatVisitErrorKind({ failureKind: error.kind, tolerable: error.tolerable }) : null
                 const failure = error?.reason ? describeFailure(error.reason) : null
+                // Its error's kind and where, as a step's view says them: "runtime error at tsc · 2 attempts".
                 const evidence = error
                     ? [
-                        error.node ? `at ${error.node}` : null,
+                        [formatVisitErrorKind({ failureKind: error.kind }), error.node ? `at ${error.node}` : null].filter(Boolean).join(' '),
                         error.attempts !== null ? `${error.attempts} ${error.attempts === 1 ? 'attempt' : 'attempts'}` : null,
                     ].filter(Boolean).join(' · ')
                     : terminal
@@ -792,10 +793,8 @@ function BranchResults({ results, branchVisits, onSelectVisit }: {
                         {failure ? (
                             <span data-testid="run-visit-branch-reason" className="whitespace-pre-wrap break-words text-foreground/90">{failure.summary}</span>
                         ) : null}
-                        {errorKind || failure?.detail ? (
-                            <FailureDetail data-testid="run-visit-branch-reason-detail">
-                                {[errorKind, failure?.detail].filter(Boolean).join(': ')}
-                            </FailureDetail>
+                        {failure?.detail ? (
+                            <FailureDetail data-testid="run-visit-branch-reason-detail">{failure.detail}</FailureDetail>
                         ) : null}
                     </li>
                 )

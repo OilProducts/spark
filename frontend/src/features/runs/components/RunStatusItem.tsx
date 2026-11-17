@@ -196,7 +196,8 @@ export function RunStatusItem({
         // A fan-out runs while its branches do; the branches are where the work is.
         const branches = step ? running.filter((visit) => visit.parentKey === step.key) : []
         const current = branches.length > 0 ? branches : step ? [step] : []
-        const finished = rootVisits.filter((visit) => visit.outcome !== 'running' && visit.outcome !== 'waiting').length
+        // Counted as the Steps list counts them, branches included.
+        const finished = visits.filter((visit) => visit.outcome !== 'running' && visit.outcome !== 'waiting').length
         heading = 'Running'
         meta = <>for {duration}</>
         body = (
@@ -219,7 +220,7 @@ export function RunStatusItem({
                 )}
                 {finished > 0 ? (
                     <p data-testid="run-status-finished-count">
-                        {finished} {finished === 1 ? 'step' : 'steps'} finished so far. Pick a step to follow its work.
+                        {finished} of {visits.length} visits finished so far. Pick one to follow its work.
                     </p>
                 ) : null}
             </div>

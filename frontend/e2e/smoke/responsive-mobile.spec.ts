@@ -267,6 +267,21 @@ test('a narrow viewport stacks each view\'s panel above its main area and keeps 
   for (const name of ['Overview', 'Chats', 'Missions', 'Runs', 'Inbox', 'More']) {
     await expect(activityBar.getByText(name, { exact: true })).toBeInViewport()
   }
+  // Arrow keys reach every item in the row, the Inbox and More too, and wrap around.
+  await page.getByTestId('activity-runs').focus()
+  await page.keyboard.press('ArrowRight')
+  await expect(page.getByTestId('attention-bell')).toBeFocused()
+  await page.keyboard.press('ArrowRight')
+  await expect(page.getByTestId('activity-more')).toBeFocused()
+  await page.keyboard.press('ArrowRight')
+  await expect(page.getByTestId('activity-overview')).toBeFocused()
+  await page.keyboard.press('ArrowLeft')
+  await expect(page.getByTestId('activity-more')).toBeFocused()
+  // Tabbing on past the open list's last item closes it.
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('activity-more-list')).toBeVisible()
+  for (let item = 0; item < 5; item += 1) await page.keyboard.press('Tab')
+  await expect(page.getByTestId('activity-more-list')).toHaveCount(0)
   for (const { icon, view } of VIEWS) {
     if (PHONE_MORE_VIEWS.has(icon)) {
       await expect(page.getByTestId(icon)).toBeHidden()

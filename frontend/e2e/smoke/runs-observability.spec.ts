@@ -958,10 +958,10 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await expect(rows.getByTestId('run-visit-row-count')).toHaveText(['', '1', '1', '2', '2'])
   await expect(rows.nth(2).locator('[data-mark]')).toHaveCount(1)
   await expect(rows.nth(2).locator('[data-mark="loop_back"]')).toBeVisible()
-  // The visit that was sent back says where it went.
-  await expect(rows.nth(2).getByTestId('run-visit-row-sent-back')).toHaveText('Sent back to Implement')
+  // The visit that looped back says where it went.
+  await expect(rows.nth(2).getByTestId('run-visit-row-next-note')).toHaveText('Looped back to Implement')
   await expect(rows.nth(4).locator('[data-mark]')).toHaveCount(0)
-  await expect(rows.nth(4).getByTestId('run-visit-row-sent-back')).toHaveCount(0)
+  await expect(rows.nth(4).getByTestId('run-visit-row-next-note')).toHaveCount(0)
   await expect(page.getByTestId('run-visit-item-context')).toContainText(/\d+ keys?/)
 
   // A long visit shows every step.
@@ -987,7 +987,7 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await expect(page.getByTestId('run-visit-work')).toContainText('the loop has no regression test')
   await expect(page.getByTestId('run-visit-work')).not.toContainText('"decision"')
   await expect(page.getByTestId('run-visit-reason')).toHaveText('Missing regression tests.')
-  await expect(page.getByTestId('run-visit-returned')).toContainText('Sent back to')
+  await expect(page.getByTestId('run-visit-returned')).toContainText('Looped back to')
   await expect(page.getByTestId('run-visit-next')).toHaveText('Implement 2')
   await expect(page.locator('[data-testid="run-visit-write"][data-key="context.review.required_changes"]')).toContainText('Add a regression test for the loop.')
   await expect(page.locator('[data-testid="run-visit-write"][data-key="context.review.approved"]')).toContainText('cleared')
@@ -1137,9 +1137,9 @@ test('wrapped visit labels stay inside their own rows in split and stacked layou
         rows: [...element.querySelectorAll('[data-testid="run-visit-row"]')].map((row) => ({
           name: row.children[1].querySelector('span')!.textContent,
           indent: parseFloat(getComputedStyle(row).paddingLeft),
-          sentBack: row.querySelector('[data-testid="run-visit-row-sent-back"]') !== null,
+          loopedBack: row.querySelector('[data-testid="run-visit-row-next-note"]') !== null,
           row: box(row),
-          // The label column holds the label and any sent-back description.
+          // The label column holds the label and any looped-back note.
           label: box(row.children[1]),
           duration: box(row.children[2]),
         })),
@@ -1153,7 +1153,7 @@ test('wrapped visit labels stay inside their own rows in split and stacked layou
     const lineHeight = Math.min(...rail.rows.map(({ label }) => label.height))
     expect(Math.max(...rail.rows.map(({ label }) => label.height))).toBeGreaterThanOrEqual(3 * lineHeight)
     expect(rail.rows.filter(({ indent }) => indent === 24).map(({ name }) => name)).toEqual([labels.check_wide, 'Check A', 'Check B'])
-    expect(rail.rows.filter(({ sentBack }) => sentBack)).toHaveLength(4)
+    expect(rail.rows.filter(({ loopedBack }) => loopedBack)).toHaveLength(4)
 
     // Every label column and duration lies inside its own button, and buttons do not overlap.
     type Box = (typeof rail.rows)[number]['row']
@@ -1168,16 +1168,16 @@ test('wrapped visit labels stay inside their own rows in split and stacked layou
 
     // Natural sizes: Result/Context rows, single-line visits, the heading between them.
     expect(rail.items.map(({ height }) => Math.round(height))).toEqual([34, 34])
-    const singleLine = rail.rows.filter(({ sentBack, label }) => !sentBack && label.height <= lineHeight + tolerance)
+    const singleLine = rail.rows.filter(({ loopedBack, label }) => !loopedBack && label.height <= lineHeight + tolerance)
     expect(singleLine.map(({ name }) => name)).toEqual(['Start', 'Prepare', 'Fan out', 'Check A', 'Check B', 'Summarize', 'Publish', 'Notify'])
     expect(singleLine.map(({ row }) => Math.round(row.height))).toEqual(singleLine.map(() => 32))
     expect(rail.heading.text).toBe('Steps19 visits')
     expect(rail.heading.top).toBeGreaterThanOrEqual(rail.items[1].bottom - tolerance)
     expect(rail.rows[0].row.top).toBeGreaterThanOrEqual(rail.heading.bottom - tolerance)
 
-    // Durations stay centred in ordinary rows and level with the label in sent-back rows.
-    for (const { name, row, label, duration, sentBack } of rail.rows) {
-      const offset = sentBack
+    // Durations stay centred in ordinary rows and level with the label in looped-back rows.
+    for (const { name, row, label, duration, loopedBack } of rail.rows) {
+      const offset = loopedBack
         ? duration.top - label.top
         : (duration.top + duration.bottom) / 2 - (row.top + row.bottom) / 2
       expect(Math.abs(offset), `duration alignment of ${name}`).toBeLessThanOrEqual(tolerance)

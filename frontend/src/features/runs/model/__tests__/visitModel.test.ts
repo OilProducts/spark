@@ -147,7 +147,7 @@ describe('buildRunVisits', () => {
     ])
     const firstEvaluate = visits[2]
     expect(visitMark(firstEvaluate)).toBe('loop_back')
-    expect(firstEvaluate.next).toEqual({ key: visits[3].key, loopBack: true })
+    expect(firstEvaluate.next).toEqual({ key: visits[3].key, loopBack: true, retry: false })
     expect(firstEvaluate.startedAt).not.toBeNull()
     expect(firstEvaluate.endedAt).not.toBeNull()
     expect(visitContextWrites(firstEvaluate)).toEqual({
@@ -157,10 +157,10 @@ describe('buildRunVisits', () => {
       ],
       systemCount: 2,
     })
-    // The error's kind and tolerance stay separate from the status and the (absent) decision.
-    expect(visits[5]).toMatchObject({ outcome: 'error', decision: null, failureKind: 'runtime', tolerable: true, reason: 'tool command failed with code 1' })
+    // The error's kind stays separate from the status and the (absent) decision.
+    expect(visits[5]).toMatchObject({ outcome: 'error', decision: null, failureKind: 'runtime', reason: 'tool command failed with code 1' })
     expect(visitMark(visits[5])).toBe('error')
-    expect(formatVisitErrorKind(visits[5])).toBe('runtime error, tolerable')
+    expect(formatVisitErrorKind(visits[5])).toBe('runtime error')
     expect(formatVisitErrorKind(visits[4])).toBeNull()
   })
 
@@ -355,7 +355,7 @@ describe('buildRunVisits', () => {
     expect(lint.endedAt).toBe(journal[7].receivedAt)
     expect(visitContextWrites(lint).writes).toEqual([['context.lint.status', 'clean']])
     expect(visitToolResult(lint)).toEqual({ output: 'ok', exitCode: 0 })
-    expect(typecheck).toMatchObject({ failureKind: 'runtime', tolerable: false, reason: 'tsc exited 2', next: null })
+    expect(typecheck).toMatchObject({ failureKind: 'runtime', reason: 'tsc exited 2', next: null })
     expect(fanOut.executionIdentity).toBeUndefined()
   })
 
@@ -684,6 +684,15 @@ describe('buildRunVisits', () => {
       executions: [execution('evaluate', 1, { status: 'completed', decision: 'done' }, 1)],
     })
     expect(retried.map((visit) => [visit.nodeId, visit.attempt])).toEqual([['start', 0], ['evaluate', 0], ['evaluate', 1]])
+    // Going on to the retry is not a loop: the stopped visit says it was retried.
+    expect(retried[1].next).toEqual({ key: retried[2].key, loopBack: false, retry: true })
+    expect(visitMark(retried[1])).toBe('interrupted')
+    expect(retried[0].next).toMatchObject({ loopBack: false, retry: false })
+    // A loop after the retry is still a loop.
+    const loopedAfterRetry = build({
+      journal: [...interrupted, event('PipelineRetryStarted', { current_node: 'evaluate' }), ...stage('evaluate', 1), ...stage('start', 2)],
+    })
+    expect(loopedAfterRetry[2].next).toMatchObject({ loopBack: true, retry: false })
   })
 
   it('leaves a branch node event with no started branch to the execution fallback', () => {
@@ -732,7 +741,7 @@ describe('buildRunVisits', () => {
     })
     expect(parallelBranchResults(fanOut)).toEqual([
       { id: 'lint', index: 0, status: 'completed', decisions: [{ node: 'lint', decision: 'done', target: 'end' }], notes: 'clean', error: null, terminal: null },
-      { id: 'typecheck', index: 1, status: 'error', decisions: [], notes: null, error: { node: 'typecheck', kind: 'runtime', tolerable: false, reason: 'tsc exited 2', attempts: 3 }, terminal: null },
+      { id: 'typecheck', index: 1, status: 'error', decisions: [], notes: null, error: { node: 'typecheck', kind: 'runtime', reason: 'tsc exited 2', attempts: 3 }, terminal: null },
       { id: 'review', index: 2, status: 'terminal_result', decisions: [], notes: null, error: null, terminal: { exitId: 'stop', name: 'blocked', outcome: 'failure', node: 'review' } },
       { id: 'docs', index: 3, status: 'canceled', decisions: [], notes: null, error: null, terminal: null },
     ])

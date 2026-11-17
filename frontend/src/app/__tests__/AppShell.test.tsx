@@ -585,12 +585,15 @@ describe('App shell behavior', () => {
     expect(useStore.getState().viewMode).toBe('editor')
     expect(screen.getByTestId('flows-view')).toBeVisible()
 
+    // The Inbox is on the way, as it is in the bar.
     screen.getByTestId('activity-flows').focus()
     await user.keyboard('{ArrowDown}')
     expect(screen.getByTestId('activity-roles')).toHaveFocus()
     await user.keyboard('{ArrowDown}')
-    expect(screen.getByTestId('activity-settings')).toHaveFocus()
+    expect(screen.getByTestId('attention-bell')).toHaveFocus()
     await user.keyboard('{ArrowDown}')
+    expect(screen.getByTestId('activity-settings')).toHaveFocus()
+    await user.keyboard('{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}')
     expect(screen.getByTestId('activity-overview')).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('editor')
     await user.keyboard('{Enter}')
@@ -1962,11 +1965,14 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('activity-triggers'))
     expect(await screen.findByTestId('triggers-custom-list-loading')).toBeVisible()
     triggersDeferred.resolve(jsonResponse([]))
+    // A desktop says there are none once, beside the list.
     await waitFor(() => {
-      expect(screen.getByText('No custom triggers yet.')).toBeVisible()
+      expect(screen.getByText('No triggers yet')).toBeVisible()
     })
-    // With no protected triggers there is no System section.
+    expect(screen.queryByTestId('triggers-custom-list-loading')).not.toBeInTheDocument()
+    // With no protected triggers there is no System section, and so no Custom heading either.
     expect(screen.queryByRole('heading', { name: 'System' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Custom' })).not.toBeInTheDocument()
   })
 
   it('preserves the run project filter and selected run across view switches', async () => {

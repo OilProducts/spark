@@ -110,6 +110,12 @@ it('names the project a first message starts a chat in, and opens the group of a
     // Another chat opened from outside the list, as the Overview or the Inbox do.
     act(() => useStore.getState().updateProjectSessionState('/work/busy', { conversationId: 'busy-3' }))
     await waitFor(() => expect(within(group('/work/busy')).getByTestId('chats-project-toggle')).toHaveAttribute('aria-expanded', 'true'))
+    // An older chat than the recent five, as search opens one, gets its row below them, marked open.
+    act(() => useStore.getState().updateProjectSessionState('/work/busy', { conversationId: 'busy-0' }))
+    await waitFor(() => expect(within(group('/work/busy')).getAllByTestId('chats-chat-row')).toHaveLength(6))
+    expect(within(group('/work/busy')).getAllByTestId('chats-chat-row').at(-1)).toHaveAttribute('data-conversation-id', 'busy-0')
+    expect(within(group('/work/busy')).getAllByTestId('chats-chat-row').at(-1)).toHaveAttribute('aria-current', 'true')
+    expect(within(group('/work/busy')).getByTestId('chats-project-more')).toHaveTextContent('1 more')
 })
 
 it('shows a project\'s recent chats with a "more" link to its project page', async () => {

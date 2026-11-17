@@ -185,10 +185,13 @@ export function TriggersPanel() {
     <div ref={listRef} className="space-y-4">
       {triggerGroups.map((group) => (
         <div key={group.title} className="space-y-0.5">
-          <ListGroupLabel>
-            <h3>{group.title}</h3>
-            {group.note ? <p className="font-normal">{group.note}</p> : null}
-          </ListGroupLabel>
+          {/* A lone Custom group needs no heading: there is nothing to tell it from. */}
+          {triggerGroups.length > 1 ? (
+            <ListGroupLabel>
+              <h3>{group.title}</h3>
+              {group.note ? <p className="font-normal">{group.note}</p> : null}
+            </ListGroupLabel>
+          ) : null}
           {status !== 'ready' && status !== 'error' && group.title === 'Custom' ? (
             <p data-testid="triggers-custom-list-loading" className="px-3 py-1 text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
           ) : null}
@@ -229,8 +232,9 @@ export function TriggersPanel() {
               />
             )
           })}
-          {status === 'ready' && group.triggers.length === 0 ? (
-            <p className="px-3 py-1 text-sm text-muted-foreground">No custom triggers yet.</p>
+          {/* With no triggers at all, a desktop says so once, beside the list; a phone shows only the list. */}
+          {status === 'ready' && group.triggers.length === 0 && (triggerGroups.length > 1 || isNarrowViewport) ? (
+            <p className="px-3 py-1 text-sm text-muted-foreground">{triggerGroups.length > 1 ? 'No custom triggers yet.' : 'No triggers yet.'}</p>
           ) : null}
         </div>
       ))}
