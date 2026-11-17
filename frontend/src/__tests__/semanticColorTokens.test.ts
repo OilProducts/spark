@@ -45,7 +45,7 @@ it.each([':root', '.dark'])('keeps text tokens at WCAG AA contrast in %s', (sele
         .filter(([, , ratio]) => !(ratio >= 4.5))
     expect(failures).toEqual([])
 
-    // Resolve the pill's rendered Tailwind token classes and composite its tint over the sheet.
+    // Resolve the rendered colors. An Interrupted warning pill can also sit inside a muted well.
     const pillFailures = (['success', 'warning', 'destructive', 'info'] as const).flatMap((tone) => {
         const { getByText } = render(createElement(StatusPill, { tone }, tone))
         const classes = [...getByText(tone).classList]
@@ -55,9 +55,12 @@ it.each([':root', '.dark'])('keeps text tokens at WCAG AA contrast in %s', (sele
 
         const [backgroundToken, opacity = '100'] = backgroundClass.slice(3).split('/')
         const alpha = Number(opacity) / 100
-        const background = theme[backgroundToken].map((c, i) => c * alpha + theme.background[i] * (1 - alpha))
-        const ratio = contrast(theme[textClass.slice(5)], background)
-        return ratio >= 4.5 ? [] : [`${tone} pill ${ratio.toFixed(2)}`]
+        const surfaces = tone === 'warning' ? ['background', 'muted'] : ['background']
+        return surfaces.flatMap((surface) => {
+            const background = theme[backgroundToken].map((c, i) => c * alpha + theme[surface][i] * (1 - alpha))
+            const ratio = contrast(theme[textClass.slice(5)], background)
+            return ratio >= 4.5 ? [] : [`${tone} pill on ${surface} ${ratio.toFixed(2)}`]
+        })
     })
     expect(pillFailures).toEqual([])
 })

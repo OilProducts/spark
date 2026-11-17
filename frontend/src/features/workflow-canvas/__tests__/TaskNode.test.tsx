@@ -123,6 +123,15 @@ describe('TaskNode', () => {
         }
         const humanGateOutline = screen.getByTestId('workflow-node-frame-hexagon').querySelector('path')?.getAttribute('d') ?? ''
         expect(humanGateOutline.match(/[MLHV]/g)).toHaveLength(6)
+
+        const switchFrame = screen.getByTestId('workflow-node-frame-diamond')
+        const [, , width, height] = (switchFrame.getAttribute('viewBox') ?? '').split(/\s+/).map(Number)
+        const outline = switchFrame.querySelector('path')?.getAttribute('d') ?? ''
+        const vertices = [...outline.matchAll(/[ML]\s+([\d.]+)\s+([\d.]+)/g)].map(([, x, y]) => [Number(x), Number(y)])
+        expect(vertices).toHaveLength(4)
+        expect(vertices).toEqual(expect.arrayContaining([
+            [width / 2, 0], [width, height / 2], [width / 2, height], [0, height / 2],
+        ]))
     })
 
     it('moves to the step settings from the canvas Edit button', () => {

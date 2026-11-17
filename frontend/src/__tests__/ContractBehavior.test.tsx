@@ -13,6 +13,7 @@ import { RunsPanel } from '@/features/runs/RunsPanel'
 import { useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
 import { Sidebar } from '@/features/editor/Sidebar'
+import { ValidationPanel } from '@/features/editor/components/ValidationPanel'
 import {
   ApiHttpError,
   ApiSchemaError,
@@ -1385,6 +1386,27 @@ useStore.getState().setRunsSelectedRunId('run-focus-audit');
     expect(within(nodeEditor).getByRole('button', { name: 'Add attribute' }).className).toContain('focus-visible')
   })
 
+  it('[CID:13.2.01] removes the fixed inspector width and starts diagnostics collapsed on narrow screens', () => {
+    vi.stubGlobal('innerWidth', 760)
+    const warning = 'Choose a prompt for this step.'
+    useStore.getState().setDiagnostics([{ severity: 'warning', rule_id: 'node_prompt_required', message: warning }])
+    renderWithFlowProvider(<><Sidebar /><ValidationPanel /></>)
+
+    const inspector = screen.getByRole('complementary', { name: 'Inspector' })
+    expect(inspector.style.width).toBe('')
+    const toggle = screen.getByRole('button', { name: /Validation.*1 warning/ })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText(warning)).not.toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(screen.getByText(warning)).toBeVisible()
+
+    act(() => {
+      vi.stubGlobal('innerWidth', 1280)
+      window.dispatchEvent(new Event('resize'))
+    })
+    expect(inspector.style.width).toMatch(/^\d+px$/)
+  })
+
   it('[CID:13.3.03] keeps every visit listed under sustained SSE throughput', async () => {
     const runId = 'run-timeline-throughput-contract'
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
@@ -1496,7 +1518,9 @@ useStore.getState().setRunsSelectedRunId(runId);
     await waitFor(() => {
       expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
-    expect(screen.getByTestId('timeline-update-performance-budget')).toBeVisible()
+    const budget = screen.getByTestId('timeline-update-performance-budget')
+    expect(budget).toBeVisible()
+    expect(budget).toHaveTextContent(/\b50ms\b/)
     await waitFor(() => {
       expect(eventSource?.onmessage).toBeTruthy()
     })

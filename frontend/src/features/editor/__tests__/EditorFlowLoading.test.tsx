@@ -187,12 +187,18 @@ describe('Editor flow loading behavior', () => {
 
     renderEditor()
     const profile = await screen.findByTestId('canvas-performance-profile')
-    expect(screen.getByTestId('canvas-interaction-performance-budget')).toBeVisible()
+    const budget = screen.getByTestId('canvas-interaction-performance-budget')
+    expect(budget).toBeVisible()
+    expect(budget).toHaveTextContent(/\b16ms\b/)
+    expect(profile).toHaveAttribute('data-only-render-visible-elements', 'false')
+    expect(profile).toHaveAttribute('data-preview-debounce-ms', '300')
 
     act(() => {
-      previewDeferreds.get('flow-a.dot')?.resolve(buildPreview(1))
+      previewDeferreds.get('flow-a.dot')?.resolve(buildPreview(25))
     })
-    await waitFor(() => expect(profile).toHaveAttribute('data-node-count', '1'))
+    await waitFor(() => expect(profile).toHaveAttribute('data-node-count', '25'))
+    expect(profile).toHaveAttribute('data-only-render-visible-elements', 'true')
+    expect(profile).toHaveAttribute('data-preview-debounce-ms', '600')
 
     act(() => {
       useStore.setState((state) => ({ ...state, activeFlow: 'flow-b.dot' }))
