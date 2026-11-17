@@ -1,7 +1,7 @@
 import { cn } from '@/lib/utils'
 import { useNow } from '@/lib/useNow'
 import { useEffect, useState, type ComponentProps, type ReactNode } from 'react'
-import { Check, MessageSquare } from 'lucide-react'
+import { Check, FolderPlus, MessageSquare } from 'lucide-react'
 
 import { SectionHeading } from '@/components/app/section-heading'
 import { StatusDot, statusTextClassName, type StatusTone } from '@/components/app/status'
@@ -223,6 +223,28 @@ export function OverviewPanel() {
                         </ProjectPicker>
                     </div>
                 </header>
+
+                {/* A fresh install has nothing to pick up: point at the first step. */}
+                {listsLoaded && (loaded || Object.keys(registry).length === 0) && runs.length === 0 && missions.length === 0 && chats.length === 0 ? (
+                    <Well data-testid="overview-get-started" className="flex flex-wrap items-center justify-between gap-3 py-3.5 text-sm">
+                        <p className="min-w-0 flex-1 basis-64">
+                            <span className="font-medium">New to Spark?</span>{' '}
+                            <span className="text-muted-foreground">Add the folder of a project for agents to work in, then start a chat or run a flow from the buttons above.</span>
+                        </p>
+                        <Button
+                            type="button"
+                            size="sm"
+                            data-testid="overview-add-project"
+                            onClick={() => {
+                                useStore.getState().setViewMode('home')
+                                window.dispatchEvent(new Event('spark:add-project'))
+                            }}
+                        >
+                            <FolderPlus aria-hidden="true" />
+                            Add a project
+                        </Button>
+                    </Well>
+                ) : null}
 
                 <Section testId="overview-needs-you" heading="Needs you" count={loadedAttention ? attention.length + failingTriggers.length : undefined}>
                     {/* A failed check is not an all-clear: say so, and keep what was last known. */}

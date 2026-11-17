@@ -172,9 +172,11 @@ export function ProjectsSidebar({
                                                 onClick={() => onSelectConversationThread(projectPath, conversation.conversation_id)}
                                                 selected={isActiveConversation}
                                                 aria-label={`Open thread ${conversation.title}`}
+                                                // The ID and age are read as the row's description, so its name stays the visible title.
+                                                aria-describedby={`chat-row-meta-${conversation.conversation_id}`}
                                                 title={conversation.title}
                                                 meta={(
-                                                    <span data-testid="chats-chat-row-meta">
+                                                    <span id={`chat-row-meta-${conversation.conversation_id}`} aria-hidden data-testid="chats-chat-row-meta">
                                                         {conversation.conversation_handle ? <><span className="font-mono">{conversation.conversation_handle}</span> · </> : null}
                                                         {formatConversationAgeShort(conversation.updated_at)}
                                                     </span>

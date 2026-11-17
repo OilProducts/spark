@@ -140,7 +140,7 @@ export function RunContextItem({
             ) : null}
             {namespaces.map((namespace) => (
                 <section key={namespace.name} data-testid="run-context-namespace" data-namespace={namespace.name} className="flex flex-col gap-1">
-                    <SectionHeading as="h4" count={namespace.keys.length}>{namespace.name}</SectionHeading>
+                    <SectionHeading as="h3" count={namespace.keys.length}>{namespace.name}</SectionHeading>
                     <ul className="divide-y divide-border">
                         {namespace.keys.map((row) => {
                             const last = row.history.at(-1)

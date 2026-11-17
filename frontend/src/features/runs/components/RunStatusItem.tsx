@@ -280,7 +280,7 @@ export function RunStatusItem({
             {body}
             {kind !== 'waiting' && didNotPass.length > 0 ? (
                 <Well data-testid="run-status-did-not-pass" className="flex flex-col gap-2">
-                    <SectionHeading as="h4" count={didNotPass.length}>{kind === 'failed' ? 'Earlier errors' : 'Errors'}</SectionHeading>
+                    <SectionHeading as="h3" count={didNotPass.length}>{kind === 'failed' ? 'Earlier errors' : 'Errors'}</SectionHeading>
                     <ul className="flex flex-col gap-1.5 text-sm">
                         {didNotPass.map((visit) => {
                             const reason = visit.reason?.trim() || null
@@ -400,7 +400,7 @@ function RunOutputs({
     ]
     return (
         <Well data-testid="run-status-outputs" className="flex flex-col gap-2">
-            <SectionHeading as="h4">Outputs</SectionHeading>
+            <SectionHeading as="h3">Outputs</SectionHeading>
             {commit || branch || resultFiles.length > 0 ? (
                 <dl className="space-y-1 text-sm">
                     {rows.map(([label, value]) => (

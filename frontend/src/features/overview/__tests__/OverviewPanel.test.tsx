@@ -338,3 +338,29 @@ describe('Overview finished since', () => {
         expect(screen.getByTestId('overview-finished').textContent).toContain('Nothing has finished')
     })
 })
+
+describe('Overview on a fresh install', () => {
+    it('points at adding a project until anything has run, and opens the folder chooser from Chats', async () => {
+        reset()
+        setRuns([])
+        setMissions([])
+        // Earlier tests leave chats in the shared thread-list cache.
+        act(() => { useStore.setState({ homeConversationCache: useStore.getInitialState().homeConversationCache }) })
+        const initialMode = useStore.getState().viewMode
+        onTestFinished(() => useStore.setState({ viewMode: initialMode }))
+        const onAddProject = vi.fn()
+        window.addEventListener('spark:add-project', onAddProject)
+        onTestFinished(() => window.removeEventListener('spark:add-project', onAddProject))
+        const view = render(<OverviewPanel />)
+
+        expect(await screen.findByTestId('overview-get-started')).toHaveTextContent('New to Spark?')
+        fireEvent.click(screen.getByRole('button', { name: 'Add a project' }))
+        expect(useStore.getState().viewMode).toBe('home')
+        expect(onAddProject).toHaveBeenCalledTimes(1)
+
+        view.unmount()
+        setRuns([finishedRun('run-1', 1)])
+        render(<OverviewPanel />)
+        expect(screen.queryByTestId('overview-get-started')).toBeNull()
+    })
+})

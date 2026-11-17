@@ -474,14 +474,15 @@ export function RunsPanel() {
                 <>
                     <Button
                         type="button"
-                        variant="ghost"
-                        size="icon-sm"
+                        variant="outline"
+                        size="sm"
                         data-testid="runs-run-flow-button"
-                        aria-label="Run a flow"
+                        aria-label="New run"
                         title="Run a flow"
                         onClick={() => openRunFlowDialog({ projectPath: useStore.getState().runsListSession.projectFilter })}
                     >
                         <Plus aria-hidden="true" />
+                        New
                     </Button>
                 </>
             )}

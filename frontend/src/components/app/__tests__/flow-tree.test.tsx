@@ -57,6 +57,8 @@ describe('FlowTree', () => {
     rerender(<FlowTree flows={flows} projectFlows={new Set(['nightly-audit'])} projectLabel="acme" flowLabels={{ 'nightly-audit': { title: 'Nightly audit', description: 'Checks the build every night.' } }} selectedFlow={null} onSelectFlow={onSelectFlow} />)
     const named = screen.getByRole('region', { name: "acme's flows" })
     expect(within(named).getByRole('button', { name: 'Nightly audit (nightly-audit)' })).toHaveTextContent('Checks the build every night.')
+    // The description is the row's accessible description, so its name matches the visible title.
+    expect(within(named).getByRole('button', { name: 'Nightly audit (nightly-audit)' })).toHaveAccessibleDescription('Checks the build every night.')
 
     // A search that leaves none of the project's flows keeps the rest under their heading.
     rerender(<FlowTree flows={['examples/simple-linear']} projectFlows={new Set(['nightly-audit'])} selectedFlow={null} onSelectFlow={onSelectFlow} />)

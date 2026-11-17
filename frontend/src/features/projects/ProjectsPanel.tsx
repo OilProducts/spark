@@ -32,6 +32,14 @@ export function ProjectsPanel() {
         return () => window.removeEventListener('spark:new-chat', onNewChat)
     }, [onCreateConversationThread])
 
+    // The Overview's Add a project opens the folder chooser here.
+    const openProjectChooser = addProject.onOpenProjectDirectoryChooser
+    useEffect(() => {
+        const onAddProject = () => { void openProjectChooser() }
+        window.addEventListener('spark:add-project', onAddProject)
+        return () => window.removeEventListener('spark:add-project', onAddProject)
+    }, [openProjectChooser])
+
     useProjectRegistryBootstrap({
         hydrateProjectRegistry,
         enabled: shouldBootstrapRegistry,

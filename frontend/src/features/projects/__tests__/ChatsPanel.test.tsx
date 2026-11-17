@@ -76,6 +76,8 @@ it('groups chats by project with Home first and open, others by recent use and c
     renderChats()
     expect(screen.getAllByTestId('chats-project-group').map((entry) => entry.dataset.projectPath)).toEqual([HOME, '/work/gone', '/work/busy'])
     expect(await within(group(HOME)).findByRole('button', { name: 'Open thread Chat home-1' })).toBeVisible()
+    // The row's age is its description, so its name stays the visible title.
+    expect(within(group(HOME)).getByRole('button', { name: 'Open thread Chat home-1' })).toHaveAccessibleDescription(/\S/)
     expect(within(group('/work/busy')).getByTestId('chats-project-toggle')).toHaveAttribute('aria-expanded', 'false')
     expect(within(group('/work/busy')).queryByTestId('chats-chat-row')).not.toBeInTheDocument()
 })

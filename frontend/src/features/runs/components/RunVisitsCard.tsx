@@ -513,7 +513,7 @@ function RunVisitView({
             {returned ? (
                 <Well data-testid="run-visit-returned" className="flex flex-col gap-2.5">
                     <div className="flex flex-wrap items-center gap-2.5">
-                        <SectionHeading as="h4">Returned</SectionHeading>
+                        <SectionHeading as="h3">Returned</SectionHeading>
                         {outcomePill}
                         {visit.decision ? (
                             <span data-testid="run-visit-decision" className="text-sm text-muted-foreground">
@@ -611,7 +611,7 @@ function RunVisitView({
 
             <section data-testid="run-visit-work" className="flex flex-col gap-3">
                 <SectionHeading
-                    as="h4"
+                    as="h3"
                     action={hasThinking ? <ShowThinkingToggle pressed={showThinking} onPressedChange={setShowThinking} /> : null}
                 >
                     {workTitle}

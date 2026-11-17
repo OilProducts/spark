@@ -1,6 +1,6 @@
 import { ChevronRight, FileText, Folder, FolderOpen, Trash2 } from 'lucide-react'
 import type { MouseEvent, ReactNode } from 'react'
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 
 import { ListGroupLabel } from '@/components/app/side-panel-row'
 import { Button } from '@/components/ui/button'
@@ -111,6 +111,7 @@ function FlowTreeNodeRow({
     renderFlowIndicator,
 }: FlowTreeNodeRowProps) {
     const indent = 12 + depth * 14
+    const detailId = useId()
 
     if (node.kind === 'directory') {
         return (
@@ -131,11 +132,14 @@ function FlowTreeNodeRow({
     const title = label?.title.trim() || null
     const description = label?.description.trim() || null
     const error = label?.error || null
+    const indicator = renderFlowIndicator?.(node.path)
     return (
         <div className="group relative">
             <Button
                 type="button"
                 aria-label={`${title ? `${title} (${node.path})` : node.path}${error ? ', has errors' : ''}`}
+                // The badge and description are read as the row's description, so its name stays the visible title.
+                aria-describedby={[indicator && `${detailId}-badge`, (error || description) && `${detailId}-text`].filter(Boolean).join(' ') || undefined}
                 // The row truncates its title and description; the tooltip has them in full.
                 title={[title, node.path, error ?? description].filter(Boolean).join('\n')}
                 aria-current={selectedFlow === node.path ? 'true' : undefined}
@@ -155,11 +159,11 @@ function FlowTreeNodeRow({
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                         <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                             <span className="min-w-0 max-w-full truncate">{title ?? node.name}</span>
-                            {renderFlowIndicator?.(node.path)}
+                            {indicator ? <span id={`${detailId}-badge`} aria-hidden className="contents">{indicator}</span> : null}
                         </span>
                         {error ? (
-                            <span data-testid="flow-tree-error" className="block w-full truncate text-xs font-normal text-destructive">Has errors · won’t open until fixed</span>
-                        ) : description ? <span data-testid="flow-tree-description" className="block w-full truncate text-xs font-normal text-muted-foreground">{description}</span> : null}
+                            <span id={`${detailId}-text`} aria-hidden data-testid="flow-tree-error" className="block w-full truncate text-xs font-normal text-destructive">Has errors · won’t open until fixed</span>
+                        ) : description ? <span id={`${detailId}-text`} aria-hidden data-testid="flow-tree-description" className="block w-full truncate text-xs font-normal text-muted-foreground">{description}</span> : null}
                     </span>
                 </span>
             </Button>

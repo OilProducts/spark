@@ -242,7 +242,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                     position={handle.position}
                     className={handleClassName}
                     style={handle.targetStyle}
-                    aria-label={`${handle.side} target port`}
                 />
             ))}
 
@@ -334,7 +333,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                     position={handle.position}
                     className={handleClassName}
                     style={handle.sourceStyle}
-                    aria-label={`${handle.side} source port`}
                 />
             ))}
 
