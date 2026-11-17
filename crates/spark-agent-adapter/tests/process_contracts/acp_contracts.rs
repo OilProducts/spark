@@ -134,7 +134,7 @@ fn acp_turn_streams_updates_while_the_prompt_is_open_and_returns_them_once() {
             chunk("agent_message_chunk", "Done."),
         ],
         "gate": gate,
-        "usage": {"inputTokens": 12, "outputTokens": 5, "totalTokens": 17},
+        "usage": {"inputTokens": 12, "outputTokens": 5, "thoughtTokens": 2, "cachedReadTokens": 30, "cachedWriteTokens": 4, "totalTokens": 53},
         "log_env": ["HARNESS_ONLY", "SPARK_PROJECT_WORK_DIR"],
     });
     let mut request = request(dir.path(), script, json!({"env": {"HARNESS_ONLY": "kept"}}));
@@ -188,7 +188,12 @@ fn acp_turn_streams_updates_while_the_prompt_is_open_and_returns_them_once() {
     // Context occupancy is not request consumption; plans are not the plan channel.
     assert_eq!(other(&seen, "context_usage_updated").len(), 1);
     assert_eq!(other(&seen, "plan_updated").len(), 1);
-    let usage = json!({"inputTokens": 12, "outputTokens": 5, "totalTokens": 17});
+    // ACP counts each token type once; Spark's input includes the cache and
+    // its output includes thinking.
+    let usage = json!({
+        "input_tokens": 46, "cached_input_tokens": 30, "cache_creation_input_tokens": 4,
+        "output_tokens": 7, "reasoning_tokens": 2, "total_tokens": 53,
+    });
     assert_eq!(turn.output.token_usage, Some(usage.clone()));
     let usage_events = seen
         .iter()
