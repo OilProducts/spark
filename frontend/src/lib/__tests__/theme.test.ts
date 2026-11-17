@@ -8,7 +8,7 @@ afterEach(() => {
     vi.unstubAllGlobals()
 })
 
-it('applies and follows the OS color scheme in System mode', () => {
+it('follows the OS color scheme in System mode and honors explicit appearance choices', () => {
     const media = Object.assign(new EventTarget(), { matches: true })
     vi.stubGlobal('matchMedia', (query: string) => query === '(prefers-color-scheme: dark)' ? media : undefined)
 
@@ -18,6 +18,15 @@ it('applies and follows the OS color scheme in System mode', () => {
 
     media.matches = false
     media.dispatchEvent(new Event('change'))
+    expect(document.documentElement).not.toHaveClass('dark')
+    expect(document.documentElement.style.colorScheme).toBe('light')
+
+    applyTheme('dark')
+    expect(document.documentElement).toHaveClass('dark')
+    expect(document.documentElement.style.colorScheme).toBe('dark')
+
+    media.matches = true
+    applyTheme('light')
     expect(document.documentElement).not.toHaveClass('dark')
     expect(document.documentElement.style.colorScheme).toBe('light')
 })

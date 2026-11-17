@@ -117,6 +117,9 @@ describe('TaskNode', () => {
         for (const { id, data } of nodes) {
             const frame = screen.getByTestId(`workflow-node-frame-${id}`)
             expect(frame.closest('.react-flow__node')).toHaveTextContent(data.label)
+            if (id !== 'box') {
+                expect(frame.querySelector('path[d]:not([d=""]), rect[width][height]')).not.toBeNull()
+            }
         }
     })
 

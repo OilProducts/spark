@@ -16,12 +16,15 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); isTauri.
 const markdown = (content: string, enableCodeCopy = true) => <ProjectConversationMarkdown content={content} enableCodeCopy={enableCodeCopy} />
 
 describe('shared Markdown', () => {
-    it('exposes named table headers and read-only task states', () => {
-        render(markdown('| Step | Owner |\n| --- | --- |\n| Review | Ada |\n\n- [x] Reviewed\n- [ ] Shipped'))
+    it('preserves named table headers, column alignment, read-only tasks, and ordered list starts', () => {
+        render(markdown('| Step | Owner |\n| --- | ---: |\n| Review | Ada |\n\n- [x] Reviewed\n- [ ] Shipped\n\n7. Draft release notes\n8. Send announcement'))
         expect(screen.getByRole('columnheader', { name: 'Step' })).toBeVisible()
-        expect(screen.getByRole('columnheader', { name: 'Owner' })).toBeVisible()
+        const owner = screen.getByRole('columnheader', { name: 'Owner' })
+        expect(owner).toBeVisible()
+        expect(owner).toHaveStyle({ textAlign: 'right' })
         expect(screen.getByRole('checkbox', { checked: true })).toBeDisabled()
         expect(screen.getByRole('checkbox', { checked: false })).toBeDisabled()
+        expect(screen.getByText('Draft release notes').closest('ol')).toHaveAttribute('start', '7')
     })
 
     it('copies exact fences, highlights known languages, and keeps nested/unknown code plain', async () => {

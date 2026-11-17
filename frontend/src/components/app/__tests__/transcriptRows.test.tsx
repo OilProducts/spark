@@ -68,7 +68,8 @@ describe('ToolCallGroupRow', () => {
         expect(first).toHaveTextContent('git status --short')
         expect(first).not.toHaveTextContent('/bin/zsh')
         expect(first).toHaveAttribute('title', "/bin/zsh -lc 'git status --short'")
-        expect(screen.getByTestId('t-tool-call-toggle-b')).toHaveTextContent('Failed')
+        const failed = screen.getByTestId('t-tool-call-toggle-b')
+        expect(failed).toHaveTextContent('Failed')
         expect(screen.getByTestId('t-tool-call-toggle-a')).not.toHaveTextContent('Failed')
 
         // A line still reveals that call's output, with the full command.
@@ -76,6 +77,10 @@ describe('ToolCallGroupRow', () => {
         expect(first).toHaveAttribute('aria-expanded', 'true')
         expect(screen.getByText('M src/App.tsx', { selector: 'pre' })).toBeVisible()
         expect(screen.getByText("/bin/zsh -lc 'git status --short'", { selector: 'p' })).toBeVisible()
+        expect(screen.queryByText('exit 1', { selector: 'pre' })).not.toBeInTheDocument()
+        fireEvent.click(failed)
+        expect(failed).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByText('exit 1', { selector: 'pre' })).toBeVisible()
     })
 
     it('says Running… while a call is still running', () => {

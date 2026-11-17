@@ -3648,7 +3648,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(within(graphEditor).getByDisplayValue('x_graph_extension')).toBeVisible()
   })
 
-  it('[CID:11.4.03] keeps numeric extension attrs stable across repeated structured edits', async () => {
+  it('[CID:11.4.03] keeps string and numeric extension attrs stable across repeated structured edits', async () => {
     const savePayloads: Array<{ name: string; flow: Record<string, unknown> }> = []
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
@@ -3665,6 +3665,7 @@ useStore.getState().setRunsSelectedRunId(runId);
       useStore.getState().setGraphAttrs({
         goal: 'Release',
         title: 'Milestone',
+        x_graph_extension: 'graph-extra',
         x_graph_extension_number: 17,
       } as never)
     })
@@ -3681,6 +3682,7 @@ useStore.getState().setRunsSelectedRunId(runId);
         data: {
           label: 'Task',
           shape: 'box',
+          x_node_extension: 'node-extra',
           x_node_extension_number: 23,
         },
       },
@@ -3694,6 +3696,7 @@ useStore.getState().setRunsSelectedRunId(runId);
         target: 'task',
         data: {
           label: 'next',
+          x_edge_extension: 'edge-extra',
           x_edge_extension_number: 29,
         },
       },
@@ -3717,6 +3720,9 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     savePayloads.forEach(({ flow }) => {
       const content = JSON.stringify(flow)
+      expect(content).toContain('"x_graph_extension":"graph-extra"')
+      expect(content).toContain('"x_node_extension":"node-extra"')
+      expect(content).toContain('"x_edge_extension":"edge-extra"')
       expect(content).toContain('"x_graph_extension_number":17')
       expect(content).toContain('"x_node_extension_number":23')
       expect(content).toContain('"x_edge_extension_number":29')

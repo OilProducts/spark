@@ -1,7 +1,7 @@
 import { buildHydratedFlowGraph, layoutWithElk } from '@/features/workflow-canvas/flowCanvasShared'
 import { filterAuthoredEdges, filterAuthoredNodes } from '@/features/workflow-canvas/derivedPreview'
 import { routeLabels } from '@/features/workflow-canvas/ValidationEdge'
-import { buildFlowLayoutFromNodesAndEdges, EDGE_RENDER_ROUTE_KEY } from '@/lib/flowLayout'
+import { buildFlowLayoutFromNodesAndEdges, EDGE_RENDER_ROUTE_KEY, readNodeRect } from '@/lib/flowLayout'
 import type { PreviewResponsePayload } from '@/lib/attractorClient'
 import {
     buildCanonicalFlowModelFromEditorState,
@@ -176,7 +176,7 @@ describe('flowCanvasShared', () => {
         ])
     })
 
-    it('produces routed render polylines with distinct fan-in touch points', async () => {
+    it('routes fan-in to distinct ports and keeps a self-loop outside its step', async () => {
         const preview: PreviewResponsePayload = {
             status: 'ok',
             graph: {
@@ -192,6 +192,7 @@ describe('flowCanvasShared', () => {
                     { from: 'start', to: 'right' },
                     { from: 'left', to: 'join' },
                     { from: 'right', to: 'join' },
+                    { from: 'left', to: 'left', label: 'Retry' },
                 ],
             },
         }
@@ -208,7 +209,7 @@ describe('flowCanvasShared', () => {
         const { start, left, right, join } = layoutGraph.layout.nodePositions
         expect(start.y).toBeLessThan(Math.min(left.y, right.y))
         expect(join.y).toBeGreaterThan(Math.max(left.y, right.y))
-        expect(layoutGraph.edges).toHaveLength(4)
+        expect(layoutGraph.edges).toHaveLength(5)
         for (const edge of layoutGraph.edges) {
             expect(getRenderRoute(edge)).not.toBeNull()
         }
@@ -223,6 +224,19 @@ describe('flowCanvasShared', () => {
         )
 
         expect(leftJoinRoute?.at(-1)).not.toEqual(rightJoinRoute?.at(-1))
+
+        const loop = layoutGraph.edges.find((edge) => edge.source === 'left' && edge.target === 'left')
+        expect(loop?.label).toBe('Retry')
+        const route = getRenderRoute(loop ?? {}) ?? []
+        const rect = readNodeRect(layoutGraph.nodes.find((node) => node.id === 'left')!)
+        const rightEdge = rect.x + rect.width
+        expect(route[0]).not.toEqual(route.at(-1))
+        for (const port of [route[0], route.at(-1)]) {
+            expect(port?.x).toBe(rightEdge)
+            expect(port?.y).toBeGreaterThanOrEqual(rect.y)
+            expect(port?.y).toBeLessThanOrEqual(rect.y + rect.height)
+        }
+        expect(Math.max(...route.map((point) => point.x))).toBeGreaterThan(rightEdge)
     })
 
     it('restores saved node positions and routed edges when saved layout exists', async () => {
@@ -254,12 +268,25 @@ describe('flowCanvasShared', () => {
         const movedNodes = firstLayout.nodes.map((node) => node.id === 'task' ? { ...node, position: movedTask } : node)
         const { layout: savedLayout } = buildFlowLayoutFromNodesAndEdges(movedNodes, firstLayout.edges)
         expect(savedLayout.nodePositions.task).not.toEqual(firstLayout.layout.nodePositions.task)
+        // Keep the endpoints, but take a detour between the steps that fresh routing would skip.
+        const savedEdge = savedLayout.edgeLayouts['start->task#0']
+        const [from] = savedEdge.route
+        const to = savedEdge.route.at(-1)!
+        const detourX = to.x + 120
+        savedEdge.route = [
+            from,
+            { x: from.x, y: from.y + 16 },
+            { x: detourX, y: from.y + 16 },
+            { x: detourX, y: to.y - 16 },
+            { x: to.x, y: to.y - 16 },
+            to,
+        ]
 
         const restored = await layoutWithElk(hydrated?.nodes ?? [], hydrated?.edges ?? [], { savedLayout })
         expect(restored.nodes.find((node) => node.id === 'task')?.position).toEqual(movedTask)
         expect(restored.layout.edgeLayouts).toEqual(savedLayout.edgeLayouts)
         const restoredEdge = restored.edges.find((edge) => edge.source === 'start' && edge.target === 'task')
-        expect(getRenderRoute(restoredEdge ?? {})).toEqual(savedLayout.edgeLayouts['start->task#0'].route)
+        expect(getRenderRoute(restoredEdge ?? {})).toEqual(savedEdge.route)
     })
 
     it('routes reciprocal edges as distinct polylines', async () => {
