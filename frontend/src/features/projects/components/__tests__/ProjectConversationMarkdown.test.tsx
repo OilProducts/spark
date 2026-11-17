@@ -90,7 +90,9 @@ describe('shared Markdown', () => {
         for (const renderer of renderers) {
             const links = renderer.querySelectorAll('a')
             expect(links).toHaveLength(2)
-            expect(renderer.querySelectorAll('a[aria-describedby]')).toHaveLength(1)
+            const references = renderer.querySelectorAll('a[aria-describedby]')
+            expect(references).toHaveLength(1)
+            expect(references[0]).toHaveAccessibleDescription('Footnotes')
             for (const link of links) {
                 const target = link.getAttribute('href')!.slice(1)
                 expect([...renderer.querySelectorAll('[id]')].some((element) => element.id === target)).toBe(true)

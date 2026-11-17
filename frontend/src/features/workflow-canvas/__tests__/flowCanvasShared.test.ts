@@ -236,7 +236,9 @@ describe('flowCanvasShared', () => {
             expect(port?.y).toBeGreaterThanOrEqual(rect.y)
             expect(port?.y).toBeLessThanOrEqual(rect.y + rect.height)
         }
-        expect(Math.max(...route.map((point) => point.x))).toBeGreaterThan(rightEdge)
+        const routeXs = route.map(({ x }) => x)
+        expect(Math.min(...routeXs)).toBeGreaterThanOrEqual(rightEdge)
+        expect(Math.max(...routeXs)).toBeGreaterThan(rightEdge)
     })
 
     it('restores saved node positions and routed edges when saved layout exists', async () => {
@@ -859,7 +861,7 @@ describe('schema-2 routes and fork structure', () => {
         },
     }
 
-    it('derives one edge per decision, including two decisions to the same node, and saves them back into the routes map', () => {
+    it('routes each decision, including two decisions to the same node, and saves them back into the routes map', async () => {
         const hydrated = hydrate(reviewFlow)
         const reviewEdges = hydrated.edges.filter((edge) => edge.source === 'review')
         expect(reviewEdges.map((edge) => [edge.target, edge.data?.decision, edge.data?.label])).toEqual([
@@ -868,6 +870,14 @@ describe('schema-2 routes and fork structure', () => {
             ['failed', 'reject', 'Reject'],
         ])
         expect(new Set(reviewEdges.map((edge) => edge.id)).size).toBe(3)
+
+        const layout = await layoutWithElk(hydrated.nodes, hydrated.edges)
+        const sameTargetRoutes = layout.edges
+            .filter((edge) => edge.source === 'review' && edge.target === 'done')
+            .map(getRenderRoute)
+        expect(sameTargetRoutes).toHaveLength(2)
+        expect(sameTargetRoutes).not.toContain(null)
+        expect(sameTargetRoutes[0]).not.toEqual(sameTargetRoutes[1])
 
         const saved = buildFlow('routes', hydrated.nodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow)
         expect(saved.nodes).toEqual(reviewFlow.nodes)

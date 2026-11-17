@@ -823,6 +823,7 @@ describe('Frontend contract behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
+    expect(screen.queryByTestId('timeline-update-performance-budget')).not.toBeInTheDocument()
     // The status and Context items stay functional independently of the failed endpoint.
     expect(screen.getByTestId('run-status-item')).toBeVisible()
     await user.click(screen.getByTestId('run-visit-item-context'))
@@ -1495,6 +1496,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     await waitFor(() => {
       expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
+    expect(screen.getByTestId('timeline-update-performance-budget')).toBeVisible()
     await waitFor(() => {
       expect(eventSource?.onmessage).toBeTruthy()
     })
@@ -1961,6 +1963,7 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
     expect(screen.queryByTestId('graph-attr-input-tool.hooks.pre')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('graph-attr-input-tool.hooks.post')).not.toBeInTheDocument()
     expect(screen.queryByTestId('graph-attr-warning-tool.hooks.pre')).not.toBeInTheDocument()
     act(() => {
       cleanup()
@@ -3051,6 +3054,7 @@ useStore.getState().setRunsSelectedRunId(runId);
       'review_gate (index 2)',
       'approval_gate (index 3)',
     ])
+    expect(within(groups[1]).getByText('Finalize production promotion?')).toBeVisible()
 
     const reviewGroup = groups[0]
     const reviewScope = within(reviewGroup)

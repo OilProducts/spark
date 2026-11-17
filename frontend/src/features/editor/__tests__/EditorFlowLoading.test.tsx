@@ -187,6 +187,7 @@ describe('Editor flow loading behavior', () => {
 
     renderEditor()
     const profile = await screen.findByTestId('canvas-performance-profile')
+    expect(screen.getByTestId('canvas-interaction-performance-budget')).toBeVisible()
 
     act(() => {
       previewDeferreds.get('flow-a.dot')?.resolve(buildPreview(1))
@@ -398,6 +399,8 @@ describe('Editor structured metadata', () => {
 
     await act(async () => preview.resolve({ ...buildPreview(0), graph: { nodes: [], edges: [], metadata }, flow }))
     await waitFor(() => expect(filesButton).toBeEnabled())
+    expect(screen.queryByTestId('canvas-interaction-performance-budget')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('canvas-performance-profile')).not.toBeInTheDocument()
     await user.click(filesButton)
     await screen.findByTestId('flow-file-editor')
 

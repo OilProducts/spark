@@ -29,4 +29,11 @@ it('follows the OS color scheme in System mode and honors explicit appearance ch
     applyTheme('light')
     expect(document.documentElement).not.toHaveClass('dark')
     expect(document.documentElement.style.colorScheme).toBe('light')
+
+    media.matches = false
+    media.dispatchEvent(new Event('change'))
+    media.matches = true
+    media.dispatchEvent(new Event('change'))
+    expect(document.documentElement).not.toHaveClass('dark')
+    expect(document.documentElement.style.colorScheme).toBe('light')
 })

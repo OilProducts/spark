@@ -121,6 +121,8 @@ describe('TaskNode', () => {
                 expect(frame.querySelector('path[d]:not([d=""]), rect[width][height]')).not.toBeNull()
             }
         }
+        const humanGateOutline = screen.getByTestId('workflow-node-frame-hexagon').querySelector('path')?.getAttribute('d') ?? ''
+        expect(humanGateOutline.match(/[MLHV]/g)).toHaveLength(6)
     })
 
     it('moves to the step settings from the canvas Edit button', () => {
