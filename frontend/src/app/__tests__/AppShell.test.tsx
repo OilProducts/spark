@@ -2510,8 +2510,9 @@ describe('App shell behavior', () => {
 
     expect(inspectorPanel.style.width).toBe(`${DEFAULT_EDITOR_SIDEBAR_WIDTH}px`)
 
-    fireEvent.pointerDown(resizeHandle, { clientX: DEFAULT_EDITOR_SIDEBAR_WIDTH })
-    fireEvent.pointerMove(window, { clientX: 360 })
+    // The inspector sits right of the canvas, so dragging the handle left widens it.
+    fireEvent.pointerDown(resizeHandle, { clientX: 1200 - DEFAULT_EDITOR_SIDEBAR_WIDTH })
+    fireEvent.pointerMove(window, { clientX: 1200 - 360 })
     fireEvent.pointerUp(window)
 
     expect(useStore.getState().editorSidebarWidth).toBe(360)

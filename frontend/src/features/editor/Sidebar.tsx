@@ -555,13 +555,14 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     }
 
     return (
-        <nav
+        <aside
             ref={navRef}
+            aria-label="Inspector"
             data-testid="inspector-panel"
             data-inspector-active-scope={activeInspectorScope}
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
             className={`bg-background flex flex-col shrink-0 overflow-hidden z-40 ${
-                isNarrowViewport ? 'w-full max-h-[40vh] border-t' : 'border-r'
+                isNarrowViewport ? 'w-full max-h-[40vh] border-t' : 'border-l'
             }`}
             style={isNarrowViewport ? undefined : { width: `${desktopWidthPx}px` }}
         >
@@ -621,6 +622,6 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                     />
                 ) : null}
             </div>
-        </nav>
+        </aside>
     )
 }

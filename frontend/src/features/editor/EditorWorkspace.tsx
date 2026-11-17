@@ -41,7 +41,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     const editorSidebarWidth = useStore((state) => state.editorSidebarWidth)
     const setEditorSidebarWidth = useStore((state) => state.setEditorSidebarWidth)
     const activeFlow = useStore((state) => state.activeFlow)
-    // A phone shows the open flow under the flow list, so it names the flow it opened.
+    // The open flow is named above its canvas: in the toolbar, or on a phone under the flow list.
     const openFlowTitle = useStore((state) => state.flowMetadata.title?.trim()) || flowTitle(activeFlow)
     // A flow that failed to load has no inspector to resize.
     const hasActiveFlow = useStore((state) => Boolean(state.activeFlow) && !flowLoadFailed(state.flowLoadFailure, state.activeFlow, state.activeProjectPath))
@@ -98,14 +98,15 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     }
 
     const onEditorSidebarResizeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+        // The inspector sits right of the canvas: moving its edge left widens it.
         if (event.key === 'ArrowLeft') {
             event.preventDefault()
-            adjustEditorSidebarWidth(-24)
+            adjustEditorSidebarWidth(24)
             return
         }
         if (event.key === 'ArrowRight') {
             event.preventDefault()
-            adjustEditorSidebarWidth(24)
+            adjustEditorSidebarWidth(-24)
             return
         }
         const containerWidth = workspaceRef.current?.getBoundingClientRect().width || 0
@@ -157,7 +158,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
             if (!resizeState || containerWidth <= 0) {
                 return
             }
-            const nextWidth = resizeState.startWidth + (event.clientX - resizeState.startX)
+            const nextWidth = resizeState.startWidth - (event.clientX - resizeState.startX)
             setEditorSidebarWidth(clampEditorSidebarWidth(nextWidth, containerWidth))
         }
 
@@ -206,7 +207,10 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                 <ReactFlowProvider>
                     <CanvasSessionModeProvider mode="editor">
                         <EditorGraphBridgeProvider>
-                            {isNarrowViewport || !showInspector ? null : <Sidebar desktopWidthPx={sidebarWidth} />}
+                            <div data-testid="editor-panel" className="flex-1 min-h-0 min-w-0 w-full h-full">
+                                <Editor isActive={isActive} title={isNarrowViewport ? null : openFlowTitle} flowList={{ failed: catalog.loadFailed, retry: () => void catalog.refreshFlows() }} />
+                            </div>
+                            {/* The inspector opens right of the canvas, so the graph stays where it was. */}
                             {!isNarrowViewport && hasActiveFlow && !isFilesMode && showInspector ? (
                                 <div
                                     data-testid="editor-sidebar-resize-handle"
@@ -223,11 +227,8 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                                     <span className="h-16 w-1 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/70" />
                                 </div>
                             ) : null}
-                            <div data-testid="editor-panel" className="flex-1 min-h-0 min-w-0 w-full h-full">
-                                <Editor isActive={isActive} flowList={{ failed: catalog.loadFailed, retry: () => void catalog.refreshFlows() }} />
-                            </div>
                             {/* Stacked, the canvas comes first, right under the flow list, and the inspector follows. */}
-                            {isNarrowViewport && showInspector ? <Sidebar desktopWidthPx={sidebarWidth} /> : null}
+                            {showInspector ? <Sidebar desktopWidthPx={sidebarWidth} /> : null}
                         </EditorGraphBridgeProvider>
                     </CanvasSessionModeProvider>
                 </ReactFlowProvider>

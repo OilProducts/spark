@@ -83,8 +83,8 @@ export function ClientPreferencesController() {
             title={error.kind === 'save' ? 'Couldn’t save your preferences' : undefined}
             actions={error.kind === 'save' ? (
                 <>
-                    <Button type="button" variant="outline" size="xs" onClick={retry}>Retry preference save</Button>
-                    <Button type="button" variant="ghost" size="xs" onClick={() => window.dispatchEvent(new Event('spark:preferences-discard'))}>Discard preference changes</Button>
+                    <Button type="button" variant="outline" size="xs" onClick={retry}>Try again</Button>
+                    <Button type="button" variant="ghost" size="xs" onClick={() => window.dispatchEvent(new Event('spark:preferences-discard'))}>Discard changes</Button>
                 </>
             ) : <Button type="button" variant="outline" size="xs" onClick={retry}>Try again</Button>}
         >

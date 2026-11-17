@@ -314,7 +314,7 @@ function buildAuthoredFlow(
 }
 
 
-export function Editor({ isActive = true, flowList }: { isActive?: boolean; flowList?: { failed: boolean; retry: () => void } }) {
+export function Editor({ isActive = true, title = null, flowList }: { isActive?: boolean; title?: string | null; flowList?: { failed: boolean; retry: () => void } }) {
     const selectedNodeId = useStore((state) => state.selectedNodeId);
     const selectedEdgeId = useStore((state) => state.selectedEdgeId);
     const setSelectedNodeId = useStore((state) => state.setSelectedNodeId);
@@ -1784,6 +1784,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         <div className="flow-surface flex h-full w-full flex-col">
             {flowOpen && flowName && (
                 <EditorCanvasToolbar
+                    title={title}
                     mode={editorMode}
                     modeDisabled={!isHydrated || switchingEditorMode}
                     switchingMode={switchingEditorMode}

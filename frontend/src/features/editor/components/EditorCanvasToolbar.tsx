@@ -9,6 +9,8 @@ import type { EditorMode } from '@/state/store-types'
 import { cn } from '@/lib/utils'
 
 type EditorCanvasToolbarProps = {
+    /** The open flow's name, leading the row where there is room for it. */
+    title?: string | null
     mode: EditorMode
     /** Set until the flow is loaded: a view switch saves the canvas, which is empty until then. */
     modeDisabled: boolean
@@ -37,19 +39,20 @@ type EditorCanvasToolbarProps = {
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 
-// Below 42rem of toolbar the toggles and actions show only icons (named by aria-label), so the row stays one line beside the flow settings at 1280px.
+// Below 64rem of toolbar the toggles and actions show only icons (named by aria-label), so the row, with the flow's name, stays one line beside the inspector.
 const segmentLabel = (Icon: LucideIcon, text: string) => ({
     'aria-label': text,
     title: text,
     label: (
         <>
-            <Icon aria-hidden="true" className="size-4 @2xl:hidden" />
-            <span className="hidden @2xl:inline">{text}</span>
+            <Icon aria-hidden="true" className="size-4 @5xl:hidden" />
+            <span className="hidden @5xl:inline">{text}</span>
         </>
     ),
 })
 
 export function EditorCanvasToolbar({
+    title = null,
     mode,
     modeDisabled,
     switchingMode = false,
@@ -78,6 +81,11 @@ export function EditorCanvasToolbar({
             aria-label="Canvas toolbar"
             className="@container flex min-h-11 shrink-0 flex-wrap items-center gap-x-1 gap-y-2 border-b bg-background px-2 py-1.5 @2xl:gap-x-1.5 @2xl:px-3"
         >
+            {title ? (
+                <h2 data-testid="editor-open-flow-title" title={title} className="mr-1.5 hidden max-w-[12rem] truncate text-sm font-semibold text-foreground @xl:block @6xl:max-w-[20rem]">
+                    {title}
+                </h2>
+            ) : null}
             <SegmentedControl
                 data-testid="editor-mode-toggle"
                 aria-label="View"
@@ -136,8 +144,8 @@ export function EditorCanvasToolbar({
                             className="aria-pressed:bg-accent aria-pressed:text-foreground"
                             onClick={flowSettings.onToggle}
                         >
-                            <SlidersHorizontal aria-hidden="true" className="@2xl:hidden" />
-                            <span className="hidden @2xl:inline">Flow settings</span>
+                            <SlidersHorizontal aria-hidden="true" className="@5xl:hidden" />
+                            <span className="hidden @5xl:inline">Flow settings</span>
                         </Button>
                     ) : null}
                     {canEditLayout && undo ? (
@@ -160,16 +168,16 @@ export function EditorCanvasToolbar({
                     ) : null}
                     {canEditLayout ? (
                         <Button type="button" size="sm" variant="outline" aria-label="Add step" title="Add step" onClick={onAddNode}>
-                            <SquarePlus aria-hidden="true" className="@2xl:hidden" />
-                            <span className="hidden @2xl:inline">+ Step</span>
+                            <SquarePlus aria-hidden="true" className="@5xl:hidden" />
+                            <span className="hidden @5xl:inline">+ Step</span>
                         </Button>
                     ) : null}
                     {/* A disabled button shows no tooltip, so its wrapper says why Run is off. */}
                     <span title={runDisabledReason ?? undefined} className="inline-flex">
                         <ProjectPicker heading="Run in" testId="run-flow-project-picker" defaultProjectPath={runDefaultProjectPath} onPick={onRun}>
                             <Button data-testid="editor-run-button" type="button" size="sm" variant="outline" aria-label="Run…" disabled={Boolean(runDisabledReason)} aria-describedby={runDisabledReason ? 'editor-run-disabled-reason' : undefined}>
-                                <Play aria-hidden="true" className="@2xl:hidden" />
-                                <span className="hidden @2xl:inline">Run…</span>
+                                <Play aria-hidden="true" className="@5xl:hidden" />
+                                <span className="hidden @5xl:inline">Run…</span>
                             </Button>
                         </ProjectPicker>
                     </span>
