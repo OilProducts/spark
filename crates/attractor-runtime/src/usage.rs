@@ -334,7 +334,7 @@ impl TokenUsageBreakdown {
 /// USD per million tokens: (input, cached input, output), for backends that
 /// report no cost of their own.
 /// OpenAI rates checked against the official OpenAI pricing page on
-/// 2026-07-09 (gpt-6 family on 2026-10-17, short-context tier); Claude
+/// 2026-07-09 (gpt-6 family on 2026-11-17, short-context tier); Claude
 /// rates against the Anthropic pricing page on 2026-10-17. Long-context
 /// tiers (OpenAI >272K, Haiku 5.5 >100K input) are not modeled.
 const MODEL_PRICING_CATALOG: &[(&str, (f64, f64, f64))] = &[
@@ -364,6 +364,8 @@ const MODEL_PRICING_CATALOG: &[(&str, (f64, f64, f64))] = &[
     ("gpt-6-astra", (10.00, 1.00, 50.00)),
     ("gpt-6-sol", (2.00, 0.20, 10.00)),
     ("gpt-6.1-sol", (2.00, 0.10, 10.00)),
+    ("gpt-6.2-astra", (8.00, 0.40, 40.00)),
+    ("gpt-6.2-sol", (2.00, 0.10, 10.00)),
     ("gpt-6-luna", (0.10, 0.01, 0.50)),
     ("claude-fable-5-1", (10.00, 0.25, 50.00)),
     ("claude-mythos-5-1", (10.00, 0.25, 50.00)),

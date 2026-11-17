@@ -6,7 +6,7 @@ description: A child milestone worker for the software-development spec implemen
 schema_version: '2'
 defaults:
   llm_provider: codex
-  llm_model: gpt-6.1-sol
+  llm_model: gpt-6.2-sol
   reasoning_effort: xhigh
 metadata:
   software_development:

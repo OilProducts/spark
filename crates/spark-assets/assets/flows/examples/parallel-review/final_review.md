@@ -6,7 +6,7 @@ contracts:
   - parallel.results
   response: decision_envelope
 execution:
-  llm_model: gpt-6.1-sol
+  llm_model: gpt-6.2-sol
   reasoning_effort: xhigh
 routes:
   blocked:

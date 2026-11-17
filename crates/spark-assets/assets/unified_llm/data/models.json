@@ -246,6 +246,56 @@
       ]
     },
     {
+      "id": "gpt-6.2-astra",
+      "provider": "openai",
+      "display_name": "GPT-6.2 Astra",
+      "context_window": 1050000,
+      "max_output": 128000,
+      "supports_tools": true,
+      "supports_vision": true,
+      "reasoning_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "aliases": [],
+      "supported_reasoning_modes": [
+        "standard",
+        "pro"
+      ],
+      "supported_reasoning_summaries": [
+        "auto",
+        "detailed"
+      ]
+    },
+    {
+      "id": "gpt-6.2-sol",
+      "provider": "openai",
+      "display_name": "GPT-6.2 Sol",
+      "context_window": 1050000,
+      "max_output": 128000,
+      "supports_tools": true,
+      "supports_vision": true,
+      "reasoning_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "aliases": [],
+      "supported_reasoning_modes": [
+        "standard",
+        "pro"
+      ],
+      "supported_reasoning_summaries": [
+        "auto",
+        "detailed"
+      ]
+    },
+    {
       "id": "gpt-5.5",
       "provider": "openai",
       "display_name": "GPT-5.5",

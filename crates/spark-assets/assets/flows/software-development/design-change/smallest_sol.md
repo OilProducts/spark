@@ -11,7 +11,7 @@ contracts:
   response: decision_envelope
 execution:
   llm_provider: codex
-  llm_model: gpt-6.1-sol
+  llm_model: gpt-6.2-sol
 routes:
   blocked:
     to: failed

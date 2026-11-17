@@ -35,7 +35,7 @@
         "anthropic": 2,
         "gemini": 6,
         "litellm": 0,
-        "openai": 7,
+        "openai": 9,
         "openrouter": 0
       }
     },

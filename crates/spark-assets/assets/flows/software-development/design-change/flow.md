@@ -33,7 +33,7 @@ inputs:
   required: false
 defaults:
   llm_provider: codex
-  llm_model: gpt-6.1-sol
+  llm_model: gpt-6.2-sol
   reasoning_effort: high
 metadata:
   software_development:

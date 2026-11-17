@@ -675,7 +675,7 @@ fn design_change_chooses_among_drafts_then_reviews_with_isolated_lenses() {
         let (provider, model) = if id.ends_with("opus") {
             ("claude-code", "claude-opus-5-5[1m]")
         } else {
-            ("codex", "gpt-6.1-sol")
+            ("codex", "gpt-6.2-sol")
         };
         assert_eq!(
             drafter["execution"]["llm_provider"],

@@ -6,7 +6,7 @@ description: Draft a change, route it through explicit human approval, and loop 
 schema_version: '2'
 defaults:
   llm_provider: codex
-  llm_model: gpt-6.1-sol
+  llm_model: gpt-6.2-sol
   reasoning_effort: xhigh
 ---
 

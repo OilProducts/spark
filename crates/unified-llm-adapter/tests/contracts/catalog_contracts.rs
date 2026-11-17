@@ -35,6 +35,8 @@ fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
+            "gpt-6.2-astra",
+            "gpt-6.2-sol",
             "gpt-5.5"
         ]
     );
