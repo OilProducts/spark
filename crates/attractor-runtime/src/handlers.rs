@@ -2088,7 +2088,7 @@ impl RuntimeHandlerRunner {
                         &runtime.node_id,
                         &branches[index],
                         index,
-                        record_status(&record) == "completed",
+                        record_status(&record),
                     ),
                 );
                 records[index] = Some(record);
@@ -2131,6 +2131,10 @@ impl RuntimeHandlerRunner {
                 &runtime.node_id,
                 completed,
                 results.len() - completed,
+                results
+                    .iter()
+                    .filter(|record| record_status(record) == "canceled")
+                    .count(),
             ),
         )
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
@@ -2175,6 +2179,18 @@ impl RuntimeHandlerRunner {
                 notes: format!("branch {} reached {}", terminal.branch, terminal.exit_id),
                 terminal: Some(terminal),
                 ..Outcome::completed("")
+            });
+        }
+        // The user's cancel stopped branches: the fork ends as the cancel stopped
+        // it, as a stopped tool does, so it is never recorded as completed.
+        if completed < results.len() && run_cancel_requested(&runtime) {
+            return Ok(Outcome {
+                context_updates,
+                ..Outcome::error(
+                    FailureKind::Runtime,
+                    "parallel fan-out stopped by cancellation",
+                    Some(false),
+                )
             });
         }
         Ok(Outcome {

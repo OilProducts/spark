@@ -1,5 +1,5 @@
 import type { DiagnosticEntry } from '@/state/store-types'
-import { fetchSpark } from '../fetchSpark'
+import { fetchSpark, UNREACHABLE_MESSAGE } from '../fetchSpark'
 
 export { fetchSpark }
 
@@ -24,7 +24,10 @@ export class ApiHttpError extends Error {
 
     constructor(endpoint: string, status: number, detail: string | null, payload: unknown = null) {
         // People read the message: the server's reason when it gives one; the endpoint stays on the error.
-        super(detail ? detail.charAt(0).toUpperCase() + detail.slice(1) : `Spark couldn’t complete the request (HTTP ${status}).`)
+        // A proxy's 502-504 means Spark itself didn't answer.
+        super(detail ? detail.charAt(0).toUpperCase() + detail.slice(1)
+            : status >= 502 && status <= 504 ? UNREACHABLE_MESSAGE
+            : `Spark couldn’t complete the request (HTTP ${status}).`)
         this.name = 'ApiHttpError'
         this.endpoint = endpoint
         this.status = status
@@ -181,7 +184,8 @@ export async function extractHttpError(response: Response, endpoint: string): Pr
                 payload = JSON.parse(bodyText) as unknown
                 detail = parseHttpErrorDetail(payload)
             } catch {
-                detail = bodyText.trim()
+                // A proxy's plain-text gateway error ("Error: connect ECONNREFUSED") isn't Spark's reason.
+                detail = response.status >= 502 && response.status <= 504 ? null : bodyText.trim()
             }
         }
     } catch {

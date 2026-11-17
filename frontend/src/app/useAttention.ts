@@ -5,7 +5,7 @@ import { requestNavigation } from '@/state/workspaceSlice'
 import { revealSelection } from '@/components/app/view-layout'
 import { ATTENTION_CHANGED_EVENT, fetchPendingAttention, type AttentionItem } from '@/lib/api/attentionApi'
 import { triggerKey } from '@/lib/api/triggersApi'
-import { flowTitle, formatRunDate, formatRunTime, runTitle } from '@/features/runs/model/runOverviewModel'
+import { flowTitle, formatRunDate, formatRunTime, runFlowTitle, runTitle } from '@/features/runs/model/runOverviewModel'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { focusRunHeading } from '@/features/runs/components/RunHeaderBar'
 
@@ -22,7 +22,7 @@ export const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
     mission: 'Mission needs you',
 }
 
-type AttentionRun = Pick<RunRecord, 'run_id' | 'title' | 'flow_name' | 'launch_context' | 'first_launch_input'>
+type AttentionRun = Pick<RunRecord, 'run_id' | 'title' | 'flow_name' | 'flow_title' | 'first_launch_input'>
 
 /**
  * What an item is called: a run waiting at a gate takes the title the Runs list gives it,
@@ -42,7 +42,9 @@ export function attentionTitle(item: AttentionItem, runs: AttentionRun[]): strin
 /** A run gate's flow, when the item's title doesn't already say it. */
 export function attentionFlow(item: AttentionItem, runs: AttentionRun[]): string | null {
     if (item.kind !== 'run_gate' || !item.flow_name) return null
-    const flow = flowTitle(item.flow_name)
+    // A loaded run knows its flow's declared title.
+    const run = runs.find((candidate) => candidate.run_id === item.run_id)
+    const flow = run ? runFlowTitle(run) : flowTitle(item.flow_name)
     return flow.toLowerCase() === attentionTitle(item, runs).toLowerCase() ? null : flow
 }
 

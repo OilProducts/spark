@@ -32,6 +32,14 @@ export function ProjectsPanel() {
         return () => window.removeEventListener('spark:new-chat', onNewChat)
     }, [onCreateConversationThread])
 
+    // The Overview's Add a project opens the folder chooser here.
+    const openProjectChooser = addProject.onOpenProjectDirectoryChooser
+    useEffect(() => {
+        const onAddProject = () => { void openProjectChooser() }
+        window.addEventListener('spark:add-project', onAddProject)
+        return () => window.removeEventListener('spark:add-project', onAddProject)
+    }, [openProjectChooser])
+
     useProjectRegistryBootstrap({
         hydrateProjectRegistry,
         enabled: shouldBootstrapRegistry,
@@ -59,7 +67,7 @@ export function ProjectsPanel() {
                 panel={(
                     <div className="flex h-full min-h-0 flex-col">
                         <div className="min-h-0 flex-1 overflow-y-auto">
-                            <ProjectsSidebar {...sidebarProps} />
+                            <ProjectsSidebar {...sidebarProps} loadFailed={Boolean(registryBootstrapError)} />
                         </div>
                         <div className="shrink-0 pt-2">
                             <Button

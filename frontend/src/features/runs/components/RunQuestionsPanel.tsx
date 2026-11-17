@@ -7,7 +7,7 @@ import { FormQuestionFields } from '@/components/app/form-question'
 import { InlineError } from '@/components/app/inline-error'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import type { FormReply } from '@/lib/forms'
 import { useStore } from '@/store'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
@@ -161,16 +161,26 @@ export function RunQuestionsPanel({
                                             />
                                         )}
                                         {questionId && isFreeform && (
-                                            <div className="flex flex-wrap items-center gap-2">
-                                                <Input
-                                                    type="text"
+                                            // An answer may be a command or a few paragraphs: its lines are kept, and
+                                            // Ctrl+Enter or ⌘Enter sends it.
+                                            <div className="flex flex-wrap items-end gap-2">
+                                                <Textarea
                                                     data-testid={`run-pending-human-gate-freeform-input-${questionId}`}
                                                     value={freeformAnswer}
                                                     onChange={(event) => onFreeformAnswerChange(questionId, event.target.value)}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing && freeformAnswer.trim()) {
+                                                            event.preventDefault()
+                                                            answered.current = true
+                                                            onSubmitPendingGateAnswer(gate, freeformAnswer)
+                                                        }
+                                                    }}
                                                     disabled={disabled}
                                                     aria-labelledby={promptId}
+                                                    aria-keyshortcuts="Control+Enter Meta+Enter"
+                                                    rows={1}
                                                     placeholder="Type your answer…"
-                                                    className="h-9 min-w-0 flex-[1_1_14rem] bg-background"
+                                                    className="max-h-60 min-h-9 min-w-0 flex-[1_1_14rem] bg-background py-1.5"
                                                 />
                                                 <Button
                                                     type="button"
@@ -194,15 +204,16 @@ export function RunQuestionsPanel({
                                                         <label htmlFor={noteId} className="text-xs font-medium text-muted-foreground">
                                                             Note for the next step (optional)
                                                         </label>
-                                                        <Input
+                                                        {/* Notes keep their lines: a command and its output read as written. */}
+                                                        <Textarea
                                                             id={noteId}
-                                                            type="text"
                                                             data-testid={`run-pending-human-gate-note-input-${questionId}`}
                                                             value={gateNote}
                                                             onChange={(event) => onGateNoteChange(questionId, event.target.value)}
                                                             disabled={disabled}
+                                                            rows={1}
                                                             placeholder="Add context the next step should see…"
-                                                            className="h-9 w-full bg-background"
+                                                            className="max-h-60 min-h-9 w-full bg-background py-1.5"
                                                         />
                                                     </div>
                                                 )}

@@ -157,6 +157,10 @@ pub struct RunRecord {
     pub started_at: String,
     #[serde(default)]
     pub ended_at: Option<String>,
+    /// Milliseconds the run sat stopped before its retries: not run time,
+    /// so its duration leaves them out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_ms: Option<u64>,
     #[serde(default)]
     pub project_path: String,
     #[serde(default)]
@@ -211,6 +215,13 @@ pub struct RunRecord {
     pub estimated_model_cost: Option<Value>,
     #[serde(default)]
     pub launch_context: Option<crate::context::ContextMap>,
+    /// The launched flow's own title, so a run names its flow as the flow does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_title: Option<String>,
+    /// The first launch input given, in the flow's declared order, cut to a
+    /// line: what names a run that has no title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_launch_input: Option<String>,
     /// Utility-generated title of a root run. Written once, after launch;
     /// deliberately absent from the record writer's known fields so a stale
     /// in-memory record written later keeps the stored title.

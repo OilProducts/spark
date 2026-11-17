@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ClientPreferencesController } from '../ClientPreferencesController'
 import { completePreferenceInteraction, fetchClientPreferences, saveClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
@@ -74,4 +74,16 @@ it('keeps Show thinking on by default, follows the saved setting and persists th
     vi.mocked(fetchClientPreferences).mockResolvedValue({ ...off, revision: 'third', effective: { ...off.effective, show_thinking: true } })
     await act(async () => { window.dispatchEvent(new Event('spark:settings-live-event')) })
     await waitFor(() => expect(useStore.getState().preferredShowThinking).toBe(true))
+})
+
+it('lets a load failure notice be dismissed, and shows a different problem again', async () => {
+    const view: ClientPreferencesView = { client_id: 'browser-one', revision: 'first', stored: {}, effective: {} }
+    vi.mocked(fetchClientPreferences).mockRejectedValueOnce(new Error('down')).mockResolvedValue(view)
+    vi.mocked(saveClientPreferences).mockRejectedValue(new Error('Preferences changed elsewhere.'))
+    render(<ClientPreferencesController />)
+    const notice = await screen.findByTestId('client-preferences-error')
+    act(() => within(notice).getByRole('button', { name: 'Dismiss' }).click())
+    expect(screen.queryByTestId('client-preferences-error')).not.toBeInTheDocument()
+    act(() => window.dispatchEvent(new CustomEvent('spark:preferences-completed', { detail: { editor_sidebar_width: 450 } })))
+    expect(await screen.findByText('Preferences changed elsewhere.')).toBeVisible()
 })

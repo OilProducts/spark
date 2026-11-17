@@ -2,7 +2,6 @@ import { completePreferenceInteraction } from '@/features/settings/services/clie
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type SetStateAction } from 'react';
 import {
     ReactFlow,
-    MiniMap,
     Background,
     MarkerType,
     useNodesState,
@@ -60,6 +59,7 @@ import { routeFixedNodeGraphInWorker } from '@/lib/flowLayoutRouterClient';
 import { routeIntersectsRect, type NodeRect, type RouteSide } from '@/lib/edgeRouting';
 import {
     buildHydratedFlowGraph,
+    CanvasMiniMap,
     edgeTypes,
     EDGE_CLASS,
     EDGE_INTERACTION_WIDTH,
@@ -94,8 +94,8 @@ import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSe
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
 const MEDIUM_GRAPH_PREVIEW_DEBOUNCE_MS = 600;
 const MEDIUM_GRAPH_NODE_THRESHOLD = 25;
-// The view controls live in the toolbar, and the minimap shows only when asked for, so nothing
-// covers the canvas when a graph opens.
+// The view controls live in the toolbar, and the minimap shows only for a flow too big to show
+// whole, or when asked for, so nothing covers a canvas that shows all there is.
 // The sides leave room for self-loops, which reach past their node's box.
 const FRAME_PADDING = { top: 24, right: 48, bottom: 24, left: 48 } as const;
 const MINIMAP_SIZE = { width: 160, height: 108 };
@@ -314,7 +314,7 @@ function buildAuthoredFlow(
 }
 
 
-export function Editor({ isActive = true, flowList }: { isActive?: boolean; flowList?: { failed: boolean; retry: () => void } }) {
+export function Editor({ isActive = true, title = null, flowList }: { isActive?: boolean; title?: string | null; flowList?: { failed: boolean; retry: () => void } }) {
     const selectedNodeId = useStore((state) => state.selectedNodeId);
     const selectedEdgeId = useStore((state) => state.selectedEdgeId);
     const setSelectedNodeId = useStore((state) => state.setSelectedNodeId);
@@ -423,7 +423,10 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
     const flowName = activeFlow;
     const canvasPaneRef = useRef<HTMLDivElement>(null);
     const frame = useReadableFraming(canvasPaneRef);
-    const [showMinimap, setShowMinimap] = useState(false);
+    // A flow that opens too big to show whole shows where the rest of it is, until the toggle says otherwise.
+    const [minimapChoice, setMinimapChoice] = useState<boolean | null>(null);
+    const [graphOverflows, setGraphOverflows] = useState(false);
+    const showMinimap = minimapChoice ?? graphOverflows;
     // A view switch saves the view it leaves first; the toolbar says so while it does.
     const [switchingEditorMode, setSwitchingEditorMode] = useState(false);
     // A newly opened flow, or a switch between its parent and expanded views, opens framed;
@@ -433,7 +436,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         const graphKey = `${flowName}:${expandChildFlowsRef.current}`;
         if (framedGraphRef.current === graphKey) return;
         framedGraphRef.current = graphKey;
-        frame(graphNodes, { padding: FRAME_PADDING });
+        setGraphOverflows(frame(graphNodes, { padding: FRAME_PADDING }) === false);
     }, [frame, flowName]);
     const isExpandedReadOnlyPreview = editorMode === 'structured' && expandChildFlows;
     // The file view edits the files; its canvas only selects nodes.
@@ -1784,6 +1787,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
         <div className="flow-surface flex h-full w-full flex-col">
             {flowOpen && flowName && (
                 <EditorCanvasToolbar
+                    title={title}
                     mode={editorMode}
                     modeDisabled={!isHydrated || switchingEditorMode}
                     switchingMode={switchingEditorMode}
@@ -1802,7 +1806,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                     onAddNode={onAddNode}
                     undo={isCanvasReadOnly ? undefined : { label: lastEdit ? canvasEditUndoLabel(lastEdit, nodes) : null, onUndo: undoLastEdit }}
                     runDefaultProjectPath={runDefaultProjectPath}
-                    minimap={isExpandedReadOnlyPreview ? undefined : { shown: showMinimap, onToggle: () => setShowMinimap((shown) => !shown) }}
+                    minimap={isExpandedReadOnlyPreview ? undefined : { shown: showMinimap, onToggle: () => setMinimapChoice(!showMinimap) }}
                     // Opening them leaves the selected step, so the inspector shows them.
                     flowSettings={{
                         shown: flowSettingsShown,
@@ -1896,11 +1900,7 @@ export function Editor({ isActive = true, flowList }: { isActive?: boolean; flow
                         >
                             {/* The expanded preview's nodes never reach the minimap, so it would show an empty box. */}
                             {showMinimap && !isExpandedReadOnlyPreview ? (
-                                <MiniMap
-                                    style={MINIMAP_SIZE}
-                                    nodeColor="hsl(var(--muted))"
-                                    maskColor="hsl(var(--background)/0.5)"
-                                />
+                                <CanvasMiniMap style={MINIMAP_SIZE} />
                             ) : null}
                             <Background gap={20} size={1} color="hsl(var(--border))" />
                         </ReactFlow>

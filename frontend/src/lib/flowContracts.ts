@@ -4,6 +4,8 @@ export interface LaunchInputDefinition {
     key: string
     label: string
     type: LaunchInputType
+    /** A string written over several lines, such as a bug report: its field keeps Enter for new lines. */
+    multiline?: boolean
     description: string
     required: boolean
 }
@@ -95,6 +97,7 @@ export function serializeLaunchInputDefinitions(entries: LaunchInputDefinition[]
             key: normalizeContextKey(entry.key),
             label: entry.label.trim(),
             type: entry.type,
+            ...(entry.type === 'string' && entry.multiline ? { multiline: true } : {}),
             description: entry.description.trim(),
             required: Boolean(entry.required),
         }))
@@ -134,6 +137,7 @@ export function parseLaunchInputDefinitions(raw: unknown): ParsedLaunchInputDefi
                 key,
                 label,
                 type,
+                ...(record.multiline === true ? { multiline: true } : {}),
                 description,
                 required,
             })

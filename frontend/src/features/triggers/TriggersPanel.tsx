@@ -29,7 +29,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { statusTextClassName } from "@/components/app/status"
 import { RunLink } from "@/features/missions/MissionTranscript"
-import { flowTitle } from "@/features/runs/model/runOverviewModel"
+import { runFlowTitle } from "@/features/runs/model/runOverviewModel"
 import { formatRunStatusLabel, runRecordTone, type RunRecord } from "@/features/runs/model/shared"
 
 type HistoryEntry = { status: string; run_id?: string | null; message: string }
@@ -45,7 +45,7 @@ function FiringResult({ entry, run }: { entry: HistoryEntry; run: RunRecord | un
       {run ? (
         <><span className={statusTextClassName(runRecordTone(run))}>{formatRunStatusLabel(run)}</span>{' · '}</>
       ) : null}
-      <RunLink runId={entry.run_id}>{run ? flowTitle(run.flow_name) : 'Started a run'}</RunLink>
+      <RunLink runId={entry.run_id}>{run ? runFlowTitle(run) : 'Started a run'}</RunLink>
     </span>
   )
 }
@@ -156,6 +156,7 @@ export function TriggersPanel() {
 
   const createFormOpen = triggersSession.createFormOpen
   const nothingPicked = !createFormOpen && !(selectedTrigger && editTriggerForm)
+  const listFailed = status === 'error' && visibleTriggers.length === 0
   const openCreateForm = () => {
     // An untouched draft starts in the project worked in most recently, as Run a flow does.
     if (!newTriggerForm.name.trim() && !newTriggerForm.projectPath) {
@@ -184,10 +185,13 @@ export function TriggersPanel() {
     <div ref={listRef} className="space-y-4">
       {triggerGroups.map((group) => (
         <div key={group.title} className="space-y-0.5">
-          <ListGroupLabel>
-            <h3>{group.title}</h3>
-            {group.note ? <p className="font-normal">{group.note}</p> : null}
-          </ListGroupLabel>
+          {/* A lone Custom group needs no heading: there is nothing to tell it from. */}
+          {triggerGroups.length > 1 ? (
+            <ListGroupLabel>
+              <h3>{group.title}</h3>
+              {group.note ? <p className="font-normal">{group.note}</p> : null}
+            </ListGroupLabel>
+          ) : null}
           {status !== 'ready' && status !== 'error' && group.title === 'Custom' ? (
             <p data-testid="triggers-custom-list-loading" className="px-3 py-1 text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
           ) : null}
@@ -228,8 +232,9 @@ export function TriggersPanel() {
               />
             )
           })}
-          {status === 'ready' && group.triggers.length === 0 ? (
-            <p className="px-3 py-1 text-sm text-muted-foreground">No custom triggers yet.</p>
+          {/* With no triggers at all, a desktop says so once, beside the list; a phone shows only the list. */}
+          {status === 'ready' && group.triggers.length === 0 && (triggerGroups.length > 1 || isNarrowViewport) ? (
+            <p className="px-3 py-1 text-sm text-muted-foreground">{triggerGroups.length > 1 ? 'No custom triggers yet.' : 'No triggers yet.'}</p>
           ) : null}
         </div>
       ))}
@@ -258,7 +263,7 @@ export function TriggersPanel() {
     {isNarrowViewport && nothingPicked && !error && issues.length === 0 ? null : (
     <section data-testid="triggers-panel" className="flex h-full flex-col overflow-auto p-6">
       <div className="flex w-full max-w-3xl flex-col gap-6">
-        {error ? (
+        {error && !(nothingPicked && listFailed) ? (
           <InlineError>{error}</InlineError>
         ) : null}
 
@@ -442,9 +447,25 @@ export function TriggersPanel() {
             </Card>
           ) : null}
       </div>
-      {nothingPicked && !isNarrowViewport ? (
-        <SheetEmpty icon={Zap} title="No trigger selected" className="h-auto flex-1">
-          Triggers start flows on a schedule, on events, or from webhooks. Select one or create a new one.
+      {/* A list that never loaded can't say there are no triggers. */}
+      {nothingPicked && listFailed ? (
+        <SheetEmpty
+          data-testid="triggers-load-failed"
+          icon={Zap}
+          title="Triggers couldn’t load"
+          className="h-auto flex-1"
+          action={<Button type="button" variant="outline" size="sm" onClick={() => void refreshTriggers()}>Try again</Button>}
+        >
+          {error}
+        </SheetEmpty>
+      ) : nothingPicked && !isNarrowViewport ? (
+        <SheetEmpty
+          icon={Zap}
+          title={visibleTriggers.length ? 'No trigger selected' : 'No triggers yet'}
+          className="h-auto flex-1"
+          action={<Button type="button" variant="outline" size="sm" onClick={openCreateForm}><Plus aria-hidden="true" />Create a trigger</Button>}
+        >
+          Triggers start flows on a schedule, on events, or from webhooks.{visibleTriggers.length ? ' Select one or create a new one.' : ''}
         </SheetEmpty>
       ) : null}
     </section>

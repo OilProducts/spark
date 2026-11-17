@@ -1,7 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { expect, it } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { expect, it, vi } from 'vitest'
 
-import { ViewLayout } from '@/components/app/view-layout'
+import { ListBackLink, revealList, ViewLayout } from '@/components/app/view-layout'
 
 it('hides the side panel to a show button and back, keeping the panel mounted and focus on the toggle', () => {
   render(
@@ -24,4 +24,22 @@ it('hides the side panel to a show button and back, keeping the panel mounted an
   expect(screen.getByLabelText('Search runs')).toHaveValue('audit')
   expect(screen.getByRole('button', { name: 'Hide Runs panel' })).toHaveFocus()
   expect(screen.getByText('Run detail')).toBeVisible()
+})
+
+it('goes back up to the list from what was picked, by its back link or a second tap on the view', () => {
+  render(
+    <ViewLayout view="runs" title="Runs" panel={<button type="button" aria-current="true">Fix rounding</button>}>
+      <ListBackLink>All runs</ListBackLink>
+    </ViewLayout>,
+  )
+  const panel = screen.getByRole('complementary', { name: 'Runs panel' })
+  const scrolled = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {})
+  fireEvent.click(screen.getByRole('button', { name: 'All runs' }))
+  expect(scrolled.mock.contexts).toEqual([panel])
+  // Onto the picked row, so the keyboard carries on from there.
+  expect(screen.getByRole('button', { name: 'Fix rounding' })).toHaveFocus()
+
+  act(() => revealList())
+  expect(scrolled.mock.contexts).toEqual([panel, panel])
+  scrolled.mockRestore()
 })

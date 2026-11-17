@@ -53,12 +53,12 @@ it('coalesces initial, manual, reconnect and recovery bursts into one trailing r
 it('clears pending refresh on failure and retries only when requested', async () => {
   const { result } = mount()
   notice()
-  await act(async () => pending[0].resolve(new Response('', { status: 503 })))
+  await act(async () => pending[0].resolve(new Response('', { status: 500 })))
   expect(pending).toHaveLength(1)
   expect(result.current.error).toBe('Couldn’t load your runs.')
   notice()
   expect(pending).toHaveLength(2)
-  await act(async () => pending[1].resolve(new Response('', { status: 503 })))
+  await act(async () => pending[1].resolve(new Response('', { status: 500 })))
   expect(pending).toHaveLength(2)
   act(() => requestRunsTransportReconnect())
   expect(pending).toHaveLength(3)
@@ -68,7 +68,7 @@ it('clears pending refresh on failure and retries only when requested', async ()
 
 it('keeps a failed load failed when one run\'s live update arrives', async () => {
   const { result } = mount()
-  await act(async () => pending[0].resolve(new Response('', { status: 503 })))
+  await act(async () => pending[0].resolve(new Response('', { status: 500 })))
   act(() => {
     window.dispatchEvent(new CustomEvent('spark:run-upsert', { detail: { run: {
       run_id: 'live', project_path: '/one', working_directory: '/one', flow_name: 'flow.yaml',

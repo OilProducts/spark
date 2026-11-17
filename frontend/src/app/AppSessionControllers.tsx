@@ -679,11 +679,22 @@ export function HistoryRoutingController() {
     return null
 }
 
+/**
+ * Problems with the whole app, as banners above the open view. They take their own room rather
+ * than float, so they never cover a control such as a composer's Send button.
+ */
+export function AppNotices() {
+    return (
+        <div data-testid="app-notices" className="flex shrink-0 flex-col gap-2 px-3 pt-3 empty:hidden">
+            <ModelDefaultsController />
+            <ClientPreferencesController />
+        </div>
+    )
+}
+
 export function AppSessionControllers() {
     return (
         <>
-            <ModelDefaultsController />
-            <ClientPreferencesController />
             <WorkspaceLiveEventsController />
             <HomeSessionController />
             <RunsSessionController />

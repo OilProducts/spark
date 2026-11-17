@@ -28,6 +28,8 @@ type ProjectsSidebarProps = {
     onSelectConversationThread: (projectPath: string, conversationId: string) => void
     onDeleteConversationThread: (projectPath: string, conversationId: string, title: string) => void | Promise<void>
     formatConversationAgeShort: (value: string) => string
+    /** The project list couldn't load (the chat area says why); it keeps retrying. */
+    loadFailed?: boolean
 }
 
 /** A standing role's state, shown on its pinned row in place of the age. */
@@ -57,6 +59,7 @@ export function ProjectsSidebar({
     onSelectConversationThread,
     onDeleteConversationThread,
     formatConversationAgeShort,
+    loadFailed,
 }: ProjectsSidebarProps) {
     const projectRegistry = useStore((state) => state.projectRegistry)
     const projectPagePath = useStore((state) => state.projectPagePath)
@@ -72,7 +75,9 @@ export function ProjectsSidebar({
 
     return (
         <ul data-testid="project-thread-list" aria-label="Chats by project" className="flex flex-col gap-1.5">
-            {groups.length === 0 ? (
+            {groups.length === 0 && loadFailed ? (
+                <li><InlineError dense>Couldn’t load projects. Spark keeps trying.</InlineError></li>
+            ) : groups.length === 0 ? (
                 <li>
                     <Empty className="py-4 text-xs">
                         <EmptyHeader>
@@ -86,9 +91,12 @@ export function ProjectsSidebar({
                 const missing = isFolderMissing(project)
                 const expanded = expandedByPath[projectPath] ?? Boolean(project.isDefault || projectPath === activeProjectPath)
                 const status = conversationSummariesStatusByProjectPath[projectPath] ?? 'idle'
-                // Standing roles stay pinned above the recent chats.
+                // Standing roles stay pinned above the recent chats; an older chat opened elsewhere,
+                // such as from search, joins them so the open chat always has its row.
                 const ordinaryChats = chats.filter((chat) => !chat.standing_role)
-                const recentChats = [...chats.filter((chat) => chat.standing_role), ...ordinaryChats.slice(0, RECENT_CHATS_PER_PROJECT)]
+                const shownOrdinaryChats = ordinaryChats.filter((chat, index) => index < RECENT_CHATS_PER_PROJECT
+                    || (projectPath === activeProjectPath && chat.conversation_id === activeConversationId))
+                const recentChats = [...chats.filter((chat) => chat.standing_role), ...shownOrdinaryChats]
                 return (
                     <li
                         key={projectPath}
@@ -171,10 +179,11 @@ export function ProjectsSidebar({
                                                 data-standing-role={conversation.standing_role?.name}
                                                 onClick={() => onSelectConversationThread(projectPath, conversation.conversation_id)}
                                                 selected={isActiveConversation}
-                                                aria-label={`Open thread ${conversation.title}`}
+                                                // The row's name is its visible title; the ID and age are read as its description.
+                                                aria-describedby={`chat-row-meta-${conversation.conversation_id}`}
                                                 title={conversation.title}
                                                 meta={(
-                                                    <span data-testid="chats-chat-row-meta">
+                                                    <span id={`chat-row-meta-${conversation.conversation_id}`} aria-hidden data-testid="chats-chat-row-meta">
                                                         {conversation.conversation_handle ? <><span className="font-mono">{conversation.conversation_handle}</span> · </> : null}
                                                         {formatConversationAgeShort(conversation.updated_at)}
                                                     </span>
@@ -197,7 +206,7 @@ export function ProjectsSidebar({
                                         </li>
                                     )
                                 })}
-                                {ordinaryChats.length > RECENT_CHATS_PER_PROJECT ? (
+                                {ordinaryChats.length > shownOrdinaryChats.length ? (
                                     <li>
                                         <Button
                                             type="button"
@@ -207,7 +216,7 @@ export function ProjectsSidebar({
                                             onClick={() => openProjectPage(projectPath)}
                                             className="ml-7 text-muted-foreground"
                                         >
-                                            {ordinaryChats.length - RECENT_CHATS_PER_PROJECT} more
+                                            {ordinaryChats.length - shownOrdinaryChats.length} more
                                         </Button>
                                     </li>
                                 ) : null}

@@ -114,15 +114,28 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                             placeholder="Short explanation shown in the launch form."
                         />
                     </Field>
-                    <div className="flex items-center justify-between gap-3">
-                        <Label className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
-                            <Checkbox
-                                data-testid={`graph-launch-input-required-${index}`}
-                                checked={entry.required}
-                                onCheckedChange={(checked) => updateEntry(index, { required: checked === true })}
-                            />
-                            Required at launch
-                        </Label>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                            <Label className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
+                                <Checkbox
+                                    data-testid={`graph-launch-input-required-${index}`}
+                                    checked={entry.required}
+                                    onCheckedChange={(checked) => updateEntry(index, { required: checked === true })}
+                                />
+                                Required at launch
+                            </Label>
+                            {/* Text such as a bug report gets a text box at launch; a name or a path, one line that runs on Enter. */}
+                            {entry.type === 'string' ? (
+                                <Label className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
+                                    <Checkbox
+                                        data-testid={`graph-launch-input-multiline-${index}`}
+                                        checked={entry.multiline === true}
+                                        onCheckedChange={(checked) => updateEntry(index, { multiline: checked === true })}
+                                    />
+                                    Several lines
+                                </Label>
+                            ) : null}
+                        </div>
                         <Button
                             type="button"
                             data-testid={`graph-launch-input-remove-${index}`}

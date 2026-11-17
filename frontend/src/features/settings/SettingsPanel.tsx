@@ -8,7 +8,7 @@ import { AgentSettingsEditor } from "./AgentSettingsEditor"
 import { LlmProfilesEditor, ExecutionProfilesEditor } from "./ProfileSettingsEditors"
 import { ClientPreferencesEditor } from "./ClientPreferencesEditor"
 import { UtilityModelSettingsEditor } from "./UtilityModelSettingsEditor"
-import { useEffect, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useStore } from "@/store"
 import { useLlmProfiles } from "@/lib/useLlmProfiles"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
@@ -23,6 +23,7 @@ import { useModelSettingsEditor } from "./hooks/useModelSettingsEditor"
 import { SaveStatus } from './SaveStatus'
 import { ViewLayout } from '@/components/app/view-layout'
 import { Well } from '@/components/app/well'
+import { useNarrowViewport } from '@/lib/useNarrowViewport'
 
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 
@@ -78,6 +79,13 @@ export function SettingsPanel() {
     const storedCategory = useStore(state => state.settingsCategory)
     const category = Object.hasOwn(categories, storedCategory) ? storedCategory as keyof typeof categories : 'models'
     const setCategory = useStore(state => state.setSettingsCategory)
+    // Each category opens at its top, not at the last one's scroll position.
+    const paneRef = useRef<HTMLDivElement | null>(null)
+    useLayoutEffect(() => {
+        if (paneRef.current) paneRef.current.scrollTop = 0
+    }, [category])
+    // On a phone the categories sit above the settings, so they take two short rows, not four.
+    const narrow = useNarrowViewport()
     const [desktopRetry, setDesktopRetry] = useState(0)
 
     useEffect(() => {
@@ -144,17 +152,17 @@ export function SettingsPanel() {
 
     // The categories are the side panel; the chosen category fills the main area.
     return (
-        <Tabs className="absolute inset-0 flex-col gap-0" orientation="vertical" value={category} onValueChange={setCategory}>
+        <Tabs className="absolute inset-0 flex-col gap-0" orientation={narrow ? 'horizontal' : 'vertical'} value={category} onValueChange={setCategory}>
         <ViewLayout
             view="settings"
             title="Settings"
             panel={(
-                <TabsList className="w-full items-stretch gap-0.5 p-0" aria-label="Settings categories">
+                <TabsList className={narrow ? 'grid w-full grid-cols-2 gap-0.5 p-0 group-data-[orientation=horizontal]/tabs:h-auto' : 'w-full items-stretch gap-0.5 p-0'} aria-label="Settings categories">
                     {Object.entries(categories).map(([value, { title }]) => <TabsTrigger key={value} className={categoryRow} value={value}>{title}</TabsTrigger>)}
                 </TabsList>
             )}
         >
-        <div data-testid="settings-panel" className="absolute inset-0 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:border-0 [&_[data-slot=card]]:gap-2 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:grid-rows-none [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-content]]:px-0">
+        <div ref={paneRef} data-testid="settings-panel" className="absolute inset-0 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:border-0 [&_[data-slot=card]]:gap-2 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:grid-rows-none [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-content]]:px-0">
             <div className="w-full max-w-3xl space-y-6">
                 <header className="space-y-1">
                     <h1 className="text-xl font-semibold tracking-tight">{categories[category].title}</h1>

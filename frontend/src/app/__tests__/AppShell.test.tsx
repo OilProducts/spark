@@ -477,7 +477,7 @@ const openChat = async (user: ReturnType<typeof userEvent.setup>, projectPath: s
   if (within(group).getByTestId('chats-project-toggle').getAttribute('aria-expanded') !== 'true') {
     await user.click(within(group).getByTestId('chats-project-toggle'))
   }
-  await user.click(await within(group).findByRole('button', { name: `Open thread ${title}` }))
+  await user.click(await within(group).findByRole('button', { name: title }))
 }
 
 const openProjectPage = async (user: ReturnType<typeof userEvent.setup>, projectPath: string) => {
@@ -585,12 +585,15 @@ describe('App shell behavior', () => {
     expect(useStore.getState().viewMode).toBe('editor')
     expect(screen.getByTestId('flows-view')).toBeVisible()
 
+    // The Inbox is on the way, as it is in the bar.
     screen.getByTestId('activity-flows').focus()
     await user.keyboard('{ArrowDown}')
     expect(screen.getByTestId('activity-roles')).toHaveFocus()
     await user.keyboard('{ArrowDown}')
-    expect(screen.getByTestId('activity-settings')).toHaveFocus()
+    expect(screen.getByTestId('attention-bell')).toHaveFocus()
     await user.keyboard('{ArrowDown}')
+    expect(screen.getByTestId('activity-settings')).toHaveFocus()
+    await user.keyboard('{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}')
     expect(screen.getByTestId('activity-overview')).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('editor')
     await user.keyboard('{Enter}')
@@ -870,7 +873,7 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('add-project-button'))
     expect(await screen.findByTestId('project-browser-dialog')).toBeVisible()
-    expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/tmp/project-shell')
+    expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/tmp/project-shell')
     await user.click(screen.getByTestId('project-browser-select-button'))
 
     // The new project joins the Chats panel, ready for a chat in it.
@@ -959,15 +962,15 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('add-project-button'))
     expect(await screen.findByTestId('project-browser-dialog')).toBeVisible()
-    expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home/spark')
+    expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/home/spark')
     await user.click(screen.getByTestId('project-browser-root--projects'))
     await waitFor(() => {
-      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/projects')
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/projects')
     })
     expect(screen.getByTestId('project-browser-entry-mounted-app')).toBeVisible()
     await user.click(screen.getByTestId('project-browser-root--home-spark'))
     await waitFor(() => {
-      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home/spark')
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/home/spark')
     })
 
     await user.click(screen.getByTestId('project-browser-entry-broken'))
@@ -975,22 +978,32 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('project-browser-entry-repo'))
     await waitFor(() => {
-      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home/spark/repo')
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/home/spark/repo')
     })
 
     await user.click(screen.getByTestId('project-browser-parent-button'))
     await waitFor(() => {
-      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home/spark')
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/home/spark')
     })
 
     await user.click(screen.getByRole('button', { name: 'Root' }))
     await waitFor(() => {
-      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/')
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/')
     })
 
     await user.click(screen.getByTestId('project-browser-entry-home'))
     await waitFor(() => {
-      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home')
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/home')
+    })
+
+    // A pasted path goes straight there; until it does, the dialog won't select the folder still shown.
+    await user.clear(screen.getByTestId('project-browser-current-path'))
+    await user.type(screen.getByTestId('project-browser-current-path'), '/home/spark/repo')
+    expect(screen.getByTestId('project-browser-select-button')).toBeDisabled()
+    await user.keyboard('{Enter}')
+    await waitFor(() => {
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/home/spark/repo')
+      expect(screen.getByTestId('project-browser-select-button')).toBeEnabled()
     })
   })
 
@@ -1076,7 +1089,7 @@ describe('App shell behavior', () => {
     // Other projects' chats sit in their own collapsed groups.
     const projectTwo = screen.getAllByTestId('chats-project-group').find((group) => group.dataset.projectPath === '/tmp/project-two')!
     await user.click(within(projectTwo).getByTestId('chats-project-toggle'))
-    await user.click(await within(projectTwo).findByRole('button', { name: 'Open thread Thread two' }))
+    await user.click(await within(projectTwo).findByRole('button', { name: 'Thread two' }))
 
     await waitFor(() => {
       expect(useStore.getState().activeProjectPath).toBe('/tmp/project-two')
@@ -1169,7 +1182,7 @@ describe('App shell behavior', () => {
     render(<App />)
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Open thread Thread home' })).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Thread home' })).toBeVisible()
       expect(screen.getByText('Existing assistant reply')).toBeVisible()
     })
 
@@ -1179,7 +1192,7 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('activity-chats'))
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Open thread Thread home' })).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Thread home' })).toBeVisible()
     })
     expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Need follow-up')
     expect(screen.queryByTestId('project-thread-list-loading')).not.toBeInTheDocument()
@@ -1952,11 +1965,14 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('activity-triggers'))
     expect(await screen.findByTestId('triggers-custom-list-loading')).toBeVisible()
     triggersDeferred.resolve(jsonResponse([]))
+    // A desktop says there are none once, beside the list.
     await waitFor(() => {
-      expect(screen.getByText('No custom triggers yet.')).toBeVisible()
+      expect(screen.getByText('No triggers yet')).toBeVisible()
     })
-    // With no protected triggers there is no System section.
+    expect(screen.queryByTestId('triggers-custom-list-loading')).not.toBeInTheDocument()
+    // With no protected triggers there is no System section, and so no Custom heading either.
     expect(screen.queryByRole('heading', { name: 'System' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Custom' })).not.toBeInTheDocument()
   })
 
   it('preserves the run project filter and selected run across view switches', async () => {
@@ -2510,8 +2526,9 @@ describe('App shell behavior', () => {
 
     expect(inspectorPanel.style.width).toBe(`${DEFAULT_EDITOR_SIDEBAR_WIDTH}px`)
 
-    fireEvent.pointerDown(resizeHandle, { clientX: DEFAULT_EDITOR_SIDEBAR_WIDTH })
-    fireEvent.pointerMove(window, { clientX: 360 })
+    // The inspector sits right of the canvas, so dragging the handle left widens it.
+    fireEvent.pointerDown(resizeHandle, { clientX: 1200 - DEFAULT_EDITOR_SIDEBAR_WIDTH })
+    fireEvent.pointerMove(window, { clientX: 1200 - 360 })
     fireEvent.pointerUp(window)
 
     expect(useStore.getState().editorSidebarWidth).toBe(360)
@@ -2820,7 +2837,7 @@ describe('App shell behavior', () => {
     expect(within(editorFlowTree).getByText('Team')).toBeVisible()
     expect(within(editorFlowTree).getByText('Review')).toBeVisible()
 
-    await user.click(within(editorFlowTree).getByRole('button', { name: NESTED_LINEAR_FLOW_NAME }))
+    await user.click(editorFlowTree.querySelector<HTMLElement>(`[data-flow-name="${NESTED_LINEAR_FLOW_NAME}"]`)!)
 
     await waitFor(() => {
       expect(screen.getByTestId('editor-mode-toggle')).toBeVisible()

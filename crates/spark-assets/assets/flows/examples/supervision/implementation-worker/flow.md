@@ -8,6 +8,7 @@ inputs:
 - key: context.request.summary
   label: Request Summary
   type: string
+  multiline: true
   description: Short description of the requested change.
   required: true
 - key: context.request.target_paths

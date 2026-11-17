@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { fetchSpark } from '@/lib/fetchSpark'
+import { extractHttpError } from '@/lib/api/shared'
 import { Button } from '@/components/ui/button'
 import { InlineError } from '@/components/app/inline-error'
 import { ListGroupLabel, SidePanelRow } from '@/components/app/side-panel-row'
@@ -41,10 +42,13 @@ export async function request<T>(project: string, id = '', body?: unknown, actio
     const method = body === undefined ? undefined : action || !id ? 'POST' : 'PATCH'
     const query = project ? `${action.includes('?') ? '&' : '?'}project_path=${encodeURIComponent(project)}` : ''
     const response = await fetchSpark(`/workspace/api/missions${id ? `/${encodeURIComponent(id)}` : ''}${action}${query}`, method ? { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined)
-    const value = await response.json()
-    if (response.status === 409) throw new MissionConflict((action && value.detail) || 'This mission changed on the server. Your edits are preserved. Refresh and reconcile the latest revision before saving.')
-    if (!response.ok) throw new Error(value.detail || 'Mission request failed')
-    return value as T
+    if (response.status === 409) {
+        const value = await response.json().catch(() => null) as { detail?: string } | null
+        throw new MissionConflict((action && value?.detail) || 'This mission changed on the server. Your edits are preserved. Refresh and reconcile the latest revision before saving.')
+    }
+    // Spark's reason when it gives one; a proxy's plain-text error page reads as Spark being unreachable.
+    if (!response.ok) throw await extractHttpError(response, '/workspace/api/missions')
+    return await response.json() as T
 }
 /** Every project's missions in the panel, grouped by state; the selected one in the main area. */
 export function MissionsPanel({ active }: { active: boolean }) {
@@ -223,7 +227,8 @@ export function MissionsPanel({ active }: { active: boolean }) {
             </div>
             {search && <Button type="button" variant="ghost" size="xs" aria-label="Clear search" onClick={() => { filter('', archived); searchInput.current?.focus() }}>Clear</Button>}
         </div>
-        {(error || loadError) && editing === undefined && <InlineError>{error || loadError}</InlineError>}
+        {/* A board that never loaded says why in the main area; here, only a failed refresh of a loaded one. */}
+        {(error || (loaded && loadError)) && editing === undefined && <InlineError>{error || loadError}</InlineError>}
         {groups.map(([status, label]) => {
             const grouped = visible.filter(mission => (mission.status ?? 'draft') === status).sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''))
             if (!grouped.length) return null
@@ -239,7 +244,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
         {/* With no missions at all, the main area's empty state says so once. */}
         {!visible.length && (loaded && !loadError
             ? (search || missions.length ? <p className="px-3 py-1 text-sm text-muted-foreground">{search ? 'No matches' : 'No missions here'}</p> : null)
-            : <p className="px-3 py-1 text-sm text-muted-foreground">{loadError ? 'Missions could not be loaded.' : 'Loading…'}</p>)}
+            : <p className="px-3 py-1 text-sm text-muted-foreground">{loadError ? 'Missions couldn’t load.' : 'Loading…'}</p>)}
         <Button type="button" variant="ghost" size="sm" className="self-start text-muted-foreground" aria-pressed={archived} onClick={() => filter(search, !archived)}>{archived ? 'Hide archived' : 'Show archived'}</Button>
     </div>
     return <ViewLayout view="missions" title="Missions" panel={missionsPanel} selected={editing === undefined ? null : editing?.id ?? newKey} actions={<>
@@ -257,7 +262,18 @@ export function MissionsPanel({ active }: { active: boolean }) {
                         setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)
                 : missing
                     ? <SheetEmpty icon={Target} title="Mission not found">The linked mission isn’t here. It may have been deleted, or its project removed.</SheetEmpty>
-                    : <SheetEmpty icon={Target} title={active && missions.length ? 'No mission selected' : 'No missions yet'}>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with New.'}</SheetEmpty>}
+                    // Until the board loads, it can't say there are no missions.
+                    : !loaded
+                        ? <SheetEmpty data-testid="missions-load-state" icon={Target} title={loadError ? 'Missions couldn’t load' : 'Loading missions…'}
+                            action={loadError ? <Button type="button" variant="outline" size="sm" onClick={() => void refresh()}>Try again</Button> : null}>
+                            {loadError || null}
+                        </SheetEmpty>
+                    : <SheetEmpty icon={Target} title={active && missions.length ? 'No mission selected' : 'No missions yet'}
+                        action={<ProjectPicker heading="New mission in" testId="empty-new-mission-project-picker" defaultProjectPath={defaultProjectChoice(registry)} onPick={path => open(null, null, path)}>
+                            <Button type="button" variant="outline" size="sm" disabled={busy}><Plus aria-hidden="true" />Start a mission</Button>
+                        </ProjectPicker>}>
+                        {active && missions.length ? 'Pick a mission, or start a new one.' : 'A mission keeps a goal and the runs that work toward it together.'}
+                    </SheetEmpty>}
         </section>}
     </ViewLayout>
 }

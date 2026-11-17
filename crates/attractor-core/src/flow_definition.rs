@@ -69,6 +69,10 @@ pub struct FlowInput {
     pub label: String,
     #[serde(default = "default_input_type")]
     pub r#type: String,
+    /// A `string` input written over several lines, such as a bug report:
+    /// launch forms give it a text box in which Enter starts a new line.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub multiline: bool,
     #[serde(default)]
     pub description: String,
     #[serde(default)]

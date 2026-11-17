@@ -1,5 +1,5 @@
 import { LocateFixed, Lock, LockOpen, Map as MapIcon, Maximize, Minus, Plus } from 'lucide-react'
-import { useReactFlow, useStore, useStoreApi, type ReactFlowState } from '@xyflow/react'
+import { MiniMap, useReactFlow, useStore, useStoreApi, type MiniMapProps, type ReactFlowState } from '@xyflow/react'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -11,6 +11,16 @@ type CanvasViewControlsProps = {
     /** Offer the lock that stops nodes being moved, connected or selected (editable canvases only). */
     lockable?: boolean
     className?: string
+}
+
+/** The narrowest toolbar that shows the minimap toggle (`@2xl/canvas-toolbar`, 42rem), so a minimap shown unasked can be hidden. */
+export const MINIMAP_TOGGLE_MIN_WIDTH = 672
+
+const hasMinimapToggleRoom = (state: ReactFlowState) => state.width >= MINIMAP_TOGGLE_MIN_WIDTH
+
+/** The minimap, drawn only while the canvas is wide enough for its toolbar toggle, so it can always be hidden. */
+export function CanvasMiniMap(props: MiniMapProps) {
+    return useStore(hasMinimapToggleRoom) ? <MiniMap pannable zoomable {...props} /> : null
 }
 
 const isInteractiveSelector = (state: { nodesDraggable: boolean; nodesConnectable: boolean; elementsSelectable: boolean }) => (
@@ -70,11 +80,12 @@ export function CanvasViewControls({ minimap, lockable = false, className }: Can
 
     return (
         // On a phone, pinching zooms and a minimap would cover the graph: Fit and Lock stay, so the toolbar keeps to one row.
+        // A narrow editor toolbar drops the zoom buttons (the wheel still zooms) and the minimap; beside the inspector, Lock too.
         <div role="group" aria-label="Zoom" data-testid="canvas-view-controls" className={cn('flex shrink-0 items-center gap-0.5', className)}>
-            <Button type="button" size="icon-sm" variant="ghost" aria-label="Zoom out" title="Zoom out" className="max-sm:hidden" onClick={() => void zoomOut({ duration: 150 })}>
+            <Button type="button" size="icon-sm" variant="ghost" aria-label="Zoom out" title="Zoom out" className="max-sm:hidden @max-2xl/canvas-toolbar:hidden" onClick={() => void zoomOut({ duration: 150 })}>
                 <Minus aria-hidden="true" />
             </Button>
-            <Button type="button" size="icon-sm" variant="ghost" aria-label="Zoom in" title="Zoom in" className="max-sm:hidden" onClick={() => void zoomIn({ duration: 150 })}>
+            <Button type="button" size="icon-sm" variant="ghost" aria-label="Zoom in" title="Zoom in" className="max-sm:hidden @max-2xl/canvas-toolbar:hidden" onClick={() => void zoomIn({ duration: 150 })}>
                 <Plus aria-hidden="true" />
             </Button>
             <Button type="button" size="icon-sm" variant="ghost" aria-label="Fit whole graph" title="Fit whole graph" onClick={() => void fitView({ padding: 0.1, duration: 200 })}>
@@ -105,7 +116,7 @@ export function CanvasViewControls({ minimap, lockable = false, className }: Can
                     aria-label="Lock canvas"
                     title={isInteractive ? 'Lock canvas' : 'Unlock canvas'}
                     aria-pressed={!isInteractive}
-                    className="aria-pressed:bg-accent aria-pressed:text-foreground"
+                    className="aria-pressed:bg-accent aria-pressed:text-foreground lg:@max-xl/canvas-toolbar:hidden"
                     onClick={() => store.setState({
                         nodesDraggable: !isInteractive,
                         nodesConnectable: !isInteractive,
@@ -124,7 +135,7 @@ export function CanvasViewControls({ minimap, lockable = false, className }: Can
                     title={minimap.shown ? 'Hide minimap' : 'Show minimap'}
                     aria-pressed={minimap.shown}
                     data-testid="canvas-minimap-toggle"
-                    className="aria-pressed:bg-accent aria-pressed:text-foreground max-sm:hidden"
+                    className="aria-pressed:bg-accent aria-pressed:text-foreground max-sm:hidden @max-2xl/canvas-toolbar:hidden"
                     onClick={minimap.onToggle}
                 >
                     <MapIcon aria-hidden="true" />

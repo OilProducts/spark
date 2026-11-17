@@ -5,7 +5,9 @@ export function toRunRecord(status: PipelineStatusResponse): RunRecord {
     return {
         run_id: status.run_id,
         title: status.title ?? null,
+        first_launch_input: status.first_launch_input ?? null,
         flow_name: status.flow_name || '',
+        flow_title: status.flow_title ?? null,
         status: status.status,
         outcome: status.outcome ?? null,
         outcome_reason_code: status.outcome_reason_code ?? null,
@@ -22,6 +24,7 @@ export function toRunRecord(status: PipelineStatusResponse): RunRecord {
         reasoning_effort: status.reasoning_effort ?? null,
         started_at: status.started_at || '',
         ended_at: status.ended_at ?? null,
+        idle_ms: status.idle_ms ?? null,
         last_error: status.last_error || '',
         token_usage: typeof status.token_usage === 'number' || status.token_usage === null
             ? status.token_usage

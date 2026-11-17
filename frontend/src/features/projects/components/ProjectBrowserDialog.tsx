@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { ChevronRight, Folder, FolderOpen, House, MoveUpRight } from 'lucide-react'
 
 import {
@@ -11,6 +12,7 @@ import {
 import { InlineError } from '@/components/app/inline-error'
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import type { ProjectBrowseEntryResponse } from '@/lib/workspaceClient'
 
 type ProjectBrowserDialogProps = {
@@ -72,7 +74,12 @@ export function ProjectBrowserDialog({
     onSelectCurrentFolder,
 }: ProjectBrowserDialogProps) {
     const breadcrumbSegments = currentPath ? buildBreadcrumbSegments(currentPath) : []
-    const canSelectCurrentFolder = Boolean(currentPath) && !isLoading
+    // The path box shows where the browser is; type or paste a path there to go straight to it.
+    const [pathDraft, setPathDraft] = useState(currentPath ?? '')
+    useEffect(() => { setPathDraft(currentPath ?? '') }, [currentPath])
+    const typedPath = pathDraft.trim()
+    const typedElsewhere = typedPath.length > 0 && typedPath !== currentPath
+    const canSelectCurrentFolder = Boolean(currentPath) && !isLoading && !typedElsewhere
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -83,9 +90,9 @@ export function ProjectBrowserDialog({
                     className="grid-cols-[minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-3xl"
                 >
                     <DialogHeader className="border-b border-border/70 px-6 py-5">
-                        <DialogTitle>Browse Spark Projects</DialogTitle>
+                        <DialogTitle>Add a project</DialogTitle>
                         <DialogDescription>
-                            Select a directory Spark can access, then confirm the current folder to register it.
+                            Type or paste the project’s folder path, or browse to it, then select it.
                         </DialogDescription>
                     </DialogHeader>
 
@@ -128,12 +135,28 @@ export function ProjectBrowserDialog({
                                         ))
                                     )}
                                 </div>
-                                <p
-                                    data-testid="project-browser-current-path"
-                                    className="break-all rounded-md border border-border/70 px-3 py-2 font-mono text-xs text-foreground"
+                                <form
+                                    className="flex gap-2"
+                                    onSubmit={(event) => {
+                                        event.preventDefault()
+                                        if (typedElsewhere && !isLoading) onBrowse(typedPath)
+                                    }}
                                 >
-                                    {currentPath || 'Resolving directory…'}
-                                </p>
+                                    <Input
+                                        data-testid="project-browser-current-path"
+                                        aria-label="Folder path"
+                                        value={pathDraft}
+                                        onChange={(event) => setPathDraft(event.target.value)}
+                                        placeholder={currentPath ? 'Type or paste a folder path' : 'Resolving directory…'}
+                                        spellCheck={false}
+                                        autoComplete="off"
+                                        autoCapitalize="off"
+                                        className="h-8 min-w-0 flex-1 font-mono text-xs"
+                                    />
+                                    <Button type="submit" variant="outline" size="sm" data-testid="project-browser-go-button" disabled={!typedElsewhere || isLoading}>
+                                        Go
+                                    </Button>
+                                </form>
                             </div>
 
                             <Button
@@ -226,9 +249,10 @@ export function ProjectBrowserDialog({
                                 void onSelectCurrentFolder()
                             }}
                             disabled={!canSelectCurrentFolder}
+                            title={typedElsewhere ? 'Go to the typed folder first' : undefined}
                         >
                             <FolderOpen className="h-4 w-4" />
-                            Select This Folder
+                            Select this folder
                         </Button>
                     </DialogFooter>
                 </DialogContent>

@@ -16,7 +16,7 @@ use crate::context::{
 };
 use crate::error::{Result, RuntimeStorageError};
 use crate::events::{
-    checkpoint_saved_event, cleanup_error_event, log_event, pipeline_completed_event_with_reasons,
+    checkpoint_saved_event, cleanup_error_event, pipeline_completed_event_with_reasons,
     pipeline_failed_event, pipeline_paused_event, pipeline_started_event, runtime_status_event,
     stage_completed_event_with_notes, stage_failed_event, stage_retrying_event,
     stage_started_event, stage_transition_event,
@@ -1856,10 +1856,6 @@ fn finalize_canceled(
     store.append_event(
         paths,
         pipeline_failed_event(run_id, current_node, last_error, node_outcomes.len()),
-    )?;
-    store.append_event(
-        paths,
-        log_event(run_id, "Pipeline Canceled: aborted_by_user"),
     )?;
     store.write_result(paths, &canceled_run_result(run_id, last_error))?;
     Ok(PipelineExecutionResult {

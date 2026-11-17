@@ -1,9 +1,10 @@
-import type { ComponentProps, ReactNode } from 'react'
+import { useState, type ComponentProps, type ReactNode } from 'react'
 import { ChevronRight } from 'lucide-react'
 
 import type { PipelineResultResponse } from '@/lib/attractorClient'
 import type { TokenUsageBucketResponse } from '@/lib/api/attractorApi'
 import { InlineError } from '@/components/app/inline-error'
+import { StatusDot } from '@/components/app/status'
 import { SectionHeading } from '@/components/app/section-heading'
 import { Well } from '@/components/app/well'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
@@ -32,7 +33,7 @@ import {
     runFailureMessage,
     type RunStatusKind,
 } from '../model/runOverviewModel'
-import { visitContextWrites, type RunVisit, type VisitFlowNode } from '../model/visitModel'
+import { formatVisitDuration, humanizeNodeId, parseBranchFailure, visitContextWrites, visitDurationMs, visitToolResult, type RunVisit, type VisitFlowNode } from '../model/visitModel'
 
 type ViewArtifact = (entry: { path: string; viewable: boolean }) => void
 
@@ -47,6 +48,8 @@ interface RunStatusItemProps {
     artifactEntries: ArtifactListEntry[]
     /** The output file list failed to load, so an empty list says nothing. */
     artifactsUnavailable?: boolean
+    /** The output file list is still loading, so an empty list says nothing yet. */
+    artifactsLoading?: boolean
     /** The pending question, answered in place. */
     question: ReactNode
     onSelectVisit: (visit: RunVisit) => void
@@ -67,9 +70,32 @@ export function VisitLink({ visit, onSelect }: { visit: RunVisit; onSelect: (vis
     )
 }
 
+// A command's output ends with its error, so a long one shows its last lines until asked for all.
+const FAILURE_DETAIL_TAIL = 12
+
 /** The runtime's own words for a failure, muted under the plain ones, for whoever debugs the flow. */
-export function FailureDetail({ className, ...props }: ComponentProps<'span'>) {
-    return <span className={cn('block whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground', className)} {...props} />
+export function FailureDetail({ className, children, ...props }: ComponentProps<'div'>) {
+    const [expanded, setExpanded] = useState(false)
+    const lines = typeof children === 'string' ? children.split('\n') : null
+    const hidden = lines && lines.length > FAILURE_DETAIL_TAIL ? lines.length - FAILURE_DETAIL_TAIL : 0
+    return (
+        <div className={cn('flex flex-col items-start gap-1 font-mono text-xs text-muted-foreground', className)} {...props}>
+            {hidden > 0 ? (
+                <button
+                    type="button"
+                    data-testid="failure-detail-toggle"
+                    aria-expanded={expanded}
+                    onClick={() => setExpanded((value) => !value)}
+                    className="font-sans text-xs text-primary underline-offset-4 hover:underline"
+                >
+                    {expanded ? `Show only the last ${FAILURE_DETAIL_TAIL} lines` : `Show ${hidden} earlier lines`}
+                </button>
+            ) : null}
+            <span className={cn('block max-w-full whitespace-pre-wrap break-words', expanded && 'max-h-[60vh] overflow-auto')}>
+                {hidden > 0 && !expanded ? `…\n${lines!.slice(-FAILURE_DETAIL_TAIL).join('\n')}` : children}
+            </span>
+        </div>
+    )
 }
 
 /** A clock time or date, with the full timestamp on hover. */
@@ -112,14 +138,16 @@ export function RunStatusItem({
     resultError,
     artifactEntries,
     artifactsUnavailable = false,
+    artifactsLoading = false,
     question,
     onSelectVisit,
     onViewArtifact,
 }: RunStatusItemProps) {
     const rootVisits = visits.filter((visit) => visit.parentKey === null)
     const lastVisit = rootVisits.at(-1) ?? null
-    const duration = formatDuration(run.started_at, run.ended_at, run.status, now)
+    const duration = formatDuration(run.started_at, run.ended_at, run.status, now, run.idle_ms)
     const link = (visit: RunVisit | null | undefined) => (visit ? <VisitLink visit={visit} onSelect={onSelectVisit} /> : null)
+    const nodeLabel = (nodeId: string) => flowNodes[nodeId]?.label ?? humanizeNodeId(nodeId)
 
     let heading: string
     let meta: ReactNode
@@ -131,8 +159,13 @@ export function RunStatusItem({
         body = question
     } else if (kind === 'failed') {
         const infrastructure = classifyRunFailure(run) === 'infrastructure'
-        const failure = describeFailure(runFailureMessage(run))
-        const stoppedIn = [...rootVisits].reverse().find((visit) => visit.outcome === 'failed') ?? lastVisit
+        const failure = describeFailure(runFailureMessage(run), nodeLabel)
+        const failedVisit = [...rootVisits].reverse().find((visit) => visit.outcome === 'failed')
+        const stoppedIn = failedVisit ?? lastVisit
+        // A fork fails with the branch step whose error ended it.
+        const cause = failedVisit ? visits.find((visit) => visit.parentKey === failedVisit.key && visit.outcome === 'failed') ?? failedVisit : null
+        // A command's error carries only its stderr; a test runner names what failed on stdout, so its end shows too.
+        const output = cause?.kind === 'tool' ? visitToolResult(cause).output : null
         // The header's badge already says Failed; this section says why.
         heading = 'Why it failed'
         meta = (
@@ -147,6 +180,12 @@ export function RunStatusItem({
                         {failure.summary}
                     </p>
                     {failure.detail ? <FailureDetail data-testid="run-status-failure-detail" className="mt-1">{failure.detail}</FailureDetail> : null}
+                    {output ? (
+                        <div data-testid="run-status-failure-output" className="mt-2">
+                            <p className="text-xs font-semibold text-muted-foreground">Output</p>
+                            <FailureDetail>{output}</FailureDetail>
+                        </div>
+                    ) : null}
                 </div>
                 <p data-testid="run-status-stopped-in" className="text-sm text-muted-foreground">
                     {stoppedIn ? <>Stopped in {link(stoppedIn)} after {duration}.</> : <>Stopped after {duration}.</>}
@@ -155,13 +194,39 @@ export function RunStatusItem({
             </>
         )
     } else if (kind === 'running') {
-        const current = [...visits].reverse().find((visit) => visit.outcome === 'running')
+        const running = visits.filter((visit) => visit.outcome === 'running')
+        const step = [...running].reverse().find((visit) => visit.parentKey === null)
+        // A fan-out runs while its branches do; the branches are where the work is.
+        const branches = step ? running.filter((visit) => visit.parentKey === step.key) : []
+        const current = branches.length > 0 ? branches : step ? [step] : []
+        // Counted as the Steps list counts them, branches included.
+        const finished = visits.filter((visit) => visit.outcome !== 'running' && visit.outcome !== 'waiting').length
         heading = 'Running'
         meta = <>for {duration}</>
         body = (
-            <p data-testid="run-status-running" className="text-sm text-muted-foreground">
-                {current ? <>Now in {link(current)}.</> : 'Starting…'}
-            </p>
+            <div className="flex flex-col gap-2 text-sm text-muted-foreground">
+                {current.length > 1 ? (
+                    <>
+                        <p data-testid="run-status-running">{current.length} steps are running at the same time:</p>
+                        <ul className="flex flex-col gap-1">
+                            {current.map((visit) => (
+                                <li key={visit.key} data-testid="run-status-running-step" className="flex items-center gap-2">
+                                    <StatusDot tone="info" />
+                                    {link(visit)}
+                                    <span className="tabular-nums">{formatVisitDuration(visitDurationMs(visit, now))}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    </>
+                ) : (
+                    <p data-testid="run-status-running">{current[0] ? <>Now in {link(current[0])}.</> : 'Starting…'}</p>
+                )}
+                {finished > 0 ? (
+                    <p data-testid="run-status-finished-count">
+                        {finished} of {visits.length} visits finished so far. Pick one to follow its work.
+                    </p>
+                ) : null}
+            </div>
         )
     } else if (kind === 'completed') {
         const source = result?.source_node_id
@@ -206,7 +271,9 @@ export function RunStatusItem({
                         {outcomeReason}
                     </p>
                 ) : null}
-                {resultRestatesReason ? null : <RunResult result={result} resultError={resultError} />}
+                {resultRestatesReason ? null : (
+                    <RunResult result={result} resultError={resultError} plain={Boolean(source && flowNodes[source]?.kind === 'human_gate')} />
+                )}
             </>
         )
     } else {
@@ -219,21 +286,22 @@ export function RunStatusItem({
     // A failed run's own error is shown above; an earlier visit that hit the same error says so
     // instead of repeating it.
     const failureMessage = kind === 'failed' ? runFailureMessage(run) : null
+    const failureCause = parseBranchFailure(failureMessage)?.reason.trim() ?? null
     return (
         <article data-testid="run-status-item" data-status-kind={kind} className="flex flex-col gap-5 pb-6">
             <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h2 className="text-base font-semibold text-foreground">{heading}</h2>
+                <h2 tabIndex={-1} className="rounded-sm text-base font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">{heading}</h2>
                 <span className="text-sm text-muted-foreground">{meta}</span>
             </header>
             {body}
             {kind !== 'waiting' && didNotPass.length > 0 ? (
                 <Well data-testid="run-status-did-not-pass" className="flex flex-col gap-2">
-                    <SectionHeading as="h4" count={didNotPass.length}>{kind === 'failed' ? 'Earlier errors' : 'Errors'}</SectionHeading>
+                    <SectionHeading as="h3" count={didNotPass.length}>{kind === 'failed' ? 'Earlier errors' : 'Errors'}</SectionHeading>
                     <ul className="flex flex-col gap-1.5 text-sm">
                         {didNotPass.map((visit) => {
                             const reason = visit.reason?.trim() || null
-                            const sameAsAbove = reason !== null && reason === failureMessage
-                            const failure = reason && !sameAsAbove ? describeFailure(reason) : null
+                            const sameAsAbove = reason !== null && (reason === failureMessage || reason === failureCause)
+                            const failure = reason && !sameAsAbove ? describeFailure(reason, nodeLabel) : null
                             return (
                                 <li key={visit.key} data-testid="run-status-did-not-pass-row" className="max-w-[72ch]">
                                     {link(visit)}
@@ -252,14 +320,15 @@ export function RunStatusItem({
                 </Well>
             ) : null}
             {kind === 'completed' || kind === 'failed' ? (
-                <RunOutputs run={run} withCommit={kind === 'completed'} artifactEntries={artifactEntries} unavailable={artifactsUnavailable} onViewArtifact={onViewArtifact} />
+                <RunOutputs run={run} withCommit={kind === 'completed'} artifactEntries={artifactEntries} unavailable={artifactsUnavailable} loading={artifactsLoading} onViewArtifact={onViewArtifact} />
             ) : null}
             <RunFacts run={run} now={now} />
         </article>
     )
 }
 
-function RunResult({ result, resultError }: { result: PipelineResultResponse | null; resultError: string | null }) {
+// `plain`: the result is a person's gate note, which reads as written, not as Markdown.
+function RunResult({ result, resultError, plain }: { result: PipelineResultResponse | null; resultError: string | null; plain: boolean }) {
     if (resultError) {
         return <InlineError data-testid="run-result-error">{resultError}</InlineError>
     }
@@ -274,7 +343,9 @@ function RunResult({ result, resultError }: { result: PipelineResultResponse | n
     }
     return (
         <div data-testid="run-result-body" className="max-w-[72ch] text-sm">
-            <ProjectConversationMarkdown content={resultMarkdown(result.body_markdown || '')} keepLineBreaks />
+            {plain
+                ? <p className="whitespace-pre-wrap break-words leading-6">{result.body_markdown.trim()}</p>
+                : <ProjectConversationMarkdown content={resultMarkdown(result.body_markdown || '')} keepLineBreaks />}
             {result.summary_error ? (
                 <p data-testid="run-result-summary-error" className="mt-2 text-xs text-warning">
                     Summary unavailable: {result.summary_error}
@@ -302,12 +373,14 @@ function RunOutputs({
     withCommit,
     artifactEntries,
     unavailable,
+    loading,
     onViewArtifact,
 }: {
     run: RunRecord
     withCommit: boolean
     artifactEntries: ArtifactListEntry[]
     unavailable: boolean
+    loading: boolean
     onViewArtifact: ViewArtifact
 }) {
     const resultFiles = artifactEntries.filter((entry) => (
@@ -346,7 +419,7 @@ function RunOutputs({
     ]
     return (
         <Well data-testid="run-status-outputs" className="flex flex-col gap-2">
-            <SectionHeading as="h4">Outputs</SectionHeading>
+            <SectionHeading as="h3">Outputs</SectionHeading>
             {commit || branch || resultFiles.length > 0 ? (
                 <dl className="space-y-1 text-sm">
                     {rows.map(([label, value]) => (
@@ -359,6 +432,10 @@ function RunOutputs({
             ) : unavailable ? (
                 <p data-testid="run-status-outputs-unavailable" className="text-sm text-muted-foreground">
                     The output files couldn’t load.
+                </p>
+            ) : loading ? (
+                <p data-testid="run-status-outputs-loading" className="text-sm text-muted-foreground">
+                    Loading the output files…
                 </p>
             ) : (
                 <p data-testid="run-status-no-outputs" className="text-sm text-muted-foreground">

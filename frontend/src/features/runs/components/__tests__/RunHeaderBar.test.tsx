@@ -108,10 +108,14 @@ describe('RunHeaderBar', () => {
         expect(screen.getByTestId('run-summary-rerun-button')).toBeVisible()
         // With no visit selected, Continue asks for the node to start from.
         expect(screen.getByTestId('run-summary-continue-button')).toHaveTextContent('Continue from…')
-        // The actions explain themselves without hovering, naming only the ones shown.
+        // The actions explain themselves behind the ? button, naming only the ones shown.
         expect(screen.getByTestId('run-header-actions-help')).toHaveTextContent(
             'Continue from… starts a new run from a step you pick, keeping results so far. Re-run starts over with the same inputs.',
         )
+        expect(screen.getByTestId('run-header-actions-help')).toHaveClass('sr-only')
+        fireEvent.click(screen.getByRole('button', { name: 'What these buttons do' }))
+        expect(screen.getByTestId('run-header-actions-help')).not.toHaveClass('sr-only')
+        fireEvent.click(screen.getByRole('button', { name: 'What these buttons do' }))
         unmount()
 
         const failed = renderHeader(makeRun({ status: 'failed', outcome: 'failure', last_error: 'boom' }), 'Transform')

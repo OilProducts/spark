@@ -20,7 +20,11 @@ import {
 } from '../model/presentation'
 import { Transcript, type TranscriptExpansionState } from '@/components/app/transcript/Transcript'
 import { SheetEmpty } from '@/components/app/view-layout'
-import { MessageSquare } from 'lucide-react'
+import { Check, CircleHelp, Inbox, MessageSquare, X, Zap } from 'lucide-react'
+import { EventDetail, EventLine, MessageRow, messageDelivery } from '@/components/app/transcript/SegmentRows'
+import { isInboxBatch, parseTurn, runKinds } from '@/features/missions/model/missionModel'
+import { describeFailure, flowTitle, isCancelReason, runStatusKind } from '@/features/runs/model/runOverviewModel'
+import { STATUS_LABELS } from '@/features/runs/model/shared'
 import { statusTextClassName } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,6 +35,62 @@ import { formatRunDate } from '@/features/runs/model/runOverviewModel'
 const formatCardTime = (value: string) => formatRunDate(value, Date.now()) || value
 
 type RequestUserInputEntry = Extract<ConversationTimelineEntry, { kind: 'request_user_input' }>
+type MessageEntry = Extract<ConversationTimelineEntry, { kind: 'message' }>
+
+/**
+ * What Spark delivered to the agent between turns: run reports and questions, fired triggers, and
+ * messages from other chats. It reaches the agent as a user turn; here each reads as the event it
+ * reports, with its run linked, rather than as something you said.
+ */
+function InboxEventRows({ entry, onOpenFlowRun }: { entry: MessageEntry; onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void }) {
+    const at = formatCardTime(entry.timestamp)
+    const runLink = (runId: string, flowName: string, label: string) => (
+        <button type="button" className="text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onOpenFlowRun({ run_id: runId, flow_name: flowName })}>
+            {label}
+        </button>
+    )
+    const delivery = messageDelivery(entry)
+    return <>{parseTurn(entry.content).map((event, index) => {
+        const key = `${entry.id}:${index}`
+        switch (event.kind) {
+        case 'result': {
+            const kind = runStatusKind(event.status, false)
+            const Icon = kind === 'completed' ? Check : kind === 'waiting' ? CircleHelp : X
+            // Why it ended, in plain words and in full under the line; a cancel says so already.
+            const reason = event.error && !isCancelReason(event.error) ? describeFailure(event.error).summary : ''
+            return <li key={key} data-testid="project-inbox-event">
+                <EventLine icon={<Icon className={statusTextClassName(runKinds[kind].tone)} />} at={at}>
+                    {runLink(event.runId, event.flowName, event.summary || flowTitle(event.flowName))}{' '}
+                    {event.status === 'waiting' ? 'is waiting on a recovery decision' : `ended · ${STATUS_LABELS[event.status] || event.status}`}
+                </EventLine>
+                {reason ? <EventDetail>{reason}</EventDetail> : null}
+            </li>
+        }
+        case 'question':
+            return <li key={key} data-testid="project-inbox-event">
+                <EventLine icon={<CircleHelp className={statusTextClassName('warning')} />} at={at}>
+                    {event.runId ? runLink(event.runId, event.flowName, flowTitle(event.flowName)) : flowTitle(event.flowName)} asked
+                </EventLine>
+                <EventDetail>{event.prompt}</EventDetail>
+            </li>
+        case 'reply':
+            return <MessageRow key={key} entry={{ ...entry, id: key, content: event.text }} enableCopy formatConversationTimestamp={formatCardTime} />
+        case 'start':
+            return null
+        default: {
+            // A trigger, a mission update or another chat's message: its first line, the rest under it.
+            const [first, ...rest] = event.text.split('\n')
+            const body = rest.join('\n').trim()
+            return <li key={key} data-testid="project-inbox-event">
+                <EventLine icon={event.kind === 'event' && first.startsWith('Trigger fired') ? <Zap /> : <Inbox />} at={at} title={event.text}>{first}</EventLine>
+                {body ? <EventDetail>{body}</EventDetail> : null}
+            </li>
+        }
+        }
+    })}{delivery ? (
+        <li><p data-testid="message-delivery" className={`ml-6.5 text-xs ${entry.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`}>{delivery}</p></li>
+    ) : null}</>
+}
 type PlanEntry = Extract<ConversationTimelineEntry, { kind: 'plan' }>
 
 interface ProjectConversationHistoryProps {
@@ -378,6 +438,10 @@ export function ProjectConversationHistory({
     // Their times read as the messages' do: "3:52 PM" today, a date before.
     const renderEntry = (entry: ConversationTimelineEntry): ReactNode | undefined => {
         switch (entry.kind) {
+        case 'message':
+            return entry.role === 'user' && isInboxBatch(entry.content)
+                ? <InboxEventRows entry={entry} onOpenFlowRun={onOpenFlowRun} />
+                : undefined
         case 'request_user_input':
             return (
                 <RequestUserInputRow

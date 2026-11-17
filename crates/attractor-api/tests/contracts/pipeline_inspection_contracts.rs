@@ -879,6 +879,48 @@ fn journal_page_keeps_parent_and_child_sequence_spaces_independent() {
         .all(|entry| entry["source_scope"] != json!("child")));
 }
 
+/// An untitled run is named by the first input it was given in the order its
+/// flow declares them, not in the order of their keys.
+#[test]
+fn the_first_declared_launch_input_names_an_untitled_run() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let mut flow = simple_flow();
+    flow["inputs"] = json!([
+        {"key": "context.request.target", "label": "Target"},
+        {"key": "context.request.details", "label": "Details", "multiline": true}
+    ]);
+    let service = AttractorApiService::new(settings.clone());
+    let start = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
+        run_id: Some("run-named".to_string()),
+        flow_name: Some(crate::install_flow(&settings, flow)),
+        working_directory: temp.path().join("project").to_string_lossy().to_string(),
+        model: Some("compat-model".to_string()),
+        launch_context: Some(
+            [
+                (
+                    "context.request.details".to_string(),
+                    json!("Line one\nLine two"),
+                ),
+                ("context.request.target".to_string(), json!("api-server")),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        ..PipelineStartRequest::default()
+    });
+    assert_eq!(start.body["status"], json!("started"));
+    let listed = service.list_runs();
+    let run = listed.body["runs"]
+        .as_array()
+        .expect("runs")
+        .iter()
+        .find(|run| run["run_id"] == json!("run-named"))
+        .expect("listed run");
+    assert_eq!(run["first_launch_input"], json!("api-server"));
+}
+
 fn simple_flow() -> Value {
     json!({
         "schema_version": "2",

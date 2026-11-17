@@ -8,6 +8,7 @@ inputs:
 - key: context.request.objective
   label: Bug Report
   type: string
+  multiline: true
   description: The observed defect, including reproduction hints and expected behavior when known.
   required: true
 - key: context.request.target_paths

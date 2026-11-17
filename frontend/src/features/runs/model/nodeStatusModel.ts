@@ -1,4 +1,15 @@
 import type { NodeStatus } from '@/store'
+import type { VisitOutcome } from './visitModel'
+
+/** The graph status a visit's outcome shows; an error the run continued past is still a failure. */
+export const VISIT_NODE_STATUSES: Record<VisitOutcome, NodeStatus> = {
+    completed: 'success',
+    error: 'failed',
+    failed: 'failed',
+    interrupted: 'interrupted',
+    running: 'running',
+    waiting: 'waiting',
+}
 
 interface BuildRunNodeStatusesArgs {
     completedNodes: string[]
@@ -8,6 +19,8 @@ interface BuildRunNodeStatusesArgs {
     gateNodeId: string | null
     isRunActive: boolean
     runStatus: string | null
+    /** Each node's status as its latest visit in the run's Steps says, branches included. */
+    visitStatuses?: Record<string, NodeStatus>
 }
 
 const TERMINAL_NODE_STATUSES = new Set<NodeStatus>(['success', 'failed'])
@@ -16,7 +29,8 @@ const TERMINAL_NODE_STATUSES = new Set<NodeStatus>(['success', 'failed'])
 // the per-node status map the run graph renders. Precedence, lowest to highest:
 // checkpoint completions, per-node checkpoint statuses (an errored node sits in
 // completed_nodes too, so the error must override), live stage statuses, the
-// active current node, the failed run's terminal node, and a pending gate.
+// active current node, the steps the run's visits say were interrupted, the failed run's
+// terminal node, and a pending gate.
 export function buildRunNodeStatuses({
     completedNodes,
     nodeOutcomes,
@@ -25,6 +39,7 @@ export function buildRunNodeStatuses({
     gateNodeId,
     isRunActive,
     runStatus,
+    visitStatuses = {},
 }: BuildRunNodeStatusesArgs): Record<string, NodeStatus> {
     const statuses: Record<string, NodeStatus> = {}
     for (const nodeId of completedNodes) {
@@ -47,6 +62,7 @@ export function buildRunNodeStatuses({
     ) {
         statuses[currentNodeId] = 'running'
     }
+    Object.assign(statuses, visitStatuses)
     if (runStatus === 'failed' && currentNodeId) {
         statuses[currentNodeId] = 'failed'
     }

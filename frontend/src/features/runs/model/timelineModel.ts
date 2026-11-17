@@ -1,5 +1,6 @@
 import { parseFormQuestion } from '@/lib/forms'
 import { ApiHttpError } from '@/lib/attractorClient'
+import { describeFailure, isCancelReason } from './runOverviewModel'
 import type {
     PendingInterviewGate,
     PendingInterviewGateGroup,
@@ -127,7 +128,7 @@ const timelineSeverityFromEvent = (type: string, payload: Record<string, unknown
         return payload.outcome === 'failure' ? 'warning' : 'info'
     }
     if (type === 'PipelineFailed' || type === 'StageFailed') {
-        return 'error'
+        return type === 'PipelineFailed' && isCancelReason(payload.error) ? 'warning' : 'error'
     }
     if (type === 'StageRetrying') {
         return 'warning'
@@ -179,6 +180,9 @@ const interviewOutcomeProvenanceFromPayload = (
 // flow label (ids in a child flow resolve against that flow, so the caller gets the scope).
 type NodeLabel = (nodeId: string, scope: TimelineSourceScope) => string
 
+// `afterCancel`: a user asked the run to cancel before this event, so work ending in an error was
+// stopped by that cancel, as the Steps list says, not failed.
+
 const timelineSummaryFromEvent = (
     type: string,
     payload: Record<string, unknown>,
@@ -187,6 +191,7 @@ const timelineSummaryFromEvent = (
     sourceParentNodeId: string | null,
     sourceFlowName: string | null,
     nodeLabel: NodeLabel = (id) => id,
+    afterCancel = false,
 ): string | null => {
     const sourcePrefix = timelineSourcePrefix(
         sourceScope,
@@ -212,7 +217,8 @@ const timelineSummaryFromEvent = (
     }
     if (type === 'PipelineFailed') {
         const error = asTrimmedString(payload.error)
-        return error ? `${sourcePrefix}Run failed: ${error}` : `${sourcePrefix}Run failed`
+        if (isCancelReason(error)) return `${sourcePrefix}Run canceled`
+        return error ? `${sourcePrefix}Run failed: ${failureLines(error, (id) => nodeLabel(id, sourceScope))}` : `${sourcePrefix}Run failed`
     }
     if (type === 'PipelinePaused') {
         return `${sourcePrefix}Run paused at ${step(asTrimmedString(payload.current_node) ?? nodeId, 'checkpoint')}`
@@ -232,14 +238,15 @@ const timelineSummaryFromEvent = (
     }
     if (type === 'StageTransition') {
         // A decision ID reads as the canvas labels its route: `ready_for_review` as "ready for review".
-        const decision = asTrimmedString(payload.decision)?.replace(/_/g, ' ') ?? 'unknown'
+        // A fork's move to its join carries no decision.
+        const decision = asTrimmedString(payload.decision)?.replace(/_/g, ' ')
         const target = step(asTrimmedString(payload.target), 'unknown')
         const visit = asFiniteNumber(payload.visit)
-        return `${sourcePrefix}${node} → ${target} on ${decision}${visit !== null && visit > 1 ? ` (visit ${visit})` : ''}`
+        return `${sourcePrefix}${node} → ${target}${decision ? ` on ${decision}` : ''}${visit !== null && visit > 1 ? ` (visit ${visit})` : ''}`
     }
     if (type === 'StageFailed') {
         const error = asTrimmedString(payload.error)
-        return error ? `${sourcePrefix}${node} failed: ${error}` : `${sourcePrefix}${node} failed`
+        return error ? `${sourcePrefix}${node} failed: ${failureLines(error, (id) => nodeLabel(id, sourceScope))}` : `${sourcePrefix}${node} failed`
     }
     if (type === 'StageRetrying') {
         const attempt = asFiniteNumber(payload.attempt)
@@ -253,11 +260,26 @@ const timelineSummaryFromEvent = (
             ? `${sourcePrefix}Parallel fan-out started (${branchCount} branches)`
             : `${sourcePrefix}Parallel fan-out started`
     }
+    if (type === 'runtime' && (payload.status === 'canceled' || payload.status === 'cancel_requested')) {
+        return `${sourcePrefix}${payload.status === 'canceled' ? 'Run canceled' : 'Cancel requested'}`
+    }
+    if (type === 'ParallelBranchNodeStarted' || type === 'ParallelBranchNodeCompleted') {
+        const branchNode = step(asTrimmedString(payload.branch_node_id) ?? asTrimmedString(payload.branch), 'branch step')
+        if (type === 'ParallelBranchNodeStarted') return `${sourcePrefix}${branchNode} started`
+        const outcome = asTrimmedString(payload.outcome)
+        if (afterCancel && outcome === 'error') return `${sourcePrefix}${branchNode} stopped by the cancel`
+        return outcome && outcome !== 'completed' && outcome !== 'success'
+            ? `${sourcePrefix}${branchNode} completed (${outcome})`
+            : `${sourcePrefix}${branchNode} completed`
+    }
     if (type === 'ParallelBranchStarted') {
         return `${sourcePrefix}Parallel branch ${step(asTrimmedString(payload.branch) ?? nodeId, 'unknown')} started`
     }
     if (type === 'ParallelBranchCompleted') {
         const branchName = step(asTrimmedString(payload.branch) ?? nodeId, 'unknown')
+        if (afterCancel && payload.success === false) return `${sourcePrefix}Parallel branch ${branchName} stopped by the cancel`
+        // A branch its fork stopped, when another branch ended the fan-out, did not fail.
+        if (payload.status === 'canceled') return `${sourcePrefix}Parallel branch ${branchName} stopped`
         const success = payload.success === true ? 'success' : payload.success === false ? 'failed' : null
         return success
             ? `${sourcePrefix}Parallel branch ${branchName} completed (${success})`
@@ -266,6 +288,14 @@ const timelineSummaryFromEvent = (
     if (type === 'ParallelCompleted') {
         const successCount = asFiniteNumber(payload.success_count)
         const failureCount = asFiniteNumber(payload.failure_count)
+        if (successCount !== null && failureCount !== null && afterCancel) {
+            return `${sourcePrefix}Parallel fan-out stopped (${successCount} of ${successCount + failureCount} branches finished)`
+        }
+        const stopped = asFiniteNumber(payload.canceled_count) ?? 0
+        if (successCount !== null && failureCount !== null && stopped > 0) {
+            const failed = failureCount - stopped
+            return `${sourcePrefix}Parallel fan-out stopped (${successCount} of ${successCount + failureCount} branches finished: ${failed > 0 ? `${failed} failed, ` : ''}${stopped} stopped)`
+        }
         if (successCount !== null && failureCount !== null) {
             return `${sourcePrefix}Parallel fan-out completed (${successCount} success, ${failureCount} failed)`
         }
@@ -298,8 +328,17 @@ const timelineSummaryFromEvent = (
     return null
 }
 
-/** A journal entry's line, with steps named by `nodeLabel`; kinds the UI does not word keep the runtime's summary. */
-const journalEntrySummary = (event: TimelineEventEntry, nodeLabel: NodeLabel): string => (
+// A failure in plain words first; the runtime's own text, such as a command's output, on the lines after.
+const failureLines = (error: string, nodeLabel: (nodeId: string) => string): string => {
+    const { summary, detail } = describeFailure(error, nodeLabel)
+    return detail ? `${summary}\n${detail}` : summary
+}
+
+/**
+ * A journal entry's line, with steps named by `nodeLabel`; kinds the UI does not word keep the
+ * runtime's summary. `afterCancel`: the entry follows a cancel request.
+ */
+const journalEntrySummary = (event: TimelineEventEntry, nodeLabel: NodeLabel, afterCancel = false): string => (
     timelineSummaryFromEvent(
         event.type,
         event.payload,
@@ -308,17 +347,64 @@ const journalEntrySummary = (event: TimelineEventEntry, nodeLabel: NodeLabel): s
         event.sourceParentNodeId,
         event.sourceFlowName,
         nodeLabel,
+        afterCancel,
     ) ?? event.summary
 )
 
+/** The run status a lifecycle event reports, which the run record's status entry beside it echoes. */
+const lifecycleStatus = (event: TimelineEventEntry): string | null => {
+    switch (event.type) {
+    case 'PipelineStarted':
+    case 'PipelineRetryStarted':
+        return 'running'
+    case 'CancelRequested':
+        return 'cancel_requested'
+    case 'PipelinePaused':
+        return 'paused'
+    case 'PipelineCompleted':
+        return 'completed'
+    case 'PipelineFailed':
+        return isCancelReason(event.payload.error) ? 'canceled' : 'failed'
+    default:
+        return null
+    }
+}
+
 /**
- * The journal's entries, oldest first, as its list shows them. A gate's answer is recorded twice:
+ * The journal's entries, oldest first, as its list shows them, without the lines another one beside
+ * them already says. A gate's answer is recorded twice:
  * as delivered to the gate (with its question ID, by decision ID) and as the gate took it (by its
  * label); the list keeps the latter once it is there.
  */
 const journalEntriesShown = (journal: TimelineEventEntry[]): TimelineEventEntry[] => {
     const isDelivery = (event: TimelineEventEntry) => event.type === 'InterviewCompleted' && Boolean(event.questionId ?? event.payload.question_id)
+    const sameSource = (left: TimelineEventEntry, right: TimelineEventEntry) => (
+        left.sourceScope === right.sourceScope && left.sourceParentNodeId === right.sourceParentNodeId
+    )
     return journal.filter((event, index) => {
+        // A status change of the run record ("Run status: canceled") echoes the lifecycle event
+        // written with it; it shows only when no such event is beside it.
+        if (event.type === 'runtime') {
+            return !journal.slice(Math.max(0, index - 3), index + 4).some((other) => (
+                sameSource(other, event) && lifecycleStatus(other) === event.payload.status
+            ))
+        }
+        // A run ending at an exit saves the checkpoint it saved on arriving there again; one line says it.
+        if (event.type === 'CheckpointSaved') {
+            const previous = journal.slice(0, index).reverse().find((other) => sameSource(other, event) && other.type !== 'runtime')
+            return !(previous?.type === 'CheckpointSaved' && previous.payload.current_node === event.payload.current_node)
+        }
+        // A step that simply completed says so with the route it took next, a moment later: "Tally → Climb".
+        if (event.type === 'StageCompleted') {
+            const outcome = asTrimmedString(event.payload.outcome)
+            if (outcome && outcome !== 'completed' && outcome !== 'success') return true
+            const next = journal.slice(index + 1).find((other) => sameSource(other, event) && other.type !== 'runtime' && other.type !== 'CheckpointSaved')
+            return !(next?.type === 'StageTransition' && next.nodeId === event.nodeId)
+        }
+        // A branch whose only step is its first node says so already as the branch.
+        if (event.type === 'ParallelBranchNodeStarted' || event.type === 'ParallelBranchNodeCompleted') {
+            return event.payload.branch_node_id !== event.payload.branch
+        }
         if (!isDelivery(event)) return true
         const next = journal.slice(index + 1).find((later) => (
             later.nodeId === event.nodeId

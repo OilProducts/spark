@@ -206,6 +206,7 @@ export function useRunTimeline({
         groupedPendingInterviewGates,
         hasOlderTimelineEvents: journalState.hasOlder,
         isTimelineLive,
+        isTimelineLoading: journalState.status === 'idle' || journalState.status === 'loading',
         isTimelineLoadingOlder: journalState.isLoadingOlder,
         latestRetryTimelineEvent: journalState.latestRetryEntry,
         latestTimelineEvent: latestRunStateTimelineEvent,

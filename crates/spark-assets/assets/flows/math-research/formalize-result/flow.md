@@ -12,11 +12,13 @@ inputs:
 - key: context.request.statement
   label: Statement
   type: string
+  multiline: true
   description: The mathematical claim to formalize, stated precisely in informal language.
   required: true
 - key: context.request.reference
   label: Reference
   type: string
+  multiline: true
   description: Optional source for the result and its proof (paper, book, URL, or a proof sketch).
   required: false
 defaults:

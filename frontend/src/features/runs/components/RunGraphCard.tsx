@@ -1,14 +1,15 @@
 import { buildDiagnosticMaps, normalizeGraphAttrs } from '@/state/store-helpers'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { RefreshCw, SquarePen } from 'lucide-react'
 import {
     Background,
     MarkerType,
-    MiniMap,
     ReactFlow,
     ReactFlowProvider,
+    type Dimensions,
     type Edge,
     type Node,
+    type NodeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
@@ -16,6 +17,7 @@ import { isAbortError } from '@/lib/abortError'
 import { useStore, type NodeStatus } from '@/store'
 import {
     buildHydratedFlowGraph,
+    CanvasMiniMap,
     CanvasSessionModeProvider,
     CanvasViewControls,
     ChildFlowExpansionToggle,
@@ -46,8 +48,8 @@ const clampGraphPaneHeight = (height: number) => (
     Math.min(MAX_GRAPH_PANE_HEIGHT, Math.max(MIN_GRAPH_PANE_HEIGHT, Math.round(height)))
 )
 
-// The view controls sit in the card header and the minimap shows only when asked for,
-// so nothing covers the graph when it opens.
+// The view controls sit in the card header and the minimap shows only for a graph too big to
+// show whole, or when asked for, so nothing covers a graph that shows all there is.
 // The sides leave room for self-loops, which reach past their node's box.
 const FRAME_PADDING = { top: 16, right: 40, bottom: 16, left: 40 } as const
 const MINIMAP_SIZE = { width: 120, height: 84 }
@@ -70,6 +72,8 @@ type RunGraphCanvasInnerProps = {
     onSelectNode: (nodeId: string | null) => void
     paneHeight: number | 'fill'
     showMinimap: boolean
+    /** Told, as each loaded graph opens, whether some of it is out of view. */
+    onFramed: (overflows: boolean) => void
 }
 
 function RunGraphCanvasInner({
@@ -81,13 +85,14 @@ function RunGraphCanvasInner({
     onSelectNode,
     paneHeight,
     showMinimap,
+    onFramed,
 }: RunGraphCanvasInnerProps) {
     const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const activeLoadRef = useRef(0)
     const paneRef = useRef<HTMLDivElement>(null)
     const frame = useReadableFraming(paneRef)
-    // Open on the step that needs attention: the selected one, else the one waiting, running or failed.
+    // Open on the step that needs attention: the selected one, else the one waiting, running, failed or interrupted.
     const focusNodeIdRef = useRef<string | null>(null)
     const matchingVariant = runDetailSession?.graphExpanded === (runDetailSession?.expandChildFlows ?? false)
     const nodes = matchingVariant ? runDetailSession?.graphNodes ?? EMPTY_GRAPH_NODES : EMPTY_GRAPH_NODES
@@ -104,23 +109,35 @@ function RunGraphCanvasInner({
             : edge
     )), [graphEdges, takenRoutes])
 
+    // React Flow measures each step but keeps the size to itself unless it is handed back;
+    // the minimap draws only steps whose size it is given.
+    const [measured, setMeasured] = useState<ReadonlyMap<string, Dimensions>>(new Map())
+    const onNodesChange = useCallback((changes: NodeChange[]) => {
+        const sized = changes.flatMap((change) => (
+            change.type === 'dimensions' && change.dimensions ? [[change.id, change.dimensions] as const] : []
+        ))
+        if (sized.length > 0) setMeasured((current) => new Map([...current, ...sized]))
+    }, [])
+
     const decoratedNodes = useMemo(() => (
         nodes.map((node) => {
             const status = nodeStatusesById[node.id] ?? 'idle'
             const selected = node.id === selectedNodeId
-            if ((node.data?.status ?? 'idle') === status && Boolean(node.selected) === selected) {
+            const size = measured.get(node.id)
+            if ((node.data?.status ?? 'idle') === status && Boolean(node.selected) === selected && node.measured === size) {
                 return node
             }
             return {
                 ...node,
                 selected,
+                measured: size,
                 data: {
                     ...node.data,
                     status,
                 },
             }
         })
-    ), [nodes, nodeStatusesById, selectedNodeId])
+    ), [nodes, nodeStatusesById, selectedNodeId, measured])
 
     useEffect(() => {
         const statusIds = Object.keys(nodeStatusesById)
@@ -128,12 +145,15 @@ function RunGraphCanvasInner({
             ?? statusIds.find((id) => nodeStatusesById[id] === 'waiting')
             ?? statusIds.find((id) => nodeStatusesById[id] === 'running')
             ?? statusIds.find((id) => nodeStatusesById[id] === 'failed')
+            ?? statusIds.find((id) => nodeStatusesById[id] === 'interrupted')
             ?? null
     })
 
     // Each loaded graph opens whole when it stays readable, else readable around its focus.
     useEffect(() => {
-        frame(nodes, { padding: FRAME_PADDING, focusNodeId: focusNodeIdRef.current })
+        const fits = frame(nodes, { padding: FRAME_PADDING, focusNodeId: focusNodeIdRef.current })
+        if (fits !== null) onFramed(!fits)
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- framed once per loaded graph
     }, [nodes, frame])
 
     useEffect(() => {
@@ -242,6 +262,7 @@ function RunGraphCanvasInner({
             <ReactFlow
                 id="run-graph"
                 nodes={decoratedNodes}
+                onNodesChange={onNodesChange}
                 edges={edges}
                 nodesDraggable={false}
                 nodesConnectable={false}
@@ -264,7 +285,7 @@ function RunGraphCanvasInner({
                 proOptions={{ hideAttribution: true }}
             >
                 {showMinimap ? (
-                    <MiniMap pannable zoomable position="bottom-right" style={MINIMAP_SIZE} />
+                    <CanvasMiniMap position="bottom-right" style={MINIMAP_SIZE} />
                 ) : null}
                 <Background gap={24} size={1} />
             </ReactFlow>
@@ -300,7 +321,9 @@ export function RunGraphCard({
         return session?.graphExpanded === session?.expandChildFlows ? session?.diagnostics ?? EMPTY_DIAGNOSTICS : EMPTY_DIAGNOSTICS
     })
     const [refreshToken, setRefreshToken] = useState(0)
-    const [showMinimap, setShowMinimap] = useState(false)
+    const [minimapChoice, setMinimapChoice] = useState<boolean | null>(null)
+    const [graphOverflows, setGraphOverflows] = useState(false)
+    const showMinimap = minimapChoice ?? graphOverflows
     const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const graphStatus = runDetailSession?.graphStatus ?? 'idle'
@@ -326,9 +349,11 @@ export function RunGraphCard({
             className={fillHeight ? 'flex h-full min-h-0 flex-col gap-2 border-0 py-0' : 'gap-2 border-0 py-0'}
         >
             <CardHeader className="px-0">
-                {/* One row when there is room: which graph, then how it is viewed. */}
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                    <h2 className="shrink-0 whitespace-nowrap text-base font-semibold text-foreground">
+                {/* One row: which graph, then how it is viewed. Narrow, it drops the zoom buttons and
+                    minimap as the editor's toolbar does (the wheel still zooms), Open in editor its words,
+                    and its heading, which the pressed Graph toggle beside it already says. */}
+                <div className="@container/canvas-toolbar flex flex-wrap items-center gap-x-3 gap-y-2">
+                    <h2 className="shrink-0 whitespace-nowrap text-base font-semibold text-foreground @max-md/canvas-toolbar:sr-only">
                         Run graph
                     </h2>
                     <ChildFlowExpansionToggle
@@ -338,7 +363,7 @@ export function RunGraphCard({
                     />
                     <div className="ml-auto flex items-center gap-2">
                         <div className="flex items-center gap-0.5">
-                            <CanvasViewControls minimap={{ shown: showMinimap, onToggle: () => setShowMinimap((shown) => !shown) }} />
+                            <CanvasViewControls minimap={{ shown: showMinimap, onToggle: () => setMinimapChoice(!showMinimap) }} />
                             <Button
                                 onClick={() => setRefreshToken((current) => current + 1)}
                                 data-testid="run-graph-refresh-button"
@@ -359,7 +384,8 @@ export function RunGraphCard({
                                 disabled={Boolean(openInEditorDisabledReason)}
                                 title={openInEditorDisabledReason ?? 'Open this flow in the Editor with the selected node focused'}
                             >
-                                Open in editor
+                                <SquarePen aria-hidden="true" />
+                                <span className="@max-xl/canvas-toolbar:sr-only">Open in editor</span>
                             </Button>
                         ) : null}
                     </div>
@@ -412,6 +438,7 @@ export function RunGraphCard({
                                 onSelectNode={onSelectNode}
                                 paneHeight={fillHeight ? 'fill' : paneHeight}
                                 showMinimap={showMinimap}
+                                onFramed={setGraphOverflows}
                             />
                     </CanvasSessionModeProvider>
                 </div>
@@ -421,6 +448,9 @@ export function RunGraphCard({
                     role="separator"
                     aria-label="Resize run graph"
                     aria-orientation="horizontal"
+                    aria-valuenow={paneHeight}
+                    aria-valuemin={MIN_GRAPH_PANE_HEIGHT}
+                    aria-valuemax={MAX_GRAPH_PANE_HEIGHT}
                     tabIndex={0}
                     onPointerDown={(event) => {
                         event.preventDefault()

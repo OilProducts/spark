@@ -75,7 +75,9 @@ const group = (projectPath: string) => screen.getAllByTestId('chats-project-grou
 it('groups chats by project with Home first and open, others by recent use and collapsed', async () => {
     renderChats()
     expect(screen.getAllByTestId('chats-project-group').map((entry) => entry.dataset.projectPath)).toEqual([HOME, '/work/gone', '/work/busy'])
-    expect(await within(group(HOME)).findByRole('button', { name: 'Open thread Chat home-1' })).toBeVisible()
+    expect(await within(group(HOME)).findByRole('button', { name: 'Chat home-1' })).toBeVisible()
+    // The row's age is its description, so its name stays the visible title.
+    expect(within(group(HOME)).getByRole('button', { name: 'Chat home-1' })).toHaveAccessibleDescription(/\S/)
     expect(within(group('/work/busy')).getByTestId('chats-project-toggle')).toHaveAttribute('aria-expanded', 'false')
     expect(within(group('/work/busy')).queryByTestId('chats-chat-row')).not.toBeInTheDocument()
 })
@@ -108,6 +110,12 @@ it('names the project a first message starts a chat in, and opens the group of a
     // Another chat opened from outside the list, as the Overview or the Inbox do.
     act(() => useStore.getState().updateProjectSessionState('/work/busy', { conversationId: 'busy-3' }))
     await waitFor(() => expect(within(group('/work/busy')).getByTestId('chats-project-toggle')).toHaveAttribute('aria-expanded', 'true'))
+    // An older chat than the recent five, as search opens one, gets its row below them, marked open.
+    act(() => useStore.getState().updateProjectSessionState('/work/busy', { conversationId: 'busy-0' }))
+    await waitFor(() => expect(within(group('/work/busy')).getAllByTestId('chats-chat-row')).toHaveLength(6))
+    expect(within(group('/work/busy')).getAllByTestId('chats-chat-row').at(-1)).toHaveAttribute('data-conversation-id', 'busy-0')
+    expect(within(group('/work/busy')).getAllByTestId('chats-chat-row').at(-1)).toHaveAttribute('aria-current', 'true')
+    expect(within(group('/work/busy')).getByTestId('chats-project-more')).toHaveTextContent('1 more')
 })
 
 it('shows a project\'s recent chats with a "more" link to its project page', async () => {
@@ -180,7 +188,7 @@ it('asks which project "+ New" starts a chat in, Home first then recent projects
 it('names the open thread in the header and switches its mode from the compact control', async () => {
     const user = userEvent.setup()
     renderChats()
-    await user.click(await within(group(HOME)).findByRole('button', { name: 'Open thread Chat home-1' }))
+    await user.click(await within(group(HOME)).findByRole('button', { name: 'Chat home-1' }))
     // The snapshot's title replaces the list's once it loads.
     await waitFor(() => expect(screen.getByTestId('chat-title')).toHaveTextContent('New thread'))
     const mode = await screen.findByTestId('project-active-chat-mode-badge')
@@ -221,11 +229,11 @@ it.each([
     const user = userEvent.setup()
     renderChats()
     await user.click(within(group('/work/busy')).getByTestId('chats-project-toggle'))
-    await user.click(await within(group('/work/busy')).findByRole('button', { name: 'Open thread Chat busy-6' }))
+    await user.click(await within(group('/work/busy')).findByRole('button', { name: 'Chat busy-6' }))
     const input = () => screen.getByTestId('project-ai-conversation-input')
     await waitFor(() => expect(input()).toBeEnabled())
     await user.type(input(), 'Draft for busy-6')
-    await user.click(await within(group(HOME)).findByRole('button', { name: 'Open thread Chat home-1' }))
+    await user.click(await within(group(HOME)).findByRole('button', { name: 'Chat home-1' }))
     await waitFor(() => expect(useStore.getState().activeProjectPath).toBe(HOME))
     expect(input()).toHaveValue('')
     await user.click(within(group('/work/busy')).getAllByTestId('chats-chat-row').find((row) => row.dataset.conversationId === returnTo)!)
@@ -237,11 +245,11 @@ it('empties the fallback chat after deleting a project\'s drafted chat while ano
     const user = userEvent.setup()
     renderChats()
     await user.click(within(group('/work/busy')).getByTestId('chats-project-toggle'))
-    await user.click(await within(group('/work/busy')).findByRole('button', { name: 'Open thread Chat busy-6' }))
+    await user.click(await within(group('/work/busy')).findByRole('button', { name: 'Chat busy-6' }))
     const input = () => screen.getByTestId('project-ai-conversation-input')
     await waitFor(() => expect(input()).toBeEnabled())
     await user.type(input(), 'Draft for busy-6')
-    await user.click(await within(group(HOME)).findByRole('button', { name: 'Open thread Chat home-1' }))
+    await user.click(await within(group(HOME)).findByRole('button', { name: 'Chat home-1' }))
     await waitFor(() => expect(useStore.getState().activeProjectPath).toBe(HOME))
     await user.click(within(group('/work/busy')).getByTestId('project-thread-delete-busy-6'))
     await user.click(await screen.findByRole('button', { name: 'Delete thread' }))
@@ -265,11 +273,11 @@ it.each([
     })(vi.mocked(fetch).getMockImplementation()!))
     render(<DialogProvider><HomeSessionController /><ActivityBar /><ProjectsPanel /></DialogProvider>)
     await user.click(within(group('/work/busy')).getByTestId('chats-project-toggle'))
-    await user.click(await within(group('/work/busy')).findByRole('button', { name: 'Open thread Chat busy-6' }))
+    await user.click(await within(group('/work/busy')).findByRole('button', { name: 'Chat busy-6' }))
     const input = () => screen.getByTestId('project-ai-conversation-input')
     await waitFor(() => expect(input()).toBeEnabled())
     await user.type(input(), 'Draft for busy-6')
-    await user.click(await within(group(HOME)).findByRole('button', { name: 'Open thread Chat home-1' }))
+    await user.click(await within(group(HOME)).findByRole('button', { name: 'Chat home-1' }))
     await waitFor(() => expect(useStore.getState().activeProjectPath).toBe(HOME))
     await user.click(screen.getByTestId('attention-bell'))
     await user.click(await screen.findByTestId('attention-bell-item'))
@@ -315,7 +323,7 @@ describe('a long chat', () => {
     const openHomeChat = async () => {
         const user = userEvent.setup()
         renderChats()
-        await user.click(await within(group(HOME)).findByRole('button', { name: 'Open thread Chat home-1' }))
+        await user.click(await within(group(HOME)).findByRole('button', { name: 'Chat home-1' }))
         await screen.findByText('Message 3')
         return user
     }
@@ -523,7 +531,7 @@ describe('a long chat', () => {
         expect(screen.queryByText('Message 3')).not.toBeInTheDocument()
         await user.type(screen.getByTestId('project-ai-conversation-input'), 'Anyone there?')
         expect(screen.getByTestId('project-ai-conversation-send-button')).toBeDisabled()
-        expect(within(group(HOME)).queryByRole('button', { name: 'Open thread Chat home-1' })).not.toBeInTheDocument()
+        expect(within(group(HOME)).queryByRole('button', { name: 'Chat home-1' })).not.toBeInTheDocument()
     })
 
     it('discards the chat and shows it unavailable when it is gone after a reset', async () => {

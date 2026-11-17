@@ -146,6 +146,16 @@ export async function runFlowInProject(page: Page, projectPath: string) {
   await picker.locator(`[data-testid="project-picker-item"][data-project-path="${projectPath}"]`).click()
 }
 
+/** Opens a view from the activity bar; a phone's row keeps Triggers, Flows, Roles and Settings under More. */
+export async function openActivity(page: Page, testId: string) {
+  if ((page.viewportSize()?.width ?? 1440) < 640 && ['activity-triggers', 'activity-flows', 'activity-roles', 'activity-settings'].includes(testId)) {
+    await page.getByTestId('activity-more').click()
+    await page.getByTestId(`${testId}-more`).click()
+  } else {
+    await page.getByTestId(testId).click()
+  }
+}
+
 export async function gotoWithRegisteredProject(page: Page, projectPath: string) {
   await stubProjectRegistration(page, projectPath)
   await page.goto('/')
@@ -289,4 +299,4 @@ export const pageTurns = (page: Json): Json[] => (page.turn_ids ?? [])
 
 /** A flow's row in the Flows list. Its Delete button's name also contains the flow's name, so that button is left out. */
 export const flowRow = (page: Page, flowName: string) =>
-    page.getByRole('button', { name: flowName }).and(page.locator(':not([aria-label^="Delete "])'))
+    page.locator(`button[data-flow-name="${flowName}"]`)

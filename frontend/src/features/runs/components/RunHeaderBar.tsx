@@ -1,4 +1,5 @@
-import { useEffect, useId } from 'react'
+import { useEffect, useId, useState } from 'react'
+import { CircleHelp } from 'lucide-react'
 
 import { StatusPill } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
@@ -13,7 +14,7 @@ import {
     formatTimestamp,
     runRecordTone,
 } from '../model/shared'
-import { formatCompactCount, formatRunDate, flowTitle as flowTitleFromName, runTitle, runTrigger } from '../model/runOverviewModel'
+import { formatCompactCount, formatRunDate, runFlowTitle, runTitle, runTrigger } from '../model/runOverviewModel'
 import { openTrigger } from '@/app/useAttention'
 import { useStore } from '@/store'
 import { normalizeProjectPath } from '@/lib/projectPaths'
@@ -23,6 +24,9 @@ import { normalizeProjectPath } from '@/lib/projectPaths'
 // status item.
 
 const CANCELING_STATUSES = new Set(['cancel_requested', 'abort_requested'])
+
+// Whether the recovery buttons' explanations show, kept as you move between runs.
+let actionsHelpShown = false
 
 // The run whose heading takes focus when it shows: a launched run's detail loads after its launcher closes.
 let headingFocusRunId: string | null = null
@@ -67,6 +71,7 @@ export function RunHeaderBar({
     const inactive = canContinueRun(run.status)
     const retry = canRetryRun(run.status)
     const helpId = useId()
+    const [helpShown, setHelpShown] = useState(actionsHelpShown)
     useEffect(() => {
         if (headingFocusRunId !== run.run_id) return
         headingFocusRunId = null
@@ -80,15 +85,16 @@ export function RunHeaderBar({
     const commit = run.git_commit?.trim()
     const facts = [
         when,
-        formatDuration(run.started_at, run.ended_at, run.status, now),
-        ...(typeof tokens === 'number' ? [`${formatCompactCount(tokens)} tokens${run.token_usage_breakdown?.coverage === 'partial' ? ' (partial)' : ''}`] : []),
+        formatDuration(run.started_at, run.ended_at, run.status, now, run.idle_ms),
+        // A run with no model work yet, such as tools only, has no tokens to report.
+        ...(typeof tokens === 'number' && tokens > 0 ? [`${formatCompactCount(tokens)} tokens${run.token_usage_breakdown?.coverage === 'partial' ? ' (partial)' : ''}`] : []),
         ...(commit ? [commit.slice(0, 7)] : []),
     ].filter((fact) => fact && fact !== '—')
     // The title is the one the run list shows. The flow's own title joins the breadcrumb
     // only under a title of the run's own; a title made from the flow's name says it already.
     const title = runTitle(run)
-    const flow = flowTitle?.trim() || flowTitleFromName(run.flow_name)
-    const showFlow = title !== flowTitleFromName(run.flow_name) && flow.toLowerCase() !== title.toLowerCase()
+    const flow = flowTitle?.trim() || runFlowTitle(run)
+    const showFlow = title !== runFlowTitle(run) && flow.toLowerCase() !== title.toLowerCase()
     const tone = runRecordTone(run)
     const trigger = runTrigger(run)
     const triggerProject = run.project_path || run.working_directory
@@ -107,12 +113,13 @@ export function RunHeaderBar({
                         {showFlow ? <span data-testid="run-header-flow">{flow}</span> : null}
                     </p>
                 ) : null}
+                {/* The title wraps, so a phone shows it whole; only a very long one is clamped. */}
                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                     <h1
                         id={headingId(run.run_id)}
                         data-testid="run-header-title"
                         tabIndex={-1}
-                        className="min-w-0 truncate rounded-sm text-xl font-semibold tracking-tight text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="line-clamp-3 min-w-0 rounded-sm text-xl font-semibold tracking-tight text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring"
                         title={`${title} · ${run.run_id}`}
                     >
                         {title}
@@ -136,9 +143,9 @@ export function RunHeaderBar({
                         </span>
                     ) : null}
                 </p>
-                {/* The recovery buttons' explanations, visible without hovering; each button is described by its sentence. */}
+                {/* The recovery buttons' explanations, shown by the ? button; each button is always described by its sentence. */}
                 {inactive ? (
-                    <p data-testid="run-header-actions-help" className="text-xs text-muted-foreground">
+                    <p id={`${helpId}-help`} data-testid="run-header-actions-help" className={helpShown ? 'text-xs text-muted-foreground' : 'sr-only'}>
                         {retry ? <><span id={`${helpId}-retry`}>Retry picks up from the failed step.</span>{' '}</> : null}
                         <span id={`${helpId}-continue`}>
                             {selectedVisitLabel
@@ -190,7 +197,9 @@ export function RunHeaderBar({
                         {selectedVisitLabel ? 'Continue from here' : 'Continue from…'}
                     </Button>
                 ) : null}
+                {/* The ? goes with the last button, so a narrow screen never wraps it onto a line of its own. */}
                 {inactive ? (
+                    <span className="flex items-center gap-2">
                     <Button
                         type="button"
                         data-testid="run-summary-rerun-button"
@@ -202,6 +211,21 @@ export function RunHeaderBar({
                     >
                         Re-run
                     </Button>
+                    <Button
+                        type="button"
+                        data-testid="run-header-actions-help-toggle"
+                        aria-label="What these buttons do"
+                        title="What these buttons do"
+                        aria-expanded={helpShown}
+                        aria-controls={`${helpId}-help`}
+                        onClick={() => { actionsHelpShown = !helpShown; setHelpShown(!helpShown) }}
+                        variant="ghost"
+                        size="icon-sm"
+                        className="text-muted-foreground"
+                    >
+                        <CircleHelp />
+                    </Button>
+                    </span>
                 ) : null}
             </div>
         </header>

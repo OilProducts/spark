@@ -12,11 +12,13 @@ inputs:
 - key: context.request.problem
   label: Problem
   type: string
+  multiline: true
   description: The open problem or conjecture to explore, with any known constraints or prior results worth starting from.
   required: true
 - key: context.request.focus
   label: Focus
   type: string
+  multiline: true
   description: Optional focus for this session (a case, a bound, a construction family, a computational budget).
   required: false
 defaults:

@@ -1,7 +1,7 @@
 import { cn } from '@/lib/utils'
 import { useNow } from '@/lib/useNow'
 import { useEffect, useState, type ComponentProps, type ReactNode } from 'react'
-import { Check, MessageSquare } from 'lucide-react'
+import { Check, FolderPlus, MessageSquare } from 'lucide-react'
 
 import { SectionHeading } from '@/components/app/section-heading'
 import { StatusDot, statusTextClassName, type StatusTone } from '@/components/app/status'
@@ -14,8 +14,8 @@ import { triggerKey } from '@/lib/api/triggersApi'
 import { missionTime } from '@/features/missions/model/missionModel'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
-import { flowTitle, formatRunDate, runTitle } from '@/features/runs/model/runOverviewModel'
-import { formatDuration, formatRunStatusLabel, isCompletedFailure } from '@/features/runs/model/shared'
+import { formatRunDate, runFlowTitle, runTitle } from '@/features/runs/model/runOverviewModel'
+import { formatDuration, formatRunStatusLabel, formatTimestamp, isCompletedFailure } from '@/features/runs/model/shared'
 import { openRunFlowDialog } from '@/features/launch'
 import { useOverviewChats } from './hooks/useOverviewChats'
 import {
@@ -142,13 +142,13 @@ function SourceLink({ source }: { source: Source | null }) {
 const itemTitle = (item: Started) => (item.kind === 'run' ? runTitle(item.run) : item.mission.fields.title || 'Untitled mission')
 // A run's flow is worth naming under its title only when the title doesn't already say it.
 const distinctFlowTitle = (item: Started & { kind: 'run' }) => {
-    const flow = flowTitle(item.run.flow_name)
+    const flow = runFlowTitle(item.run)
     return flow.toLowerCase() === itemTitle(item).toLowerCase() ? null : flow
 }
 const openItem = (item: Started) => (item.kind === 'run' ? openRun(item.id) : openMission(item.id, item.mission.project_path))
 const itemProject = (item: Started) => (item.kind === 'run' ? item.run.project_path : item.mission.project_path)
 const itemDuration = (item: Started) => (item.kind === 'run'
-    ? formatDuration(item.run.started_at, item.run.ended_at)
+    ? formatDuration(item.run.started_at, item.run.ended_at, undefined, undefined, item.run.idle_ms)
     : formatDuration(missionTime(item.mission.started_at), missionTime(item.mission.closed?.at)))
 
 /** Pick up where you left off: the chat you were last in, what needs you, what finished, and what to start. */
@@ -223,6 +223,28 @@ export function OverviewPanel() {
                         </ProjectPicker>
                     </div>
                 </header>
+
+                {/* A fresh install has nothing to pick up: point at the first step. */}
+                {listsLoaded && (loaded || Object.keys(registry).length === 0) && runs.length === 0 && missions.length === 0 && chats.length === 0 ? (
+                    <Well data-testid="overview-get-started" className="flex flex-wrap items-center justify-between gap-3 py-3.5 text-sm">
+                        <p className="min-w-0 flex-1 basis-64">
+                            <span className="font-medium">New to Spark?</span>{' '}
+                            <span className="text-muted-foreground">Add the folder of a project for agents to work in, then start a chat or run a flow from the buttons above.</span>
+                        </p>
+                        <Button
+                            type="button"
+                            size="sm"
+                            data-testid="overview-add-project"
+                            onClick={() => {
+                                useStore.getState().setViewMode('home')
+                                window.dispatchEvent(new Event('spark:add-project'))
+                            }}
+                        >
+                            <FolderPlus aria-hidden="true" />
+                            Add a project
+                        </Button>
+                    </Well>
+                ) : null}
 
                 <Section testId="overview-needs-you" heading="Needs you" count={loadedAttention ? attention.length + failingTriggers.length : undefined}>
                     {/* A failed check is not an all-clear: say so, and keep what was last known. */}
@@ -330,7 +352,7 @@ export function OverviewPanel() {
                                         />
                                     </span>
                                     {item.kind === 'run' ? (
-                                        <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground" title="Running for">{formatDuration(item.run.started_at, null, 'running', now)}</span>
+                                        <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground" title="Running for">{formatDuration(item.run.started_at, null, 'running', now, item.run.idle_ms)}</span>
                                     ) : null}
                                     <span className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{when(item.at, now)}</span>
                                 </li>
@@ -372,7 +394,7 @@ export function OverviewPanel() {
                                             <MarkDot mark={item.mark} />
                                             <TitleLink onClick={() => openItem(item)}>{itemTitle(item)}</TitleLink>
                                             <span className="ml-auto flex shrink-0 items-baseline text-xs text-muted-foreground">
-                                                {item.kind === 'mission' ? 'Mission' : flowTitle(item.run.flow_name)} · {when(item.at, now)}
+                                                {item.kind === 'mission' ? 'Mission' : runFlowTitle(item.run)} · {when(item.at, now)}
                                                 <ExceptionWord item={item} />
                                             </span>
                                         </li>
@@ -431,7 +453,8 @@ export function OverviewPanel() {
                                     </span>
                                     {isNew ? <span data-testid="overview-finished-new" className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">New</span> : null}
                                     <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground max-sm:hidden">{itemDuration(item)}</span>
-                                    <span className="min-w-12 shrink-0 text-right text-xs text-muted-foreground">{when(item.at, now)}</span>
+                                    {/* When it finished, said so: Runs lists when each started. */}
+                                    <span className="min-w-12 shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground" title={item.at ? `Finished ${formatTimestamp(new Date(item.at).toISOString())}` : undefined}>{item.at ? `ended ${when(item.at, now)}` : ''}</span>
                                 </li>
                             ))}
                         </ul>

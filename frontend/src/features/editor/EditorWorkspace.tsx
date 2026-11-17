@@ -2,7 +2,6 @@ import { completePreferenceInteraction } from '@/features/settings/services/clie
 import { flowLoadFailed } from './model/flowLoadFailure'
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { ReactFlowProvider } from '@xyflow/react'
-import { ArrowLeft } from 'lucide-react'
 
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -12,8 +11,7 @@ import { EditorGraphBridgeProvider } from './EditorGraphBridgeContext'
 import { Sidebar } from './Sidebar'
 import { selectFlowSettingsOpen } from './GraphSettings'
 import { FlowsPanelActions, FlowsPanelList, useFlowCatalogPanel } from './FlowsPanel'
-import { ViewLayout } from '@/components/app/view-layout'
-import { Button } from '@/components/ui/button'
+import { ListBackLink, ViewLayout } from '@/components/app/view-layout'
 import { CanvasSessionModeProvider } from '@/features/workflow-canvas'
 import { flowTitle } from '@/features/runs/model/runOverviewModel'
 
@@ -41,7 +39,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     const editorSidebarWidth = useStore((state) => state.editorSidebarWidth)
     const setEditorSidebarWidth = useStore((state) => state.setEditorSidebarWidth)
     const activeFlow = useStore((state) => state.activeFlow)
-    // A phone shows the open flow under the flow list, so it names the flow it opened.
+    // The open flow is named above its canvas: in the toolbar, or on a phone under the flow list.
     const openFlowTitle = useStore((state) => state.flowMetadata.title?.trim()) || flowTitle(activeFlow)
     // A flow that failed to load has no inspector to resize.
     const hasActiveFlow = useStore((state) => Boolean(state.activeFlow) && !flowLoadFailed(state.flowLoadFailure, state.activeFlow, state.activeProjectPath))
@@ -64,13 +62,6 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
         return () => observer.disconnect()
     }, [])
     const sidebarWidth = clampEditorSidebarWidth(editorSidebarWidth, workspaceWidth)
-
-    // Stacked, the flow list is above the open flow: go back up to it, onto the open flow's row.
-    const showFlowList = () => {
-        const panel = workspaceRef.current?.closest('[data-testid="flows-view"]')?.querySelector<HTMLElement>('[data-testid="side-panel"]')
-        panel?.scrollIntoView({ block: 'start' })
-        panel?.querySelector<HTMLElement>('[aria-current="true"]')?.focus()
-    }
 
     const persistSidebarWidth = () => completePreferenceInteraction({ editor_sidebar_width: useStore.getState().editorSidebarWidth })
 
@@ -98,14 +89,15 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     }
 
     const onEditorSidebarResizeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+        // The inspector sits right of the canvas: moving its edge left widens it.
         if (event.key === 'ArrowLeft') {
             event.preventDefault()
-            adjustEditorSidebarWidth(-24)
+            adjustEditorSidebarWidth(24)
             return
         }
         if (event.key === 'ArrowRight') {
             event.preventDefault()
-            adjustEditorSidebarWidth(24)
+            adjustEditorSidebarWidth(-24)
             return
         }
         const containerWidth = workspaceRef.current?.getBoundingClientRect().width || 0
@@ -157,7 +149,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
             if (!resizeState || containerWidth <= 0) {
                 return
             }
-            const nextWidth = resizeState.startWidth + (event.clientX - resizeState.startX)
+            const nextWidth = resizeState.startWidth - (event.clientX - resizeState.startX)
             setEditorSidebarWidth(clampEditorSidebarWidth(nextWidth, containerWidth))
         }
 
@@ -195,10 +187,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
             >
                 {isNarrowViewport && activeFlow ? (
                     <div className="flex shrink-0 items-baseline gap-2 px-3 pt-2">
-                        <Button type="button" variant="link" size="sm" className="h-auto shrink-0 p-0 text-muted-foreground" onClick={showFlowList}>
-                            <ArrowLeft aria-hidden="true" />
-                            All flows
-                        </Button>
+                        <ListBackLink>All flows</ListBackLink>
                         <span aria-hidden="true" className="text-muted-foreground">/</span>
                         <h2 data-testid="editor-open-flow-title" className="min-w-0 truncate text-sm font-semibold text-foreground">{openFlowTitle}</h2>
                     </div>
@@ -206,13 +195,19 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                 <ReactFlowProvider>
                     <CanvasSessionModeProvider mode="editor">
                         <EditorGraphBridgeProvider>
-                            {isNarrowViewport || !showInspector ? null : <Sidebar desktopWidthPx={sidebarWidth} />}
+                            <div data-testid="editor-panel" className="flex-1 min-h-0 min-w-0 w-full h-full">
+                                <Editor isActive={isActive} title={isNarrowViewport ? null : openFlowTitle} flowList={{ failed: catalog.loadFailed, retry: () => void catalog.refreshFlows() }} />
+                            </div>
+                            {/* The inspector opens right of the canvas, so the graph stays where it was. */}
                             {!isNarrowViewport && hasActiveFlow && !isFilesMode && showInspector ? (
                                 <div
                                     data-testid="editor-sidebar-resize-handle"
                                     role="separator"
                                     aria-label="Resize editor sidebar"
                                     aria-orientation="vertical"
+                                    aria-valuenow={sidebarWidth}
+                                    aria-valuemin={MIN_EDITOR_SIDEBAR_WIDTH}
+                                    aria-valuemax={Math.max(sidebarWidth, clampEditorSidebarWidth(MAX_EDITOR_SIDEBAR_WIDTH, workspaceWidth))}
                                     tabIndex={0}
                                     onPointerDown={onEditorSidebarResizePointerDown}
                                     onKeyDown={onEditorSidebarResizeKeyDown}
@@ -223,11 +218,8 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                                     <span className="h-16 w-1 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/70" />
                                 </div>
                             ) : null}
-                            <div data-testid="editor-panel" className="flex-1 min-h-0 min-w-0 w-full h-full">
-                                <Editor isActive={isActive} flowList={{ failed: catalog.loadFailed, retry: () => void catalog.refreshFlows() }} />
-                            </div>
                             {/* Stacked, the canvas comes first, right under the flow list, and the inspector follows. */}
-                            {isNarrowViewport && showInspector ? <Sidebar desktopWidthPx={sidebarWidth} /> : null}
+                            {showInspector ? <Sidebar desktopWidthPx={sidebarWidth} /> : null}
                         </EditorGraphBridgeProvider>
                     </CanvasSessionModeProvider>
                 </ReactFlowProvider>

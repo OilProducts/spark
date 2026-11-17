@@ -27,11 +27,11 @@ import { RunContinuationPanel } from './components/RunContinuationPanel'
 import { focusRunHeading, RunHeaderBar } from './components/RunHeaderBar'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { formatDuration, runHasEnded, type RunRecord } from './model/shared'
-import { buildRunNodeStatuses } from './model/nodeStatusModel'
+import { buildRunNodeStatuses, VISIT_NODE_STATUSES } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
 import { buildRunContextOverview, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
 import type { StatusTone } from '@/components/app/status'
-import { SheetEmpty, ViewLayout } from '@/components/app/view-layout'
+import { ListBackLink, SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
 import { Play, Plus, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -42,7 +42,7 @@ import { requestNavigation } from '@/state/workspaceSlice'
 const EMPTY_NODE_STATUSES = {}
 const EMPTY_FLOW_NODES: Record<string, VisitFlowNode> = {}
 // The rail (16rem + gap) plus details and graph columns of 28rem each.
-const RAIL_BESIDE_GRAPH_MIN_WIDTH = 1200
+const GRAPH_COLUMN_MIN_WIDTH = 1200
 
 // The rail's first row; a dot only when the run needs attention.
 const STATUS_ROWS: Record<RunStatusKind, { label: string; tone?: StatusTone }> = {
@@ -142,7 +142,8 @@ export function RunsPanel() {
     const isSelectedRunLive = selectedRun ? !runHasEnded(selectedRun.status) : false
     // The editor opens a run's flow from the run's own project.
     const runProjectPath = selectedRun?.project_path ?? null
-    const flowCatalog = useFlowCatalog(runProjectPath, Boolean(selectedRunId))
+    // Reloaded as each run opens and as Runs is shown again, so a flow created meanwhile opens in the editor.
+    const flowCatalog = useFlowCatalog(runProjectPath, isRunsView ? selectedRunId : null)
     const selectedRunTimelineId = selectedRun?.run_id ?? null
     const {
         artifactDownloadHref,
@@ -160,6 +161,7 @@ export function RunsPanel() {
         contextStatus,
         degradedDetailPanels,
         fetchContext,
+        isArtifactLoading,
         isArtifactViewerLoading,
         pendingQuestionSnapshots,
         resultData,
@@ -185,6 +187,7 @@ export function RunsPanel() {
         groupedPendingInterviewGates,
         hasOlderTimelineEvents,
         isTimelineLive,
+        isTimelineLoading,
         isTimelineLoadingOlder,
         loadOlderTimelineEvents,
         pendingGateActionError,
@@ -319,6 +322,11 @@ export function RunsPanel() {
         window.addEventListener('keydown', onKeyDown)
         return () => window.removeEventListener('keydown', onKeyDown)
     }, [])
+    // The graph marks each step as its latest visit in Steps ends.
+    const visitStatuses = useMemo(
+        () => Object.fromEntries(visits.map((visit) => [visit.nodeId, VISIT_NODE_STATUSES[visit.outcome]])),
+        [visits],
+    )
     const runNodeStatuses = useMemo(() => buildRunNodeStatuses({
         completedNodes: completedNodesSnapshot ?? [],
         nodeOutcomes: checkpointNodeOutcomes,
@@ -327,8 +335,10 @@ export function RunsPanel() {
         gateNodeId,
         isRunActive: isSelectedRunActive,
         runStatus: selectedRunStatus,
+        visitStatuses,
     }), [
         checkpointNodeOutcomes,
+        visitStatuses,
         completedNodesSnapshot,
         currentNodeForSummary,
         gateNodeId,
@@ -454,9 +464,9 @@ export function RunsPanel() {
             fillHeight={!isNarrowViewport}
         />
     ) : null
-    // With the graph open, the Steps rail keeps its own column only when the details and the
-    // graph still get a readable column each; otherwise it sits above the details.
-    const railBeside = runBodyWidth >= RAIL_BESIDE_GRAPH_MIN_WIDTH
+    // With the graph open, it takes a column of its own only when the details still get a readable
+    // one beside it; otherwise it sits above the details, and the Steps rail keeps its full height.
+    const graphColumn = graphCard && (isNarrowViewport || runBodyWidth >= GRAPH_COLUMN_MIN_WIDTH) ? graphCard : null
 
     const runFlowAction = (
         <Button type="button" variant="outline" size="sm" data-testid="runs-empty-run-flow-button" onClick={() => openRunFlowDialog({ projectPath: useStore.getState().runsListSession.projectFilter })}>
@@ -472,14 +482,15 @@ export function RunsPanel() {
                 <>
                     <Button
                         type="button"
-                        variant="ghost"
-                        size="icon-sm"
+                        variant="outline"
+                        size="sm"
                         data-testid="runs-run-flow-button"
-                        aria-label="Run a flow"
+                        aria-label="New run"
                         title="Run a flow"
                         onClick={() => openRunFlowDialog({ projectPath: useStore.getState().runsListSession.projectFilter })}
                     >
                         <Plus aria-hidden="true" />
+                        New
                     </Button>
                 </>
             )}
@@ -497,6 +508,7 @@ export function RunsPanel() {
             {/* The view header sits at the top of the sheet, under one hairline. */}
             {selectedRun && (
                 <div className={`border-b border-border ${isNarrowViewport ? 'px-4 py-3' : 'px-6 py-4'}`}>
+                    {isNarrowViewport ? <div className="mb-2"><ListBackLink>All runs</ListBackLink></div> : null}
                     <RunHeaderBar
                         run={selectedRun}
                         now={now}
@@ -596,7 +608,7 @@ export function RunsPanel() {
                     >
                         <div className={isNarrowViewport
                             ? undefined
-                            : cn('flex min-h-0 min-w-0 flex-col', !graphCard ? 'flex-[1_1_0%]' : railBeside ? 'flex-[1_1_17.5rem]' : 'flex-[2_1_0%]')}
+                            : cn('flex min-h-0 min-w-0 flex-col', graphColumn ? 'flex-[1_1_17.5rem]' : 'flex-[1_1_0%]')}
                         >
                         <div
                             ref={detailsScrollRef}
@@ -614,18 +626,23 @@ export function RunsPanel() {
                                 isNarrowViewport={isNarrowViewport}
                                 isLive={isTimelineLive && isSelectedRunActive}
                                 timelineError={timelineError}
+                                stepsLoading={isTimelineLoading}
                                 selectedNodeId={selectedNodeId}
                                 onSelectNode={selectNode}
                                 onOpenRun={openRun}
                                 artifactEntries={artifactEntries}
                                 onViewArtifact={openArtifact}
                                 graph={{ shown: showGraph, onToggle: () => setShowGraph((current) => !current) }}
-                                railAbove={Boolean(graphCard) && !railBeside}
+                                graphPane={graphColumn ? undefined : graphCard}
                                 statusRow={{
                                     ...STATUS_ROWS[statusKind],
-                                    detail: formatDuration(selectedRun.started_at, selectedRun.ended_at, selectedRun.status, now),
+                                    detail: formatDuration(selectedRun.started_at, selectedRun.ended_at, selectedRun.status, now, selectedRun.idle_ms),
                                 }}
-                                contextKeyCount={contextError ? null : contextOverview.namespaces.reduce((count, namespace) => count + namespace.keys.length, 0)}
+                                contextKeyCount={contextError
+                                    ? null
+                                    : isTimelineLoading || (contextStatus !== 'ready' && !contextData)
+                                        ? 'loading'
+                                        : contextOverview.namespaces.reduce((count, namespace) => count + namespace.keys.length, 0)}
                                 renderStatus={(selectVisit) => (
                                     <RunStatusItem
                                         run={selectedRun}
@@ -637,6 +654,7 @@ export function RunsPanel() {
                                         resultError={resultError}
                                         artifactEntries={artifactEntries}
                                         artifactsUnavailable={Boolean(artifactError)}
+                                        artifactsLoading={isArtifactLoading && artifactEntries.length === 0}
                                         onSelectVisit={selectVisit}
                                         onViewArtifact={openArtifact}
                                         question={
@@ -694,13 +712,9 @@ export function RunsPanel() {
                         {/* After the details, so on a phone a question to answer comes first and the
                             rail's Graph toggle sits just above the graph; beside them it never moves the
                             Steps rail. A continuation picks its restart node on it. */}
-                        {graphCard ? (
-                        <div className={isNarrowViewport
-                            ? undefined
-                            // With the rail above the details, the graph takes the larger share.
-                            : cn('flex min-h-0 min-w-0 flex-col', railBeside ? 'flex-[1_1_0%]' : 'flex-[3_1_0%]')}
-                        >
-                            {graphCard}
+                        {graphColumn ? (
+                        <div className={isNarrowViewport ? undefined : 'flex min-h-0 min-w-0 flex-[1_1_0%] flex-col'}>
+                            {graphColumn}
                         </div>
                         ) : null}
                     </div>

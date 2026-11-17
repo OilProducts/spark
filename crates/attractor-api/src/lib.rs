@@ -1949,6 +1949,7 @@ impl AttractorApiService {
             };
         let mut record = RunRecord::new(&run_id, &working_directory);
         record.flow_name = flow_name.clone();
+        record.flow_title = trimmed_option(Some(flow.title.as_str()));
         record.working_directory = working_directory.clone();
         record.project_path = project_path;
         record.model = display_model.clone();
@@ -1971,6 +1972,7 @@ impl AttractorApiService {
         record.plan_id = trimmed_option(request.plan_id.as_deref());
         record.root_run_id = Some(run_id.clone());
         record.launch_context = Some(launch_context.values().clone());
+        record.first_launch_input = first_launch_input(&flow.inputs, launch_context.values());
         record.title = trimmed_option(request.title.as_deref())
             .map(|title| title.chars().take(RUN_TITLE_MAX_CHARS).collect());
         record.execution_lock = execution_lock.clone();
@@ -4530,16 +4532,9 @@ fn list_run_records(
                 }
             };
             // Launch inputs can be large; the runs list stays lean and the
-            // detail endpoint remains the only place they are exposed. The
-            // first one, cut to a line, names a run that has no title.
+            // detail endpoint remains the only place they are exposed.
             if let Some(object) = value.as_object_mut() {
-                if let Some(input) = object
-                    .remove("launch_context")
-                    .as_ref()
-                    .and_then(first_launch_input)
-                {
-                    object.insert("first_launch_input".to_string(), json!(input));
-                }
+                object.remove("launch_context");
             }
             if let Some(project_path_filter) = project_path_filter.as_deref() {
                 let project_path = value
@@ -4586,12 +4581,17 @@ fn placeholder_run_row(run_id: &str, status: &str) -> Value {
     })
 }
 
-/// The first non-empty launch input, cut to a line, which names a run that
-/// has no title in run lists.
-pub fn first_launch_input(launch_context: &Value) -> Option<String> {
-    let input = launch_context
-        .as_object()?
-        .values()
+/// The first non-empty text launch input, cut to a line, which names a run
+/// that has no title: the flow's declared inputs in their order, then any
+/// other key.
+fn first_launch_input(
+    inputs: &[attractor_core::FlowInput],
+    launch_context: &attractor_core::ContextMap,
+) -> Option<String> {
+    let input = inputs
+        .iter()
+        .filter_map(|input| launch_context.get(&input.key))
+        .chain(launch_context.values())
         .filter_map(Value::as_str)
         .map(str::trim)
         .find(|value| !value.is_empty())?;

@@ -143,6 +143,35 @@ describe('Overview last chat', () => {
         await waitFor(() => expect(screen.getByTestId('overview-last-chat-title').textContent).toBe('Ship the fix'))
         expect(screen.queryByTestId('overview-chats-error')).toBeNull()
     })
+
+    it('says the chats could not load when Spark is down before any project has loaded', async () => {
+        reset()
+        const initialRegistry = useStore.getState().projectRegistry
+        onTestFinished(() => { chatsDown = false; useStore.setState({ projectRegistry: initialRegistry }) })
+        act(() => { useStore.setState({ projectRegistry: {} }) })
+        chatsDown = true
+        render(<OverviewPanel />)
+        expect(await screen.findByTestId('overview-chats-error')).toHaveTextContent('Couldn’t load your chats.')
+        expect(screen.queryByText('Loading chats…')).toBeNull()
+    })
+})
+
+describe('Overview last chat, before the projects list', () => {
+    it('keeps loading, not "No chats yet", while chats wait on the projects they belong to', async () => {
+        reset()
+        const initialRegistry = useStore.getState().projectRegistry
+        const initialCache = useStore.getState().homeConversationCache
+        onTestFinished(() => { chats = []; useStore.setState({ projectRegistry: initialRegistry, homeConversationCache: initialCache }) })
+        act(() => { useStore.setState({ projectRegistry: {} }) })
+        chats = [{ conversation_id: 'chat-1', project_path: '/work/app', title: 'Ship the fix', created_at: '', updated_at: new Date().toISOString(), revision: 1, launched_run_ids: [] }]
+        render(<OverviewPanel />)
+        await waitFor(() => expect(Object.keys(useStore.getState().homeConversationCache.summariesByProjectPath)).toContain('/work/app'))
+        expect(screen.getByText('Loading chats…')).toBeInTheDocument()
+        expect(screen.queryByText('No chats yet.')).toBeNull()
+
+        act(() => { useStore.getState().hydrateProjectRegistry([{ directoryPath: '/work/app', displayName: 'app', isDefault: false, isFavorite: false, lastAccessedAt: null }]) })
+        await waitFor(() => expect(screen.getByTestId('overview-last-chat-title').textContent).toBe('Ship the fix'))
+    })
 })
 
 describe('Overview needs you seen', () => {
@@ -336,5 +365,31 @@ describe('Overview finished since', () => {
         expect(screen.queryByTestId('overview-runs-error')).toBeNull()
         expect(screen.getByTestId('overview-running-empty')).toBeInTheDocument()
         expect(screen.getByTestId('overview-finished').textContent).toContain('Nothing has finished')
+    })
+})
+
+describe('Overview on a fresh install', () => {
+    it('points at adding a project until anything has run, and opens the folder chooser from Chats', async () => {
+        reset()
+        setRuns([])
+        setMissions([])
+        // Earlier tests leave chats in the shared thread-list cache.
+        act(() => { useStore.setState({ homeConversationCache: useStore.getInitialState().homeConversationCache }) })
+        const initialMode = useStore.getState().viewMode
+        onTestFinished(() => useStore.setState({ viewMode: initialMode }))
+        const onAddProject = vi.fn()
+        window.addEventListener('spark:add-project', onAddProject)
+        onTestFinished(() => window.removeEventListener('spark:add-project', onAddProject))
+        const view = render(<OverviewPanel />)
+
+        expect(await screen.findByTestId('overview-get-started')).toHaveTextContent('New to Spark?')
+        fireEvent.click(screen.getByRole('button', { name: 'Add a project' }))
+        expect(useStore.getState().viewMode).toBe('home')
+        expect(onAddProject).toHaveBeenCalledTimes(1)
+
+        view.unmount()
+        setRuns([finishedRun('run-1', 1)])
+        render(<OverviewPanel />)
+        expect(screen.queryByTestId('overview-get-started')).toBeNull()
     })
 })

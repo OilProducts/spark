@@ -939,14 +939,11 @@ fn resync_required(
 }
 
 fn public_run_record(record: attractor_core::RunRecord) -> Value {
-    let first_launch_input = record
-        .launch_context
-        .as_ref()
-        .and_then(|context| attractor_api::first_launch_input(&json!(context)));
     json!({
         "run_id": record.run_id,
         "title": record.title,
         "flow_name": record.flow_name,
+        "flow_title": record.flow_title,
         "status": record.status,
         "outcome": record.outcome,
         "outcome_reason_code": record.outcome_reason_code,
@@ -959,6 +956,7 @@ fn public_run_record(record: attractor_core::RunRecord) -> Value {
         "reasoning_effort": record.reasoning_effort,
         "started_at": record.started_at,
         "ended_at": record.ended_at,
+        "idle_ms": record.idle_ms,
         "project_path": record.project_path,
         "git_branch": record.git_branch,
         "git_commit": record.git_commit,
@@ -979,7 +977,7 @@ fn public_run_record(record: attractor_core::RunRecord) -> Value {
         "execution_mode": record.execution_mode,
         "execution_profile_id": record.execution_profile_id,
         "execution_profile_capabilities": record.execution_profile_capabilities.unwrap_or_else(|| json!({})),
-        "first_launch_input": first_launch_input,
+        "first_launch_input": record.first_launch_input,
     })
 }
 

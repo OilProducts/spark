@@ -155,7 +155,9 @@ it('reads the thread as quiet event lines, ends with the pending question, and r
     // The objective shows once, in the rail; the thread opens with a quiet start line.
     expect(detail().getAllByText('Ship search')).toHaveLength(1)
     const events = detail().getAllByTestId('mission-event')
-    expect(events.map(event => event.children[1].textContent)).toEqual(['Mission started', 'Build ended · Completed', 'Build asked “Ship the build?”'])
+    expect(events.map(event => event.children[1].textContent)).toEqual(['Mission started', 'Build ended · Completed', 'Build asked'])
+    // The question reads in full under its line.
+    expect(events[2].nextElementSibling).toHaveTextContent('Ship the build?')
     expect(detail().getByText('Prefer small diffs')).toBeInTheDocument()
     const ask = within(detail().getByRole('region', { name: 'Waiting on you' }))
     expect(ask.getByText('Ship the build?')).toBeInTheDocument()
@@ -407,6 +409,20 @@ it('preserves drafts across refresh and tab activation, and reconciles concurren
     fireEvent.click(screen.getByRole('button', { name: /^Save/ }))
     await waitFor(() => expect(task.revision).toBe(3))
     expect(task.fields.description).toBe('Server objective')
+})
+
+it('says the board couldn’t load, in words, instead of offering a first mission', async () => {
+    // A proxy's plain-text gateway error while Spark is down.
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('Error: connect ECONNREFUSED 127.0.0.1:8000', { status: 502 }))
+    render(<MissionsPanel active />)
+    const state = await screen.findByTestId('missions-load-state')
+    expect(state).toHaveTextContent('Missions couldn’t load')
+    expect(state).toHaveTextContent('Couldn’t reach Spark')
+    expect(screen.queryByText('No missions yet')).toBeNull()
+    expect(screen.queryByText(/not valid JSON|ECONNREFUSED/)).toBeNull()
+    fireEvent.click(within(state).getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('button', { name: /Deliver search/ })).toBeInTheDocument()
+    expect(screen.queryByTestId('missions-load-state')).toBeNull()
 })
 
 it('loads once without polling and preserves drafts when opening other missions', async () => {

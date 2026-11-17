@@ -9,7 +9,7 @@ import type {
 
 export type ViewMode = 'overview' | 'home' | 'projects' | 'editor' | 'triggers' | 'settings' | 'runs' | 'missions' | 'roles'
 export type EditorMode = 'structured' | 'files'
-export type NodeStatus = 'idle' | 'running' | 'success' | 'failed' | 'waiting'
+export type NodeStatus = 'idle' | 'running' | 'success' | 'failed' | 'waiting' | 'interrupted'
 export type DiagnosticSeverity = 'error' | 'warning' | 'info'
 export type RunOutcome = 'success' | 'failure'
 export type RuntimeStatus =

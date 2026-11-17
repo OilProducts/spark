@@ -9,9 +9,10 @@ import {
   formatRunDate,
   formatCompactCount,
   runDayLabel,
+  runMatchesSearch,
   runStatusKind,
 } from '../runOverviewModel'
-import { canContinueRun, canRetryRun, formatRunStatusLabel } from '../shared'
+import { canContinueRun, canRetryRun, formatDuration, formatRunStatusLabel } from '../shared'
 import type { RunVisit, VisitOutcome } from '../visitModel'
 
 const visit = (nodeId: string, number: number, outcome: VisitOutcome, updates: Record<string, unknown> | null = null): RunVisit => ({
@@ -29,7 +30,6 @@ const visit = (nodeId: string, number: number, outcome: VisitOutcome, updates: R
   outcome,
   decision: null,
   failureKind: null,
-  tolerable: null,
   reason: null,
   status: updates ? { status: 'completed', decision: 'done', context_updates: updates } : null,
   next: null,
@@ -125,16 +125,27 @@ describe('classifyRunFailure', () => {
 })
 
 describe('describeFailure', () => {
+  // The detail is the command's stderr, nothing for a bare exit code, else the runtime's text.
   it.each([
-    ['tool exited with unmapped code 1; stderr: lint broke', 'The command failed (exit code 1).'],
-    ['tool exited with code 2 instead of 0 with a JSON verdict decision', 'The command failed (exit code 2).'],
-    ['tool returned undeclared decision "maybe"', 'The command’s output did not name a decision this step can take.'],
-    ['codergen backend failed: codex app-server error: codex app-server turn timed out waiting for activity', 'The agent could not run: it stopped responding.'],
-    ['codergen backend failed: usage limit reached', 'The agent could not run: its usage limit was reached.'],
-    ['codergen backend failed: codex app-server exited unexpectedly', 'The agent could not run.'],
-    ['stage_failed', 'The step failed without giving a reason.'],
-  ])('rewords %s and keeps it as the detail', (reason, summary) => {
-    expect(describeFailure(reason)).toEqual({ summary, detail: reason })
+    ['tool exited with unmapped code 1; stderr: lint broke', 'The command failed (exit code 1).', 'lint broke'],
+    ['tool exited with unmapped code 3', 'The command failed (exit code 3).', null],
+    ['tool exited with code 2 instead of 0 with a JSON verdict decision', 'The command failed (exit code 2).', 'as written'],
+    ['tool returned undeclared decision "maybe"', 'The command’s output did not name a decision this step can take.', 'as written'],
+    ['codergen backend failed: codex app-server error: codex app-server turn timed out waiting for activity', 'The agent could not run: it stopped responding.', 'as written'],
+    ['codergen backend failed: usage limit reached', 'The agent could not run: its usage limit was reached.', 'as written'],
+    ['codergen backend failed: codex app-server exited unexpectedly', 'The agent could not run.', 'as written'],
+    ['stage_failed', 'The step failed without giving a reason.', 'as written'],
+  ])('rewords %s', (reason, summary, detail) => {
+    expect(describeFailure(reason)).toEqual({ summary, detail: detail === 'as written' ? reason : detail })
+  })
+
+  it("names a fork's failing branch by its step and says its error plainly", () => {
+    const labels: Record<string, string> = { checks: 'Checks', typecheck: 'Typecheck', tsc: 'Run tsc' }
+    const label = (id: string) => labels[id] ?? id
+    expect(describeFailure('branch typecheck (index 0) failed at typecheck: tool exited with unmapped code 2; stderr: TS2322', label))
+      .toEqual({ summary: 'The Typecheck branch failed. The command failed (exit code 2).', detail: 'TS2322' })
+    expect(describeFailure('branch checks (index 1) failed at tsc: tsc exited 2', label))
+      .toEqual({ summary: 'The Checks branch failed at Run tsc. tsc exited 2', detail: null })
   })
 
   it("keeps a flow's or tool's own words as they are", () => {
@@ -146,14 +157,18 @@ describe('describeFailure', () => {
 describe('runTitle', () => {
   it('uses the generated title, else the first launch input, else the flow title', () => {
     expect(runTitle({ title: 'Tighten the review loop', flow_name: 'implement-change.yaml' })).toBe('Tighten the review loop')
-    expect(runTitle({
-      title: null,
-      flow_name: 'software-development/implement-change.yaml',
-      launch_context: { 'context.request.artifact_path': 'changes/CR-1/request.md', 'context.request.validation_command': 'just test' },
-    })).toBe('changes/CR-1/request.md')
-    expect(runTitle({ title: '  ', flow_name: 'Implement Task', launch_context: null })).toBe('Implement Task')
-    // The runs list carries only the first input.
+    expect(runTitle({ title: '  ', flow_name: 'Implement Task' })).toBe('Implement Task')
+    // The run records its first input in its flow's order.
     expect(runTitle({ flow_name: 'merge-change.yaml', first_launch_input: 'changes/CR-2/request.md' })).toBe('changes/CR-2/request.md')
+    // A flow's own title names it, as its run header does.
+    expect(runTitle({ flow_name: 'release-check.yaml', flow_title: 'Release readiness' })).toBe('Release readiness')
+  })
+
+  it("finds a run by its flow's own title as well as its file name", () => {
+    const run = { run_id: 'run-1', status: 'completed', working_directory: '', flow_name: 'release-check.yaml', flow_title: 'Release readiness', title: 'Ship 1.2' }
+    expect(runMatchesSearch(run, 'release readiness')).toBe(true)
+    expect(runMatchesSearch(run, 'release check')).toBe(true)
+    expect(runMatchesSearch(run, 'nightly')).toBe(false)
   })
 })
 
@@ -199,5 +214,14 @@ describe('an unreadable run', () => {
     expect(canContinueRun('unreadable')).toBe(false)
     expect(canRetryRun('unreadable')).toBe(false)
     expect(formatRunStatusLabel({ status: 'unreadable', outcome: null, outcome_reason_code: null })).toBe('Unreadable')
+  })
+})
+
+describe('formatDuration', () => {
+  it('leaves out the time a run sat stopped before its retry, finished or still running', () => {
+    const start = '2026-03-03T07:00:00Z'
+    expect(formatDuration(start, '2026-03-03T07:09:23Z', 'completed')).toBe('9m 23s')
+    expect(formatDuration(start, '2026-03-03T07:09:23Z', 'completed', undefined, 9 * 60_000 + 21_000)).toBe('2s')
+    expect(formatDuration(start, null, 'running', Date.parse('2026-03-03T07:10:00Z'), 9 * 60_000)).toBe('1m 00s')
   })
 })

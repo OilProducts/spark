@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Check, ChevronDown, Hash } from 'lucide-react'
 import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
@@ -82,25 +82,39 @@ const MODEL_SOURCES = {
 /** The chat sheet: header, scrolling transcript and the composer. ViewLayout supplies the sheet itself. */
 // The chat's ID is how flows and the spark command's --conversation option reach it: shown in the title line and copied with a click.
 function CopyChatId({ handle }: { handle: string }) {
-    const [copied, setCopied] = useState(false)
+    const [status, setStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+    const reset = useRef<number | null>(null)
+    useEffect(() => () => { if (reset.current !== null) window.clearTimeout(reset.current) }, [])
+    const show = (next: 'copied' | 'failed') => {
+        setStatus(next)
+        if (reset.current !== null) window.clearTimeout(reset.current)
+        reset.current = window.setTimeout(() => setStatus('idle'), next === 'failed' ? 4000 : 1500)
+    }
     return (
-        <button
-            type="button"
-            data-testid="chat-handle"
-            data-handle={handle}
-            aria-label={copied ? 'Chat ID copied' : `Copy chat ID ${handle}`}
-            title={`Copy this chat’s ID (${handle}). Flows and the spark command’s --conversation option use it to reach this chat.`}
-            onClick={() => {
-                void navigator.clipboard?.writeText(handle).then(() => {
-                    setCopied(true)
-                    window.setTimeout(() => setCopied(false), 1500)
-                })
-            }}
-            className="ml-1 inline-flex shrink-0 items-center gap-1 rounded-sm px-1 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-        >
-            {copied ? <Check aria-hidden="true" className="size-3.5" /> : <Hash aria-hidden="true" className="size-3.5" />}
-            <span className="font-mono text-xs">{copied ? 'Copied' : handle}</span>
-        </button>
+        <>
+            <button
+                type="button"
+                data-testid="chat-handle"
+                data-handle={handle}
+                aria-label={status === 'copied' ? 'Chat ID copied' : `Copy chat ID ${handle}`}
+                title={`Copy this chat’s ID (${handle}). Flows and the spark command’s --conversation option use it to reach this chat.`}
+                onClick={() => {
+                    // A browser can refuse the clipboard; the ID stays on screen to copy by hand.
+                    Promise.resolve()
+                        .then(() => navigator.clipboard.writeText(handle))
+                        .then(() => show('copied'), () => show('failed'))
+                }}
+                className="ml-1 inline-flex shrink-0 items-center gap-1 rounded-sm px-1 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            >
+                {status === 'copied' ? <Check aria-hidden="true" className="size-3.5" /> : <Hash aria-hidden="true" className="size-3.5" />}
+                <span className="select-all font-mono text-xs">{status === 'copied' ? 'Copied' : handle}</span>
+            </button>
+            {status === 'failed' ? (
+                <span role="status" data-testid="chat-handle-copy-failed" className="shrink-0 text-xs text-destructive">
+                    Couldn’t copy: the browser blocked the clipboard
+                </span>
+            ) : null}
+        </>
     )
 }
 
@@ -148,8 +162,8 @@ export function ProjectConversationSurface({
     return (
         <div
             data-testid="project-ai-conversation-surface"
-            // A narrow viewport stacks the chat list above; the chat still fills one screen so it opens at its latest message with the composer in reach.
-            className={cn('flex min-h-0 flex-col', isNarrowViewport ? 'h-[calc(100dvh-3.25rem)]' : 'h-full')}
+            // A narrow viewport stacks the chat list above; the chat still fills the view's height so it opens at its latest message with the composer in reach.
+            className={cn('flex min-h-0 flex-col', isNarrowViewport ? 'h-[100cqh]' : 'h-full')}
         >
             <header className="flex items-center justify-between gap-x-6 border-b border-border px-6 py-4">
                 <div className="min-w-0 flex-1">

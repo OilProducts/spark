@@ -8,11 +8,13 @@ inputs:
 - key: context.request.problem
   label: Problem
   type: string
+  multiline: true
   description: The precise mathematical problem to investigate, with known constraints or results.
   required: true
 - key: context.request.focus
   label: Focus
   type: string
+  multiline: true
   description: Optional standing scope, resource, or methodology constraints.
   required: false
 defaults:

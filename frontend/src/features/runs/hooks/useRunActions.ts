@@ -49,7 +49,7 @@ export function useRunActions() {
             title: 'Cancel run?',
             description: currentStatus === 'waiting'
                 ? 'Its question closes unanswered and the run stops.'
-                : 'It will stop after the active node finishes.',
+                : 'Its running steps stop now; steps that finished keep their results.',
             confirmLabel: 'Cancel run',
             cancelLabel: 'Keep running',
             confirmVariant: 'destructive',

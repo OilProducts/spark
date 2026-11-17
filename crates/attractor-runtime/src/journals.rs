@@ -1,6 +1,9 @@
 use attractor_core::{JournalEntry, RawRuntimeEvent};
 use serde_json::Value;
 
+/// The failure reason the runtime records for a run a user canceled.
+const CANCEL_REASON: &str = "aborted_by_user";
+
 pub fn journal_entries_from_events(events: &[RawRuntimeEvent]) -> Vec<JournalEntry> {
     let mut entries = events
         .iter()
@@ -122,6 +125,12 @@ fn journal_severity(raw_type: &str, event: &RawRuntimeEvent) -> String {
         }
         return "info".to_string();
     }
+    // A canceled run's end is the cancel a user asked for, not an error.
+    if raw_type == "PipelineFailed"
+        && string_payload(event, "error").as_deref() == Some(CANCEL_REASON)
+    {
+        return "warning".to_string();
+    }
     if matches!(raw_type, "PipelineFailed" | "StageFailed") {
         return "error".to_string();
     }
@@ -199,7 +208,13 @@ fn journal_summary(
         }
         "PipelineCompleted" => pipeline_completed_summary(event, node_id, &source_prefix),
         "PipelineFailed" => string_payload(event, "error")
-            .map(|error| format!("{source_prefix}Pipeline failed: {error}"))
+            .map(|error| {
+                if error == CANCEL_REASON {
+                    format!("{source_prefix}Pipeline canceled")
+                } else {
+                    format!("{source_prefix}Pipeline failed: {error}")
+                }
+            })
             .unwrap_or_else(|| format!("{source_prefix}Pipeline failed")),
         "PipelineRetryStarted" => {
             let retry_node = string_payload(event, "current_node")
@@ -371,23 +386,38 @@ fn journal_summary(
                 .or_else(|| node_id.map(str::to_string))
                 .unwrap_or_else(|| "unknown".to_string());
             let success = event.payload.get("success").and_then(Value::as_bool);
-            match success {
-                Some(true) => {
+            match (string_payload(event, "status").as_deref(), success) {
+                (Some("canceled"), _) => format!("{source_prefix}Parallel branch {branch} stopped"),
+                (_, Some(true)) => {
                     format!("{source_prefix}Parallel branch {branch} completed (success)")
                 }
-                Some(false) => {
+                (_, Some(false)) => {
                     format!("{source_prefix}Parallel branch {branch} completed (failed)")
                 }
-                None => format!("{source_prefix}Parallel branch {branch} completed"),
+                (_, None) => format!("{source_prefix}Parallel branch {branch} completed"),
             }
         }
         "ParallelCompleted" => match (
             numeric_payload(event, "success_count"),
             numeric_payload(event, "failure_count"),
         ) {
-            (Some(success), Some(failed)) => {
-                format!("{source_prefix}Parallel fan-out completed ({success} success, {failed} failed)")
-            }
+            (Some(success), Some(failed)) => match numeric_payload(event, "canceled_count") {
+                Some(stopped) if stopped > 0 => {
+                    let errored = failed.saturating_sub(stopped);
+                    let failures = if errored > 0 {
+                        format!("{errored} failed, ")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "{source_prefix}Parallel fan-out stopped ({success} of {} branches finished: {failures}{stopped} stopped)",
+                        success + failed
+                    )
+                }
+                _ => format!(
+                    "{source_prefix}Parallel fan-out completed ({success} success, {failed} failed)"
+                ),
+            },
             _ => format!("{source_prefix}Parallel fan-out completed"),
         },
         "InterviewStarted" => {

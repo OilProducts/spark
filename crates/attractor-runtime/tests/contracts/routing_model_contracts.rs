@@ -811,6 +811,18 @@ fn a_blocked_branch_cancels_and_settles_running_siblings() {
     let results = fork_results(&run);
     assert_eq!(results[1]["status"], json!("canceled"));
     assert_eq!(results[1]["started"], json!(true));
+    // The journal says the stopped branch was stopped, not that it failed.
+    let branch = run
+        .events("ParallelBranchCompleted")
+        .into_iter()
+        .find(|event| event["index"] == json!(1))
+        .unwrap();
+    assert_eq!(branch["status"], json!("canceled"));
+    assert_eq!(branch["success"], json!(false));
+    assert_eq!(
+        run.events("ParallelCompleted")[0]["canceled_count"],
+        json!(1)
+    );
 }
 
 /// A branch's routing error saved before a crash, with the fork's own status

@@ -26,6 +26,7 @@ const RUN_RECORD_FIELDS: &[&str] = &[
     "reasoning_summary",
     "started_at",
     "ended_at",
+    "idle_ms",
     "project_path",
     "git_branch",
     "git_commit",
@@ -157,6 +158,20 @@ pub fn normalize_record_for_write(record: &mut RunRecord) {
 }
 
 pub fn mark_record_retry_started(record: &mut RunRecord) {
+    // The time it sat stopped, from its end to this retry, is not run time.
+    let stopped_ms = record
+        .ended_at
+        .as_deref()
+        .and_then(|ended| {
+            time::OffsetDateTime::parse(ended, &time::format_description::well_known::Rfc3339).ok()
+        })
+        .map(|ended| {
+            u64::try_from((time::OffsetDateTime::now_utc() - ended).whole_milliseconds())
+                .unwrap_or(0)
+        });
+    if let Some(stopped_ms) = stopped_ms {
+        record.idle_ms = Some(record.idle_ms.unwrap_or(0) + stopped_ms);
+    }
     record.status = "running".to_string();
     record.outcome = None;
     record.outcome_reason_code = None;

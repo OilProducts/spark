@@ -246,6 +246,11 @@ fn continue_starts_a_new_run_without_retry_authority_or_execution_bases() {
     assert!(!attractor_runtime::retry::retry_authorizes_checkpoint(
         &legacy, "retry", "task", 1
     ));
+    // The time the source sat stopped is its own, not the new run's.
+    let bundle = store.read_run_bundle("retry").unwrap().unwrap();
+    let mut record = bundle.record.unwrap();
+    record.idle_ms = Some(5_000);
+    store.write_run_record(&bundle.paths, &record).unwrap();
     let started = controls
         .continue_from_snapshot(attractor_runtime::ContinueRunRequest {
             source_run_id: "retry".into(),
@@ -272,6 +277,8 @@ fn continue_starts_a_new_run_without_retry_authority_or_execution_bases() {
     assert!(saved_retry_request(&checkpoint.context).unwrap().is_none());
     assert!(checkpoint.retry_counts.is_empty());
     assert_eq!(controls.get_checkpoint("retry").unwrap(), source);
+    let continued = store.read_run_bundle("continued").unwrap().unwrap();
+    assert_eq!(continued.record.unwrap().idle_ms, None);
 }
 
 #[test]
@@ -426,4 +433,36 @@ fn looping_retry_resumes_the_prepared_visit_and_reuses_its_durable_response() {
             );
         }
     }
+}
+
+#[test]
+fn a_retry_leaves_the_time_its_run_sat_failed_out_of_its_duration() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = RunStore::for_runs_dir(temp.path());
+    seed(&store);
+    let bundle = store.read_run_bundle("retry").unwrap().unwrap();
+    let mut record = bundle.record.unwrap();
+    // It failed an hour ago, after an earlier retry had already left out five seconds.
+    let failed_at = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+    record.ended_at = Some(
+        failed_at
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    );
+    record.idle_ms = Some(5_000);
+    store.write_run_record(&bundle.paths, &record).unwrap();
+
+    RuntimeControls::new(store.clone())
+        .prepare_retry("retry")
+        .unwrap();
+
+    let record = store
+        .read_run_bundle("retry")
+        .unwrap()
+        .unwrap()
+        .record
+        .unwrap();
+    assert_eq!(record.ended_at, None);
+    let idle_ms = record.idle_ms.unwrap();
+    assert!((3_605_000..3_665_000).contains(&idle_ms), "{idle_ms}");
 }

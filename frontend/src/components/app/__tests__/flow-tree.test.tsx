@@ -27,12 +27,12 @@ describe('FlowTree', () => {
     expect(within(flowTree).getByTestId('flow-indicator')).toBeVisible()
 
     await user.click(within(flowTree).getByRole('button', { name: 'Team' }))
-    expect(within(flowTree).queryByRole('button', { name: 'team/review/nested.dot' })).not.toBeInTheDocument()
+    expect(within(flowTree).queryByRole('button', { name: 'nested.dot' })).not.toBeInTheDocument()
 
     await user.click(within(flowTree).getByRole('button', { name: 'Team' }))
     expect(within(flowTree).getByText('Review')).toBeVisible()
 
-    await user.click(within(flowTree).getByRole('button', { name: 'team/review/nested.dot' }))
+    await user.click(within(flowTree).getByRole('button', { name: 'nested.dot' }))
     expect(onSelectFlow).toHaveBeenCalledWith('team/review/nested.dot')
   })
 
@@ -50,13 +50,15 @@ describe('FlowTree', () => {
     expect(within(project).getByRole('button', { name: 'nightly-audit' })).toBeVisible()
     expect(within(project).getByText('Team')).toBeVisible()
     expect(within(screen.getByRole('region', { name: 'Bundled with Spark' })).getByText('Examples')).toBeVisible()
-    await user.click(within(project).getByRole('button', { name: 'team/release' }))
+    await user.click(within(project).getByRole('button', { name: 'release' }))
     expect(onSelectFlow).toHaveBeenCalledWith('team/release')
 
     // Named for its project when given; a flow with a title shows it, its description under it.
     rerender(<FlowTree flows={flows} projectFlows={new Set(['nightly-audit'])} projectLabel="acme" flowLabels={{ 'nightly-audit': { title: 'Nightly audit', description: 'Checks the build every night.' } }} selectedFlow={null} onSelectFlow={onSelectFlow} />)
     const named = screen.getByRole('region', { name: "acme's flows" })
     expect(within(named).getByRole('button', { name: 'Nightly audit (nightly-audit)' })).toHaveTextContent('Checks the build every night.')
+    // The description is the row's accessible description, so its name matches the visible title.
+    expect(within(named).getByRole('button', { name: 'Nightly audit (nightly-audit)' })).toHaveAccessibleDescription('Checks the build every night.')
 
     // A search that leaves none of the project's flows keeps the rest under their heading.
     rerender(<FlowTree flows={['examples/simple-linear']} projectFlows={new Set(['nightly-audit'])} selectedFlow={null} onSelectFlow={onSelectFlow} />)

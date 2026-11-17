@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::context::INTERNAL_PIPELINE_RETRY_RUN_ID_KEY;
 use crate::error::RuntimeStorageError;
 use crate::events::{
-    cancel_requested_event, log_event, pipeline_paused_event, pipeline_retry_started_event,
+    cancel_requested_event, pipeline_paused_event, pipeline_retry_started_event,
     runtime_status_event,
 };
 use crate::records::{
@@ -296,6 +296,8 @@ impl RuntimeControls {
         let mut record = source_record.clone();
         record.run_id = new_run_id.clone();
         record.flow_name = flow_name.clone();
+        record.flow_title =
+            Some(request.flow.title.trim().to_string()).filter(|title| !title.is_empty());
         record.status = "running".to_string();
         record.outcome = None;
         record.outcome_reason_code = None;
@@ -315,6 +317,7 @@ impl RuntimeControls {
         record.execution_lock = request.execution_lock.clone();
         record.started_at = crate::events::utc_timestamp();
         record.ended_at = None;
+        record.idle_ms = None;
         record.continued_from_run_id = Some(source_record.run_id.clone());
         record.continued_from_node = Some(start_node.to_string());
         record.continued_from_flow_mode = Some(mode.clone());
@@ -760,13 +763,6 @@ impl RuntimeControls {
                 None,
                 None,
                 Some("cancel_requested_by_user".to_string()),
-            ),
-        )?;
-        self.store.append_event(
-            &bundle.paths,
-            log_event(
-                run_id,
-                "[System] Cancel requested. Stopping after current node.",
             ),
         )?;
         Ok(RuntimeControlStatus {

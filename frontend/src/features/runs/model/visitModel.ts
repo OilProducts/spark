@@ -38,6 +38,8 @@ export interface VisitFlowNode {
     kind: string
     readsContext: string[]
     command: string | null
+    /** Each declared decision's display label, such as a gate's "Approve" for `approve`. */
+    routeLabels?: Record<string, string>
 }
 
 export interface VisitChildRun {
@@ -65,12 +67,15 @@ export interface RunVisit {
     outcome: VisitOutcome
     /** The decision the node returned, which selected its route. */
     decision: string | null
-    /** An error's kind (runtime, contract, routing) and whether the flow tolerates it. */
+    /** An error's kind: runtime, contract or routing. */
     failureKind: string | null
-    tolerable: boolean | null
     reason: string | null
     status: Record<string, unknown> | null
-    next: { key: string; loopBack: boolean } | null
+    /**
+     * The visit that came next: a loop-back when it went back to a node that first ran no
+     * later than this one, a retry when the run was retried from it after it stopped.
+     */
+    next: { key: string; loopBack: boolean; retry: boolean } | null
     childRun: VisitChildRun | null
     /** The fan-out visit a parallel branch visit belongs to. */
     parentKey: string | null
@@ -111,6 +116,8 @@ export const humanizeNodeId = (nodeId: string): string => (
 interface VisitDraft {
     visit: RunVisit
     startSequence: number
+    /** The first stage a retry of the run started. */
+    retryStart?: boolean
     terminal: 'completed' | 'error' | null
     journalReason: string | null
     journalDecision: string | null
@@ -172,7 +179,6 @@ export function buildRunVisits({
                     outcome: 'running',
                     decision: null,
                     failureKind: null,
-                    tolerable: null,
                     reason: null,
                     status: null,
                     next: null,
@@ -193,10 +199,12 @@ export function buildRunVisits({
     const startsByStage = new Map<string, number>()
     const openByStage = new Map<string, VisitDraft>()
     const branchDrafts: BranchDraft[] = []
+    let retryPending = false
     for (const event of events) {
         // An explicit retry is a new attempt, even of a stage a crash left open.
         if (event.type === 'PipelineRetryStarted') {
             openByStage.clear()
+            retryPending = true
         }
         const nodeId = event.nodeId
         const stageIndex = event.stageIndex ?? (typeof event.payload.index === 'number' ? event.payload.index : null)
@@ -212,6 +220,8 @@ export function buildRunVisits({
                 startsByStage.set(stageKey, attempt + 1)
                 const draft = draftFor(nodeId, stageIndex, attempt, event.sequence)
                 draft.visit.startedAt = event.receivedAt
+                draft.retryStart = retryPending
+                retryPending = false
                 openByStage.set(stageKey, draft)
                 continue
             }
@@ -419,15 +429,38 @@ export function buildRunVisits({
         // run summary says what happened, so only a failure reason is kept.
         visit.decision = asString(status?.decision) ?? draft.journalDecision
         visit.failureKind = asString(status?.failure_kind)
-        visit.tolerable = typeof status?.tolerable === 'boolean' ? status.tolerable : null
         visit.reason = asString(status?.failure_reason)
             ?? (visit.childRun ? null : asString(status?.notes) ?? draft.journalReason)
     }
     rootDrafts.forEach((draft, index) => settle(draft, index === rootDrafts.length - 1))
-    branchDrafts.forEach((draft) => settle(draft, false))
+    const runCanceled = runStatus !== null && CANCELED_RUN_STATUSES.has(runStatus)
+    branchDrafts.forEach((draft) => {
+        settle(draft, false)
+        const { visit } = draft
+        const result = parallelBranchResults(draft.parent.visit).find((candidate) => candidate.index === draft.branchIndex)
+        // A branch the user's cancel or its fork stopped ends as it is killed, with no reason of its
+        // own: the stop ended it, not an error.
+        if (visit.outcome === 'error' && !visit.reason
+            && (result?.status === 'canceled' || (runCanceled && draft.parent === rootDrafts.at(-1)))) {
+            visit.outcome = 'interrupted'
+            visit.endedAt ??= runEndedAt
+        }
+        // A branch step keeps no status of its own; the error its fork recorded for it says why it failed.
+        const error = result?.error
+        if (visit.outcome === 'error' && error && (error.node ?? visit.nodeId) === visit.nodeId) {
+            visit.reason ??= error.reason
+            visit.failureKind ??= error.kind
+        }
+        // The branch error that ended a fork the run failed on is the run's failure too.
+        const cause = draft.parent.visit.outcome === 'failed' ? parseBranchFailure(draft.parent.visit.reason) : null
+        if (visit.outcome === 'error' && cause?.index === draft.branchIndex && cause.node === visit.nodeId) {
+            visit.outcome = 'failed'
+        }
+    })
 
     // Where each visit went next, and whether that went back to a node that
-    // first ran no later than this one: a loop-back, whatever the outcome.
+    // first ran no later than this one: a loop-back, whatever the outcome. A retry
+    // that starts again where the run stopped is not a loop.
     const firstRun = new Map<string, number>()
     rootDrafts.forEach((draft, index) => {
         if (!firstRun.has(draft.visit.nodeId)) {
@@ -437,9 +470,11 @@ export function buildRunVisits({
     rootDrafts.forEach((draft, index) => {
         const next = rootDrafts[index + 1]
         if (next) {
+            const retry = Boolean(next.retryStart)
             draft.visit.next = {
                 key: next.visit.key,
-                loopBack: firstRun.get(next.visit.nodeId)! <= firstRun.get(draft.visit.nodeId)!,
+                loopBack: !retry && firstRun.get(next.visit.nodeId)! <= firstRun.get(draft.visit.nodeId)!,
+                retry,
             }
         }
     })
@@ -489,13 +524,12 @@ export function formatVisitDuration(durationMs: number | null): string {
     return durationMs === null ? '' : formatElapsed(durationMs)
 }
 
-/** An error's kind and whether the flow tolerates it, such as "runtime error, tolerable". */
-export function formatVisitErrorKind(visit: Pick<RunVisit, 'failureKind' | 'tolerable'>): string | null {
-    const parts = [
-        visit.failureKind ? `${visit.failureKind} error` : null,
-        visit.tolerable === true ? 'tolerable' : visit.tolerable === false ? 'not tolerable' : null,
-    ].filter(Boolean)
-    return parts.length > 0 ? parts.join(', ') : null
+/**
+ * An error's kind, such as "runtime error". Whether a fork tolerated it shows in what happened
+ * next (its fork went on or stopped), not in the error's own words.
+ */
+export function formatVisitErrorKind(visit: Pick<RunVisit, 'failureKind'>): string | null {
+    return visit.failureKind ? `${visit.failureKind} error` : null
 }
 
 export type VisitMark = 'error' | 'failed' | 'interrupted' | 'waiting' | 'loop_back'
@@ -577,7 +611,7 @@ export interface ParallelBranchResult {
     status: string
     decisions: Array<{ node: string; decision: string; target: string | null }>
     notes: string | null
-    error: { node: string | null; kind: string | null; tolerable: boolean | null; reason: string | null; attempts: number | null } | null
+    error: { node: string | null; kind: string | null; reason: string | null; attempts: number | null } | null
     terminal: { exitId: string | null; name: string | null; outcome: string | null; node: string | null } | null
 }
 
@@ -586,6 +620,12 @@ const asRecord = (value: unknown): Record<string, unknown> | null => (
 )
 
 /** The branch results a fan-out visit wrote, in declared order; empty for any other visit. */
+/** A fork's error naming the branch that ended it: "branch checks (index 0) failed at tsc: <reason>". */
+export function parseBranchFailure(text: string | null | undefined): { branch: string; index: number; node: string; reason: string } | null {
+    const match = text?.trim().match(/^branch (\S+) \(index (\d+)\) failed at (\S+): ([\s\S]*)$/)
+    return match ? { branch: match[1], index: Number(match[2]), node: match[3], reason: match[4] } : null
+}
+
 export function parallelBranchResults(visit: Pick<RunVisit, 'status'>): ParallelBranchResult[] {
     const results = asRecord(visit.status?.context_updates)?.['parallel.results']
     if (!Array.isArray(results)) {
@@ -614,7 +654,6 @@ export function parallelBranchResults(visit: Pick<RunVisit, 'status'>): Parallel
             error: error ? {
                 node: asString(error.node),
                 kind: asString(error.kind),
-                tolerable: typeof error.tolerable === 'boolean' ? error.tolerable : null,
                 reason: asString(error.reason),
                 attempts: typeof error.attempts === 'number' ? error.attempts : null,
             } : null,
@@ -663,11 +702,16 @@ export function visitFlowNodesFromSnapshot(flow: Record<string, unknown> | null 
         const config = (node?.config ?? {}) as Record<string, unknown>
         const contracts = (node?.contracts ?? {}) as Record<string, unknown>
         const reads = Array.isArray(contracts.reads_context) ? contracts.reads_context : []
+        const routes = asRecord(node?.routes) ?? {}
         return [nodeId, {
             label: asString(node?.label) ?? humanizeNodeId(nodeId),
             kind: asString(node?.kind) ?? asString(config.kind) ?? 'agent_task',
             readsContext: reads.filter((key): key is string => typeof key === 'string'),
             command: asString(config.command),
+            routeLabels: Object.fromEntries(Object.entries(routes).flatMap(([decision, route]) => {
+                const label = asString(asRecord(route)?.label)
+                return label ? [[decision, label]] : []
+            })),
         }]
     }))
 }

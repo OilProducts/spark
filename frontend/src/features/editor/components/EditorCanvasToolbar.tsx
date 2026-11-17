@@ -9,6 +9,8 @@ import type { EditorMode } from '@/state/store-types'
 import { cn } from '@/lib/utils'
 
 type EditorCanvasToolbarProps = {
+    /** The open flow's name, leading the row where there is room for it. */
+    title?: string | null
     mode: EditorMode
     /** Set until the flow is loaded: a view switch saves the canvas, which is empty until then. */
     modeDisabled: boolean
@@ -37,19 +39,20 @@ type EditorCanvasToolbarProps = {
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 
-// Below 42rem of toolbar the toggles and actions show only icons (named by aria-label), so the row stays one line beside the flow settings at 1280px.
+// Below 64rem of toolbar the toggles and actions show only icons (named by aria-label), so the row, with the flow's name, stays one line beside the inspector.
 const segmentLabel = (Icon: LucideIcon, text: string) => ({
     'aria-label': text,
     title: text,
     label: (
         <>
-            <Icon aria-hidden="true" className="size-4 @2xl:hidden" />
-            <span className="hidden @2xl:inline">{text}</span>
+            <Icon aria-hidden="true" className="size-4 @5xl:hidden" />
+            <span className="hidden @5xl:inline">{text}</span>
         </>
     ),
 })
 
 export function EditorCanvasToolbar({
+    title = null,
     mode,
     modeDisabled,
     switchingMode = false,
@@ -73,11 +76,19 @@ export function EditorCanvasToolbar({
 
     return (
         // One row, even on a phone (the zoom buttons drop there); should it still overflow, the actions wrap rather than scroll out of sight.
+        // ponytail: beside the inspector (1024 to 1280px windows) the layout, lock, zoom and minimap buttons give way to
+        // the flow's name and come back as it closes; gather them in a More menu if they're missed there.
         <div
             data-testid="editor-canvas-toolbar"
             aria-label="Canvas toolbar"
-            className="@container flex min-h-11 shrink-0 flex-wrap items-center gap-x-1 gap-y-2 border-b bg-background px-2 py-1.5 @2xl:gap-x-1.5 @2xl:px-3"
+            className="@container/canvas-toolbar flex min-h-11 shrink-0 flex-wrap items-center gap-x-1 gap-y-2 border-b bg-background px-2 py-1.5 @2xl:gap-x-1.5 @2xl:px-3"
         >
+            {title ? (
+                // Up to its whole name in the room the controls leave, never so little that it is gone.
+                <h2 data-testid="editor-open-flow-title" title={title} className="mr-1.5 min-w-16 max-w-max flex-[1_1_0%] truncate text-sm font-semibold text-foreground">
+                    {title}
+                </h2>
+            ) : null}
             <SegmentedControl
                 data-testid="editor-mode-toggle"
                 aria-label="View"
@@ -107,8 +118,8 @@ export function EditorCanvasToolbar({
 
             {canEditLayout ? (
                 <>
-                    <Separator orientation="vertical" className="data-[orientation=vertical]:h-5" />
-                    <div role="group" aria-label="Layout" className="flex shrink-0 items-center gap-0.5">
+                    <Separator orientation="vertical" className="data-[orientation=vertical]:h-5 lg:@max-xl:hidden" />
+                    <div role="group" aria-label="Layout" className="flex shrink-0 items-center gap-0.5 lg:@max-xl:hidden">
                         <Button type="button" size="icon-sm" variant="ghost" aria-label="Auto-arrange layout" title="Auto-arrange layout" onClick={onArrange}>
                             <LayoutDashboard aria-hidden="true" />
                         </Button>
@@ -136,8 +147,8 @@ export function EditorCanvasToolbar({
                             className="aria-pressed:bg-accent aria-pressed:text-foreground"
                             onClick={flowSettings.onToggle}
                         >
-                            <SlidersHorizontal aria-hidden="true" className="@2xl:hidden" />
-                            <span className="hidden @2xl:inline">Flow settings</span>
+                            <SlidersHorizontal aria-hidden="true" className="@5xl:hidden" />
+                            <span className="hidden @5xl:inline">Flow settings</span>
                         </Button>
                     ) : null}
                     {canEditLayout && undo ? (
@@ -160,16 +171,16 @@ export function EditorCanvasToolbar({
                     ) : null}
                     {canEditLayout ? (
                         <Button type="button" size="sm" variant="outline" aria-label="Add step" title="Add step" onClick={onAddNode}>
-                            <SquarePlus aria-hidden="true" className="@2xl:hidden" />
-                            <span className="hidden @2xl:inline">+ Step</span>
+                            <SquarePlus aria-hidden="true" className="@5xl:hidden" />
+                            <span className="hidden @5xl:inline">+ Step</span>
                         </Button>
                     ) : null}
                     {/* A disabled button shows no tooltip, so its wrapper says why Run is off. */}
                     <span title={runDisabledReason ?? undefined} className="inline-flex">
                         <ProjectPicker heading="Run in" testId="run-flow-project-picker" defaultProjectPath={runDefaultProjectPath} onPick={onRun}>
                             <Button data-testid="editor-run-button" type="button" size="sm" variant="outline" aria-label="Run…" disabled={Boolean(runDisabledReason)} aria-describedby={runDisabledReason ? 'editor-run-disabled-reason' : undefined}>
-                                <Play aria-hidden="true" className="@2xl:hidden" />
-                                <span className="hidden @2xl:inline">Run…</span>
+                                <Play aria-hidden="true" className="@5xl:hidden" />
+                                <span className="hidden @5xl:inline">Run…</span>
                             </Button>
                         </ProjectPicker>
                     </span>

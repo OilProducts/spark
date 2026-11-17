@@ -260,10 +260,35 @@ fn a_stop_still_ends_the_group_as_soon_as_its_processes_go() {
     command.arg("60");
     configure_process_group(&mut command);
     let mut child = spawn_process_group(command).unwrap();
+    // A stop in a start's first moments can land while the lifeline forks its
+    // watcher, which then misses the TERM and waits out the grace period (see
+    // `spawn_with_lifeline`). Stop once the start has settled: the command
+    // and the lifeline's two shells are in the group.
+    let group = child.id().to_string();
+    assert!(
+        wait_until(|| group_members(&group) >= 3),
+        "the lifeline never joined group {group}"
+    );
     let stopped = Instant::now();
     terminate_process_group(child.id(), Some(&mut child));
     let took = stopped.elapsed();
     assert!(took < Duration::from_secs(1), "the stop took {took:?}");
+}
+
+/// Live (not zombie) processes in process group `group`.
+#[cfg(unix)]
+fn group_members(group: &str) -> usize {
+    let output = Command::new("ps")
+        .args(["-A", "-o", "pgid=,stat="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| {
+            let mut fields = line.split_whitespace();
+            fields.next() == Some(group) && fields.next().is_some_and(|stat| !stat.starts_with('Z'))
+        })
+        .count()
 }
 
 /// The lifeline goes once what Spark started, and what that started, has gone,
@@ -277,16 +302,8 @@ fn nothing_stays_behind_once_what_spark_started_has_ended() {
     let mut child = spawn_process_group(command).unwrap();
     let group = child.id().to_string();
     child.wait().unwrap();
-    let group_running = || {
-        let output = Command::new("ps")
-            .args(["-A", "-o", "pgid=,stat="])
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-            let mut fields = line.split_whitespace();
-            fields.next() == Some(group.as_str())
-                && fields.next().is_some_and(|stat| !stat.starts_with('Z'))
-        })
-    };
-    assert!(wait_until(|| !group_running()), "group {group} still runs");
+    assert!(
+        wait_until(|| group_members(&group) == 0),
+        "group {group} still runs"
+    );
 }

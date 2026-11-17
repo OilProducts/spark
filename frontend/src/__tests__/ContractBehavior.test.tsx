@@ -1,5 +1,6 @@
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import App from '@/App'
+import { UNREACHABLE_MESSAGE } from '@/lib/fetchSpark'
 import { HomeSessionController, RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { LaunchPanel, type LaunchPanelProps } from '@/features/launch'
@@ -661,7 +662,8 @@ describe('Frontend contract behavior', () => {
     await expect(fetchPipelineStatusValidated('run-504')).rejects.toMatchObject<ApiHttpError>({
       endpoint: '/attractor/pipelines/{id}',
       status: 504,
-      detail: 'Gateway timeout',
+      detail: null,
+      message: UNREACHABLE_MESSAGE,
     })
 
     vi.stubGlobal(
@@ -1262,38 +1264,48 @@ describe('Frontend contract behavior', () => {
     const flowsTab = screen.getByTestId('activity-flows')
     const settingsTab = screen.getByTestId('activity-settings')
 
-    // Overview, Chats, Missions, Runs, Triggers, Flows and Roles, then the bell and Settings at the bottom.
+    // Overview, Chats, Missions, Runs, Triggers, Flows and Roles, then the bell and Settings at the bottom;
+    // More holds the views a phone's row has no room for (only a phone shows it).
     expect(within(screen.getByTestId('activity-bar')).getAllByRole('button')).toEqual([
-      screen.getByTestId('activity-overview'), chatsTab, missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), screen.getByTestId('attention-bell'), settingsTab,
+      screen.getByTestId('activity-overview'), chatsTab, missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), screen.getByTestId('attention-bell'), settingsTab, screen.getByTestId('activity-more'),
     ])
     expect(settingsTab).toHaveAccessibleName('Settings')
     expect(chatsTab).toHaveAccessibleName('Chats')
     // Each icon shows its name under it.
     expect(within(screen.getByTestId('activity-bar')).getAllByRole('button').map((button) => button.textContent)).toEqual([
-      'Overview', 'Chats', 'Missions', 'Runs', 'Triggers', 'Flows', 'Roles', 'Inbox', 'Settings',
+      'Overview', 'Chats', 'Missions', 'Runs', 'Triggers', 'Flows', 'Roles', 'Inbox', 'Settings', 'More',
     ])
 
     chatsTab.focus()
     expect(chatsTab).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('projects')
 
-    // Arrow keys only move focus, so passing over a view does not open it.
-    for (const tab of [missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), settingsTab, screen.getByTestId('activity-overview'), chatsTab]) {
-      await user.keyboard('{ArrowDown}')
-      expect(tab).toHaveFocus()
-      expect(useStore.getState().viewMode).toBe('projects')
-    }
+    // A desktop's stylesheet hides More, which only a phone's row shows; jsdom applies no styles.
+    Object.defineProperty(HTMLElement.prototype, 'checkVisibility', {
+      configurable: true,
+      value(this: HTMLElement) { return this.dataset.testid !== 'activity-more' },
+    })
+    try {
+      // Arrow keys only move focus, so passing over a view does not open it; the Inbox is on the way.
+      for (const tab of [missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), screen.getByTestId('attention-bell'), settingsTab, screen.getByTestId('activity-overview'), chatsTab]) {
+        await user.keyboard('{ArrowDown}')
+        expect(tab).toHaveFocus()
+        expect(useStore.getState().viewMode).toBe('projects')
+      }
 
-    await user.keyboard('{ArrowUp}')
-    expect(screen.getByTestId('activity-overview')).toHaveFocus()
-    await user.keyboard('{ArrowUp}')
-    expect(settingsTab).toHaveFocus()
-    expect(useStore.getState().viewMode).toBe('projects')
-    await user.keyboard('{Enter}')
-    expect(useStore.getState().viewMode).toBe('settings')
-    await user.keyboard('{ArrowUp}')
-    await user.keyboard(' ')
-    expect(useStore.getState().viewMode).toBe('roles')
+      await user.keyboard('{ArrowUp}')
+      expect(screen.getByTestId('activity-overview')).toHaveFocus()
+      await user.keyboard('{ArrowUp}')
+      expect(settingsTab).toHaveFocus()
+      expect(useStore.getState().viewMode).toBe('projects')
+      await user.keyboard('{Enter}')
+      expect(useStore.getState().viewMode).toBe('settings')
+      await user.keyboard('{ArrowUp}{ArrowUp}')
+      await user.keyboard(' ')
+      expect(useStore.getState().viewMode).toBe('roles')
+    } finally {
+      delete (HTMLElement.prototype as { checkVisibility?: unknown }).checkVisibility
+    }
   })
 
   it('[CID:13.1.02] provides semantic labels and focus-visible states across core interactive controls', () => {
@@ -2163,7 +2175,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     })
     const beta = screen.getAllByTestId('chats-project-group').find((group) => group.dataset.projectPath === '/tmp/project-beta')!
     await user.click(within(beta).getByTestId('chats-project-toggle'))
-    await user.click(await within(beta).findByRole('button', { name: 'Open thread Beta thread' }))
+    await user.click(await within(beta).findByRole('button', { name: 'Beta thread' }))
 
     await waitFor(() => {
       expect(screen.getByTestId('chat-project')).toHaveTextContent('project-beta')

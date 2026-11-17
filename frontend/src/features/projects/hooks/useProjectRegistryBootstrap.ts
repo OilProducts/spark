@@ -4,6 +4,8 @@ import { fetchProjectRegistryValidated } from '@/lib/workspaceClient'
 
 import { extractApiErrorMessage, toHydratedProjectRecord } from '../model/projectsHomeState'
 
+const PROJECT_REGISTRY_RETRY_MS = 5000
+
 type UseProjectRegistryBootstrapArgs = {
     hydrateProjectRegistry: (projects: ReturnType<typeof toHydratedProjectRecord>[]) => void
     enabled?: boolean
@@ -22,6 +24,7 @@ export function useProjectRegistryBootstrap({
         }
 
         let canceled = false
+        let retryTimer: ReturnType<typeof setTimeout> | undefined
 
         const loadProjectRegistry = async () => {
             try {
@@ -35,6 +38,8 @@ export function useProjectRegistryBootstrap({
                     return
                 }
                 const message = extractApiErrorMessage(error, 'Unable to load available projects.')
+                // Spark may be restarting: keep trying, so the list fills in once it is back.
+                retryTimer = setTimeout(() => { void loadProjectRegistry() }, PROJECT_REGISTRY_RETRY_MS)
                 if (onError) {
                     onError(message)
                     return
@@ -46,6 +51,7 @@ export function useProjectRegistryBootstrap({
         void loadProjectRegistry()
         return () => {
             canceled = true
+            clearTimeout(retryTimer)
         }
     }, [enabled, hydrateProjectRegistry, onError])
 }

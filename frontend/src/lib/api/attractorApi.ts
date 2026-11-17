@@ -141,11 +141,13 @@ export interface PipelineStatusResponse {
     pipeline_id: string
     run_id: string
     title?: string | null
+    first_launch_input?: string | null
     status: string
     outcome?: 'success' | 'failure' | null
     outcome_reason_code?: string | null
     outcome_reason_message?: string | null
     flow_name?: string
+    flow_title?: string | null
     working_directory?: string
     project_path?: string
     git_branch?: string | null
@@ -170,6 +172,7 @@ export interface PipelineStatusResponse {
     }
     started_at?: string
     ended_at?: string | null
+    idle_ms?: number
     continued_from_run_id?: string | null
     continued_from_node?: string | null
     continued_from_flow_mode?: string | null
@@ -289,6 +292,7 @@ export interface RunRecordResponse {
     title?: string | null
     first_launch_input?: string | null
     flow_name: string
+    flow_title?: string | null
     status: string
     outcome?: 'success' | 'failure' | null
     outcome_reason_code?: string | null
@@ -306,6 +310,8 @@ export interface RunRecordResponse {
     reasoning_effort?: string | null
     started_at: string
     ended_at?: string | null
+    /** Milliseconds it sat stopped before its retries, which its duration leaves out. */
+    idle_ms?: number
     last_error?: string
     token_usage?: number | null
     token_usage_breakdown?: TokenUsageBreakdownResponse | null
@@ -835,6 +841,7 @@ function parseRunRecord(
         title: asOptionalNullableString(record.title),
         first_launch_input: asOptionalNullableString(record.first_launch_input),
         flow_name: typeof record.flow_name === 'string' ? record.flow_name : '',
+        flow_title: asOptionalNullableString(record.flow_title),
         status: record.status,
         outcome: asOptionalNullableString(record.outcome) as RunRecordResponse['outcome'],
         outcome_reason_code: asOptionalNullableString(record.outcome_reason_code),
@@ -852,6 +859,7 @@ function parseRunRecord(
         reasoning_effort: asOptionalNullableString(record.reasoning_effort),
         started_at: typeof record.started_at === 'string' ? record.started_at : '',
         ended_at: asOptionalNullableString(record.ended_at),
+        idle_ms: typeof record.idle_ms === 'number' ? record.idle_ms : undefined,
         last_error: asOptionalString(record.last_error),
         token_usage: typeof record.token_usage === 'number'
             ? record.token_usage

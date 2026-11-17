@@ -80,6 +80,9 @@ describe('timelineModel', () => {
       .toBe('Run Test Suite → Draft Notes on done')
     expect(line('StageTransition', { decision: 'ready_for_review', target: 'draft_notes' }, { node_id: 'run_tests' }))
       .toBe('Run Test Suite → Draft Notes on ready for review')
+    // A fork enters its join on no decision.
+    expect(line('StageTransition', { decision: '', target: 'draft_notes' }, { node_id: 'run_tests' }))
+      .toBe('Run Test Suite → Draft Notes')
     expect(line('CheckpointSaved', { current_node: 'draft_notes' }, { node_id: 'draft_notes' })).toBe('Checkpoint saved at Draft Notes')
     expect(line('InterviewCompleted', { answer: 'ship' }, { node_id: 'draft_notes' })).toBe('Answer for Draft Notes: ship')
     // A child flow's nodes are its own; its parent node is this flow's.
@@ -100,6 +103,100 @@ describe('timelineModel', () => {
     expect(journalEntriesShown([asked, delivered, taken])).toEqual([asked, taken])
     // Until the gate takes it, the delivered answer is the record.
     expect(journalEntriesShown([asked, delivered])).toEqual([asked, delivered])
+  })
+
+  it('says a checkpoint saved again at the exit once', () => {
+    const entry = (sequence: number, rawType: string, node: string) => toTimelineEvent({
+      id: `journal-${sequence}`, sequence, emitted_at: '2026-07-08T10:00:00Z', kind: 'checkpoint', raw_type: rawType,
+      summary: rawType, severity: 'info', source_scope: 'root', node_id: node, payload: { current_node: node },
+    })!
+    const arrived = entry(1, 'CheckpointSaved', 'done')
+    const ended = entry(2, 'CheckpointSaved', 'done')
+    const finished = entry(3, 'PipelineCompleted', 'done')
+    expect(journalEntriesShown([arrived, ended, finished])).toEqual([arrived, finished])
+    // A loop that saves at the same node after other work says each save.
+    const review = [entry(1, 'CheckpointSaved', 'review'), entry(2, 'StageStarted', 'review'), entry(3, 'CheckpointSaved', 'review')]
+    expect(journalEntriesShown(review)).toEqual(review)
+  })
+
+  it('says a step that simply completed with the route it took next', () => {
+    const entry = (sequence: number, rawType: string, node: string, payload: Record<string, unknown> = {}) => toTimelineEvent({
+      id: `journal-${sequence}`, sequence, emitted_at: '2026-07-08T10:00:00Z', kind: 'stage', raw_type: rawType,
+      summary: rawType, severity: 'info', source_scope: 'root', node_id: node, payload: { node_id: node, ...payload },
+    })!
+    const started = entry(1, 'StageStarted', 'tally')
+    const completed = entry(2, 'StageCompleted', 'tally', { outcome: 'completed' })
+    const routed = entry(3, 'StageTransition', 'tally', { target: 'climb', decision: 'climb' })
+    const saved = toTimelineEvent({
+      id: 'journal-4', sequence: 4, emitted_at: '2026-07-08T10:00:00Z', kind: 'checkpoint', raw_type: 'CheckpointSaved',
+      summary: 'CheckpointSaved', severity: 'info', source_scope: 'root', node_id: 'climb', payload: { current_node: 'climb' },
+    })!
+    expect(journalEntriesShown([started, completed, saved, routed])).toEqual([started, saved, routed])
+    // Another outcome is news, and so is a completion the route doesn't follow, such as the last step's.
+    const partial = entry(2, 'StageCompleted', 'tally', { outcome: 'partial_success' })
+    expect(journalEntriesShown([started, partial, routed])).toEqual([started, partial, routed])
+    expect(journalEntriesShown([started, completed])).toEqual([started, completed])
+  })
+
+  it('tells a canceled run as canceled: its stopped branches, its end, and no status echoes', () => {
+    const entry = (sequence: number, rawType: string, payload: Record<string, unknown>, severity = 'info') => toTimelineEvent({
+      id: `journal-${sequence}`, sequence, emitted_at: '2026-07-08T10:00:00Z', kind: 'other', raw_type: rawType,
+      summary: rawType === 'CancelRequested' ? 'Cancel requested' : `server ${rawType}`, severity, source_scope: 'root', node_id: payload.node_id ?? null,
+      payload: { type: rawType, source_scope: 'root', ...payload },
+    })!
+    const labels: Record<string, string> = { lint: 'Lint check', unit: 'Unit check', checks: 'Checks' }
+    const nodeLabel = (nodeId: string) => labels[nodeId] ?? nodeId
+    const journal = [
+      entry(1, 'runtime', { status: 'running' }),
+      entry(2, 'PipelineStarted', { node_id: 'flow' }),
+      entry(3, 'ParallelBranchStarted', { node_id: 'checks', branch: 'lint' }),
+      entry(4, 'ParallelBranchNodeStarted', { node_id: 'checks', branch: 'lint', branch_node_id: 'lint' }),
+      entry(5, 'ParallelBranchNodeStarted', { node_id: 'checks', branch: 'lint', branch_node_id: 'lint_fix' }),
+      entry(6, 'CancelRequested', { status: 'cancel_requested' }, 'warning'),
+      entry(7, 'runtime', { status: 'cancel_requested' }, 'warning'),
+      entry(8, 'ParallelBranchNodeCompleted', { node_id: 'checks', branch: 'lint', branch_node_id: 'lint_fix', outcome: 'error' }),
+      entry(9, 'ParallelBranchCompleted', { node_id: 'checks', branch: 'lint', success: false }),
+      entry(10, 'ParallelCompleted', { node_id: 'checks', success_count: 0, failure_count: 2 }),
+      entry(11, 'runtime', { status: 'canceled', last_error: 'aborted_by_user' }, 'warning'),
+      entry(12, 'PipelineFailed', { error: 'aborted_by_user' }, 'warning'),
+    ]
+    let afterCancel = false
+    const lines = journalEntriesShown(journal).map((event) => {
+      afterCancel ||= event.type === 'CancelRequested'
+      return journalEntrySummary(event, nodeLabel, afterCancel)
+    })
+    expect(lines).toEqual([
+      'Run started',
+      'Parallel branch Lint check started',
+      'lint_fix started',
+      'Cancel requested',
+      'lint_fix stopped by the cancel',
+      'Parallel branch Lint check stopped by the cancel',
+      'Parallel fan-out stopped (0 of 2 branches finished)',
+      'Run canceled',
+    ])
+    // Without its lifecycle event beside it, the status entry is the record and reads plainly.
+    expect(journalEntriesShown([journal[10]]).map((event) => journalEntrySummary(event, nodeLabel))).toEqual(['Run canceled'])
+    // A raw event of the end is a warning, not an error.
+    expect(toTimelineEvent({ type: 'PipelineFailed', sequence: 1, emitted_at: '2026-07-08T10:00:00Z', error: 'aborted_by_user' })?.severity).toBe('warning')
+  })
+
+  it('tells a branch its fork stopped as stopped, not failed', () => {
+    const entry = (sequence: number, rawType: string, payload: Record<string, unknown>) => toTimelineEvent({
+      id: `journal-${sequence}`, sequence, emitted_at: '2026-07-08T10:00:00Z', kind: 'other', raw_type: rawType,
+      summary: `server ${rawType}`, severity: 'info', source_scope: 'root', node_id: 'checks',
+      payload: { type: rawType, source_scope: 'root', node_id: 'checks', ...payload },
+    })!
+    const lines = [
+      entry(1, 'ParallelBranchCompleted', { branch: 'typecheck', success: false, status: 'error' }),
+      entry(2, 'ParallelBranchCompleted', { branch: 'slow', success: false, status: 'canceled' }),
+      entry(3, 'ParallelCompleted', { success_count: 0, failure_count: 2, canceled_count: 1 }),
+    ].map((event) => journalEntrySummary(event, (nodeId) => nodeId))
+    expect(lines).toEqual([
+      'Parallel branch typecheck completed (failed)',
+      'Parallel branch slow stopped',
+      'Parallel fan-out stopped (0 of 2 branches finished: 1 failed, 1 stopped)',
+    ])
   })
 
   it('derives pending interview gates from live events and fallback question snapshots', () => {

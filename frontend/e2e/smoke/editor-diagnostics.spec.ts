@@ -689,7 +689,8 @@ test("files mode leaves readable editing space on a phone-width viewport", async
   try {
     await page.setViewportSize({ width: 390, height: 844 })
     await gotoWithRegisteredProject(page, projectPath)
-    await page.getByTestId("activity-flows").click()
+    await page.getByTestId("activity-more").click()
+    await page.getByTestId("activity-flows-more").click()
     await flowRow(page, flowName).click()
     await page.getByRole("button", { name: "Files", exact: true }).click()
     const fileEditor = page.getByTestId("flow-file-editor")

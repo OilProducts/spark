@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { createServer } from 'node:net'
 import path from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
-import { conversationRowOf, pageTurns, settingsRevisionOf } from '../fixtures/smoke-helpers'
+import { conversationRowOf, openActivity, pageTurns, settingsRevisionOf } from '../fixtures/smoke-helpers'
 
 test.beforeEach(async ({ context }) => {
     // The picker lists only reachable providers, so the fixture reaches the ones these tests choose from.
@@ -387,7 +387,7 @@ const openChat = async (page: Page, project: string, title: string) => {
     await page.getByTestId('activity-chats').click()
     const group = chatsGroup(page, project)
     if (await group.getByTestId('chats-project-toggle').getAttribute('aria-expanded') !== 'true') await group.getByTestId('chats-project-toggle').click()
-    await group.getByRole('button', { name: new RegExp(`Open thread ${title}`) }).click()
+    await group.getByRole('button', { name: title, exact: true }).click()
 }
 const openProjectPage = async (page: Page, project: string) => {
     await page.getByTestId('activity-chats').click()
@@ -566,7 +566,7 @@ for (const width of [1440, 390]) {
     test(`Settings categories retain drafts and support keyboard access without overflow at ${width}px`, async ({ page }, testInfo) => {
         await page.setViewportSize({ width, height: 900 })
         await page.goto('/')
-        await page.getByTestId('activity-settings').click()
+        await openActivity(page, 'activity-settings')
         const panel = page.getByTestId('settings-panel')
         const models = page.getByRole('tab', { name: 'Models & accounts' })
         await expect(models).toHaveAttribute('aria-selected', 'true')
@@ -577,8 +577,9 @@ for (const width of [1440, 390]) {
         await expect(view.getByTestId('side-panel').getByRole('tablist', { name: 'Settings categories' })).toBeVisible()
         await expect(view.getByTestId('view-main').getByTestId('settings-panel')).toBeVisible()
         await expect(page.getByTestId('activity-bar')).toBeInViewport()
+        // Stacked, the categories run across two rows, so the arrows follow reading order.
         await models.focus()
-        await page.keyboard.press('ArrowDown')
+        await page.keyboard.press(width === 390 ? 'ArrowRight' : 'ArrowDown')
         const preferences = page.getByRole('tab', { name: 'Preferences', exact: true })
         await expect(preferences).toBeFocused()
         await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible()
@@ -593,8 +594,11 @@ for (const width of [1440, 390]) {
         await expect(page.getByText('Choose a whole number from 256 to 560.')).toBeVisible()
         await card(page, 'Appearance').getByRole('button', { name: /^Discard\b/ }).click()
         for (const category of ['Models & accounts', 'Preferences', 'Execution', 'System']) {
+            // Each category opens at its top, wherever the last one was left.
+            await panel.evaluate((element) => { element.scrollTop = element.scrollHeight })
             await page.getByRole('tab', { name: category, exact: true }).click()
             await expect(page.getByRole('tabpanel')).toHaveCount(1)
+            expect(await panel.evaluate((element) => element.scrollTop)).toBe(0)
             await expect.poll(() => panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
             const active = page.getByRole('tabpanel')
             for (const heading of await active.getByRole('heading').all()) await expect(heading).toBeVisible()
@@ -625,7 +629,7 @@ for (const width of [1440, 390]) {
         // Settings reopens the category you left it on.
         await page.getByRole('tab', { name: 'Preferences', exact: true }).click()
         await page.getByTestId('activity-chats').click()
-        await page.getByTestId('activity-settings').click()
+        await openActivity(page, 'activity-settings')
         await expect(page.getByRole('tab', { name: 'Preferences', exact: true })).toHaveAttribute('aria-selected', 'true')
         await models.click()
     })

@@ -18,8 +18,8 @@ export function useOverviewChats() {
     const [failed, setFailed] = useState(false)
     const [attempt, setAttempt] = useState(0)
     useEffect(() => {
+        // Fetched before the projects list too: with Spark unreachable, it fails and says so instead of loading forever.
         let disposed = false
-        if (!paths) return
         void fetchProjectConversationListValidated(null)
             .then((snapshot) => {
                 if (disposed) return
@@ -38,5 +38,7 @@ export function useOverviewChats() {
         () => paths.split('\n').filter(Boolean).flatMap((path) => summaries[path] ?? []),
         [paths, summaries],
     )
-    return { chats, loaded, failed, retry: () => setAttempt((count) => count + 1) }
+    // Chats arrive keyed by project; until the projects list does too, there are chats to show, not none.
+    const waitingOnProjects = !paths && Object.values(summaries).some((list) => list.length > 0)
+    return { chats, loaded: loaded && !waitingOnProjects, failed, retry: () => setAttempt((count) => count + 1) }
 }

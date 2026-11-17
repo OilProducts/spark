@@ -89,7 +89,7 @@ const resolveRunDetailSession = (
     lifetime: ++nextSessionLifetime,
 })
 
-const LIVE_FIELDS = ['status', 'outcome', 'outcome_reason_code', 'outcome_reason_message', 'ended_at', 'last_error', 'token_usage', 'token_usage_breakdown', 'estimated_model_cost'] as const
+const LIVE_FIELDS = ['status', 'outcome', 'outcome_reason_code', 'outcome_reason_message', 'ended_at', 'idle_ms', 'last_error', 'token_usage', 'token_usage_breakdown', 'estimated_model_cost'] as const
 const TELEMETRY_FIELDS = ['token_usage', 'token_usage_breakdown', 'estimated_model_cost'] as const
 
 // Track every intended event/action write, even when it matches a list summary.

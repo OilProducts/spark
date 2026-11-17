@@ -241,6 +241,8 @@ const VIEWS = [
   { icon: 'activity-triggers', view: 'triggers-view' },
   { icon: 'activity-flows', view: 'flows-view' },
 ] as const
+// A phone's row names five views; the rest open, by name, from More.
+const PHONE_MORE_VIEWS = new Set<string>(['activity-triggers', 'activity-flows', 'activity-roles', 'activity-settings'])
 // With nothing picked, these views show their list alone on a phone, not an empty main area under it.
 const LIST_ONLY_ON_PHONES = new Set<string>(['missions-view', 'triggers-view'])
 
@@ -261,9 +263,35 @@ test('a narrow viewport stacks each view\'s panel above its main area and keeps 
   await expect(page.getByTestId('top-nav-project-switcher')).toHaveCount(0)
   await page.screenshot({ path: screenshotPath('13a-mobile-projects-operations.png'), fullPage: true })
 
+  // Every name in the row is on screen.
+  for (const name of ['Overview', 'Chats', 'Missions', 'Runs', 'Inbox', 'More']) {
+    await expect(activityBar.getByText(name, { exact: true })).toBeInViewport()
+  }
+  // Arrow keys reach every item in the row, the Inbox and More too, and wrap around.
+  await page.getByTestId('activity-runs').focus()
+  await page.keyboard.press('ArrowRight')
+  await expect(page.getByTestId('attention-bell')).toBeFocused()
+  await page.keyboard.press('ArrowRight')
+  await expect(page.getByTestId('activity-more')).toBeFocused()
+  await page.keyboard.press('ArrowRight')
+  await expect(page.getByTestId('activity-overview')).toBeFocused()
+  await page.keyboard.press('ArrowLeft')
+  await expect(page.getByTestId('activity-more')).toBeFocused()
+  // Tabbing on past the open list's last item closes it.
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('activity-more-list')).toBeVisible()
+  for (let item = 0; item < 5; item += 1) await page.keyboard.press('Tab')
+  await expect(page.getByTestId('activity-more-list')).toHaveCount(0)
   for (const { icon, view } of VIEWS) {
-    await expect(page.getByTestId(icon)).toBeInViewport()
-    await page.getByTestId(icon).click()
+    if (PHONE_MORE_VIEWS.has(icon)) {
+      await expect(page.getByTestId(icon)).toBeHidden()
+      await page.getByTestId('activity-more').click()
+      await page.getByTestId(`${icon}-more`).click()
+      await expect(page.getByTestId('activity-more')).toHaveAttribute('aria-current', 'page')
+    } else {
+      await expect(page.getByTestId(icon)).toBeInViewport()
+      await page.getByTestId(icon).click()
+    }
     const shown = page.getByTestId(view)
     await expect(shown).toHaveAttribute('data-responsive-layout', 'stacked')
     const panel = await shown.getByTestId('side-panel').boundingBox()
@@ -279,7 +307,8 @@ test('a narrow viewport stacks each view\'s panel above its main area and keeps 
   await page.getByTestId('activity-runs').click()
   await expect(page.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
   await page.screenshot({ path: screenshotPath('13b-mobile-runs-panel.png'), fullPage: true })
-  await page.getByTestId('activity-settings').click()
+  await page.getByTestId('activity-more').click()
+  await page.getByTestId('activity-settings-more').click()
   await expect(page.getByTestId('settings-panel')).toBeVisible()
   await expect(activityBar).toBeInViewport()
 })

@@ -13,6 +13,7 @@ inputs:
 - key: context.request.objective
   label: Review Focus
   type: string
+  multiline: true
   description: Optional focus areas or concerns to weight the review toward.
   required: false
 defaults:

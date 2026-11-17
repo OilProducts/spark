@@ -1,5 +1,5 @@
 import type { RunRecord } from './shared'
-import { isSystemContextKey, type RunVisit } from './visitModel'
+import { humanizeNodeId, isSystemContextKey, parseBranchFailure, type RunVisit } from './visitModel'
 
 // What the Runs page says about a run as a whole: its title, how it failed,
 // which visits didn't pass, and its context with each key's history.
@@ -15,6 +15,11 @@ export function flowTitle(flowName: string | null | undefined): string {
         ? base
         : base.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
+
+/** A run's flow as the flow titles itself when it launched, else as its file name reads. */
+export const runFlowTitle = (run: Pick<RunRecord, 'flow_name' | 'flow_title'>): string => (
+    run.flow_title?.trim() || flowTitle(run.flow_name)
+)
 
 // Shared formatters: building one per call dominates rendering a long run list.
 const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
@@ -64,18 +69,6 @@ export function formatCompactCount(value: number): string {
     return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value).replace('K', 'k')
 }
 
-// ponytail: inputs come in key order, not the flow's declared order; read the
-// flow's launch inputs if the first key often isn't the telling one.
-const firstLaunchInput = (run: Pick<RunRecord, 'launch_context' | 'first_launch_input'>): string | null => {
-    for (const value of Object.values(run.launch_context ?? {})) {
-        const text = typeof value === 'string' ? value.trim() : ''
-        if (text) {
-            return text.split('\n')[0].slice(0, 160)
-        }
-    }
-    return run.first_launch_input?.trim() || null
-}
-
 /** The trigger that started a run, from the launch context Spark gives every run a trigger starts. */
 export function runTrigger(run: Pick<RunRecord, 'launch_context'>): { id: string; name: string } | null {
     const value = run.launch_context?.['context.spark_trigger']
@@ -84,15 +77,10 @@ export function runTrigger(run: Pick<RunRecord, 'launch_context'>): { id: string
     return typeof id === 'string' && id ? { id, name: typeof name === 'string' && name ? name : id } : null
 }
 
-/** The run's generated title, else the first launch input it was given, else its flow title. */
-export function runTitle(run: Pick<RunRecord, 'title' | 'flow_name' | 'launch_context' | 'first_launch_input'>): string {
-    const title = run.title?.trim()
-    if (title) {
-        return title
-    }
-    const input = firstLaunchInput(run)
-    return input ?? flowTitle(run.flow_name)
-}
+/** The run's title, else the first launch input it was given in its flow's order, else its flow title. */
+export const runTitle = (run: Pick<RunRecord, 'title' | 'flow_name' | 'flow_title' | 'first_launch_input'>): string => (
+    run.title?.trim() || run.first_launch_input?.trim() || runFlowTitle(run)
+)
 
 // The runtime's error text is the only record of what failed: a backend,
 // container or usage-limit failure means the infrastructure failed, not the work.
@@ -128,6 +116,7 @@ const STATUS_SEARCH_WORDS: Record<RunStatusKind, string> = {
 export function runMatchesSearch(run: RunRecord, query: string): boolean {
     return !query
         || runTitle(run).toLowerCase().includes(query)
+        || runFlowTitle(run).toLowerCase().includes(query)
         || flowTitle(run.flow_name).toLowerCase().includes(query)
         || run.flow_name.toLowerCase().includes(query)
         // Word starts only, so "fail" finds failed runs but "in" doesn't find every waiting one.
@@ -185,13 +174,30 @@ const FAILURE_WORDINGS: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
     [/^stage_failed$/, () => 'The step failed without giving a reason.'],
 ]
 
-/** A failure reason in plain words, with the runtime's own text as the detail when it was reworded. */
-export function describeFailure(reason: string): { summary: string; detail: string | null } {
+/** Whether a run's failure reason is the runtime's record that a user canceled it. */
+export const isCancelReason = (reason: unknown): boolean => reason === 'aborted_by_user'
+
+/**
+ * A failure reason in plain words, with the runtime's own text as the detail when it was reworded:
+ * a command's stderr alone when it has one, nothing for a bare exit code. A fork's error names its branch's step by `nodeLabel`.
+ */
+export function describeFailure(
+    reason: string,
+    nodeLabel: (nodeId: string) => string = humanizeNodeId,
+): { summary: string; detail: string | null } {
     const text = reason.trim()
+    const branch = parseBranchFailure(text)
+    if (branch) {
+        const cause = describeFailure(branch.reason, nodeLabel)
+        const where = branch.node === branch.branch ? '' : ` at ${nodeLabel(branch.node)}`
+        return { summary: `The ${nodeLabel(branch.branch)} branch failed${where}. ${cause.summary}`, detail: cause.detail }
+    }
     for (const [pattern, words] of FAILURE_WORDINGS) {
         const match = text.match(pattern)
         if (match) {
-            return { summary: words(match), detail: text }
+            // A bare exit code says nothing the summary doesn't.
+            const stderr = text.match(/^tool [^;]*; stderr: ([\s\S]+)$/)?.[1]
+            return { summary: words(match), detail: stderr ?? (/^tool exited with (?:unmapped )?code -?\d+$/.test(text) ? null : text) }
         }
     }
     return { summary: text, detail: null }

@@ -1,5 +1,5 @@
 import type { StatusTone } from '@/components/app/status'
-import { flowTitle, formatRunDate, runStatusKind, type RunStatusKind } from '@/features/runs/model/runOverviewModel'
+import { flowTitle, formatRunDate, runFlowTitle, runStatusKind, type RunStatusKind } from '@/features/runs/model/runOverviewModel'
 import { formatDuration, STATUS_LABELS, type RunRecord } from '@/features/runs/model/shared'
 import type { Mission, RosterEntry } from '../MissionsPanel'
 
@@ -68,6 +68,9 @@ export type TurnEvent =
 const EVENT = /^(?:Run \S+ \(|Run question in run |User: |Trigger fired: |The user updated this mission)/
 const EVENT_START = new RegExp(`\n\n(?=\\[Inbox: |\\[event |${EVENT.source.slice(1)})`)
 const HEADER = /^\[Inbox: [^\n]*\]$/
+
+/** A turn Spark wrote to deliver its inbox to the agent, rather than one a person typed. */
+export const isInboxBatch = (content: string): boolean => content.split(EVENT_START).some((chunk) => HEADER.test(chunk))
 const MARK = /^\[event \S+ from \S+\]\n/
 const RUNTIME_EVENT = /^(?:Trigger fired: |The user updated this mission)/
 const RESULT = /^Run (\S+) \(([^,]*), ("(?:[^"\\]|\\.)*")\) (?:ended (\w*)|is waiting on a recovery decision)(?:: ([\s\S]*))?\.$/
@@ -115,11 +118,12 @@ export function joinRuns(roster: RosterEntry[], runs: RunRecord[], now = Date.no
         const run = byId.get(entry.run_id)
         // The roster knows about human gates; the run record's own status is fresher otherwise.
         const status = entry.status === 'waiting' ? 'waiting' : run?.status ?? entry.status
-        const duration = run ? formatDuration(run.started_at, run.ended_at, run.status, now) : formatDuration(missionTime(entry.launched_at), null, status, now)
+        const duration = run ? formatDuration(run.started_at, run.ended_at, run.status, now, run.idle_ms) : formatDuration(missionTime(entry.launched_at), null, status, now)
         return {
             runId: entry.run_id,
-            title: run?.title?.trim() || entry.summary || flowTitle(entry.flow_name),
-            flowTitle: flowTitle(run?.flow_name ?? entry.flow_name),
+            title: run?.title?.trim() || entry.summary || (run ? runFlowTitle(run) : flowTitle(entry.flow_name)),
+            // The flow's declared title, as the Runs page names it.
+            flowTitle: run ? runFlowTitle(run) : flowTitle(entry.flow_name),
             status,
             kind: runStatusKind(status, false),
             duration: duration === '—' ? '' : duration,

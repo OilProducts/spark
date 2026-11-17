@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '@/store'
 import { fetchModelSettings } from '@/lib/api/settingsApi'
+import { AppNotice } from '@/components/app/app-notice'
+import { Button } from '@/components/ui/button'
 
 export function ModelDefaultsController() {
     const [error, setError] = useState('')
@@ -17,8 +19,23 @@ export function ModelDefaultsController() {
         }
         refresh()
         window.addEventListener('spark:settings-live-event', refresh)
+        window.addEventListener('spark:model-defaults-retry', refresh)
         window.addEventListener('focus', refresh)
-        return () => { cancelled = true; window.removeEventListener('spark:settings-live-event', refresh); window.removeEventListener('focus', refresh) }
+        return () => {
+            cancelled = true
+            window.removeEventListener('spark:settings-live-event', refresh)
+            window.removeEventListener('spark:model-defaults-retry', refresh)
+            window.removeEventListener('focus', refresh)
+        }
     }, [])
-    return error ? <p role="alert" className="p-2 text-xs text-destructive">{error}</p> : null
+    return error ? (
+        <AppNotice
+            key={error}
+            data-testid="model-defaults-error"
+            title="Couldn’t load the default model"
+            actions={<Button type="button" variant="outline" size="xs" onClick={() => window.dispatchEvent(new Event('spark:model-defaults-retry'))}>Try again</Button>}
+        >
+            {error}
+        </AppNotice>
+    ) : null
 }

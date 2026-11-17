@@ -34,6 +34,8 @@ export interface RunRecord {
     /** The runs list's stand-in for launch_context: its first input, cut to a line. */
     first_launch_input?: string | null
     flow_name: string
+    /** The launched flow's own title, when it has one. */
+    flow_title?: string | null
     status: string
     outcome?: 'success' | 'failure' | null
     outcome_reason_code?: string | null
@@ -50,6 +52,8 @@ export interface RunRecord {
     reasoning_effort?: string | null
     started_at: string
     ended_at?: string | null
+    /** Milliseconds it sat stopped before its retries, which its duration leaves out. */
+    idle_ms?: number | null
     last_error?: string
     token_usage?: number | null
     token_usage_breakdown?: TokenUsageBreakdown | null
@@ -298,6 +302,7 @@ const STATUS_TONES: Record<string, StatusTone> = {
     pause_requested: 'warning',
     abort_requested: 'warning',
     cancel_requested: 'warning',
+    interrupted: 'warning',
     completed: 'success',
     success: 'success',
     failed: 'destructive',
@@ -381,7 +386,8 @@ export const formatTimestamp = (value?: string | null) => {
     return date.toLocaleString()
 }
 
-export const formatDuration = (start?: string, end?: string | null, status?: string, now?: number) => {
+/** How long a run ran: from its start to its end, or to now while it runs, less `idleMs` it sat stopped before a retry. */
+export const formatDuration = (start?: string, end?: string | null, status?: string, now?: number, idleMs?: number | null) => {
     if (!start) return '—'
     const startMs = Date.parse(start)
     if (!Number.isFinite(startMs)) return '—'
@@ -394,7 +400,7 @@ export const formatDuration = (start?: string, end?: string | null, status?: str
     }
     if (endMs === null) return '—'
     // The same "1m 37s" a step's duration reads, so a run and its last step agree.
-    return formatElapsed(endMs - startMs)
+    return formatElapsed(endMs - startMs - (idleMs ?? 0))
 }
 
 /** "<1s", "45s", "1m 07s", "2h 05m": whole units elapsed, so a ticking clock never runs ahead. */

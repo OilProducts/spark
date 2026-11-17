@@ -50,6 +50,8 @@ function useFlowCatalogPanel() {
     const activeFlowRef = useRef(activeFlow)
     const isMountedRef = useRef(true)
     const refreshRequestIdRef = useRef(0)
+    const listLoadedRef = useRef(false)
+    const listProjectRef = useRef<string | null>(null)
     activeFlowRef.current = activeFlow
 
     // Titles and descriptions; only the latest request's answer shows.
@@ -96,9 +98,15 @@ function useFlowCatalogPanel() {
             }
             setFlows(data)
             setLoadFailed(false)
+            // A flow left open from the project shown before closes. One a link names that this project
+            // lacks stays open, so the editor can say it isn't here; so does one deleted elsewhere, which
+            // a save puts back.
+            const switchedProject = listLoadedRef.current && listProjectRef.current !== activeProjectPath
+            listLoadedRef.current = true
+            listProjectRef.current = activeProjectPath
 
             const selectedFlow = activeFlowRef.current
-            if (selectedFlow && !data.includes(selectedFlow)) {
+            if (selectedFlow && switchedProject && !data.includes(selectedFlow)) {
                 setActiveFlow(null)
             }
         } catch (error) {
@@ -121,6 +129,12 @@ function useFlowCatalogPanel() {
             isMountedRef.current = false
         }
     }, [activeProjectPath])
+
+    // A flow opened from elsewhere that the list lacks, such as a run's flow made since it loaded, is listed as it opens.
+    useEffect(() => {
+        if (activeFlow && listLoadedRef.current && !flows.includes(activeFlow)) void refreshFlows()
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- only a newly opened flow refreshes
+    }, [activeFlow])
 
     // A save can retitle the open flow, so its title is read afresh; a flow listed with errors that
     // now saves has been fixed, so the whole list is.

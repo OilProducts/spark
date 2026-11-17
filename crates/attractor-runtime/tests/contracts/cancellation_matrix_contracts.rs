@@ -1028,6 +1028,14 @@ fn verify(case: Case, signals: &Signals, result: &PipelineExecutionResult) {
             .count()
     };
     assert_eq!(stages("join"), joined, "{name}: join stages");
+    // A fork the user's cancel stopped is never recorded as completed.
+    if case.stop == Stop::External {
+        let fork_completed = events.iter().any(|event| {
+            event.event_type == "StageCompleted"
+                && event.payload.get("node_id") == Some(&json!("fork"))
+        });
+        assert!(!fork_completed, "{name}: the canceled fork completed");
+    }
     assert_eq!(signals.calls("synth"), joined, "{name}: synth invocations");
     let checkpoint = store.read_checkpoint(&paths).unwrap().unwrap();
     assert_eq!(checkpoint.visit_counts["fork"], 1, "{name}: fork visits");
