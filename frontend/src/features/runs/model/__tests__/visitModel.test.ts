@@ -83,7 +83,7 @@ const flowNodes = visitFlowNodesFromSnapshot({
     fan_out: { kind: 'parallel', label: 'Fan out' },
     lint: { kind: 'tool', label: 'Lint' },
     typecheck: { kind: 'tool', label: 'Typecheck' },
-    ask: { kind: 'human', label: 'Ask' },
+    ask: { kind: 'human', label: 'Ask', routes: { approve: { to: 'done', label: 'Approve' }, revise: { to: 'evaluate' } } },
     done: { kind: 'exit', label: 'Done' },
   },
 })
@@ -307,6 +307,11 @@ describe('buildRunVisits', () => {
       ['Lint', 'interrupted'],
       ['Typecheck', 'error'],
     ])
+
+    // Without a status of its own, the failing branch takes its error from the fork's results.
+    const [, lint, typecheck] = build({ journal, executions: executions.slice(0, 1), runStatus: 'failed' })
+    expect([typecheck.outcome, typecheck.reason]).toEqual(['error', 'tsc exited 2'])
+    expect([lint.outcome, lint.reason]).toEqual(['interrupted', null])
   })
 
   it('nests parallel branches under their fan-out visit, one visit per invocation with its execution', () => {
@@ -766,6 +771,7 @@ describe('visit transcript', () => {
     ])).toBe('Judge the worktree.')
     expect(flowNodes.evaluate.readsContext).toEqual(['context.workspace.path', 'context.task.objective'])
     expect(flowNodes.validate.command).toBe('just test')
+    expect(flowNodes.ask.routeLabels).toEqual({ approve: 'Approve' })
   })
 
   describe('of a parallel branch visit', () => {

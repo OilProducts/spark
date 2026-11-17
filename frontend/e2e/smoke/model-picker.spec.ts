@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { createFlowForSmokeTest, ensureScreenshotDir, gotoWithRegisteredProject, screenshotPath, stubProjectMetadata } from '../fixtures/smoke-helpers'
+import { createFlowForSmokeTest, ensureScreenshotDir, gotoWithRegisteredProject, openActivity, screenshotPath, stubProjectMetadata } from '../fixtures/smoke-helpers'
 
 for (const theme of ['light', 'dark']) for (const width of [1440, 390]) {
     test(`model picker chat and inspector ${theme} ${width}`, async ({ page }) => {
@@ -27,7 +27,7 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 390]) {
         await page.screenshot({ path: screenshotPath(`model-picker-chat-${theme}-${width}.png`) })
         await page.keyboard.press('Escape')
         await expect(trigger).toBeFocused()
-        await page.getByTestId('activity-flows').click()
+        await openActivity(page, 'activity-flows')
         await page.getByTestId('editor-flow-tree').locator(`button[data-flow-name="${flow}"]`).click()
         await page.locator('.react-flow__node').filter({ hasText: 'Ingest Spec' }).click()
         const inspector = page.locator('[data-inspector-scope="node"]')

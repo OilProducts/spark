@@ -847,7 +847,7 @@ pub fn parallel_branch_completed_event(
     node_id: impl Into<String>,
     branch: impl Into<String>,
     index: usize,
-    success: bool,
+    status: &str,
 ) -> RawRuntimeEvent {
     let node_id = node_id.into();
     event_with_payload(
@@ -857,7 +857,9 @@ pub fn parallel_branch_completed_event(
             ("node_id", json!(node_id)),
             ("branch", json!(branch.into())),
             ("index", json!(index)),
-            ("success", json!(success)),
+            ("success", json!(status == "completed")),
+            // `canceled` is a branch its fork or a cancel stopped, not one that failed.
+            ("status", json!(status)),
         ],
     )
 }
@@ -920,6 +922,7 @@ pub fn parallel_completed_event(
     node_id: impl Into<String>,
     success_count: usize,
     failure_count: usize,
+    canceled_count: usize,
 ) -> RawRuntimeEvent {
     let node_id = node_id.into();
     event_with_payload(
@@ -928,7 +931,9 @@ pub fn parallel_completed_event(
         [
             ("node_id", json!(node_id)),
             ("success_count", json!(success_count)),
+            // Branches that did not complete, the canceled among them.
             ("failure_count", json!(failure_count)),
+            ("canceled_count", json!(canceled_count)),
         ],
     )
 }

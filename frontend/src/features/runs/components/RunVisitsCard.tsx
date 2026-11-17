@@ -169,6 +169,16 @@ export function RunVisitsCard({
         select('context')
         setContextFocusKey(key)
     }
+    // A link inside the details replaces them, so focus follows to the new view's heading
+    // instead of falling to the page.
+    const [focusRequest, setFocusRequest] = useState(0)
+    const openFromDetails = (item: RunVisit | ItemKey) => {
+        select(item)
+        setFocusRequest((count) => count + 1)
+    }
+    useLayoutEffect(() => {
+        if (focusRequest > 0) detailsRef.current?.querySelector<HTMLElement>('h2[tabindex]')?.focus()
+    }, [focusRequest])
 
     const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
         if (event.metaKey || event.ctrlKey || event.altKey) {
@@ -202,9 +212,9 @@ export function RunVisitsCard({
             {showJournal ? (
                 <RunJournal journal={journal} flowNodes={flowNodes} timelineError={timelineError} />
             ) : selected === 'status' ? (
-                renderStatus(select)
+                renderStatus(openFromDetails)
             ) : selected === 'context' ? (
-                <div key={contextFocusKey ?? ''}>{renderContext(contextFocusKey, select)}</div>
+                <div key={contextFocusKey ?? ''}>{renderContext(contextFocusKey, openFromDetails)}</div>
             ) : (
                 <RunVisitView
                     key={selected.key}
@@ -216,7 +226,7 @@ export function RunVisitsCard({
                     now={now}
                     artifactEntries={artifactEntries}
                     onViewArtifact={onViewArtifact}
-                    onSelectVisit={(visit) => select(visit)}
+                    onSelectVisit={openFromDetails}
                     onOpenContextKey={openContextKey}
                     onOpenRun={onOpenRun}
                 />
@@ -444,6 +454,7 @@ function RunVisitView({
     // Only a fork tolerates errors, so tolerance is said only of a branch's visit.
     const errorKind = formatVisitErrorKind(visit.parentKey === null ? { ...visit, tolerable: null } : visit)
     const branchResults = parallelBranchResults(visit)
+    const branchVisits = visits.filter((candidate) => candidate.parentKey === visit.key)
     const outcomeLabel = VISIT_OUTCOME_LABELS[visit.outcome]
     const returned = visit.outcome !== 'running' && visit.outcome !== 'waiting'
     // A tool's notes are its stdout, which shows once, under its command.
@@ -484,7 +495,7 @@ function RunVisitView({
         <article data-testid="run-visit-view" data-visit-key={visit.key} className="flex flex-col gap-5 pb-6">
             <header className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
-                    <h2 data-testid="run-visit-view-title" className="text-base font-semibold text-foreground">{visit.label}</h2>
+                    <h2 data-testid="run-visit-view-title" tabIndex={-1} className="rounded-sm text-base font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">{visit.label}</h2>
                     {headerMeta ? <span className="text-sm text-muted-foreground">{headerMeta}</span> : null}
                     {returned ? null : outcomePill}
                 </div>
@@ -513,6 +524,13 @@ function RunVisitView({
                 ) : null}
             </header>
 
+            {!returned && branchVisits.length > 0 ? (
+                <section className="flex flex-col gap-2">
+                    <SectionHeading as="h3" count={branchVisits.length}>Branches</SectionHeading>
+                    <BranchVisits branchVisits={branchVisits} onSelectVisit={onSelectVisit} />
+                </section>
+            ) : null}
+
             {returned ? (
                 <Well data-testid="run-visit-returned" className="flex flex-col gap-2.5">
                     <div className="flex flex-wrap items-center gap-2.5">
@@ -520,7 +538,11 @@ function RunVisitView({
                         {outcomePill}
                         {visit.decision ? (
                             <span data-testid="run-visit-decision" className="text-sm text-muted-foreground">
-                                Decision <code className="font-mono text-foreground">{visit.decision}</code>
+                                {/* A decision reads as its route is labelled, as a gate offered it; the ID stays a hover away. */}
+                                {visit.kind === 'human_gate' ? 'Answer' : 'Decision'}{' '}
+                                {flowNode?.routeLabels?.[visit.decision]
+                                    ? <span title={visit.decision} className="font-medium text-foreground">{flowNode.routeLabels[visit.decision]}</span>
+                                    : <code className="font-mono text-foreground">{visit.decision}</code>}
                             </span>
                         ) : null}
                         {next ? (
@@ -554,11 +576,9 @@ function RunVisitView({
                         </FailureDetail>
                     ) : null}
                     {branchResults.length > 0 ? (
-                        <BranchResults
-                            results={branchResults}
-                            branchVisits={visits.filter((candidate) => candidate.parentKey === visit.key)}
-                            onSelectVisit={onSelectVisit}
-                        />
+                        <BranchResults results={branchResults} branchVisits={branchVisits} onSelectVisit={onSelectVisit} />
+                    ) : branchVisits.length > 0 ? (
+                        <BranchVisits branchVisits={branchVisits} onSelectVisit={onSelectVisit} />
                     ) : null}
                     {writes.length > 0 ? (
                         <ul data-testid="run-visit-writes" className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -714,6 +734,25 @@ const BRANCH_STATUS: Record<string, { label: string; tone: StatusTone }> = {
     canceled: { label: 'Interrupted', tone: 'warning' },
 }
 
+const BRANCH_OPEN_CLASS = 'rounded-sm font-medium text-foreground underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring'
+
+// A fan-out's branch steps as Steps lists them, for a fork with no results recorded: one still
+// running, or one a cancel stopped.
+function BranchVisits({ branchVisits, onSelectVisit }: { branchVisits: RunVisit[]; onSelectVisit: (visit: RunVisit) => void }) {
+    return (
+        <ul data-testid="run-visit-branches" className="flex flex-col gap-1.5 text-sm">
+            {branchVisits.map((branch) => (
+                <li key={branch.key} data-testid="run-visit-branch" data-status={branch.outcome} className="flex flex-wrap items-center gap-2">
+                    <button type="button" data-testid="run-visit-branch-open" onClick={() => onSelectVisit(branch)} className={BRANCH_OPEN_CLASS}>
+                        {branch.label}
+                    </button>
+                    <StatusPill tone={OUTCOME_TONES[branch.outcome]}>{VISIT_OUTCOME_LABELS[branch.outcome]}</StatusPill>
+                </li>
+            ))}
+        </ul>
+    )
+}
+
 // Each declared branch of a fan-out by its step's name, which opens that step, with the
 // evidence for any branch that did not complete.
 function BranchResults({ results, branchVisits, onSelectVisit }: {
@@ -743,12 +782,7 @@ function BranchResults({ results, branchVisits, onSelectVisit }: {
                     <li key={`${branch.index}-${branch.id}`} data-testid="run-visit-branch" data-status={branch.status} className="flex max-w-[72ch] flex-col gap-0.5">
                         <span className="flex flex-wrap items-center gap-2">
                             {branchVisit ? (
-                                <button
-                                    type="button"
-                                    data-testid="run-visit-branch-open"
-                                    onClick={() => onSelectVisit(branchVisit)}
-                                    className="rounded-sm font-medium text-foreground underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-                                >
+                                <button type="button" data-testid="run-visit-branch-open" onClick={() => onSelectVisit(branchVisit)} className={BRANCH_OPEN_CLASS}>
                                     {name}
                                 </button>
                             ) : <span className="font-medium text-foreground">{name}</span>}

@@ -7,7 +7,7 @@ import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
 import type { PipelineResultResponse } from '@/lib/attractorClient'
 import type { RunRecord, TimelineEventEntry } from '../../model/shared'
 import { buildRunContextOverview, runStatusKind } from '../../model/runOverviewModel'
-import { visitKey, type RunVisit, type VisitOutcome } from '../../model/visitModel'
+import { visitKey, type RunVisit, type VisitFlowNode, type VisitOutcome } from '../../model/visitModel'
 import { RunContextItem } from '../RunContextItem'
 import { RunStatusItem } from '../RunStatusItem'
 import { RunVisitsCard } from '../RunVisitsCard'
@@ -686,11 +686,11 @@ describe('RunVisitsCard', () => {
 })
 
 describe('RunVisitsCard returned evidence', () => {
-  const openOnly = (visits: RunVisit[]) => {
+  const openOnly = (visits: RunVisit[], flowNodes: Record<string, VisitFlowNode> = {}) => {
     render(
       <SelectingVisitsCard
         visits={visits}
-        flowNodes={{}}
+        flowNodes={flowNodes}
         segments={[]}
         prompts={[]}
         journal={[]}
@@ -794,9 +794,13 @@ describe('RunVisitsCard returned evidence', () => {
     expect(runFailed).not.toHaveTextContent('line 19')
   })
 
-  it('shows a gate only its result: no empty transcript or instructions', () => {
-    openOnly([visit('approve', 1, 'completed', { kind: 'human_gate', decision: 'approve', status: { status: 'completed', decision: 'approve' } })])
+  it('shows a gate only its result, the answer by its label: no empty transcript or instructions', () => {
+    openOnly(
+      [visit('approve', 1, 'completed', { kind: 'human_gate', decision: 'approve', status: { status: 'completed', decision: 'approve' } })],
+      { approve: { label: 'Approve', kind: 'human_gate', readsContext: [], command: null, routeLabels: { approve: 'Approve the release' } } },
+    )
     expect(screen.getByTestId('run-visit-view-outcome')).toHaveTextContent('Completed')
+    expect(screen.getByTestId('run-visit-decision')).toHaveTextContent(/^Answer Approve the release$/)
     expect(screen.queryByTestId('run-visit-work')).not.toBeInTheDocument()
     expect(screen.queryByTestId('run-visit-instructions')).not.toBeInTheDocument()
     expect(screen.queryByText('No transcript was recorded for this visit.')).not.toBeInTheDocument()
@@ -828,6 +832,18 @@ describe('RunVisitsCard returned evidence', () => {
     expect(within(returned).getByTestId('run-visit-system-writes')).toHaveTextContent('1 system key written')
     fireEvent.click(within(branches[0]).getByTestId('run-visit-branch-open'))
     expect(screen.getByTestId('run-visit-view')).toHaveAttribute('data-visit-key', 'lint-branch')
+    // Focus follows to the opened step instead of falling to the page.
+    expect(screen.getByTestId('run-visit-view-title')).toHaveFocus()
+  })
+
+  it('lists the branches of a fan-out a cancel stopped before it recorded results', () => {
+    const returned = openOnly([
+      visit('fan_out', 1, 'interrupted', { kind: 'parallel' }),
+      visit('lint', 1, 'completed', { key: 'lint-branch', label: 'Lint', parentKey: 'fan_out-1' }),
+      visit('unit', 1, 'interrupted', { key: 'unit-branch', label: 'Unit tests', parentKey: 'fan_out-1' }),
+    ])
+    const branches = within(returned).getAllByTestId('run-visit-branch')
+    expect(branches.map((branch) => branch.textContent)).toEqual(['LintCompleted', 'Unit testsInterrupted'])
   })
 })
 

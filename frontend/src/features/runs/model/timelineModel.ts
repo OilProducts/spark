@@ -277,6 +277,8 @@ const timelineSummaryFromEvent = (
     if (type === 'ParallelBranchCompleted') {
         const branchName = step(asTrimmedString(payload.branch) ?? nodeId, 'unknown')
         if (afterCancel && payload.success === false) return `${sourcePrefix}Parallel branch ${branchName} stopped by the cancel`
+        // A branch its fork stopped, when another branch ended the fan-out, did not fail.
+        if (payload.status === 'canceled') return `${sourcePrefix}Parallel branch ${branchName} stopped`
         const success = payload.success === true ? 'success' : payload.success === false ? 'failed' : null
         return success
             ? `${sourcePrefix}Parallel branch ${branchName} completed (${success})`
@@ -287,6 +289,11 @@ const timelineSummaryFromEvent = (
         const failureCount = asFiniteNumber(payload.failure_count)
         if (successCount !== null && failureCount !== null && afterCancel) {
             return `${sourcePrefix}Parallel fan-out stopped (${successCount} of ${successCount + failureCount} branches finished)`
+        }
+        const stopped = asFiniteNumber(payload.canceled_count) ?? 0
+        if (successCount !== null && failureCount !== null && stopped > 0) {
+            const failed = failureCount - stopped
+            return `${sourcePrefix}Parallel fan-out stopped (${successCount} of ${successCount + failureCount} branches finished: ${failed > 0 ? `${failed} failed, ` : ''}${stopped} stopped)`
         }
         if (successCount !== null && failureCount !== null) {
             return `${sourcePrefix}Parallel fan-out completed (${successCount} success, ${failureCount} failed)`

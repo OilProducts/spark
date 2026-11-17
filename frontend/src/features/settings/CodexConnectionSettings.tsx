@@ -54,7 +54,7 @@ export function CodexConnectionControls() {
             {!connection ? (error ? 'Connection unavailable.' : 'Checking connection…')
                 : pending ? 'Waiting for sign-in…'
                     : connection.status === 'connected'
-                        ? `Connected${connection.account?.email ? ` as ${connection.account.email}` : ''}${connection.account?.plan ? ` (${connection.account.plan})` : ''}. You can retry your message or run.`
+                        ? `Connected${connection.account?.email ? ` as ${connection.account.email}` : ''}${connection.account?.plan ? ` (${connection.account.plan})` : ''}.`
                         : 'Your Codex connection needs sign-in.'}
         </p>
         {connection?.message && <p>{connection.message}</p>}

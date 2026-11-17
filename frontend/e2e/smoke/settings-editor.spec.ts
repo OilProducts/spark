@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { createServer } from 'node:net'
 import path from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
-import { conversationRowOf, pageTurns, settingsRevisionOf } from '../fixtures/smoke-helpers'
+import { conversationRowOf, openActivity, pageTurns, settingsRevisionOf } from '../fixtures/smoke-helpers'
 
 test.beforeEach(async ({ context }) => {
     // The picker lists only reachable providers, so the fixture reaches the ones these tests choose from.
@@ -566,7 +566,7 @@ for (const width of [1440, 390]) {
     test(`Settings categories retain drafts and support keyboard access without overflow at ${width}px`, async ({ page }, testInfo) => {
         await page.setViewportSize({ width, height: 900 })
         await page.goto('/')
-        await page.getByTestId('activity-settings').click()
+        await openActivity(page, 'activity-settings')
         const panel = page.getByTestId('settings-panel')
         const models = page.getByRole('tab', { name: 'Models & accounts' })
         await expect(models).toHaveAttribute('aria-selected', 'true')
@@ -625,7 +625,7 @@ for (const width of [1440, 390]) {
         // Settings reopens the category you left it on.
         await page.getByRole('tab', { name: 'Preferences', exact: true }).click()
         await page.getByTestId('activity-chats').click()
-        await page.getByTestId('activity-settings').click()
+        await openActivity(page, 'activity-settings')
         await expect(page.getByRole('tab', { name: 'Preferences', exact: true })).toHaveAttribute('aria-selected', 'true')
         await models.click()
     })

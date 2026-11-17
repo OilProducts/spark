@@ -2088,7 +2088,7 @@ impl RuntimeHandlerRunner {
                         &runtime.node_id,
                         &branches[index],
                         index,
-                        record_status(&record) == "completed",
+                        record_status(&record),
                     ),
                 );
                 records[index] = Some(record);
@@ -2131,6 +2131,10 @@ impl RuntimeHandlerRunner {
                 &runtime.node_id,
                 completed,
                 results.len() - completed,
+                results
+                    .iter()
+                    .filter(|record| record_status(record) == "canceled")
+                    .count(),
             ),
         )
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;

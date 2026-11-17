@@ -1264,15 +1264,16 @@ describe('Frontend contract behavior', () => {
     const flowsTab = screen.getByTestId('activity-flows')
     const settingsTab = screen.getByTestId('activity-settings')
 
-    // Overview, Chats, Missions, Runs, Triggers, Flows and Roles, then the bell and Settings at the bottom.
+    // Overview, Chats, Missions, Runs, Triggers, Flows and Roles, then the bell and Settings at the bottom;
+    // More holds the views a phone's row has no room for (only a phone shows it).
     expect(within(screen.getByTestId('activity-bar')).getAllByRole('button')).toEqual([
-      screen.getByTestId('activity-overview'), chatsTab, missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), screen.getByTestId('attention-bell'), settingsTab,
+      screen.getByTestId('activity-overview'), chatsTab, missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), screen.getByTestId('attention-bell'), settingsTab, screen.getByTestId('activity-more'),
     ])
     expect(settingsTab).toHaveAccessibleName('Settings')
     expect(chatsTab).toHaveAccessibleName('Chats')
     // Each icon shows its name under it.
     expect(within(screen.getByTestId('activity-bar')).getAllByRole('button').map((button) => button.textContent)).toEqual([
-      'Overview', 'Chats', 'Missions', 'Runs', 'Triggers', 'Flows', 'Roles', 'Inbox', 'Settings',
+      'Overview', 'Chats', 'Missions', 'Runs', 'Triggers', 'Flows', 'Roles', 'Inbox', 'Settings', 'More',
     ])
 
     chatsTab.focus()

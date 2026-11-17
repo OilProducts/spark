@@ -146,6 +146,16 @@ export async function runFlowInProject(page: Page, projectPath: string) {
   await picker.locator(`[data-testid="project-picker-item"][data-project-path="${projectPath}"]`).click()
 }
 
+/** Opens a view from the activity bar; a phone's row keeps Triggers, Flows, Roles and Settings under More. */
+export async function openActivity(page: Page, testId: string) {
+  if ((page.viewportSize()?.width ?? 1440) < 640 && ['activity-triggers', 'activity-flows', 'activity-roles', 'activity-settings'].includes(testId)) {
+    await page.getByTestId('activity-more').click()
+    await page.getByTestId(`${testId}-more`).click()
+  } else {
+    await page.getByTestId(testId).click()
+  }
+}
+
 export async function gotoWithRegisteredProject(page: Page, projectPath: string) {
   await stubProjectRegistration(page, projectPath)
   await page.goto('/')

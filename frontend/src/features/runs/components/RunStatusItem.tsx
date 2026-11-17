@@ -285,7 +285,7 @@ export function RunStatusItem({
     return (
         <article data-testid="run-status-item" data-status-kind={kind} className="flex flex-col gap-5 pb-6">
             <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h2 className="text-base font-semibold text-foreground">{heading}</h2>
+                <h2 tabIndex={-1} className="rounded-sm text-base font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">{heading}</h2>
                 <span className="text-sm text-muted-foreground">{meta}</span>
             </header>
             {body}

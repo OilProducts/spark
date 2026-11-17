@@ -1,4 +1,15 @@
 import type { NodeStatus } from '@/store'
+import type { VisitOutcome } from './visitModel'
+
+/** The graph status a visit's outcome shows; an error the run continued past is still a failure. */
+export const VISIT_NODE_STATUSES: Record<VisitOutcome, NodeStatus> = {
+    completed: 'success',
+    error: 'failed',
+    failed: 'failed',
+    interrupted: 'interrupted',
+    running: 'running',
+    waiting: 'waiting',
+}
 
 interface BuildRunNodeStatusesArgs {
     completedNodes: string[]
@@ -8,8 +19,8 @@ interface BuildRunNodeStatusesArgs {
     gateNodeId: string | null
     isRunActive: boolean
     runStatus: string | null
-    /** Nodes whose latest visit a cancel or its fork stopped, as the run's steps say. */
-    interruptedNodeIds?: string[]
+    /** Each node's status as its latest visit in the run's Steps says, branches included. */
+    visitStatuses?: Record<string, NodeStatus>
 }
 
 const TERMINAL_NODE_STATUSES = new Set<NodeStatus>(['success', 'failed'])
@@ -28,7 +39,7 @@ export function buildRunNodeStatuses({
     gateNodeId,
     isRunActive,
     runStatus,
-    interruptedNodeIds = [],
+    visitStatuses = {},
 }: BuildRunNodeStatusesArgs): Record<string, NodeStatus> {
     const statuses: Record<string, NodeStatus> = {}
     for (const nodeId of completedNodes) {
@@ -51,9 +62,7 @@ export function buildRunNodeStatuses({
     ) {
         statuses[currentNodeId] = 'running'
     }
-    for (const nodeId of interruptedNodeIds) {
-        statuses[nodeId] = 'interrupted'
-    }
+    Object.assign(statuses, visitStatuses)
     if (runStatus === 'failed' && currentNodeId) {
         statuses[currentNodeId] = 'failed'
     }

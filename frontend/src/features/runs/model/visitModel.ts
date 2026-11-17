@@ -38,6 +38,8 @@ export interface VisitFlowNode {
     kind: string
     readsContext: string[]
     command: string | null
+    /** Each declared decision's display label, such as a gate's "Approve" for `approve`. */
+    routeLabels?: Record<string, string>
 }
 
 export interface VisitChildRun {
@@ -427,14 +429,21 @@ export function buildRunVisits({
     const runCanceled = runStatus !== null && CANCELED_RUN_STATUSES.has(runStatus)
     branchDrafts.forEach((draft) => {
         settle(draft, false)
+        const { visit } = draft
+        const result = parallelBranchResults(draft.parent.visit).find((candidate) => candidate.index === draft.branchIndex)
         // A branch the user's cancel or its fork stopped ends as it is killed, with no reason of its
         // own: the stop ended it, not an error.
-        const canceledByFork = parallelBranchResults(draft.parent.visit)
-            .some((result) => result.index === draft.branchIndex && result.status === 'canceled')
-        if (draft.visit.outcome === 'error' && !draft.visit.reason
-            && (canceledByFork || (runCanceled && draft.parent === rootDrafts.at(-1)))) {
-            draft.visit.outcome = 'interrupted'
-            draft.visit.endedAt ??= runEndedAt
+        if (visit.outcome === 'error' && !visit.reason
+            && (result?.status === 'canceled' || (runCanceled && draft.parent === rootDrafts.at(-1)))) {
+            visit.outcome = 'interrupted'
+            visit.endedAt ??= runEndedAt
+        }
+        // A branch step keeps no status of its own; the error its fork recorded for it says why it failed.
+        const error = result?.error
+        if (visit.outcome === 'error' && error && (error.node ?? visit.nodeId) === visit.nodeId) {
+            visit.reason ??= error.reason
+            visit.failureKind ??= error.kind
+            visit.tolerable ??= error.tolerable
         }
     })
 
@@ -675,11 +684,16 @@ export function visitFlowNodesFromSnapshot(flow: Record<string, unknown> | null 
         const config = (node?.config ?? {}) as Record<string, unknown>
         const contracts = (node?.contracts ?? {}) as Record<string, unknown>
         const reads = Array.isArray(contracts.reads_context) ? contracts.reads_context : []
+        const routes = asRecord(node?.routes) ?? {}
         return [nodeId, {
             label: asString(node?.label) ?? humanizeNodeId(nodeId),
             kind: asString(node?.kind) ?? asString(config.kind) ?? 'agent_task',
             readsContext: reads.filter((key): key is string => typeof key === 'string'),
             command: asString(config.command),
+            routeLabels: Object.fromEntries(Object.entries(routes).flatMap(([decision, route]) => {
+                const label = asString(asRecord(route)?.label)
+                return label ? [[decision, label]] : []
+            })),
         }]
     }))
 }

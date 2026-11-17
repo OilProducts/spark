@@ -59,7 +59,7 @@ export function ClaudeCodeConnectionControls({ autoStart = false, onRetry }: { a
             {!connection ? (error ? 'Connection unavailable.' : 'Checking connection…')
                 : pending ? 'Waiting for sign-in… Finish in the browser window that opened.'
                     : connection.status === 'connected'
-                        ? `Signed in${connection.account?.email ? ` as ${connection.account.email}` : ''}${connection.account?.plan ? ` (${connection.account.plan})` : ''}.${onRetry ? '' : ' You can retry your message or run.'}`
+                        ? `Signed in${connection.account?.email ? ` as ${connection.account.email}` : ''}${connection.account?.plan ? ` (${connection.account.plan})` : ''}.`
                         : 'Claude Code needs sign-in.'}
         </p>
         {connection?.message && <p>{connection.message}</p>}

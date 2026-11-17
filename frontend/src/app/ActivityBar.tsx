@@ -1,5 +1,5 @@
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react"
-import { Bell, GitBranch, House, MessageSquare, Network, Play, Settings, Target, Zap, type LucideIcon } from "lucide-react"
+import { Bell, Ellipsis, GitBranch, House, MessageSquare, Network, Play, Settings, Target, Zap, type LucideIcon } from "lucide-react"
 
 import { useStore, type ViewMode } from "@/store"
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -25,17 +25,23 @@ export const ACTIVITY_ITEMS: ActivityItem[] = [
     { mode: 'editor', label: 'Flows', icon: GitBranch, testId: 'activity-flows' },
     { mode: 'roles', label: 'Roles', icon: Network, testId: 'activity-roles' },
 ]
+const SETTINGS_ITEM: ActivityItem = { mode: 'settings', label: 'Settings', icon: Settings, testId: 'activity-settings' }
 const ACTIVITY_ORDER: ViewMode[] = [...ACTIVITY_ITEMS.map((item) => item.mode), 'settings']
+// A phone's row has room for five views with their names; these open, named too, from More.
+const PHONE_MORE_MODES = new Set<ViewMode>(['triggers', 'editor', 'roles', 'settings'])
+const PHONE_MORE_ITEMS = [...ACTIVITY_ITEMS, SETTINGS_ITEM].filter((item) => PHONE_MORE_MODES.has(item.mode))
 
 const RUNNING_RUN_STATUSES = new Set(['running', 'queued', 'pause_requested', 'abort_requested', 'cancel_requested'])
 
 type ActivityDot = 'waiting' | 'running' | 'unread' | 'problem' | null
 const DOT_LABELS = { waiting: 'waiting on you', running: 'running', unread: 'new since you last looked', problem: 'something is failing' }
 
-// An icon with its name under it; on a phone-width top row there is only room for the icon,
-// and the icons share the row's width so all of them stay on screen, down to 320px wide.
+// An icon with its name under it. On a phone-width top row the items share the row's width, so
+// all of them stay on screen with their names, down to 320px wide.
 const ITEM_CLASS = 'relative flex h-12 w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border border-transparent text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring max-sm:h-11 max-sm:w-auto max-sm:min-w-6 max-sm:flex-1 max-sm:shrink'
-const LABEL_CLASS = 'text-xs leading-none max-sm:hidden'
+const LABEL_CLASS = 'text-xs leading-none max-sm:tracking-tight'
+const CURRENT_CLASS = 'transition-colors aria-[current=page]:border-border aria-[current=page]:bg-background aria-[current=page]:text-primary'
+const DOT_CLASS = (dot: NonNullable<ActivityDot>) => cn('absolute -right-1 -top-0.5 size-1.5 rounded-full', dot === 'waiting' ? 'bg-warning' : dot === 'problem' ? 'bg-destructive' : 'bg-primary')
 
 /** Which views have something waiting on you or running, for the dots on their icons. */
 export function activityDots(
@@ -205,6 +211,78 @@ function AttentionBell({ items: loadedItems, failed, narrow, triggers }: { items
     )
 }
 
+/** On a phone, the views the row has no room for, by name; marked current while one of them is open. */
+function PhoneMoreViews({ viewMode, dots, onOpen }: { viewMode: ViewMode; dots: Partial<Record<ViewMode, ActivityDot>>; onOpen: (mode: ViewMode) => void }) {
+    const [open, setOpen] = useState(false)
+    const containerRef = useRef<HTMLDivElement | null>(null)
+    const buttonRef = useRef<HTMLButtonElement | null>(null)
+    const listId = useId()
+    useEffect(() => {
+        if (!open) return
+        const onPointerDown = (event: PointerEvent) => {
+            if (!containerRef.current?.contains(event.target as Node)) setOpen(false)
+        }
+        const onKeyDown = (event: globalThis.KeyboardEvent) => {
+            if (event.key !== 'Escape' || event.defaultPrevented) return
+            if (containerRef.current?.contains(document.activeElement)) buttonRef.current?.focus()
+            setOpen(false)
+        }
+        window.addEventListener('pointerdown', onPointerDown)
+        window.addEventListener('keydown', onKeyDown)
+        return () => {
+            window.removeEventListener('pointerdown', onPointerDown)
+            window.removeEventListener('keydown', onKeyDown)
+        }
+    }, [open])
+    const shown = PHONE_MORE_ITEMS.find((item) => item.mode === viewMode) ?? null
+    const dot = PHONE_MORE_ITEMS.map((item) => dots[item.mode]).find(Boolean) ?? null
+    return (
+        <div ref={containerRef} className="flex min-w-6 flex-1 sm:hidden">
+            <button
+                ref={buttonRef}
+                type="button"
+                data-testid="activity-more"
+                aria-expanded={open}
+                aria-controls={open ? listId : undefined}
+                aria-current={shown ? 'page' : undefined}
+                aria-label={['More views', shown ? `(${shown.label} open)` : null, dot ? `(${DOT_LABELS[dot]})` : null].filter(Boolean).join(' ')}
+                onClick={() => setOpen((previous) => !previous)}
+                className={cn(ITEM_CLASS, CURRENT_CLASS)}
+            >
+                <span className="relative">
+                    <Ellipsis className="size-4.5" />
+                    {dot ? <span data-testid="activity-more-dot" data-dot={dot} className={DOT_CLASS(dot)} /> : null}
+                </span>
+                <span className={LABEL_CLASS}>More</span>
+            </button>
+            {open ? (
+                <div id={listId} data-testid="activity-more-list" className="absolute right-2 top-full z-50 mt-1 flex w-48 flex-col rounded-lg border bg-background p-1 shadow-md">
+                    {PHONE_MORE_ITEMS.map(({ mode, label, icon: ItemIcon, testId }) => {
+                        const itemDot = dots[mode] ?? null
+                        return (
+                            <button
+                                key={mode}
+                                type="button"
+                                data-testid={`${testId}-more`}
+                                aria-current={viewMode === mode ? 'page' : undefined}
+                                onClick={() => {
+                                    setOpen(false)
+                                    onOpen(mode)
+                                }}
+                                className="flex w-full items-center gap-2.5 rounded-sm px-2.5 py-2 text-left text-sm text-foreground outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring aria-[current=page]:font-medium aria-[current=page]:text-primary"
+                            >
+                                <ItemIcon aria-hidden="true" className="size-4 text-muted-foreground" />
+                                {label}
+                                {itemDot ? <span className="ml-auto text-xs text-muted-foreground">{DOT_LABELS[itemDot]}</span> : null}
+                            </button>
+                        )
+                    })}
+                </div>
+            ) : null}
+        </div>
+    )
+}
+
 /** The column of view icons on the left; on a narrow viewport, a row across the top. */
 export function ActivityBar() {
     const viewMode = useStore((state) => state.viewMode)
@@ -243,8 +321,16 @@ export function ActivityBar() {
         }
         event.preventDefault()
         const index = Math.max(0, ACTIVITY_ORDER.indexOf(mode))
-        const next = ACTIVITY_ORDER[(index + step + ACTIVITY_ORDER.length) % ACTIVITY_ORDER.length]
-        document.querySelector<HTMLButtonElement>(`[data-activity-mode="${next}"]`)?.focus()
+        const count = ACTIVITY_ORDER.length
+        // A view a phone keeps under More is passed over.
+        for (let offset = 1; offset < count; offset += 1) {
+            const next = ACTIVITY_ORDER[(index + step * offset + count * count) % count]
+            const target = document.querySelector<HTMLButtonElement>(`[data-activity-mode="${next}"]`)
+            if (target && target.checkVisibility?.() !== false) {
+                target.focus()
+                return
+            }
+        }
     }
 
     const renderItem = ({ mode, label, icon: Icon, testId }: ActivityItem) => {
@@ -264,17 +350,11 @@ export function ActivityBar() {
                     if (isActive && isNarrowViewport) revealList()
                 }}
                 onKeyDown={(event) => onKeyDown(event, mode)}
-                className={cn(ITEM_CLASS, 'transition-colors aria-[current=page]:border-border aria-[current=page]:bg-background aria-[current=page]:text-primary')}
+                className={cn(ITEM_CLASS, CURRENT_CLASS, PHONE_MORE_MODES.has(mode) && 'max-sm:hidden')}
             >
                 <span className="relative">
                     <Icon className="size-4.5" />
-                    {dot ? (
-                        <span
-                            data-testid={`${testId}-dot`}
-                            data-dot={dot}
-                            className={cn('absolute -right-1 -top-0.5 size-1.5 rounded-full', dot === 'waiting' ? 'bg-warning' : dot === 'problem' ? 'bg-destructive' : 'bg-primary')}
-                        />
-                    ) : null}
+                    {dot ? <span data-testid={`${testId}-dot`} data-dot={dot} className={DOT_CLASS(dot)} /> : null}
                 </span>
                 <span className={LABEL_CLASS}>{label}</span>
             </button>
@@ -288,14 +368,18 @@ export function ActivityBar() {
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
             className={cn(
                 'z-50 flex shrink-0 items-center gap-1 bg-ground',
-                isNarrowViewport ? 'sticky top-0 w-full flex-row px-2 py-1 max-sm:gap-0.5' : 'w-16 flex-col py-3',
+                isNarrowViewport ? 'sticky top-0 w-full flex-row px-2 py-1 max-sm:gap-0 max-sm:px-1' : 'w-16 flex-col py-3',
             )}
         >
-            <img src="/assets/spark-app-icon.png" alt="Spark" width={28} height={28} className={cn('size-7 rounded-lg', isNarrowViewport ? 'mr-1' : 'mb-3')} />
+            <img src="/assets/spark-app-icon.png" alt="Spark" width={28} height={28} className={cn('size-7 rounded-lg max-sm:hidden', isNarrowViewport ? 'mr-1' : 'mb-3')} />
             {ACTIVITY_ITEMS.map(renderItem)}
             <span className="flex-1 max-sm:hidden" />
             <AttentionBell items={loadedAttention} failed={attentionFailed} narrow={isNarrowViewport} triggers={failingTriggers} />
-            {renderItem({ mode: 'settings', label: 'Settings', icon: Settings, testId: 'activity-settings' })}
+            {renderItem(SETTINGS_ITEM)}
+            <PhoneMoreViews viewMode={viewMode} dots={dots} onOpen={(mode) => {
+                setViewMode(mode)
+                if (mode === viewMode) revealList()
+            }} />
         </nav>
     )
 }

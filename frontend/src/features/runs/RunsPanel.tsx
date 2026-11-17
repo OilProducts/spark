@@ -27,7 +27,7 @@ import { RunContinuationPanel } from './components/RunContinuationPanel'
 import { focusRunHeading, RunHeaderBar } from './components/RunHeaderBar'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { formatDuration, runHasEnded, type RunRecord } from './model/shared'
-import { buildRunNodeStatuses } from './model/nodeStatusModel'
+import { buildRunNodeStatuses, VISIT_NODE_STATUSES } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
 import { buildRunContextOverview, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
 import type { StatusTone } from '@/components/app/status'
@@ -321,11 +321,11 @@ export function RunsPanel() {
         window.addEventListener('keydown', onKeyDown)
         return () => window.removeEventListener('keydown', onKeyDown)
     }, [])
-    // The graph marks a step interrupted when its latest visit in Steps was, as a cancel leaves it.
-    const interruptedNodeIds = useMemo(() => {
-        const latestOutcome = new Map(visits.map((visit) => [visit.nodeId, visit.outcome]))
-        return [...latestOutcome].flatMap(([nodeId, outcome]) => (outcome === 'interrupted' ? [nodeId] : []))
-    }, [visits])
+    // The graph marks each step as its latest visit in Steps ends.
+    const visitStatuses = useMemo(
+        () => Object.fromEntries(visits.map((visit) => [visit.nodeId, VISIT_NODE_STATUSES[visit.outcome]])),
+        [visits],
+    )
     const runNodeStatuses = useMemo(() => buildRunNodeStatuses({
         completedNodes: completedNodesSnapshot ?? [],
         nodeOutcomes: checkpointNodeOutcomes,
@@ -334,10 +334,10 @@ export function RunsPanel() {
         gateNodeId,
         isRunActive: isSelectedRunActive,
         runStatus: selectedRunStatus,
-        interruptedNodeIds,
+        visitStatuses,
     }), [
         checkpointNodeOutcomes,
-        interruptedNodeIds,
+        visitStatuses,
         completedNodesSnapshot,
         currentNodeForSummary,
         gateNodeId,

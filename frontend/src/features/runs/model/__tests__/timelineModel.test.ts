@@ -159,6 +159,24 @@ describe('timelineModel', () => {
     expect(toTimelineEvent({ type: 'PipelineFailed', sequence: 1, emitted_at: '2026-07-08T10:00:00Z', error: 'aborted_by_user' })?.severity).toBe('warning')
   })
 
+  it('tells a branch its fork stopped as stopped, not failed', () => {
+    const entry = (sequence: number, rawType: string, payload: Record<string, unknown>) => toTimelineEvent({
+      id: `journal-${sequence}`, sequence, emitted_at: '2026-07-08T10:00:00Z', kind: 'other', raw_type: rawType,
+      summary: `server ${rawType}`, severity: 'info', source_scope: 'root', node_id: 'checks',
+      payload: { type: rawType, source_scope: 'root', node_id: 'checks', ...payload },
+    })!
+    const lines = [
+      entry(1, 'ParallelBranchCompleted', { branch: 'typecheck', success: false, status: 'error' }),
+      entry(2, 'ParallelBranchCompleted', { branch: 'slow', success: false, status: 'canceled' }),
+      entry(3, 'ParallelCompleted', { success_count: 0, failure_count: 2, canceled_count: 1 }),
+    ].map((event) => journalEntrySummary(event, (nodeId) => nodeId))
+    expect(lines).toEqual([
+      'Parallel branch typecheck completed (failed)',
+      'Parallel branch slow stopped',
+      'Parallel fan-out stopped (0 of 2 branches finished: 1 failed, 1 stopped)',
+    ])
+  })
+
   it('derives pending interview gates from live events and fallback question snapshots', () => {
     const timeoutEvent = toTimelineEvent({
       type: 'human_gate',

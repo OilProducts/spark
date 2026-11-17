@@ -58,11 +58,16 @@ export function readableViewport(
     }
 }
 
+/** The viewport that keeps the graph point at the pane's centre there when the pane resizes. */
+export function recentredViewport(viewport: Viewport, from: { width: number; height: number }, to: { width: number; height: number }): Viewport {
+    return { x: viewport.x + (to.width - from.width) / 2, y: viewport.y + (to.height - from.height) / 2, zoom: viewport.zoom }
+}
+
 type FrameRequest = { padding: FramePadding; focusNodeId?: string | null }
 
 /**
- * Frames graphs with `readableViewport`, and frames the graph again when its pane resizes,
- * unless the user has panned or zoomed since.
+ * Frames graphs with `readableViewport`, and frames the graph again when its pane resizes;
+ * a view the user has panned or zoomed keeps its centre instead, so it never slides off the graph.
  */
 export function useReadableFraming(paneRef: RefObject<HTMLElement | null>) {
     const { getViewport, setViewport } = useReactFlow()
@@ -113,7 +118,10 @@ export function useReadableFraming(paneRef: RefObject<HTMLElement | null>) {
         if (!pane || typeof ResizeObserver === 'undefined') {
             return
         }
+        let size = { width: pane.clientWidth, height: pane.clientHeight }
         const observer = new ResizeObserver(() => {
+            const previous = size
+            size = { width: pane.clientWidth, height: pane.clientHeight }
             const framed = framedRef.current
             if (!framed) {
                 return
@@ -126,11 +134,13 @@ export function useReadableFraming(paneRef: RefObject<HTMLElement | null>) {
             )
             if (untouched) {
                 frame(framed.nodes, framed.request)
+            } else if (previous.width > 0 && previous.height > 0 && size.width > 0 && size.height > 0) {
+                void setViewport(recentredViewport(current, previous, size))
             }
         })
         observer.observe(pane)
         return () => observer.disconnect()
-    }, [frame, getViewport, paneRef])
+    }, [frame, getViewport, paneRef, setViewport])
 
     return frame
 }

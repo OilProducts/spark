@@ -386,23 +386,38 @@ fn journal_summary(
                 .or_else(|| node_id.map(str::to_string))
                 .unwrap_or_else(|| "unknown".to_string());
             let success = event.payload.get("success").and_then(Value::as_bool);
-            match success {
-                Some(true) => {
+            match (string_payload(event, "status").as_deref(), success) {
+                (Some("canceled"), _) => format!("{source_prefix}Parallel branch {branch} stopped"),
+                (_, Some(true)) => {
                     format!("{source_prefix}Parallel branch {branch} completed (success)")
                 }
-                Some(false) => {
+                (_, Some(false)) => {
                     format!("{source_prefix}Parallel branch {branch} completed (failed)")
                 }
-                None => format!("{source_prefix}Parallel branch {branch} completed"),
+                (_, None) => format!("{source_prefix}Parallel branch {branch} completed"),
             }
         }
         "ParallelCompleted" => match (
             numeric_payload(event, "success_count"),
             numeric_payload(event, "failure_count"),
         ) {
-            (Some(success), Some(failed)) => {
-                format!("{source_prefix}Parallel fan-out completed ({success} success, {failed} failed)")
-            }
+            (Some(success), Some(failed)) => match numeric_payload(event, "canceled_count") {
+                Some(stopped) if stopped > 0 => {
+                    let errored = failed.saturating_sub(stopped);
+                    let failures = if errored > 0 {
+                        format!("{errored} failed, ")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "{source_prefix}Parallel fan-out stopped ({success} of {} branches finished: {failures}{stopped} stopped)",
+                        success + failed
+                    )
+                }
+                _ => format!(
+                    "{source_prefix}Parallel fan-out completed ({success} success, {failed} failed)"
+                ),
+            },
             _ => format!("{source_prefix}Parallel fan-out completed"),
         },
         "InterviewStarted" => {

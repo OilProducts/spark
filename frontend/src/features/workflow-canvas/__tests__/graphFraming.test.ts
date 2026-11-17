@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { READABLE_ZOOM, readableViewport } from '../graphFraming'
+import { READABLE_ZOOM, readableViewport, recentredViewport } from '../graphFraming'
 
 const padding = { top: 10, right: 10, bottom: 10, left: 10 }
 
@@ -26,5 +26,17 @@ describe('readableViewport', () => {
         expect(readableViewport(bounds, { width: 420, height: 740 }, padding, { x: 200, y: 1000 }).y).toBeCloseTo(370 - 1000 * READABLE_ZOOM)
         // A focus near the bottom stops with the graph's last row at the bottom padding.
         expect(readableViewport(bounds, { width: 420, height: 740 }, padding, { x: 200, y: 1990 }).y).toBeCloseTo(730 - 2000 * READABLE_ZOOM)
+    })
+})
+
+describe('recentredViewport', () => {
+    it('keeps the graph point at the centre of a moved view there as the pane narrows', () => {
+        const viewport = { x: -300, y: -100, zoom: 0.8 }
+        const centre = (view: typeof viewport, pane: { width: number; height: number }) => (
+            [(pane.width / 2 - view.x) / view.zoom, (pane.height / 2 - view.y) / view.zoom]
+        )
+        const desktop = { width: 1040, height: 840 }
+        const phone = { width: 390, height: 336 }
+        expect(centre(recentredViewport(viewport, desktop, phone), phone)).toEqual(centre(viewport, desktop))
     })
 })
