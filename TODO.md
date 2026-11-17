@@ -31,6 +31,22 @@
   2026-07-19..21 loam build (conversation nimble-stream, multi-hour milestone
   runs); blocking `human_gate` nodes were never exercised on the desktop in
   that period and still need a manual pass.
+- [ ] **ACP harnesses: paths not yet exercised against a real harness.**
+  CR-2026-0198 was checked live with OpenCode 1.19.5 on 2026-11-17 (discovery,
+  pinned instructions through a declared channel, chat, resume after restart,
+  a flow step, per-prompt usage). Still covered only by the fake ACP agent:
+  typed form elicitation (OpenCode never sends one; try Antigravity
+  `agy acp`), interrupting or cancelling a running turn, and the model
+  chooser in the browser.
+- [ ] **ACP harnesses offer Plan mode, then refuse it.** The chat mode
+  selector (`ProjectConversationSurface.tsx`) offers Plan for an `acp:<id>`
+  model, and the backend rejects the turn before prompting because no ACP
+  mode is verified read-only. Hide Plan when the model's `plan_mode`
+  capability is unsupported.
+- [ ] **ACP harness arguments are saved unredacted.** Execution snapshots
+  redact a registration's environment values but keep its `args`, so a
+  secret passed on the command line lands in run history. Redact args too,
+  or document that secrets belong in `env`.
 - [ ] **Parent-run usage rollup**: run token usage/cost is per-record; child-run
   usage does not aggregate into the parent (matches old Python behavior). Roll
   up over the combined journal if parent totals should include children.
