@@ -193,10 +193,10 @@ fn subagent_working_directory_is_scoped_and_escape_rejected_before_registration(
 #[test]
 fn session_lifecycle_transitions_emit_observable_events_and_allow_reuse() {
     let mut session = Session::default();
-    assert_eq!(
-        session.next_event().expect("SESSION_START").kind,
-        EventKind::SessionStart
-    );
+    let start = session.next_event().expect("SESSION_START");
+    assert_eq!(start.kind, EventKind::SessionStart);
+    assert_eq!(start.session_id, Some(session.id));
+    assert_eq!(start.data["state"], json!("idle"));
 
     session.mark_awaiting_input("What next?");
     assert_eq!(session.state, SessionState::AwaitingInput);
