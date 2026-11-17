@@ -537,8 +537,9 @@ test('run journal inspector hydrates durable history, pages older entries, and a
     })
   }, { runId: run.run_id })
 
-  await expect(journalPanel).toContainText('Deploy completed')
+  // The route it took says the step completed, so that line stands for both.
   await expect(journalPanel).toContainText('Deploy → Approve Release on done (visit 2)')
+  await expect(journalPanel).not.toContainText('Deploy completed')
   await page.screenshot({ path: screenshotPath('08c-runs-panel-journal-live-tail.png'), fullPage: true })
 
   // The question is answered in place on the status item: the choice reads as its label
@@ -1208,4 +1209,105 @@ test('wrapped visit labels stay inside their own rows in split and stacked layou
   await page.getByTestId('run-history-row').nth(1).click()
   await expect(page.getByTestId('run-visits-empty')).toBeInViewport({ ratio: 1 })
   await expect(list.getByText('0 visits')).toBeInViewport({ ratio: 1 })
+})
+
+test('a step opened from the status shows in Steps, and a running step keeps its newest output in view', async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-follow-${Date.now()}`
+  const run = buildSmokeRun(projectPath, {
+    run_id: `run-follow-${Date.now()}`,
+    flow_name: 'FollowFlow',
+    status: 'running',
+    outcome: null,
+    ended_at: null,
+    current_node: 'work',
+  })
+  // Twelve drafts and reviews, then the step still working: more rows than the list shows.
+  const stages = ['start', ...Array.from({ length: 12 }, () => ['draft', 'review']).flat(), 'work']
+  const workIndex = stages.length - 1
+  let sequence = 0
+  const entry = (rawType: string, node: string, index: number, payload: Record<string, unknown> = {}) => {
+    sequence += 1
+    return buildSmokeJournalEntry(sequence, {
+      kind: 'stage', raw_type: rawType, summary: `${rawType} ${node}`, node_id: node, stage_index: index,
+      emitted_at: new Date(Date.UTC(2026, 2, 3, 12) + sequence * 7_000).toISOString(),
+      payload: { node_id: node, index, ...payload },
+    })
+  }
+  const journal = stages.flatMap((node, index) => [
+    entry('StageStarted', node, index),
+    ...(index === workIndex ? [] : [entry('StageCompleted', node, index, { outcome: 'completed', decision: 'done' })]),
+  ]).reverse()
+  await installMockEventSource(page)
+  await stubRunSummary(page, run)
+  await stubJson(page, `**/attractor/pipelines/${run.run_id}/journal**`, {
+    pipeline_id: run.run_id, entries: journal, oldest_sequence: 1, newest_sequence: sequence, has_older: false,
+  })
+  await stubJson(page, `**/attractor/pipelines/${run.run_id}/graph-preview**`, {
+    status: 'ok',
+    flow: { nodes: Object.fromEntries(['start', 'draft', 'review', 'work'].map((id) => [id, { label: id[0].toUpperCase() + id.slice(1), kind: id === 'start' ? 'start' : 'agent_task' }])) },
+    graph: { nodes: [], edges: [] },
+    diagnostics: [],
+    errors: [],
+  })
+  await page.setViewportSize({ width: 1440, height: 700 })
+  await openRunsForSmokeTest(page, projectPath)
+
+  // The status's link to the running step selects its row, which the list scrolls into view.
+  const list = page.getByTestId('run-visit-list')
+  const workRow = page.locator('[data-testid="run-visit-row"][data-node-id="work"]')
+  await expect(page.getByTestId('run-visit-row')).toHaveCount(stages.length)
+  await page.getByTestId('run-status-running').getByRole('button', { name: 'Work' }).click()
+  await expect(workRow).toHaveAttribute('aria-selected', 'true')
+  const inList = () => workRow.evaluate((row) => {
+    const port = row.closest('[data-testid="run-visit-list"]')!.getBoundingClientRect()
+    const box = row.getBoundingClientRect()
+    return box.top >= port.top - 1 && box.bottom <= port.bottom + 1
+  })
+  await expect.poll(inList).toBe(true)
+  expect(await list.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+
+  // Its work arrives as it runs.
+  const say = (from: number, count: number) => page.evaluate(({ runId, node, index, from, count }) => {
+    for (let order = from; order < from + count; order += 1) {
+      window.dispatchEvent(new CustomEvent('spark:run-segment-upsert', {
+        detail: {
+          runId,
+          segment: {
+            id: `work-${order}`, turn_id: 'response', order, kind: 'assistant_message', role: 'assistant', status: 'complete',
+            timestamp: '2026-03-03T12:10:00Z', updated_at: '2026-03-03T12:10:00Z', content: `Progress note ${order}.`,
+            source_run_id: runId, node_id: node, stage_index: index, attempt: 0,
+          },
+        },
+      }))
+    }
+  }, { runId: run.run_id, node: 'work', index: workIndex, from, count })
+  const details = page.getByTestId('run-visit-details')
+  const below = () => details.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)
+  // Scrolls as a reader does: the page hears of it before more work arrives.
+  const scrollTo = (top: number | 'end') => details.evaluate((element, to) => new Promise((resolve) => {
+    element.addEventListener('scroll', resolve, { once: true })
+    element.scrollTop = to === 'end' ? element.scrollHeight : to
+  }), top)
+  // Opened before it said anything, the step shows all there is, so its output is followed as it comes.
+  await say(1, 30)
+  await expect(page.getByText('Progress note 30.')).toBeInViewport()
+  await expect.poll(below).toBeLessThanOrEqual(1)
+
+  // Scrolled back up to read, it stays where it was put.
+  await scrollTo(200)
+  await say(31, 10)
+  await expect(page.getByText('Progress note 40.')).toBeAttached()
+  expect(await details.evaluate((element) => element.scrollTop)).toBe(200)
+  await expect(page.getByText('Progress note 40.')).not.toBeInViewport()
+
+  // Read to the end again, it follows again.
+  await scrollTo('end')
+  await say(41, 10)
+  await expect(page.getByText('Progress note 50.')).toBeInViewport()
+  await expect.poll(below).toBeLessThanOrEqual(1)
+
+  // Another step opens at its top, not where the last one was read.
+  await page.locator('[data-testid="run-visit-row"][data-node-id="review"]').last().click()
+  await expect(page.getByTestId('run-visit-view-title')).toHaveText('Review')
+  expect(await details.evaluate((element) => element.scrollTop)).toBe(0)
 })

@@ -1,4 +1,4 @@
-import { Fragment, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 import { ArrowRight, ChevronRight, CircleHelp, Minus, Undo2, Workflow, X, type LucideIcon } from 'lucide-react'
 
 import type { RunExecutionPrompt, RunTranscriptSegment } from '@/lib/api/attractorApi'
@@ -79,6 +79,44 @@ const railRowClass = (isSelected: boolean) => cn(
     'flex w-full items-center gap-2 rounded-lg border px-2.5 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
     isSelected ? 'border-border bg-background font-medium text-foreground' : 'border-transparent text-foreground hover:bg-background/60',
 )
+
+const FOLLOW_THRESHOLD_PX = 8
+
+const scrollParent = (node: HTMLElement | null): HTMLElement | null => {
+    for (let element = node?.parentElement ?? null; element; element = element.parentElement) {
+        if (/auto|scroll/.test(getComputedStyle(element).overflowY)) return element
+    }
+    return null
+}
+
+/**
+ * A running step's work keeps arriving below what has been read. A reader at its end stays at
+ * its end as it grows, as in a chat; one who scrolls up, or on past it to the Steps list, stays put.
+ */
+function useFollowOutput(ref: RefObject<HTMLElement | null>, active: boolean) {
+    const pinned = useRef(false)
+    // How far the end of the work is below the bottom of the view.
+    const gap = (scroller: HTMLElement, node: HTMLElement) => node.getBoundingClientRect().bottom - scroller.getBoundingClientRect().bottom
+    useEffect(() => {
+        const node = ref.current
+        const scroller = scrollParent(node)
+        if (!active || !node || !scroller) return
+        const update = () => {
+            const below = gap(scroller, node)
+            pinned.current = below <= FOLLOW_THRESHOLD_PX && (below >= -FOLLOW_THRESHOLD_PX || scroller.scrollHeight <= scroller.clientHeight)
+        }
+        update()
+        scroller.addEventListener('scroll', update, { passive: true })
+        return () => scroller.removeEventListener('scroll', update)
+    }, [ref, active])
+    useLayoutEffect(() => {
+        const node = ref.current
+        const scroller = active && pinned.current ? scrollParent(node) : null
+        if (!node || !scroller) return
+        const below = gap(scroller, node)
+        if (below > 0) scroller.scrollTop += below
+    })
+}
 
 interface RunVisitsCardProps {
     visits: RunVisit[]
@@ -186,6 +224,30 @@ export function RunVisitsCard({
         if (focusRequest > 0) detailsRef.current?.querySelector<HTMLElement>('h2[tabindex]')?.focus()
     }, [focusRequest])
 
+    // Whatever picked it (the list, a link in the details, the graph), the selected row shows in
+    // the list, which scrolls itself only; and the details open at their top, not where the last
+    // ones were left. On a phone the page scrolls, and a pick brings the details into view itself.
+    const shownKey = showJournal ? 'journal' : itemKey(selected)
+    const columnRef = useRef<HTMLDivElement | null>(null)
+    useLayoutEffect(() => {
+        const list = listRef.current
+        const row = list?.querySelector<HTMLElement>('[aria-selected="true"]')
+        if (list && row) {
+            const listBox = list.getBoundingClientRect()
+            const rowBox = row.getBoundingClientRect()
+            if (rowBox.top < listBox.top || rowBox.bottom > listBox.bottom) {
+                list.scrollTop += rowBox.top - listBox.top - (listBox.height - rowBox.height) / 2
+            }
+        }
+        const details = detailsRef.current
+        const scroller = isNarrowViewport ? null : graphPane ? columnRef.current : details
+        if (details && scroller) {
+            const top = scroller === details ? 0 : details.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+            if (scroller.scrollTop > top) scroller.scrollTop = top
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new selection moves them
+    }, [shownKey])
+
     const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
         if (event.metaKey || event.ctrlKey || event.altKey) {
             return
@@ -246,11 +308,11 @@ export function RunVisitsCard({
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
             className={cn('flex gap-6', isNarrowViewport ? 'flex-col' : 'h-full min-h-0')}
         >
-            <Well className={cn('flex shrink-0 flex-col gap-0.5 p-2', isNarrowViewport ? undefined : 'min-h-0 w-64')}>
+            <Well className={cn('flex shrink-0 flex-col gap-0.5 p-2', isNarrowViewport ? undefined : 'min-h-0 w-64 xl:w-72')}>
                 {/* Steps and Journal exclude each other; the graph is additive, so it is its own
                     one-segment track beside them (a pressed segment beside a pressed segment reads wrong). */}
                 <div className="mb-1.5 flex items-center gap-1.5">
-                    {/* As wide as it is in the 16rem side rail, wherever the rail sits, so the
+                    {/* As wide as it is in the 16rem side rail, wherever the rail sits or however wide, so the
                         Graph toggle stays put and the segments never stretch across a wide rail. */}
                     <SegmentedControl
                         aria-label="View"
@@ -412,7 +474,7 @@ export function RunVisitsCard({
                 </div>
             </Well>
             {graphPane ? (
-                <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto">
+                <div ref={columnRef} className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto">
                     <div data-testid="run-graph-pane" className="flex h-[60%] min-h-96 shrink-0 flex-col">{graphPane}</div>
                     {details}
                 </div>
@@ -448,6 +510,8 @@ function RunVisitView({
 }) {
     const showThinking = useStore((state) => state.preferredShowThinking)
     const setShowThinking = useStore((state) => state.setPreferredShowThinking)
+    const articleRef = useRef<HTMLElement | null>(null)
+    useFollowOutput(articleRef, visit.outcome === 'running')
     const nodeVisits = visits.filter((candidate) => candidate.nodeId === visit.nodeId)
     const next = visits.find((candidate) => candidate.key === visit.next?.key) ?? null
     const prompt = visitPrompt(visit, prompts)
@@ -498,7 +562,7 @@ function RunVisitView({
     const hasWork = visit.kind === 'agent_task' || visit.kind === 'tool' || visit.kind === 'subflow' || entries.length > 0
 
     return (
-        <article data-testid="run-visit-view" data-visit-key={visit.key} className="flex flex-col gap-5 pb-6">
+        <article ref={articleRef} data-testid="run-visit-view" data-visit-key={visit.key} className="flex flex-col gap-5 pb-6">
             <header className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
                     <h2 data-testid="run-visit-view-title" tabIndex={-1} className="rounded-sm text-base font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">{visit.label}</h2>
@@ -937,14 +1001,35 @@ function RunJournal({ journal, flowNodes, timelineError }: {
     const nodeLabel = (nodeId: string, scope: TimelineEventEntry['sourceScope']) => (
         (scope === 'root' ? flowNodes[nodeId]?.label : null) ?? humanizeNodeId(nodeId)
     )
-    const entries = journalEntriesShown(journal)
+    // Checkpoints and the run's recorded details are the engine's bookkeeping, for whoever debugs a
+    // run; they show when asked for, so the steps, routes and answers read without them.
+    const [showRecords, setShowRecords] = useState(false)
+    const isRecord = (event: TimelineEventEntry) => event.category === 'checkpoint' || event.category === 'metadata'
+    const allEntries = journalEntriesShown(journal)
+    const hasRecords = allEntries.some(isRecord)
+    const entries = showRecords ? allEntries : allEntries.filter((event) => !isRecord(event))
     // A run that fails with its step's error repeats the step's detail; it shows once, under the step.
     const shownDetails = new Set<string>()
     let previousDay = ''
     let afterCancel = false
     return (
         <section data-testid="run-journal-panel" className="flex flex-col gap-3">
-            <h2 className="text-base font-semibold text-foreground">Journal</h2>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-base font-semibold text-foreground">Journal</h2>
+                {hasRecords ? (
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        data-testid="run-journal-records-toggle"
+                        aria-pressed={showRecords}
+                        onClick={() => setShowRecords(!showRecords)}
+                        className={cn('text-muted-foreground', showRecords && 'text-foreground')}
+                    >
+                        {showRecords ? 'Hide checkpoints' : 'Show checkpoints'}
+                    </Button>
+                ) : null}
+            </div>
             {timelineError ? <InlineError data-testid="run-event-timeline-error">{timelineError}</InlineError> : null}
             <ol className="flex flex-col gap-1 text-sm">
                 {entries.map((event) => {

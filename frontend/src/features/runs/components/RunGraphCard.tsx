@@ -21,6 +21,7 @@ import {
     ChildFlowExpansionToggle,
     edgeTypes,
     layoutWithElk,
+    MINIMAP_TOGGLE_MIN_WIDTH,
     nodeTypes,
     nowMs,
     useReadableFraming,
@@ -46,8 +47,8 @@ const clampGraphPaneHeight = (height: number) => (
     Math.min(MAX_GRAPH_PANE_HEIGHT, Math.max(MIN_GRAPH_PANE_HEIGHT, Math.round(height)))
 )
 
-// The view controls sit in the card header and the minimap shows only when asked for,
-// so nothing covers the graph when it opens.
+// The view controls sit in the card header and the minimap shows only for a graph too big to
+// show whole, or when asked for, so nothing covers a graph that shows all there is.
 // The sides leave room for self-loops, which reach past their node's box.
 const FRAME_PADDING = { top: 16, right: 40, bottom: 16, left: 40 } as const
 const MINIMAP_SIZE = { width: 120, height: 84 }
@@ -70,6 +71,8 @@ type RunGraphCanvasInnerProps = {
     onSelectNode: (nodeId: string | null) => void
     paneHeight: number | 'fill'
     showMinimap: boolean
+    /** Told, as each loaded graph opens, whether some of it is out of view, with the minimap toggle on hand. */
+    onFramed: (overflows: boolean) => void
 }
 
 function RunGraphCanvasInner({
@@ -81,6 +84,7 @@ function RunGraphCanvasInner({
     onSelectNode,
     paneHeight,
     showMinimap,
+    onFramed,
 }: RunGraphCanvasInnerProps) {
     const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
@@ -134,7 +138,9 @@ function RunGraphCanvasInner({
 
     // Each loaded graph opens whole when it stays readable, else readable around its focus.
     useEffect(() => {
-        frame(nodes, { padding: FRAME_PADDING, focusNodeId: focusNodeIdRef.current })
+        const fits = frame(nodes, { padding: FRAME_PADDING, focusNodeId: focusNodeIdRef.current })
+        if (fits !== null) onFramed(!fits && (paneRef.current?.clientWidth ?? 0) >= MINIMAP_TOGGLE_MIN_WIDTH)
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- framed once per loaded graph
     }, [nodes, frame])
 
     useEffect(() => {
@@ -301,7 +307,9 @@ export function RunGraphCard({
         return session?.graphExpanded === session?.expandChildFlows ? session?.diagnostics ?? EMPTY_DIAGNOSTICS : EMPTY_DIAGNOSTICS
     })
     const [refreshToken, setRefreshToken] = useState(0)
-    const [showMinimap, setShowMinimap] = useState(false)
+    const [minimapChoice, setMinimapChoice] = useState<boolean | null>(null)
+    const [graphOverflows, setGraphOverflows] = useState(false)
+    const showMinimap = minimapChoice ?? graphOverflows
     const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const graphStatus = runDetailSession?.graphStatus ?? 'idle'
@@ -341,7 +349,7 @@ export function RunGraphCard({
                     />
                     <div className="ml-auto flex items-center gap-2">
                         <div className="flex items-center gap-0.5">
-                            <CanvasViewControls minimap={{ shown: showMinimap, onToggle: () => setShowMinimap((shown) => !shown) }} />
+                            <CanvasViewControls minimap={{ shown: showMinimap, onToggle: () => setMinimapChoice(!showMinimap) }} />
                             <Button
                                 onClick={() => setRefreshToken((current) => current + 1)}
                                 data-testid="run-graph-refresh-button"
@@ -416,6 +424,7 @@ export function RunGraphCard({
                                 onSelectNode={onSelectNode}
                                 paneHeight={fillHeight ? 'fill' : paneHeight}
                                 showMinimap={showMinimap}
+                                onFramed={setGraphOverflows}
                             />
                     </CanvasSessionModeProvider>
                 </div>

@@ -4,7 +4,7 @@ import { FlowsPanelActions, FlowsPanelList, useFlowCatalogPanel } from '@/featur
 import { CanvasSessionModeProvider } from '@/features/workflow-canvas/canvasSessionContext'
 import { useStore } from '@/store'
 import { ReactFlow, ReactFlowProvider, useEdgesState, useNodesState } from '@xyflow/react'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -122,7 +122,7 @@ describe('Editor sidebar manual refresh', () => {
         vi.unstubAllGlobals()
     })
 
-    it('refreshes the saved flow catalog manually while preserving and clearing selection as appropriate', async () => {
+    it('refreshes the saved flow catalog manually, keeping the open flow until another project shows', async () => {
         const user = userEvent.setup()
         const pendingRefresh = createDeferred<string[]>()
 
@@ -131,6 +131,7 @@ describe('Editor sidebar manual refresh', () => {
             .mockResolvedValueOnce(['alpha.dot', 'beta.dot'])
             .mockImplementationOnce(() => pendingRefresh.promise)
             .mockResolvedValueOnce(['gamma.dot'])
+            .mockResolvedValueOnce(['delta.dot'])
 
         renderWithFlowProvider(<SidebarHarness />)
 
@@ -160,14 +161,22 @@ describe('Editor sidebar manual refresh', () => {
         expect(refreshButton).toHaveAccessibleName('Refresh flows')
         expect(useStore.getState().activeFlow).toBe('alpha.dot')
 
+        // Deleted elsewhere, the open flow stays open: the editor says it isn't here, or a save puts it back.
         await user.click(refreshButton)
 
         await waitFor(() => {
             expect(fetchFlowListMock).toHaveBeenCalledTimes(3)
-            expect(useStore.getState().activeFlow).toBeNull()
+            expect(within(flowTree).getByRole('button', { name: 'gamma.dot' })).toBeVisible()
         })
         expect(within(flowTree).queryByRole('button', { name: 'alpha.dot' })).not.toBeInTheDocument()
-        expect(within(flowTree).getByRole('button', { name: 'gamma.dot' })).toBeVisible()
+        expect(useStore.getState().activeFlow).toBe('alpha.dot')
+
+        // Another project's list closes the flow left open from the one before.
+        act(() => useStore.setState({ activeProjectPath: '/tmp/other-project' }))
+        await waitFor(() => {
+            expect(fetchFlowListMock).toHaveBeenCalledTimes(4)
+            expect(useStore.getState().activeFlow).toBeNull()
+        })
     })
 
     it('says when the flows could not load, and loads them on Try again', async () => {

@@ -371,7 +371,8 @@ const lifecycleStatus = (event: TimelineEventEntry): string | null => {
 }
 
 /**
- * The journal's entries, oldest first, as its list shows them. A gate's answer is recorded twice:
+ * The journal's entries, oldest first, as its list shows them, without the lines another one beside
+ * them already says. A gate's answer is recorded twice:
  * as delivered to the gate (with its question ID, by decision ID) and as the gate took it (by its
  * label); the list keeps the latter once it is there.
  */
@@ -392,6 +393,13 @@ const journalEntriesShown = (journal: TimelineEventEntry[]): TimelineEventEntry[
         if (event.type === 'CheckpointSaved') {
             const previous = journal.slice(0, index).reverse().find((other) => sameSource(other, event) && other.type !== 'runtime')
             return !(previous?.type === 'CheckpointSaved' && previous.payload.current_node === event.payload.current_node)
+        }
+        // A step that simply completed says so with the route it took next, a moment later: "Tally → Climb".
+        if (event.type === 'StageCompleted') {
+            const outcome = asTrimmedString(event.payload.outcome)
+            if (outcome && outcome !== 'completed' && outcome !== 'success') return true
+            const next = journal.slice(index + 1).find((other) => sameSource(other, event) && other.type !== 'runtime' && other.type !== 'CheckpointSaved')
+            return !(next?.type === 'StageTransition' && next.nodeId === event.nodeId)
         }
         // A branch whose only step is its first node says so already as the branch.
         if (event.type === 'ParallelBranchNodeStarted' || event.type === 'ParallelBranchNodeCompleted') {

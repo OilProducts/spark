@@ -13,6 +13,9 @@ type CanvasViewControlsProps = {
     className?: string
 }
 
+/** The narrowest toolbar that shows the minimap toggle (`@2xl/canvas-toolbar`, 42rem), so a minimap shown unasked can be hidden. */
+export const MINIMAP_TOGGLE_MIN_WIDTH = 672
+
 const isInteractiveSelector = (state: { nodesDraggable: boolean; nodesConnectable: boolean; elementsSelectable: boolean }) => (
     state.nodesDraggable || state.nodesConnectable || state.elementsSelectable
 )

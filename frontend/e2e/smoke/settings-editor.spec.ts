@@ -577,8 +577,9 @@ for (const width of [1440, 390]) {
         await expect(view.getByTestId('side-panel').getByRole('tablist', { name: 'Settings categories' })).toBeVisible()
         await expect(view.getByTestId('view-main').getByTestId('settings-panel')).toBeVisible()
         await expect(page.getByTestId('activity-bar')).toBeInViewport()
+        // Stacked, the categories run across two rows, so the arrows follow reading order.
         await models.focus()
-        await page.keyboard.press('ArrowDown')
+        await page.keyboard.press(width === 390 ? 'ArrowRight' : 'ArrowDown')
         const preferences = page.getByRole('tab', { name: 'Preferences', exact: true })
         await expect(preferences).toBeFocused()
         await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible()
@@ -593,8 +594,11 @@ for (const width of [1440, 390]) {
         await expect(page.getByText('Choose a whole number from 256 to 560.')).toBeVisible()
         await card(page, 'Appearance').getByRole('button', { name: /^Discard\b/ }).click()
         for (const category of ['Models & accounts', 'Preferences', 'Execution', 'System']) {
+            // Each category opens at its top, wherever the last one was left.
+            await panel.evaluate((element) => { element.scrollTop = element.scrollHeight })
             await page.getByRole('tab', { name: category, exact: true }).click()
             await expect(page.getByRole('tabpanel')).toHaveCount(1)
+            expect(await panel.evaluate((element) => element.scrollTop)).toBe(0)
             await expect.poll(() => panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
             const active = page.getByRole('tabpanel')
             for (const heading of await active.getByRole('heading').all()) await expect(heading).toBeVisible()

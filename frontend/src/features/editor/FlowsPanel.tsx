@@ -51,6 +51,7 @@ function useFlowCatalogPanel() {
     const isMountedRef = useRef(true)
     const refreshRequestIdRef = useRef(0)
     const listLoadedRef = useRef(false)
+    const listProjectRef = useRef<string | null>(null)
     activeFlowRef.current = activeFlow
 
     // Titles and descriptions; only the latest request's answer shows.
@@ -97,10 +98,15 @@ function useFlowCatalogPanel() {
             }
             setFlows(data)
             setLoadFailed(false)
+            // A flow left open from the project shown before closes. One a link names that this project
+            // lacks stays open, so the editor can say it isn't here; so does one deleted elsewhere, which
+            // a save puts back.
+            const switchedProject = listLoadedRef.current && listProjectRef.current !== activeProjectPath
             listLoadedRef.current = true
+            listProjectRef.current = activeProjectPath
 
             const selectedFlow = activeFlowRef.current
-            if (selectedFlow && !data.includes(selectedFlow)) {
+            if (selectedFlow && switchedProject && !data.includes(selectedFlow)) {
                 setActiveFlow(null)
             }
         } catch (error) {

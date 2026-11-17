@@ -160,12 +160,13 @@
     box-shadow: none;
   }
 
+  /* What lies out of view is shaded, so the part on screen reads as the clear window. */
   .react-flow__minimap-mask {
-    fill: hsl(var(--background) / 0.68) !important;
+    fill: hsl(var(--foreground) / 0.08) !important;
   }
 
   .react-flow__minimap-node {
-    fill: hsl(var(--muted-foreground) / 0.25) !important;
+    fill: hsl(var(--muted-foreground) / 0.45) !important;
     stroke: none !important;
     stroke-width: 1 !important;
   }

@@ -197,7 +197,9 @@ export function RunHeaderBar({
                         {selectedVisitLabel ? 'Continue from here' : 'Continue from…'}
                     </Button>
                 ) : null}
+                {/* The ? goes with the last button, so a narrow screen never wraps it onto a line of its own. */}
                 {inactive ? (
+                    <span className="flex items-center gap-2">
                     <Button
                         type="button"
                         data-testid="run-summary-rerun-button"
@@ -209,8 +211,6 @@ export function RunHeaderBar({
                     >
                         Re-run
                     </Button>
-                ) : null}
-                {inactive ? (
                     <Button
                         type="button"
                         data-testid="run-header-actions-help-toggle"
@@ -225,6 +225,7 @@ export function RunHeaderBar({
                     >
                         <CircleHelp />
                     </Button>
+                    </span>
                 ) : null}
             </div>
         </header>

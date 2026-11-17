@@ -119,6 +119,25 @@ describe('timelineModel', () => {
     expect(journalEntriesShown(review)).toEqual(review)
   })
 
+  it('says a step that simply completed with the route it took next', () => {
+    const entry = (sequence: number, rawType: string, node: string, payload: Record<string, unknown> = {}) => toTimelineEvent({
+      id: `journal-${sequence}`, sequence, emitted_at: '2026-07-08T10:00:00Z', kind: 'stage', raw_type: rawType,
+      summary: rawType, severity: 'info', source_scope: 'root', node_id: node, payload: { node_id: node, ...payload },
+    })!
+    const started = entry(1, 'StageStarted', 'tally')
+    const completed = entry(2, 'StageCompleted', 'tally', { outcome: 'completed' })
+    const routed = entry(3, 'StageTransition', 'tally', { target: 'climb', decision: 'climb' })
+    const saved = toTimelineEvent({
+      id: 'journal-4', sequence: 4, emitted_at: '2026-07-08T10:00:00Z', kind: 'checkpoint', raw_type: 'CheckpointSaved',
+      summary: 'CheckpointSaved', severity: 'info', source_scope: 'root', node_id: 'climb', payload: { current_node: 'climb' },
+    })!
+    expect(journalEntriesShown([started, completed, saved, routed])).toEqual([started, saved, routed])
+    // Another outcome is news, and so is a completion the route doesn't follow, such as the last step's.
+    const partial = entry(2, 'StageCompleted', 'tally', { outcome: 'partial_success' })
+    expect(journalEntriesShown([started, partial, routed])).toEqual([started, partial, routed])
+    expect(journalEntriesShown([started, completed])).toEqual([started, completed])
+  })
+
   it('tells a canceled run as canceled: its stopped branches, its end, and no status echoes', () => {
     const entry = (sequence: number, rawType: string, payload: Record<string, unknown>, severity = 'info') => toTimelineEvent({
       id: `journal-${sequence}`, sequence, emitted_at: '2026-07-08T10:00:00Z', kind: 'other', raw_type: rawType,

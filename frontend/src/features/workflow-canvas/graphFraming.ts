@@ -88,29 +88,33 @@ export function useReadableFraming(paneRef: RefObject<HTMLElement | null>) {
         return storeApi.subscribe(apply)
     }, [storeApi])
 
-    const frame = useCallback((nodes: Node[], request: FrameRequest) => {
+    /** Frames the graph; says whether it shows whole, or null when there is no graph or pane to measure. */
+    const frame = useCallback((nodes: Node[], request: FrameRequest): boolean | null => {
         const visibleNodes = nodes.filter((node) => !node.hidden)
         const pane = paneRef.current
         if (visibleNodes.length === 0) {
-            return
+            return null
         }
         // A pane with no size yet (hidden, or not laid out) is framed when it gets one.
         if (!pane || pane.clientWidth === 0 || pane.clientHeight === 0) {
             framedRef.current = { nodes: visibleNodes, request, viewport: null }
-            return
+            return null
         }
         // Without a focus, a graph too big to show whole opens where the flow starts.
         const focusNode = visibleNodes.find((node) => node.id === request.focusNodeId)
             ?? visibleNodes.find((node) => node.data?.kind === 'start')
         const focusRect = focusNode ? readNodeRect(focusNode) : null
+        const bounds = nodesBounds(visibleNodes)
         const viewport = readableViewport(
-            nodesBounds(visibleNodes),
+            bounds,
             { width: pane.clientWidth, height: pane.clientHeight },
             request.padding,
             focusRect ? { x: focusRect.x + focusRect.width / 2, y: focusRect.y + focusRect.height / 2 } : null,
         )
         framedRef.current = { nodes: visibleNodes, request, viewport }
         void setViewport(viewport)
+        return bounds.width * viewport.zoom <= pane.clientWidth - request.padding.left - request.padding.right + 1
+            && bounds.height * viewport.zoom <= pane.clientHeight - request.padding.top - request.padding.bottom + 1
     }, [paneRef, setViewport])
 
     useEffect(() => {
