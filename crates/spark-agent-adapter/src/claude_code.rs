@@ -393,7 +393,7 @@ impl ClaudeCodeBackend {
         let mut outcome = None;
         for message in messages {
             match message {
-                control::Message::Event(event, _held) => {
+                control::Message::Event(event) => {
                     if let Some(sink) = event_sink {
                         sink(event);
                     }

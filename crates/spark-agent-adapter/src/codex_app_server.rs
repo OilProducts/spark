@@ -882,7 +882,7 @@ impl CodexAppServerClient {
         // the turn returns, and the worker never waits on a callback.
         for message in received {
             match message {
-                TurnMessage::Event(event, _held) => {
+                TurnMessage::Event(event) => {
                     if let Some(sink) = event_sink.as_ref() {
                         sink(event);
                     }
@@ -998,9 +998,9 @@ enum Command {
 }
 
 /// What a turn hands its caller, in order: events for the sink, then its
-/// result. An event counts against the sink queue until handled.
+/// result.
 enum TurnMessage {
-    Event(TurnStreamEvent, Held),
+    Event(TurnStreamEvent),
     Done(Result<CodexAppServerTurnResult, CodexAppServerError>),
 }
 
@@ -1152,10 +1152,8 @@ struct Turn {
     /// The turn's record: every event but thinking progress.
     events: Vec<TurnStreamEvent>,
     messages: mpsc::Sender<TurnMessage>,
-    /// The sink's queue, if the caller has a sink.
-    sink: Option<Budget>,
-    /// The sink fell a full queue behind: it gets no more events.
-    overflowed: bool,
+    /// The caller has a sink.
+    sink: bool,
     /// Renewed only by provider output; suspended while a question waits on
     /// a person, with a full window again once none does.
     idle_deadline: Option<Instant>,
@@ -1167,19 +1165,14 @@ struct Turn {
 }
 
 impl Turn {
-    /// Hands `event` to the sink, never waiting on it: a sink a full queue
-    /// behind fails the turn instead.
+    /// Hands `event` to the sink, never waiting on it: a slow sink falls
+    /// behind rather than failing the turn or stalling the worker it may be
+    /// waiting on.
     fn sequence(&mut self, event: TurnStreamEvent) {
-        if let Some(sink) = self.sink.as_ref().filter(|_| !self.overflowed) {
-            match sink.try_admit(json_len(&event)) {
-                Some(held) => {
-                    let _ = self.messages.send(TurnMessage::Event(event.clone(), held));
-                }
-                None => {
-                    self.overflowed = true;
-                    self.result = Some(Err(overloaded("its event queue")));
-                }
-            }
+        // ponytail: unbounded, like the turn's record, which already holds
+        // every event but thinking progress.
+        if self.sink {
+            let _ = self.messages.send(TurnMessage::Event(event.clone()));
         }
         // Thinking progress is live-only: it is never part of the turn's record.
         if event.thinking_state().is_none() {
@@ -1228,7 +1221,7 @@ struct Worker {
     pending: BTreeMap<u64, Pending>,
     /// Notifications no turn or caller has taken yet: read before a turn
     /// starts, while a steer is outstanding, or between calls.
-    backlog: VecDeque<(Value, Held)>,
+    backlog: VecDeque<(Value, Option<Held>)>,
     backlog_budget: Budget,
     turn: Option<Turn>,
     waiter: Option<(Instant, mpsc::Sender<Result<Option<Value>, Ended>>)>,
@@ -1354,8 +1347,7 @@ impl Worker {
                     state: CodexAppServerTurnState::default(),
                     events: Vec::new(),
                     messages,
-                    sink: sink.then(|| Budget::new(&LIMITS)),
-                    overflowed: false,
+                    sink,
                     idle_deadline: None,
                     stopping: false,
                     steering: false,
@@ -1397,8 +1389,14 @@ impl Worker {
     }
 
     async fn notification(&mut self, io: &Io, message: Value, bytes: usize) {
+        // A turn's backlog grows only across one turn/start or turn/steer
+        // round trip, whose reply is read past it: it is never refused.
+        if self.turn.is_some() {
+            self.backlog.push_back((message, None));
+            return;
+        }
         match self.backlog_budget.try_admit(bytes) {
-            Some(held) => self.backlog.push_back((message, held)),
+            Some(held) => self.backlog.push_back((message, Some(held))),
             None => {
                 self.end(io, Ended::Failed(overloaded("its notification queue")))
                     .await
@@ -1644,7 +1642,7 @@ impl Worker {
             self.poll_flow_questions(io, now).await;
             self.take_steers(io).await;
         }
-        self.pump(io).await;
+        self.pump().await;
     }
 
     async fn control_turn(&mut self, io: &mut Io, now: Instant) {
@@ -1781,15 +1779,10 @@ impl Worker {
 
     /// Hands the turn's caller its result once it has one; feeds
     /// notifications to the turn or a waiting caller.
-    async fn pump(&mut self, io: &Io) {
+    async fn pump(&mut self) {
         loop {
             if let Some(turn) = self.turn.as_mut() {
                 if turn.result.is_some() {
-                    // Settles any control its sink may be waiting on.
-                    if turn.overflowed {
-                        self.end(io, Ended::Failed(overloaded("its event queue")))
-                            .await;
-                    }
                     let turn = self.turn.take().expect("turn");
                     // Its questions end with it, and so do its live messages,
                     // before its sink takes the rest: one it never took was

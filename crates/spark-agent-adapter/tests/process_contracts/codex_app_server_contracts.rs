@@ -858,7 +858,7 @@ fn a_steer_left_unread_past_its_deadline_is_refused_only_once_it_cannot_be_read(
 }
 
 #[test]
-fn a_sink_that_steers_while_a_full_queue_behind_fails_the_turn_at_once() {
+fn a_sink_that_steers_while_far_behind_still_steers_and_sees_every_event() {
     let _lock = ENV_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -870,10 +870,13 @@ fn a_sink_that_steers_while_a_full_queue_behind_fails_the_turn_at_once() {
     let steered = std::sync::Once::new();
     let request = turn_request(temp.path(), "codex-sink-burst");
     let (turn_sender, turn) = mpsc::channel();
+    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&seen);
     thread::spawn(move || {
         let _ = turn_sender.send(CodexAppServerBackend::new().run_agent_turn_with_event_sink(
             request,
             Some(Arc::new(move |_event| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 steered.call_once(|| {
                     let _ = accepted.send(CodexAppServerBackend::new().send_message(
                         &path,
@@ -887,19 +890,13 @@ fn a_sink_that_steers_while_a_full_queue_behind_fails_the_turn_at_once() {
     });
 
     // The sink waits on its own message while the output it has not taken
-    // outgrows its queue; the message settles instead of waiting it out.
-    assert_eq!(accepted_receiver.recv_timeout(PROMPTLY), Ok(false));
-    let error = turn
-        .recv_timeout(PROMPTLY)
+    // piles up behind it; the worker keeps going, so the steer lands.
+    assert_eq!(accepted_receiver.recv_timeout(PROMPTLY), Ok(true));
+    turn.recv_timeout(PROMPTLY)
         .expect("turn ended")
-        .expect_err("overflowed turn");
-    assert!(
-        error
-            .message
-            .starts_with("codex app-server overloaded: its "),
-        "{}",
-        error.message
-    );
+        .expect("a slow sink does not fail the turn");
+    // Every one of the burst's 300 deltas reached it.
+    assert!(seen.load(std::sync::atomic::Ordering::SeqCst) > 300);
 }
 
 #[cfg(unix)]

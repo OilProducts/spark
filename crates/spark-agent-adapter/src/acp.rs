@@ -49,11 +49,8 @@ use crate::agent::{
     AGENT_INSTRUCTIONS_METADATA_KEY,
 };
 use crate::codergen::{ClarificationHandler, ClarificationReply};
-use crate::codex_app_server::json_len;
 use crate::history::HistoryTurn;
-use crate::stdio_transport::{
-    self, sleep_until, Budget, Endpoints, Held, Incoming, Outgoing, Stop, LIMITS,
-};
+use crate::stdio_transport::{self, sleep_until, Endpoints, Incoming, Outgoing, Stop, LIMITS};
 
 pub const ACP_BACKEND: &str = "acp";
 /// The session a turn continues, and the one it leaves for the next turn.
@@ -206,10 +203,9 @@ pub fn terminate(project_path: &str, conversation_id: &str) -> bool {
 
 // ---- the turn ------------------------------------------------------------
 
-/// What the worker hands the calling thread, in order. An event holds its
-/// share of the sink's queue until the sink has returned.
+/// What the worker hands the calling thread, in order.
 enum Message {
-    Event(TurnStreamEvent, Option<Held>),
+    Event(TurnStreamEvent),
     /// The primary prompt is about to be sent.
     Prompted,
     Done(Result<Finished, String>),
@@ -923,11 +919,7 @@ fn turn(
     };
 
     let (messages, delivered) = std::sync::mpsc::channel();
-    let out = Out {
-        messages,
-        sink: sink.map(|_| Budget::new(&LIMITS)),
-        overflowed: AtomicBool::new(false),
-    };
+    let out = Out { messages };
     let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
         drive(endpoints, plan, out, interrupted, (replies, answered))
     })
@@ -954,7 +946,7 @@ fn turn(
     let mut done = None;
     for message in delivered {
         match message {
-            Message::Event(mut event, _held) => {
+            Message::Event(mut event) => {
                 event.source.app_turn_id = Some(app_turn_id.clone());
                 if let Some(sink) = sink {
                     sink(event.clone());
@@ -1097,32 +1089,17 @@ fn fresh_context(
 // ---- the worker ----------------------------------------------------------
 
 /// Sends events and the result to the calling thread, never waiting on the
-/// sink: a sink a full queue behind fails the turn instead.
+/// sink: a slow sink falls behind rather than failing the turn or stalling
+/// the worker it may be waiting on.
 struct Out {
+    // ponytail: unbounded, like the turn's record, which already holds every
+    // event.
     messages: std::sync::mpsc::Sender<Message>,
-    /// The sink's queue, if the caller has a sink.
-    sink: Option<Budget>,
-    overflowed: AtomicBool,
 }
 
 impl Out {
     fn event(&self, event: TurnStreamEvent) {
-        let held = match &self.sink {
-            Some(_) if self.overflowed.load(Ordering::SeqCst) => return,
-            Some(budget) => match budget.try_admit(json_len(&event)) {
-                Some(held) => Some(held),
-                None => return self.overflowed.store(true, Ordering::SeqCst),
-            },
-            None => None,
-        };
-        let _ = self.messages.send(Message::Event(event, held));
-    }
-
-    fn overloaded(&self) -> Result<(), String> {
-        match self.overflowed.load(Ordering::SeqCst) {
-            true => Err("overloaded: the event queue is full".to_string()),
-            false => Ok(()),
-        }
+        let _ = self.messages.send(Message::Event(event));
     }
 }
 
@@ -1201,11 +1178,8 @@ async fn drive(
         })
         .await
         .unwrap_or_else(|error| Err(describe(&error)));
-    // Unusable output explains a failed turn better than the closed connection;
-    // a sink that missed events never sees the turn succeed.
-    let result = result
-        .map_err(|error| failure.get().cloned().unwrap_or(error))
-        .and_then(|finished| out.overloaded().map(|()| finished));
+    // Unusable output explains a failed turn better than the closed connection.
+    let result = result.map_err(|error| failure.get().cloned().unwrap_or(error));
     let _ = out.messages.send(Message::Done(result));
 }
 
@@ -1597,7 +1571,6 @@ impl<'a> Turn<'a> {
                                         request_id
                                     }));
                                 }
-                                self.out.overloaded()?;
                                 continue;
                             }
                             dispatch => dispatch,
@@ -1675,7 +1648,6 @@ impl<'a> Turn<'a> {
                     self.stop.stop();
                 }
             }
-            self.out.overloaded()?;
         }
     }
 

@@ -226,17 +226,23 @@ fn main() {
         return;
     }
     if mode == "flood" {
-        // Ordinary output past the sink's queue while a live message waits
-        // for a receipt that never comes.
+        // A burst of output while the sink is blocked, then a result that
+        // takes the live message along.
         let delta = |text: &str| {
             json!({"type": "stream_event", "session_id": session_id,
                 "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}})
         };
         emit(&mut out, delta("Working."));
-        assert_eq!(read_control()["type"], "user");
+        let live = read_control();
+        assert_eq!(live["type"], "user");
         for _ in 0..300 {
             emit(&mut out, delta("."));
         }
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Done.",
+                "session_id": session_id, "user_message_uuids": [live["uuid"]]}),
+        );
         drain_stdin();
         append_log("STDIN_CLOSED");
         return;

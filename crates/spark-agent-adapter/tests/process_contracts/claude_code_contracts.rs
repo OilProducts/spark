@@ -1535,7 +1535,7 @@ fn claude_code_failed_stdin_write_ends_the_turn_and_settles_its_message() {
 }
 
 #[test]
-fn claude_code_overloaded_sink_still_gets_the_unused_message_accounting() {
+fn claude_code_blocked_sink_gets_every_event() {
     let _lock = ENV_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1554,7 +1554,7 @@ fn claude_code_overloaded_sink_still_gets_the_unused_message_accounting() {
     let turn = std::thread::spawn(move || {
         ClaudeCodeBackend::new().run_agent_turn_with_event_sink(request, Some(sink))
     });
-    // The overloaded turn ends, closing stdin, while the sink still waits.
+    // The turn ends, closing stdin, while the sink still waits.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !std::fs::read_to_string(&log_path)
         .unwrap_or_default()
@@ -1565,15 +1565,16 @@ fn claude_code_overloaded_sink_still_gets_the_unused_message_accounting() {
     }
     drop(release);
 
-    let error = turn.join().unwrap().unwrap_err();
-    assert!(
-        error.message.contains("its event queue is full"),
-        "{error:?}"
-    );
-    assert_eq!(
-        not_delivered(&seen.lock().unwrap()),
-        [Some("note-1".to_string())]
-    );
+    turn.join()
+        .unwrap()
+        .expect("a blocked sink does not fail the turn");
+    let seen = seen.lock().unwrap();
+    let deltas = seen
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::ContentDelta)
+        .count();
+    assert_eq!(deltas, 301);
+    assert!(not_delivered(&seen).is_empty());
 }
 
 #[test]

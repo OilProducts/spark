@@ -996,7 +996,7 @@ fn acp_chat_starts_fresh_when_the_inherited_environment_changes() {
 /// the harness's output queue up without bound.
 #[cfg(unix)]
 #[test]
-fn acp_blocked_sink_keeps_cancellation_independent_and_fails_on_overload() {
+fn acp_blocked_sink_keeps_cancellation_independent_and_gets_every_update() {
     let exists = |path: &Path| path.exists();
     let wait = |what: &str, done: &dyn Fn() -> bool| {
         let started = std::time::Instant::now();
@@ -1045,35 +1045,27 @@ fn acp_blocked_sink_keeps_cancellation_independent_and_fails_on_overload() {
     let output = result.expect("cancelled turn");
     assert_eq!(terminals(&output.events), [Some("interrupted".to_string())]);
 
-    // A sink a full queue behind fails the turn and stops the harness.
+    // A sink far behind still gets every update, and the turn succeeds.
     let dir = tempfile::tempdir().unwrap();
     let updates = (0..400)
         .map(|n| chunk("agent_message_chunk", &format!("{n} ")))
         .collect::<Vec<_>>();
-    let flooding = request(
-        dir.path(),
-        json!({"updates": updates, "await_cancel": "ignore"}),
-        json!({}),
-    );
+    let flooding = request(dir.path(), json!({"updates": updates}), json!({}));
     let turn = std::thread::spawn({
         let sink = blocking(dir.path());
         move || chat(flooding, sink)
     });
     wait("the sink blocks", &|| exists(&dir.path().join("entered")));
-    let pid = log(dir.path())[0]["pid"].to_string();
-    wait("the harness is stopped while the sink is blocked", &|| {
-        !std::process::Command::new("kill")
-            .args(["-0", &pid])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap()
-            .success()
-    });
+    // Lets the burst pile up behind the blocked sink; passes either way.
+    std::thread::sleep(std::time::Duration::from_millis(200));
     std::fs::write(dir.path().join("release"), "").unwrap();
     let (result, seen) = turn.join().unwrap();
-    let error = result.err().expect("overloaded").message;
-    assert!(error.contains("overloaded"), "{error}");
-    assert!(seen.len() < 200, "the queue is bounded: {}", seen.len());
+    result.expect("a slow sink does not fail the turn");
+    let chunks = seen
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::ContentDelta)
+        .count();
+    assert_eq!(chunks, 400);
 }
 
 // ---- forms ----------------------------------------------------------------

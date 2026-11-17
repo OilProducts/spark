@@ -81,10 +81,9 @@ impl Command {
 /// What a turn's worker hands its caller, in order: events for the sink,
 /// then the turn itself.
 pub(super) enum Message {
-    /// Counts against the sink's queue until handled.
-    Event(TurnStreamEvent, Held),
+    Event(TurnStreamEvent),
     /// With the events sequenced at teardown, which reach the sink after
-    /// everything queued, even past an overload.
+    /// everything queued.
     Done(Box<Turn>, Outcome, Vec<TurnStreamEvent>),
 }
 
@@ -144,8 +143,7 @@ pub(super) fn start(
         control: Control::new(request, questions, work, completions),
         turn: Turn::default(),
         messages,
-        sink: sink.then(|| Budget::new(&LIMITS)),
-        overflowed: false,
+        sink,
         late: Vec::new(),
         closed: Arc::clone(&closed),
         exited: false,
@@ -757,10 +755,8 @@ struct Worker {
     control: Control,
     turn: Turn,
     messages: std::sync::mpsc::Sender<Message>,
-    /// The sink's queue, if the caller has a sink.
-    sink: Option<Budget>,
-    /// The sink fell a full queue behind: it gets no more events.
-    overflowed: bool,
+    /// The caller has a sink.
+    sink: bool,
     /// Events sequenced at teardown, for the handover.
     late: Vec<TurnStreamEvent>,
     closed: Arc<AtomicBool>,
@@ -907,7 +903,7 @@ impl Worker {
     /// Records events sequenced at teardown for the handover rather than
     /// the sink's queue.
     fn settle(&mut self, events: Vec<TurnStreamEvent>) {
-        let (late, sink) = (&mut self.late, self.sink.is_some());
+        let (late, sink) = (&mut self.late, self.sink);
         self.turn.push(events, |event| {
             if sink {
                 late.push(event.clone());
@@ -916,28 +912,20 @@ impl Worker {
     }
 
     /// Sequences events: each goes to the sink's queue without waiting on
-    /// the sink, and into the turn's record.
+    /// the sink, and into the turn's record. A slow sink falls behind rather
+    /// than failing the turn or stalling the worker it may be waiting on.
     fn push(&mut self, events: Vec<TurnStreamEvent>) {
         let Self {
             turn,
             sink,
-            overflowed,
             messages,
-            control,
             ..
         } = self;
+        // ponytail: unbounded, like the turn's record, which already holds
+        // every event.
         turn.push(events, |event| {
-            let Some(sink) = sink.as_ref().filter(|_| !*overflowed) else {
-                return;
-            };
-            match sink.try_admit(json_len(event)) {
-                Some(held) => {
-                    let _ = messages.send(Message::Event(event.clone(), held));
-                }
-                None => {
-                    *overflowed = true;
-                    control.fail("claude code overloaded: its event queue is full".into());
-                }
+            if *sink {
+                let _ = messages.send(Message::Event(event.clone()));
             }
         });
     }
