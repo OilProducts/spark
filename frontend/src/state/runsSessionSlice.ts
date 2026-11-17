@@ -16,11 +16,14 @@ const DEFAULT_RUNS_LIST_SESSION_STATE: RunsListSessionState = {
     runs: [],
 }
 
-function filtersHiding(session: RunsListSessionState, runId: string): Partial<RunsListSessionState> {
-    const run = session.runs.find((candidate) => candidate.run_id === runId)
+function filtersHiding(state: AppState, runId: string): Partial<RunsListSessionState> {
+    const session = state.runsListSession
+    // The list shows a run's detail record, which can be newer than its row, as useRunsList does.
+    const runs = session.runs.map((run) => state.runDetailSessionsByRunId[run.run_id]?.record ?? run)
+    const run = runs.find((candidate) => candidate.run_id === runId)
     if (!run) return { ...session.statusFilter ? { statusFilter: null } : {}, ...session.projectFilter ? { projectFilter: null } : {} }
     const query = session.searchQuery?.trim().toLowerCase() ?? ''
-    const shows = (statusFilter: RunStatusKind | null | undefined, search: string) => listShowsRun(session.runs, run, statusFilter, search)
+    const shows = (statusFilter: RunStatusKind | null | undefined, search: string) => listShowsRun(runs, run, statusFilter, search)
     return {
         // The state filter and the search narrow the list together; the state filter goes first.
         ...shows(session.statusFilter, query) ? {}
@@ -197,7 +200,7 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
     setRunsSelectedRunId: (runId) =>
         set((state) => {
             // Opening a run the list's filters would hide drops those filters, so the open run is always listed.
-            const unfiltered = runId ? filtersHiding(state.runsListSession, runId) : {}
+            const unfiltered = runId ? filtersHiding(state, runId) : {}
             if (state.runsListSession.selectedRunId === runId) {
                 return Object.keys(unfiltered).length > 0 ? { runsListSession: { ...state.runsListSession, ...unfiltered } } : state
             }

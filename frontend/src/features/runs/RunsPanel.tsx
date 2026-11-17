@@ -68,24 +68,25 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const { error, scopedRuns, status } = useRunsList({ selectedRunId, manageSync: false })
     const isNarrowViewport = useNarrowViewport()
     const missingRunId = useStore((state) => state.runsListSession.missingRunId ?? null)
-    const fetched = useStore((state) => Boolean(state.runsListSession.fetched))
     const projectFilter = useStore((state) => state.runsListSession.projectFilter)
     const statusFilter = useStore((state) => state.runsListSession.statusFilter ?? null)
     const searchQuery = useStore((state) => state.runsListSession.searchQuery ?? '')
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
-    // A desktop opens on the run you most likely came for, once the list has loaded (a refresh may be
-    // out) or kept its last runs; a phone opens on the list. A run picked or restored (even while it
-    // loads) stays, as does a missing run's notice. Only runs the list shows count.
+    // A desktop opens on the run you most likely came for of those the list shows, even while it
+    // loads, but never a missing one; a phone opens on the list. A run picked or restored (even while
+    // it loads) stays.
     const query = searchQuery.trim().toLowerCase()
     // ponytail: O(n^2) while filters are on and nothing is open; index children by parent if lists grow large.
-    const autoRunId = selectedRunId || missingRunId || isNarrowViewport || !(fetched || status === 'ready' || status === 'error')
+    const autoRunId = selectedRunId || isNarrowViewport
         ? null
-        : mostRelevantRun(runs.filter((run) => listShowsRun(runs, run, statusFilter, query)))?.run_id ?? null
+        : mostRelevantRun(runs.filter((run) => run.run_id !== missingRunId && listShowsRun(runs, run, statusFilter, query)))?.run_id ?? null
     useEffect(() => {
         if (!autoRunId) return
         const state = useStore.getState()
+        const { missingRunId } = state.runsListSession
         state.setRunsSelectedRunId(autoRunId)
-        state.updateRunsListSession({ autoOpenedRunId: autoRunId })
+        // A missing run's notice stays over the run opened in its place.
+        state.updateRunsListSession({ autoOpenedRunId: autoRunId, missingRunId })
     }, [autoRunId])
     return (
         <div className="flex h-full min-h-0 flex-col gap-2">
@@ -156,12 +157,6 @@ export function RunsPanel() {
     const isRunsView = useStore((state) => state.viewMode === 'runs')
     const setActiveFlow = useStore((state) => state.setActiveFlow)
     const setPendingEditorNodeSelection = useStore((state) => state.setPendingEditorNodeSelection)
-    // A missing run's notice lasts the visit it shows in; the next visit to Runs opens a run.
-    useEffect(() => {
-        if (!isRunsView && useStore.getState().runsListSession.missingRunId) {
-            useStore.getState().updateRunsListSession({ missingRunId: null })
-        }
-    }, [isRunsView])
     const [continuationDraft, setContinuationDraft] = useState<ContinuationDraft | null>(null)
     const [rerunRun, setRerunRun] = useState<RunRecord | null>(null)
     // A re-run's dialog closes onto the new run: focus goes to its heading, not to the page.
@@ -582,7 +577,7 @@ export function RunsPanel() {
                         <Button data-testid="runs-transport-reconnect-button" type="button" variant="outline" size="xs" onClick={requestRunsTransportReconnect}>Try again</Button>
                     </div>
                 ) : null}
-                {!selectedRunId && missingRunId ? (
+                {missingRunId ? (
                     <InlineError data-testid="run-missing" title="This run isn’t here">
                         There’s no run with the ID “{missingRunId}”. It may have been deleted, or the link is out of date.
                     </InlineError>

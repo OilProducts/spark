@@ -3,7 +3,7 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { HistoryRoutingController } from '@/app/AppSessionControllers'
-import { buildRunsHash, missionKey, parsePlaceHash, placeHash, roleKey, type Place } from '@/app/runsRouting'
+import { addsEntry, buildRunsHash, missionKey, parsePlaceHash, placeHash, roleKey, type Place } from '@/app/runsRouting'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- triggerKey names a trigger; it calls no API
 import { triggerKey, type TriggerResponse } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
@@ -57,6 +57,17 @@ describe('runsRouting helpers', () => {
         expect(parsePlaceHash('#/roles/reviewer', '/tmp/a')).toEqual(places[4])
         expect(parsePlaceHash('#/triggers/nightly', '/tmp/a')).toEqual(places[2])
         expect(parsePlaceHash('#/roles/reviewer?project=%2Ftmp%2Fb', '/tmp/a')).toEqual({ view: 'roles', roleId: roleKey({ projectPath: '/tmp/b', name: 'reviewer' }) })
+    })
+
+    it('adds no entry for the run a desktop opens by itself, with none open or in a missing one\'s place', () => {
+        const store = useStore.getState()
+        const state = { ...store, runsListSession: { ...store.runsListSession, missingRunId: 'gone', autoOpenedRunId: 'next' } }
+        const runs = (runId: string | null): Place => ({ view: 'runs', runId })
+        expect(addsEntry(state, runs(null), runs('next'))).toBe(false)
+        // The 404 and the run opened in its place can land in one step.
+        expect(addsEntry(state, runs('gone'), runs('next'))).toBe(false)
+        expect(addsEntry(state, runs('other'), runs('next'))).toBe(true)
+        expect(addsEntry(state, runs(null), runs('picked'))).toBe(true)
     })
 
     it('names no place for unknown or malformed hashes', () => {

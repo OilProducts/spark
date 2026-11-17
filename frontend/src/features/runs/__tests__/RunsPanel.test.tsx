@@ -3729,13 +3729,19 @@ describe('RunsPanel', () => {
       expect(selected()).toBe('finished-late')
       act(() => state.updateRunsListSession({ runs: [activeNew, finishedLate, waiting] }, 'live'))
       expect(selected()).toBe('finished-late')
+    })
 
-      // A run that turns out to be gone keeps its notice; the sheet asks for a pick, with no button.
-      act(() => state.clearRunDetailSession('finished-late'))
-      expect(selected()).toBeNull()
-      expect(screen.getByTestId('run-missing')).toBeVisible()
-      expect(screen.getByTestId('run-selection-empty-state')).toHaveTextContent('No run selectedPick a run from the list to see its progress and results.')
-      expect(screen.queryByTestId('runs-empty-run-flow-button')).toBeNull()
+    it('keeps the state filter when it opens a run listed under it by a record newer than its row', () => {
+      const state = useStore.getState()
+      state.updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting] })
+      // The row still says waiting; the run's own record, updated since, says it runs again.
+      state.setRunsSelectedRunId('waiting')
+      state.reconcileRunRecord('waiting', 'live', { status: 'running' })
+      state.setRunsSelectedRunId(null)
+      state.updateRunsListSession({ statusFilter: 'running' })
+      render(<DialogProvider><RunsPanel /></DialogProvider>)
+      expect(selected()).toBe('waiting')
+      expect(useStore.getState().runsListSession.statusFilter).toBe('running')
     })
 
     it('on a phone, opens on the list; widened, opens the waiting parent a search keeps for its child', () => {
@@ -3748,6 +3754,8 @@ describe('RunsPanel', () => {
         useStore.getState().updateRunsListSession({ status: 'ready', runs: [otherWaiting, child, parent], searchQuery: 'deploy' })
         render(<DialogProvider><RunsPanel /></DialogProvider>)
         expect(selected()).toBeNull()
+        expect(screen.getByTestId('run-selection-empty-state')).toHaveTextContent('No run selectedPick a run from the list to see its progress and results.')
+        expect(screen.queryByTestId('runs-empty-run-flow-button')).toBeNull()
         // The search finds the finished child, so the list shows its waiting parent under Needs input.
         expect(within(screen.getByTestId('run-list-group-needs-input')).getAllByTestId('run-history-row').map((row) => row.dataset.runId)).toEqual(['parent', 'child'])
 
@@ -3792,23 +3800,69 @@ describe('RunsPanel', () => {
       expect(runList().getByText('Finished Late')).toBeVisible()
     })
 
-    it('says a restored run is gone for that visit, and opens a run on the next', async () => {
+    it('opens a run from live updates while the first list load is out', () => {
+      renderRunsWorkspace()
+      expect(useStore.getState().runsListSession.status).toBe('loading')
+      act(() => {
+        for (const run of [finishedLate, activeNew]) window.dispatchEvent(new CustomEvent('spark:run-upsert', { detail: { run } }))
+      })
+      expect(selected()).toBe('active-new')
+      expect(useStore.getState().runsListSession.status).toBe('loading')
+      expect(useStore.getState().runsListSession.fetched).toBeFalsy()
+    })
+
+    it('opens a listed run in place of a linked one that is gone, under its notice, and never asks for it again', async () => {
+      // The gone run's stale row, waiting, would otherwise come first.
+      const goneRow = makeRun({ run_id: 'gone', flow_name: 'gone.dot', status: 'waiting', outcome: null, ended_at: null })
+      const goneRequests = () => vi.mocked(global.fetch).mock.calls.filter(([input]) => resolveRequestUrl(input).includes('/attractor/pipelines/gone')).length
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = resolveRequestUrl(input)
+        if (url.endsWith('/attractor/runs')) return jsonResponse({ runs: [goneRow, finishedLate, activeNew] })
+        if (url.endsWith('/attractor/pipelines/gone')) return new Response(JSON.stringify({ detail: 'Unknown pipeline' }), { status: 404 })
+        return new Promise<Response>(() => {})
+      })
+      window.history.pushState(null, '', '#/overview')
+      window.history.pushState(null, '', '#/runs/gone')
+      const start = window.history.length
+      render(<DialogProvider><HistoryRoutingController /><WorkspaceLiveEventsController /><RunsSessionController /><RunStream /><RunsPanel /></DialogProvider>)
+
+      await waitFor(() => expect(selected()).toBe('active-new'))
+      expect(screen.getByTestId('run-missing')).toHaveTextContent('gone')
+      expect(window.location.hash).toBe('#/runs/active-new')
+      expect(window.history.length).toBe(start)
+      const asked = goneRequests()
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+      expect(goneRequests()).toBe(asked)
+
+      // The link's entry now holds the run opened in its place, so Back leaves Runs.
+      act(() => window.history.back())
+      await waitFor(() => expect(useStore.getState().viewMode).toBe('overview'))
+      expect(goneRequests()).toBe(asked)
+    })
+
+    it('on a phone, keeps a gone run\'s notice when you leave Runs and come back', async () => {
       vi.mocked(global.fetch).mockImplementation(async (input) => {
         const url = resolveRequestUrl(input)
         if (url.endsWith('/attractor/runs')) return jsonResponse({ runs: [finishedLate, activeNew] })
         if (url.endsWith('/attractor/pipelines/gone')) return new Response(JSON.stringify({ detail: 'Unknown pipeline' }), { status: 404 })
         return new Promise<Response>(() => {})
       })
-      useStore.getState().setRunsSelectedRunId('gone')
-      renderRunsWorkspace()
-      expect(await screen.findByTestId('run-missing')).toHaveTextContent('gone')
-      expect(await runList().findByText('Finished Late')).toBeVisible()
-      expect(selected()).toBeNull()
+      window.innerWidth = 390
+      window.dispatchEvent(new Event('resize'))
+      try {
+        useStore.getState().setRunsSelectedRunId('gone')
+        renderRunsWorkspace()
+        expect(await screen.findByTestId('run-missing')).toHaveTextContent('gone')
+        expect(await runList().findByText('Finished Late')).toBeVisible()
 
-      act(() => useStore.getState().setViewMode('overview'))
-      act(() => useStore.getState().setViewMode('runs'))
-      expect(selected()).toBe('active-new')
-      expect(screen.queryByTestId('run-missing')).toBeNull()
+        act(() => useStore.getState().setViewMode('overview'))
+        act(() => useStore.getState().setViewMode('runs'))
+        expect(screen.getByTestId('run-missing')).toHaveTextContent('gone')
+        expect(selected()).toBeNull()
+      } finally {
+        window.innerWidth = 1024
+        window.dispatchEvent(new Event('resize'))
+      }
     })
 
     it('adds no history entry for the run it opens, so Back leaves Runs', async () => {
@@ -3827,25 +3881,32 @@ describe('RunsPanel', () => {
       await waitFor(() => expect(useStore.getState().viewMode).toBe('overview'))
     })
 
-    it('adds a history entry for a run you open from a list with none open, so Back returns to Runs', async () => {
-      window.history.pushState(null, '', '#/runs')
-      // A linked run wasn't there, so its notice shows and nothing is open.
-      useStore.getState().updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting], missingRunId: 'gone' })
-      render(<DialogProvider><HistoryRoutingController /><RunsPanel /></DialogProvider>)
-      expect(screen.getByTestId('run-missing')).toBeVisible()
-      expect(selected()).toBeNull()
-      const start = window.history.length
+    it.each([
+      ['the run it opened', 1024, 'waiting'],
+      ['the list, on a phone', 390, null],
+    ] as const)('adds a history entry for a run you open, so Back returns to %s', async (_, width, opened) => {
+      window.innerWidth = width
+      window.dispatchEvent(new Event('resize'))
+      try {
+        window.history.pushState(null, '', '#/runs')
+        useStore.getState().updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting] })
+        render(<DialogProvider><HistoryRoutingController /><RunsPanel /></DialogProvider>)
+        const runsHash = opened ? `#/runs/${opened}` : '#/runs'
+        await waitFor(() => expect(window.location.hash).toBe(runsHash))
+        const start = window.history.length
 
-      await act(async () => fireEvent.click(runList().getByText('Finished Late')))
-      expect(window.location.hash).toBe('#/runs/finished-late')
-      expect(window.history.length).toBe(start + 1)
+        await act(async () => fireEvent.click(runList().getByText('Finished Late')))
+        expect(window.location.hash).toBe('#/runs/finished-late')
+        expect(window.history.length).toBe(start + 1)
 
-      // Back is Runs with none open, which opens its most relevant run in that same entry.
-      act(() => window.history.back())
-      await waitFor(() => expect(selected()).toBe('waiting'))
-      expect(useStore.getState().viewMode).toBe('runs')
-      expect(window.location.hash).toBe('#/runs/waiting')
-      expect(window.history.length).toBe(start + 1)
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(runsHash))
+        expect(useStore.getState().viewMode).toBe('runs')
+        expect(selected()).toBe(opened)
+      } finally {
+        window.innerWidth = 1024
+        window.dispatchEvent(new Event('resize'))
+      }
     })
 
     it('reveals a linked run that the search and state filter hide together, and keeps filters that show it', async () => {
@@ -3866,6 +3927,19 @@ describe('RunsPanel', () => {
       act(() => { window.location.hash = '#/runs/failed-parent' })
       await waitFor(() => expect(currentRow()).toBe('failed-parent'))
       expect(useStore.getState().runsListSession).toMatchObject({ statusFilter: null, searchQuery: 'deploy' })
+    })
+
+    it('offers to start a run when there are none, and says when the project filter leaves none', () => {
+      const state = useStore.getState()
+      state.updateRunsListSession({ status: 'ready', runs: [] })
+      render(<DialogProvider><RunsPanel /></DialogProvider>)
+      expect(screen.getByText('No runs yet')).toBeVisible()
+      expect(screen.getByTestId('runs-empty-run-flow-button')).toBeVisible()
+
+      act(() => state.updateRunsListSession({ runs: [waiting], projectFilter: '/tmp/project-one' }))
+      expect(selected()).toBeNull()
+      expect(screen.getByTestId('run-selection-empty-state')).toHaveTextContent('No runs match the project filter.')
+      expect(screen.queryByTestId('runs-empty-run-flow-button')).toBeNull()
     })
   })
 })
