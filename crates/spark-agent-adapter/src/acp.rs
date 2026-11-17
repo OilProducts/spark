@@ -736,6 +736,24 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
     }
 }
 
+/// A prompt's ACP usage in Spark's convention. ACP counts each token type
+/// once, so its total is their sum; Spark's input includes cache reads and
+/// writes, and its output includes thinking.
+fn spark_usage(usage: &agent_client_protocol::v1::schema::Usage) -> Value {
+    let cached = usage.cached_read_tokens.unwrap_or(0);
+    let creation = usage.cached_write_tokens.unwrap_or(0);
+    let input = usage.input_tokens + cached + creation;
+    let output = usage.output_tokens + usage.thought_tokens.unwrap_or(0);
+    json!({
+        "input_tokens": input,
+        "cached_input_tokens": cached,
+        "cache_creation_input_tokens": creation,
+        "output_tokens": output,
+        "reasoning_tokens": usage.thought_tokens,
+        "total_tokens": usage.total_tokens.max(input + output),
+    })
+}
+
 /// Reasoning controls a turn may carry; ACP v1 has no portable equivalent.
 const REASONING_CONTROLS: [&str; 4] = [
     "thinking",
@@ -1606,7 +1624,7 @@ impl<'a> Turn<'a> {
                     }
                     Ok(SessionMessage::PromptResponse(Ok(response))) => {
                         let PromptResponse { stop_reason, usage, .. } = response;
-                        let usage = usage.map(|usage| json!(usage));
+                        let usage = usage.as_ref().map(spark_usage);
                         if let Some(usage) = &usage {
                             self.out.event(self.translate.event(
                                 TurnStreamEventKind::TokenUsageUpdated,

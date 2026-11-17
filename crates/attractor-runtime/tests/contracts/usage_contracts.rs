@@ -343,8 +343,8 @@ fn harness_prompt_usage_counts_once_per_prompt_and_labels_missing_usage_partial(
             "acp:fake",
             json!("gpt-5"),
             json!({
-                "inputTokens": 100, "outputTokens": 20, "thoughtTokens": 5, "totalTokens": 125,
-                "cachedReadTokens": 40, "cachedWriteTokens": 10,
+                "input_tokens": 100, "cached_input_tokens": 40, "cache_creation_input_tokens": 10,
+                "output_tokens": 20, "reasoning_tokens": 5, "total_tokens": 125,
             }),
         ),
         prompt(
@@ -352,14 +352,14 @@ fn harness_prompt_usage_counts_once_per_prompt_and_labels_missing_usage_partial(
             "build",
             "acp:fake",
             json!("gpt-5"),
-            json!({"inputTokens": 50, "outputTokens": 10, "totalTokens": 60}),
+            json!({"input_tokens": 50, "cached_input_tokens": 0, "output_tokens": 10, "total_tokens": 60}),
         ),
         prompt(
             4,
             "review",
             "acp:other",
             Value::Null,
-            json!({"inputTokens": 7, "outputTokens": 3}),
+            json!({"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}),
         ),
         meter(5, "review"),
         prompt(6, "review", "acp:other", Value::Null, Value::Null),
