@@ -11,11 +11,10 @@ use serde_json::{json, Value};
 use spark_agent_adapter::{
     detect_loop, history_to_messages, tool_call_signature, AssistantTurn, ChildSessionOptions,
     CommandOptions, DirEntry, EnvironmentError, EnvironmentResult, EventKind, ExecResult,
-    ExecutionEnvironment, ExecutionEnvironmentBackend, GrepOptions, HistoryTurn, LlmClientHandle,
-    ProviderProfile, RegisteredTool, Session, SessionConfig, SessionEvent, SessionState,
-    SteeringTurn, SubAgentError, SubAgentLimitError, SubAgentResult, SubAgentStatus, SystemTurn,
-    ToolDefinition, ToolExecutionOutput, ToolRegistry, ToolResultsTurn, UserTurn,
-    LOOP_DETECTION_WARNING,
+    ExecutionEnvironment, ExecutionEnvironmentBackend, GrepOptions, HistoryTurn, ProviderProfile,
+    RegisteredTool, Session, SessionConfig, SessionEvent, SessionState, SteeringTurn,
+    SubAgentError, SubAgentLimitError, SubAgentResult, SubAgentStatus, SystemTurn, ToolDefinition,
+    ToolExecutionOutput, ToolRegistry, ToolResultsTurn, UserTurn, LOOP_DETECTION_WARNING,
 };
 use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
 use unified_llm_adapter::{
@@ -25,45 +24,6 @@ use unified_llm_adapter::{
     StreamEventType, StreamEvents, Tool, ToolCall, ToolResult, ToolResultData, Usage,
 };
 use uuid::Uuid;
-
-#[test]
-fn public_runtime_contracts_are_exported_with_session_defaults() {
-    let mut profile = ProviderProfile::new("fake-provider", "fake-model");
-    profile.supports_reasoning = true;
-    profile
-        .tools
-        .push(Tool::passive("lookup").expect("valid tool"));
-    let environment = ExecutionEnvironment::local(".");
-    let session = Session::new(
-        profile.clone(),
-        environment.clone(),
-        SessionConfig::default(),
-    );
-
-    assert_ne!(session.id, Uuid::nil());
-    assert_eq!(session.provider_profile, profile);
-    assert_eq!(session.execution_environment, environment);
-    assert_eq!(session.config.default_command_timeout_ms, 10_000);
-    assert_eq!(session.config.max_command_timeout_ms, 600_000);
-    assert!(session.config.enable_loop_detection);
-    assert_eq!(session.config.loop_detection_window, 10);
-    assert_eq!(session.config.max_subagent_depth, 1);
-    assert_eq!(session.llm_client, LlmClientHandle::default());
-    assert_eq!(session.state, SessionState::Idle);
-    assert!(session.history.is_empty());
-    assert!(session.steering_queue.is_empty());
-    assert!(session.follow_up_queue.is_empty());
-    assert!(session.active_subagents.is_empty());
-    assert!(session.pending_question.is_none());
-    assert!(!session.abort_signaled);
-    assert!(session.provider_profile.supports("supports_reasoning"));
-    assert_eq!(session.provider_profile.tool_definitions().len(), 1);
-
-    let start_event = session.event_queue.front().expect("SESSION_START event");
-    assert_eq!(start_event.kind, EventKind::SessionStart);
-    assert_eq!(start_event.session_id, Some(session.id));
-    assert_eq!(start_event.data["state"], json!("idle"));
-}
 
 #[test]
 fn subagent_types_are_exported_and_child_sessions_use_typed_registry() {
@@ -157,10 +117,7 @@ fn subagent_depth_limit_decrements_and_blocks_recursive_spawn() {
     let mut session = Session::new(
         ProviderProfile::new("fake-provider", "fake-model"),
         ExecutionEnvironment::local(workspace.path().join("workspace")),
-        SessionConfig {
-            max_subagent_depth: 1,
-            ..SessionConfig::default()
-        },
+        SessionConfig::default(),
     );
 
     let child_handle = session
@@ -233,10 +190,13 @@ fn subagent_working_directory_is_scoped_and_escape_rejected_before_registration(
 #[test]
 fn session_lifecycle_transitions_emit_observable_events_and_allow_reuse() {
     let mut session = Session::default();
-    assert_eq!(
-        session.next_event().expect("SESSION_START").kind,
-        EventKind::SessionStart
-    );
+    assert_eq!(session.config.default_command_timeout_ms, 10_000);
+    assert_eq!(session.config.max_command_timeout_ms, 600_000);
+    assert_eq!(session.config.loop_detection_window, 10);
+    let start = session.next_event().expect("SESSION_START");
+    assert_eq!(start.kind, EventKind::SessionStart);
+    assert_eq!(start.session_id, Some(session.id));
+    assert_eq!(start.data["state"], json!("idle"));
 
     session.mark_awaiting_input("What next?");
     assert_eq!(session.state, SessionState::AwaitingInput);

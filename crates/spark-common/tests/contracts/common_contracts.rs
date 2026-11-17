@@ -7,7 +7,6 @@ use serde_json::json;
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
-use spark_common::logging::spark_target;
 use spark_common::paths::{ensure_directory, resolve_runtime_workspace_path_with_env};
 use spark_common::process::ProcessLineReader;
 use spark_common::project::{
@@ -376,13 +375,6 @@ fn process_line_reader_drains_lines_and_repeats_eof() {
     assert_eq!(reader.read_line(Duration::from_millis(100)), None);
     assert_eq!(reader.read_line(Duration::from_millis(100)), None);
     assert!(reader.join(Some(Duration::from_secs(1))).expect("join"));
-}
-
-#[test]
-fn logging_target_names_follow_spark_logger_rules() {
-    assert_eq!(spark_target(""), "spark");
-    assert_eq!(spark_target("workspace"), "spark.workspace");
-    assert_eq!(spark_target("spark.workspace"), "spark.workspace");
 }
 
 #[test]

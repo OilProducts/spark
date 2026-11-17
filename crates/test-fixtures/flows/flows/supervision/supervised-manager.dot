@@ -1,8 +1,0 @@
-digraph supervised_manager {
-  graph [stack.child_dotfile="implementation-worker.dot"];
-  done [shape="Msquare"];
-  manager [manager.actions="", shape="house", type="stack.manager_loop"];
-  start [shape="Mdiamond"];
-  manager -> done [condition="outcome=success"];
-  start -> manager;
-}

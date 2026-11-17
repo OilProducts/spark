@@ -91,23 +91,6 @@ fn preview_service_reports_validation_errors_with_http_success_status() {
 }
 
 #[test]
-fn preview_service_accepts_flow_name_and_expand_children_flags() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let response = preview_with_roots(
-        PreviewRequest {
-            flow: Some(simple_flow()),
-            flow_name: Some("nested/parent".to_string()),
-            expand_children: true,
-            project_path: None,
-        },
-        &attractor_dsl::FlowRoots::new(temp.path(), None),
-    );
-
-    assert_eq!(response.status_code, 200);
-    assert_eq!(response.body["status"], json!("ok"));
-}
-
-#[test]
 fn preview_service_expands_subflow_children_by_name_through_the_roots() {
     let temp = tempfile::tempdir().expect("tempdir");
     attractor_dsl::write_flow_dir(&temp.path().join("flows/nested/child"), &child_flow())

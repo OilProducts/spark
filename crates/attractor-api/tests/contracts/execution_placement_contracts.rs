@@ -11,7 +11,7 @@ use serde_json::json;
 use spark_common::settings::SparkSettings;
 
 #[test]
-fn execution_placement_settings_exposes_profile_metadata() {
+fn execution_placement_settings_route_uses_mounted_attractor_metadata_path() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     std::fs::create_dir_all(&settings.config_dir).expect("config dir");
@@ -21,33 +21,6 @@ fn execution_placement_settings_exposes_profile_metadata() {
 [execution_defaults]
 execution_profile_id = "native-fast"
 
-[execution_profiles.native-fast]
-label = "Native Fast"
-mode = "native"
-capabilities = ["filesystem"]
-"#,
-    )
-    .expect("write profiles");
-
-    let response = execution_placement_settings(&settings);
-
-    assert_eq!(response.status_code, 200);
-    assert_eq!(response.body["config"]["loaded"], json!(true));
-    assert_eq!(
-        response.body["default_execution_profile_id"],
-        json!("native-fast")
-    );
-    assert_eq!(response.body["profiles"][0]["id"], json!("native-fast"));
-}
-
-#[test]
-fn execution_placement_settings_route_uses_mounted_attractor_metadata_path() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
-    std::fs::create_dir_all(&settings.config_dir).expect("config dir");
-    std::fs::write(
-        settings.config_dir.join("spark.toml"),
-        r#"
 [execution_profiles.native-fast]
 label = "Native Fast"
 mode = "native"
@@ -64,6 +37,10 @@ mode = "native"
 
     assert_eq!(response.status_code, 200);
     assert_eq!(response.body["config"]["loaded"], json!(true));
+    assert_eq!(
+        response.body["default_execution_profile_id"],
+        json!("native-fast")
+    );
     assert_eq!(response.body["profiles"][0]["id"], json!("native-fast"));
 }
 

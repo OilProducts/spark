@@ -1,5 +1,0 @@
-digraph implementation_worker {
-  done [shape="Msquare"];
-  start [shape="Mdiamond"];
-  start -> done;
-}
