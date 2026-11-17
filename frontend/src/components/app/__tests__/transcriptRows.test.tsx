@@ -96,15 +96,16 @@ describe('transcript rows', () => {
         expect(screen.queryByText(/Thought:/)).not.toBeInTheDocument()
     })
 
-    it('toggles Show thinking through aria-pressed', () => {
+    it('labels the thinking toggle with what a click does', () => {
         const onPressedChange = vi.fn()
         const { rerender } = render(<ShowThinkingToggle pressed={false} onPressedChange={onPressedChange} />)
         const button = screen.getByRole('button', { name: 'Show thinking' })
-        expect(button).toHaveAttribute('aria-pressed', 'false')
         fireEvent.click(button)
         expect(onPressedChange).toHaveBeenCalledWith(true)
         rerender(<ShowThinkingToggle pressed onPressedChange={onPressedChange} />)
-        expect(button).toHaveAttribute('aria-pressed', 'true')
+        expect(button).toHaveAccessibleName('Hide thinking')
+        fireEvent.click(button)
+        expect(onPressedChange).toHaveBeenCalledWith(false)
     })
 
     it('opens an assistant turn with the mark, Spark and muted meta', () => {

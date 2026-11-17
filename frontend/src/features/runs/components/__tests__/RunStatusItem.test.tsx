@@ -531,7 +531,7 @@ describe('RunVisitsCard', () => {
     const transcript = screen.getByTestId('run-visit-transcript')
     const groups = () => within(transcript).queryAllByRole('button', { expanded: false }).filter((button) => button.dataset.testid?.startsWith('run-tool-group-'))
     // Thinking shows by default, and the calls around it stay plain rows, as does a lone call.
-    expect(screen.getByRole('button', { name: 'Show thinking' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Hide thinking' })).toBeInTheDocument()
     expect(screen.getByText('Checking the diff')).toBeVisible()
     expect(groups()).toEqual([])
     expect(within(transcript).getByTestId('run-tool-call-toggle-c')).toHaveTextContent('cat AGENTS.md')
@@ -545,7 +545,7 @@ describe('RunVisitsCard', () => {
     act(() => useLiveThinkingStore.getState().report(visitKey('run-1', 'review', 1, 0), false))
     expect(screen.queryByTestId('run-visit-thinking')).toBeNull()
     // With thinking off, the calls it separated fold into a group.
-    fireEvent.click(screen.getByRole('button', { name: 'Show thinking' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Hide thinking' }))
     expect(screen.queryByText('Checking the diff')).not.toBeInTheDocument()
     expect(groups().map((group) => group.textContent)).toEqual(['Ran 2 commands· 1 failed'])
     fireEvent.click(screen.getByRole('button', { name: 'Show thinking' }))

@@ -332,15 +332,14 @@ it('opens assistant turns with the worked meta, folds commands, shows thinking b
     expect(detail().getByText(/worked 16s$/)).toBeInTheDocument()
     expect(detail().queryByText(/Worked for/)).not.toBeInTheDocument()
     // The thought between the commands shows unless turned off, leaving each a plain row that drops the shell wrapper but keeps the full command as a tooltip.
-    const thinking = detail().getByRole('button', { name: 'Show thinking' })
-    expect(thinking).toHaveAttribute('aria-pressed', 'true')
+    const thinking = detail().getByRole('button', { name: 'Hide thinking' })
     expect(detail().getByText('Planning the fix')).toBeInTheDocument()
     expect(detail().queryByRole('button', { name: 'Ran 2 commands' })).not.toBeInTheDocument()
     expect(detail().getByText('git status')).toBeInTheDocument()
     expect(detail().getByTestId('mission-tool-call-toggle-c1')).toHaveAttribute('title', "/bin/zsh -lc 'git status'")
     // With thinking off, both commands fold into one group.
     fireEvent.click(thinking)
-    expect(thinking).toHaveAttribute('aria-pressed', 'false')
+    expect(thinking).toHaveAccessibleName('Show thinking')
     expect(detail().queryByText('Planning the fix')).not.toBeInTheDocument()
     const group = detail().getByRole('button', { name: 'Ran 2 commands' })
     expect(detail().queryByText('git status')).not.toBeInTheDocument()

@@ -388,7 +388,7 @@ export function ToolCallGroupRow({
     )
 }
 
-/** The per-transcript toggle that reveals thinking rows; `aria-pressed` carries the state. */
+/** The per-transcript toggle that reveals thinking rows; its label names what a click does. */
 export function ShowThinkingToggle({
     pressed,
     onPressedChange,
@@ -400,12 +400,11 @@ export function ShowThinkingToggle({
             type="button"
             variant="ghost"
             size="xs"
-            aria-pressed={pressed}
             onClick={() => onPressedChange(!pressed)}
-            className={cn('text-muted-foreground aria-pressed:text-foreground', className)}
+            className={cn('text-muted-foreground', pressed && 'text-foreground', className)}
             {...props}
         >
-            Show thinking
+            {pressed ? 'Hide thinking' : 'Show thinking'}
         </Button>
     )
 }
