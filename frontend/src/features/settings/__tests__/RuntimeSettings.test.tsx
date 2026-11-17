@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { fetchRuntimeSettings, saveRuntimeSettings, type RuntimeSettingsView } from '@/lib/api/settingsApi'
+import { requestNavigation } from '@/state/workspaceSlice'
 import { RuntimeSettingsEditor } from '../RuntimeSettingsEditor'
 
 vi.mock('@/lib/api/settingsApi', () => ({ fetchRuntimeSettings: vi.fn(), saveRuntimeSettings: vi.fn() }))
@@ -32,6 +33,34 @@ it('retains edits across late reads and failed saves', async () => {
     await screen.findByText('Concurrent update.')
     expect(input).toHaveValue('/draft')
     expect(saveRuntimeSettings).toHaveBeenCalledWith('revision-1', { ...view.stored, runs_dir: '/draft' })
+})
+
+it('blocks navigation while a runtime save is pending and allows it once saved', async () => {
+    const saved = { runs_dir: '/saved', ui_dir: null, project_roots: [] }
+    const view: RuntimeSettingsView = {
+        scope: 'workspace', revision: 'revision-1', restart_fields: ['runs_dir'], stored: saved, effective: saved,
+    }
+    vi.mocked(fetchRuntimeSettings).mockResolvedValue(view)
+    let finishSave!: (value: RuntimeSettingsView) => void
+    vi.mocked(saveRuntimeSettings).mockImplementation(() => new Promise((resolve) => { finishSave = resolve }))
+    render(<DialogProvider><RuntimeSettingsEditor /></DialogProvider>)
+
+    const user = userEvent.setup()
+    const field = await screen.findByLabelText('Runs directory')
+    await user.clear(field)
+    await user.type(field, '/draft')
+    const save = screen.getByRole('button', { name: /^Save/ })
+    await user.click(save)
+    expect(save).toBeDisabled()
+
+    const proceed = vi.fn()
+    act(() => requestNavigation(proceed))
+    expect(proceed).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+
+    await act(async () => finishSave({ ...view, revision: 'revision-2', stored: { ...saved, runs_dir: '/draft' } }))
+    act(() => requestNavigation(proceed))
+    expect(proceed).toHaveBeenCalledOnce()
 })
 
 it('describes an unset runs directory as per-project storage', async () => {

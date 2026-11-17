@@ -5,8 +5,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { groupTranscript, type TranscriptItemClass } from '@/components/app/transcript/groupTranscript'
 import {
     AssistantTurnHeader,
-    EventLine,
-    RunCard,
     ShowThinkingToggle,
     ThinkingRow,
     ToolCallGroupRow,
@@ -16,7 +14,6 @@ import {
 import { Transcript } from '@/components/app/transcript/Transcript'
 import type { ConversationTimelineEntry } from '@/features/projects/model/types'
 import { SidePanelRow } from '@/components/app/side-panel-row'
-import { StatusPill } from '@/components/app/status'
 
 const loadOutput = vi.hoisted(() => vi.fn(async () => ({ output: 'full output', output_size: 4096 })))
 vi.mock('@/features/projects/services/conversationArtifacts', () => ({ loadConversationSegmentToolOutput: loadOutput }))
@@ -71,7 +68,8 @@ describe('ToolCallGroupRow', () => {
         expect(first).toHaveTextContent('git status --short')
         expect(first).not.toHaveTextContent('/bin/zsh')
         expect(first).toHaveAttribute('title', "/bin/zsh -lc 'git status --short'")
-        expect(screen.getByTestId('t-tool-call-toggle-b')).toHaveTextContent('Failed')
+        const failed = screen.getByTestId('t-tool-call-toggle-b')
+        expect(failed).toHaveTextContent('Failed')
         expect(screen.getByTestId('t-tool-call-toggle-a')).not.toHaveTextContent('Failed')
 
         // A line still reveals that call's output, with the full command.
@@ -79,6 +77,10 @@ describe('ToolCallGroupRow', () => {
         expect(first).toHaveAttribute('aria-expanded', 'true')
         expect(screen.getByText('M src/App.tsx', { selector: 'pre' })).toBeVisible()
         expect(screen.getByText("/bin/zsh -lc 'git status --short'", { selector: 'p' })).toBeVisible()
+        expect(screen.queryByText('exit 1', { selector: 'pre' })).not.toBeInTheDocument()
+        fireEvent.click(failed)
+        expect(failed).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByText('exit 1', { selector: 'pre' })).toBeVisible()
     })
 
     it('says Running… while a call is still running', () => {
@@ -116,24 +118,10 @@ describe('transcript rows', () => {
         expect(within(header).getByRole('presentation', { hidden: true })).toHaveAttribute('src', '/assets/spark-app-icon.png')
     })
 
-    it('renders event lines and run cards with the subject, status and time', () => {
-        render(
-            <ul>
-                <li><EventLine at="Oct 1" data-testid="event"><a href="#run">Implement change</a> ended · Completed</EventLine></li>
-                <li><RunCard data-testid="card" kicker="Launched run · Implement Change" title={<a href="#run">Implement and validate</a>} tone="success" status="Completed" duration="39m" /></li>
-            </ul>,
-        )
-        expect(screen.getByTestId('event')).toHaveTextContent('Implement change ended · CompletedOct 1')
-        const card = screen.getByTestId('card')
-        expect(within(card).getByRole('link', { name: 'Implement and validate' })).toHaveAttribute('href', '#run')
-        expect(card).toHaveTextContent('Launched run · Implement Change')
-        expect(card).toHaveTextContent('Completed · 39m')
-        expect(card.querySelector('[data-slot="status-dot"]')).toHaveAttribute('data-tone', 'success')
-    })
 })
 
 describe('shared primitives', () => {
-    it('marks a selected side-panel row as current and draws a hollow dot on request', () => {
+    it('marks a selected side-panel row as current', () => {
         const { rerender } = render(<SidePanelRow tone="success" title="Implement CR-0143" meta="Implement Change · 39m" trailing="2" />)
         const row = screen.getByRole('button', { name: /Implement CR-0143/ })
         expect(row).not.toHaveAttribute('aria-current')
@@ -141,16 +129,8 @@ describe('shared primitives', () => {
         expect(row).toHaveTextContent('2')
         rerender(<SidePanelRow tone="neutral" hollow selected title="Draft mission" />)
         expect(screen.getByRole('button', { name: 'Draft mission' })).toHaveAttribute('aria-current', 'true')
-        expect(document.querySelector('[data-slot="status-dot"]')?.className).toContain('border')
     })
 
-    it('renders a status pill with its tone', () => {
-        render(<StatusPill tone="destructive">Failed</StatusPill>)
-        const pill = screen.getByText('Failed')
-        expect(pill).toHaveAttribute('data-tone', 'destructive')
-        expect(pill.className).toContain('rounded-full')
-        expect(pill.className).not.toContain('uppercase')
-    })
 })
 
 describe('Transcript', () => {

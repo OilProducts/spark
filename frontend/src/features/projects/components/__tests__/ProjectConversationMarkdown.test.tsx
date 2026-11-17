@@ -16,13 +16,15 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); isTauri.
 const markdown = (content: string, enableCodeCopy = true) => <ProjectConversationMarkdown content={content} enableCodeCopy={enableCodeCopy} />
 
 describe('shared Markdown', () => {
-    it('renders GFM tables, alignment, read-only tasks, deletion and ordered starts', () => {
-        const { container } = render(markdown('| Left | Right |\n| :--- | ---: |\n| a | b |\n\n- [x] done\n- [ ] todo\n\n~~removed~~\n\n7. seven\n8. eight'))
-        expect(screen.getAllByRole('columnheader')).toHaveLength(2)
-        expect(screen.getAllByRole('columnheader')[1]).toHaveStyle({ textAlign: 'right' })
-        expect(screen.getAllByRole('checkbox').every((input) => (input as HTMLInputElement).disabled)).toBe(true)
-        expect(container.querySelector('del')).toHaveTextContent('removed')
-        expect(container.querySelector('ol')).toHaveAttribute('start', '7')
+    it('preserves named table headers, column alignment, read-only tasks, and ordered list starts', () => {
+        render(markdown('| Step | Owner |\n| --- | ---: |\n| Review | Ada |\n\n- [x] Reviewed\n- [ ] Shipped\n\n7. Draft release notes\n8. Send announcement'))
+        expect(screen.getByRole('columnheader', { name: 'Step' })).toBeVisible()
+        const owner = screen.getByRole('columnheader', { name: 'Owner' })
+        expect(owner).toBeVisible()
+        expect(owner).toHaveStyle({ textAlign: 'right' })
+        expect(screen.getByRole('checkbox', { checked: true })).toBeDisabled()
+        expect(screen.getByRole('checkbox', { checked: false })).toBeDisabled()
+        expect(screen.getByText('Draft release notes').closest('ol')).toHaveAttribute('start', '7')
     })
 
     it('copies exact fences, highlights known languages, and keeps nested/unknown code plain', async () => {
@@ -83,8 +85,15 @@ describe('shared Markdown', () => {
         const { container } = render(<>{markdown(source)}{markdown(source)}</>)
         const ids = [...container.querySelectorAll('[id]')].map((element) => element.id)
         expect(new Set(ids).size).toBe(ids.length)
-        for (const renderer of container.querySelectorAll('.conversation-markdown')) {
-            for (const link of renderer.querySelectorAll('a')) {
+        const renderers = container.querySelectorAll('.conversation-markdown')
+        expect(renderers).toHaveLength(2)
+        for (const renderer of renderers) {
+            const links = renderer.querySelectorAll('a')
+            expect(links).toHaveLength(2)
+            const references = renderer.querySelectorAll('a[aria-describedby]')
+            expect(references).toHaveLength(1)
+            expect(references[0]).toHaveAccessibleDescription('Footnotes')
+            for (const link of links) {
                 const target = link.getAttribute('href')!.slice(1)
                 expect([...renderer.querySelectorAll('[id]')].some((element) => element.id === target)).toBe(true)
                 const label = link.getAttribute('aria-describedby')

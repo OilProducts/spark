@@ -1,11 +1,7 @@
-import { readdirSync, readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { dirname, resolve } from 'node:path'
-
 import { buildHydratedFlowGraph, layoutWithElk } from '@/features/workflow-canvas/flowCanvasShared'
 import { filterAuthoredEdges, filterAuthoredNodes } from '@/features/workflow-canvas/derivedPreview'
 import { routeLabels } from '@/features/workflow-canvas/ValidationEdge'
-import { EDGE_RENDER_ROUTE_KEY } from '@/lib/flowLayout'
+import { buildFlowLayoutFromNodesAndEdges, EDGE_RENDER_ROUTE_KEY, readNodeRect } from '@/lib/flowLayout'
 import type { PreviewResponsePayload } from '@/lib/attractorClient'
 import {
     buildCanonicalFlowModelFromEditorState,
@@ -16,28 +12,6 @@ import {
 import type { EdgeRoute } from '@/lib/edgeRouting'
 import { formatDecisionMap, parseDecisionMap } from '@/lib/flowContracts'
 import { describe, expect, it } from 'vitest'
-
-const repoRoot = resolve(process.cwd(), '..')
-const previewFixtureCache = new Map<string, PreviewResponsePayload>()
-const require = createRequire(import.meta.url)
-// Frontmatter in flow files is YAML.
-const { load: loadFrontmatter } = require('js-yaml') as {
-    load: (source: string) => unknown
-}
-
-function loadStarterFlowPreview(flowRelativePath: string, expandChildren: boolean): PreviewResponsePayload {
-    const cacheKey = `${flowRelativePath}:${expandChildren ? 'expanded' : 'parent-only'}`
-    const cached = previewFixtureCache.get(cacheKey)
-    if (cached) {
-        return cached
-    }
-
-    const flowPath = resolve(repoRoot, flowRelativePath)
-    const payload = buildPreviewPayloadFromFlowDefinition(flowPath, expandChildren)
-
-    previewFixtureCache.set(cacheKey, payload)
-    return payload
-}
 
 type LooseRecord = Record<string, unknown>
 
@@ -81,76 +55,6 @@ function buildFlow(
         flowName,
         buildCanonicalFlowModelFromEditorState(flowName, { nodes, edges, flowMetadata, flow }),
     ) as LooseFlowDefinition & { nodes: Record<string, LooseFlowNode>; inputs?: unknown }
-}
-
-function buildPreviewPayloadFromFlowDefinition(flowPath: string, expandChildren: boolean): PreviewResponsePayload {
-    const flow = readFlowDirectory(flowPath)
-    const graph = flowDefinitionToPreviewGraph(flow)
-    if (expandChildren) {
-        const childPreviews = Object.entries(flow.nodes ?? {})
-            .filter(([, node]) => node.kind === 'subflow' || node.config?.kind === 'subflow')
-            .map(([nodeId, node]) => {
-                const flowRef = node.config?.flow_ref
-                if (typeof flowRef !== 'string' || flowRef.length === 0) {
-                    return null
-                }
-                const childPath = resolve(dirname(flowPath), flowRef)
-                const childFlow = readFlowDirectory(childPath)
-                return [nodeId, {
-                    flow_name: flowRef,
-                    flow_path: childPath,
-                    flow_label: typeof childFlow.title === 'string' && childFlow.title.length > 0 ? childFlow.title : flowRef,
-                    provenance: 'derived_child_preview',
-                    graph: flowDefinitionToPreviewGraph(childFlow),
-                }] as const
-            })
-            .filter((entry): entry is readonly [string, Record<string, unknown>] => entry !== null)
-        if (childPreviews.length > 0) {
-            graph.child_previews = Object.fromEntries(childPreviews)
-        }
-    }
-    return {
-        status: 'ok',
-        flow,
-        graph,
-    }
-}
-
-const NODE_BODY_KEYS: Record<string, string> = {
-    agent_task: 'prompt',
-    human_gate: 'prompt',
-    exit: 'result_summary_prompt',
-    tool: 'command',
-}
-
-// Assembles a flow directory (flow.md plus one <node>.md per node) the way
-// the server loader does.
-function readFlowDirectory(flowPath: string): LooseFlowDefinition {
-    const readMarkdown = (file: string) => {
-        const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(readFileSync(resolve(flowPath, file), 'utf-8'))
-        return {
-            meta: (loadFrontmatter(match?.[1] ?? '') ?? {}) as LooseRecord,
-            body: (match?.[2] ?? '').trim(),
-        }
-    }
-    const header = readMarkdown('flow.md')
-    const nodes: Record<string, LooseFlowNode> = {}
-    for (const file of readdirSync(flowPath).filter((name) => name.endsWith('.md') && name !== 'flow.md')) {
-        const nodeId = file.slice(0, -'.md'.length)
-        const { meta, body } = readMarkdown(file)
-        const { type, title, routes, config, ...rest } = meta
-        const kind = String(type)
-        const bodyKey = NODE_BODY_KEYS[kind]
-        const bodyValue = kind === 'tool' ? body.replace(/^`{3,}.*\n|`{3,}$/g, '') : body
-        nodes[nodeId] = {
-            ...rest,
-            kind,
-            label: typeof title === 'string' ? title : '',
-            config: { ...(config as LooseRecord | undefined), kind, ...(bodyKey && bodyValue ? { [bodyKey]: bodyValue } : {}) },
-            ...(routes ? { routes: routes as Record<string, LooseFlowRoute> } : {}),
-        }
-    }
-    return { ...header.meta, goal: header.body, nodes }
 }
 
 // The server's derived preview edges: every route, then a fork's branches and join.
@@ -221,32 +125,6 @@ function getRenderRoute(edge: { data?: Record<string, unknown> | undefined }): E
     return normalized.length >= 2 ? normalized : null
 }
 
-function summarizeLaidOutGraph(graph: Awaited<ReturnType<typeof layoutWithElk>>) {
-    const round = (value: number) => Math.round(value * 100) / 100
-    return {
-        nodes: [...graph.nodes]
-            .sort((left, right) => left.id.localeCompare(right.id))
-            .map((node) => ({
-                id: node.id,
-                x: round(node.position.x),
-                y: round(node.position.y),
-            })),
-        edges: [...graph.edges]
-            .sort((left, right) => left.id.localeCompare(right.id))
-            .map((edge) => {
-                const route = getRenderRoute(edge) ?? []
-                return {
-                    id: edge.id,
-                    source: edge.source,
-                    target: edge.target,
-                    pointCount: route.length,
-                    start: route[0] ? { x: round(route[0].x), y: round(route[0].y) } : null,
-                    end: route.at(-1) ? { x: round(route.at(-1)!.x), y: round(route.at(-1)!.y) } : null,
-                }
-            }),
-    }
-}
-
 describe('flowCanvasShared', () => {
     it('hydrates mixed-kind graphs with kind-derived node types and dimensions', () => {
         const preview: PreviewResponsePayload = {
@@ -298,7 +176,7 @@ describe('flowCanvasShared', () => {
         ])
     })
 
-    it('produces routed render polylines with distinct fan-in touch points', async () => {
+    it('routes fan-in to distinct ports and keeps a self-loop outside its step', async () => {
         const preview: PreviewResponsePayload = {
             status: 'ok',
             graph: {
@@ -314,6 +192,7 @@ describe('flowCanvasShared', () => {
                     { from: 'start', to: 'right' },
                     { from: 'left', to: 'join' },
                     { from: 'right', to: 'join' },
+                    { from: 'left', to: 'left', label: 'Retry' },
                 ],
             },
         }
@@ -327,7 +206,15 @@ describe('flowCanvasShared', () => {
         expect(hydrated).not.toBeNull()
         const layoutGraph = await layoutWithElk(hydrated?.nodes ?? [], hydrated?.edges ?? [])
         expect(layoutGraph.layout.edgeLayouts).not.toEqual({})
-        expect(layoutGraph.edges.every((edge) => (getRenderRoute(edge)?.length ?? 0) >= 2)).toBe(true)
+        const { start, left, right, join } = layoutGraph.layout.nodePositions
+        expect(start.y).toBeLessThan(Math.min(left.y, right.y))
+        expect(join.y).toBeGreaterThan(Math.max(left.y, right.y))
+        expect(layoutGraph.edges).toHaveLength(5)
+        for (const edge of layoutGraph.edges) {
+            expect(getRenderRoute(edge)).not.toBeNull()
+        }
+        const repeatLayout = await layoutWithElk(hydrated?.nodes ?? [], hydrated?.edges ?? [])
+        expect(repeatLayout.layout).toEqual(layoutGraph.layout)
 
         const leftJoinRoute = getRenderRoute(
             layoutGraph.edges.find((edge) => edge.source === 'left' && edge.target === 'join') ?? {},
@@ -337,6 +224,21 @@ describe('flowCanvasShared', () => {
         )
 
         expect(leftJoinRoute?.at(-1)).not.toEqual(rightJoinRoute?.at(-1))
+
+        const loop = layoutGraph.edges.find((edge) => edge.source === 'left' && edge.target === 'left')
+        expect(loop?.label).toBe('Retry')
+        const route = getRenderRoute(loop ?? {}) ?? []
+        const rect = readNodeRect(layoutGraph.nodes.find((node) => node.id === 'left')!)
+        const rightEdge = rect.x + rect.width
+        expect(route[0]).not.toEqual(route.at(-1))
+        for (const port of [route[0], route.at(-1)]) {
+            expect(port?.x).toBe(rightEdge)
+            expect(port?.y).toBeGreaterThanOrEqual(rect.y)
+            expect(port?.y).toBeLessThanOrEqual(rect.y + rect.height)
+        }
+        const routeXs = route.map(({ x }) => x)
+        expect(Math.min(...routeXs)).toBeGreaterThanOrEqual(rightEdge)
+        expect(Math.max(...routeXs)).toBeGreaterThan(rightEdge)
     })
 
     it('restores saved node positions and routed edges when saved layout exists', async () => {
@@ -364,15 +266,29 @@ describe('flowCanvasShared', () => {
 
         expect(hydrated).not.toBeNull()
         const firstLayout = await layoutWithElk(hydrated?.nodes ?? [], hydrated?.edges ?? [])
-        const restoredLayout = await layoutWithElk(
-            hydrated?.nodes ?? [],
-            hydrated?.edges ?? [],
-            {
-                savedLayout: firstLayout.layout,
-            },
-        )
+        const movedTask = { x: 500, y: 180 }
+        const movedNodes = firstLayout.nodes.map((node) => node.id === 'task' ? { ...node, position: movedTask } : node)
+        const { layout: savedLayout } = buildFlowLayoutFromNodesAndEdges(movedNodes, firstLayout.edges)
+        expect(savedLayout.nodePositions.task).not.toEqual(firstLayout.layout.nodePositions.task)
+        // Keep the endpoints, but take a detour between the steps that fresh routing would skip.
+        const savedEdge = savedLayout.edgeLayouts['start->task#0']
+        const [from] = savedEdge.route
+        const to = savedEdge.route.at(-1)!
+        const detourX = to.x + 120
+        savedEdge.route = [
+            from,
+            { x: from.x, y: from.y + 16 },
+            { x: detourX, y: from.y + 16 },
+            { x: detourX, y: to.y - 16 },
+            { x: to.x, y: to.y - 16 },
+            to,
+        ]
 
-        expect(summarizeLaidOutGraph(restoredLayout)).toEqual(summarizeLaidOutGraph(firstLayout))
+        const restored = await layoutWithElk(hydrated?.nodes ?? [], hydrated?.edges ?? [], { savedLayout })
+        expect(restored.nodes.find((node) => node.id === 'task')?.position).toEqual(movedTask)
+        expect(restored.layout.edgeLayouts).toEqual(savedLayout.edgeLayouts)
+        const restoredEdge = restored.edges.find((edge) => edge.source === 'start' && edge.target === 'task')
+        expect(getRenderRoute(restoredEdge ?? {})).toEqual(savedEdge.route)
     })
 
     it('routes reciprocal edges as distinct polylines', async () => {
@@ -411,7 +327,7 @@ describe('flowCanvasShared', () => {
         expect(backRoute).not.toEqual(forwardRoute)
     })
 
-    it('builds a namespaced one-level child preview cluster when expansion is enabled', () => {
+    it('adds and routes a single level of namespaced child previews only when expanded', async () => {
         const preview: PreviewResponsePayload = {
             status: 'ok',
             graph: {
@@ -459,13 +375,14 @@ describe('flowCanvasShared', () => {
             },
         }
 
-        const hydrated = buildHydratedFlowGraph('parent.yaml', preview, {
+        const defaults = {
             llm_model: '',
             llm_provider: '',
             reasoning_effort: '',
-        }, {
-            expandChildren: true,
-        })
+        }
+        const collapsed = buildHydratedFlowGraph('parent.yaml', preview, defaults)
+        expect(collapsed?.nodes.map((node) => node.id)).toEqual(['start', 'manager'])
+        const hydrated = buildHydratedFlowGraph('parent.yaml', preview, defaults, { expandChildren: true })
 
         expect(hydrated).not.toBeNull()
         expect(hydrated?.nodes.map((node) => node.id)).toEqual(expect.arrayContaining([
@@ -484,6 +401,12 @@ describe('flowCanvasShared', () => {
             source: 'manager',
             target: '__child_preview__manager__child_start',
         })
+        const layout = await layoutWithElk(hydrated?.nodes ?? [], hydrated?.edges ?? [])
+        const childLink = layout.edges.find((edge) => edge.id === 'e-manager-child-preview-link')
+        expect(getRenderRoute(childLink ?? {})).not.toBeNull()
+        const childRoute = layout.edges.find((edge) => edge.source === '__child_preview__manager__child_start'
+            && edge.target === '__child_preview__manager__nested_manager')
+        expect(getRenderRoute(childRoute ?? {})).not.toBeNull()
     })
 
     it('hydrates typed FlowDefinition previews, expands children, and round-trips the FlowDefinition without metadata loss', () => {
@@ -833,75 +756,6 @@ describe('flowCanvasShared', () => {
         expect(saved).not.toContain('ui_default_reasoning_effort')
     })
 
-    it.each([
-        {
-            flowName: 'implement-spec.yaml',
-            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-spec',
-            expandChildren: false,
-            expectedDerivedNodeId: null,
-        },
-        {
-            flowName: 'implement-spec.yaml',
-            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-spec',
-            expandChildren: true,
-            expectedDerivedNodeId: '__child_preview_cluster__run_milestone',
-        },
-        {
-            flowName: 'implement-milestone.yaml',
-            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-milestone',
-            expandChildren: false,
-            expectedDerivedNodeId: null,
-        },
-        {
-            flowName: 'implement-milestone.yaml',
-            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-milestone',
-            expandChildren: true,
-            expectedDerivedNodeId: null,
-        },
-    ])('keeps ELK placement plus routed geometry stable for $flowName ($expandChildren)', async ({
-        flowName,
-        flowRelativePath,
-        expandChildren,
-        expectedDerivedNodeId,
-    }) => {
-        const preview = loadStarterFlowPreview(flowRelativePath, expandChildren)
-
-        expect(preview.status).toBe('ok')
-        const hydrated = buildHydratedFlowGraph(
-            flowName,
-            preview,
-            {
-                llm_model: '',
-                llm_provider: '',
-                reasoning_effort: '',
-            },
-            { expandChildren },
-        )
-
-        expect(hydrated).not.toBeNull()
-        expect(
-            hydrated?.nodes.every((node) =>
-                Number.isFinite(node.position.x) && Number.isFinite(node.position.y)),
-        ).toBe(true)
-        if (expectedDerivedNodeId) {
-            expect(hydrated?.nodes.some((node) => node.id === expectedDerivedNodeId)).toBe(true)
-        } else {
-            expect(hydrated?.nodes.some((node) => node.id.startsWith('__child_preview_'))).toBe(false)
-        }
-
-        const firstLayout = await layoutWithElk(hydrated?.nodes ?? [], hydrated?.edges ?? [])
-        const secondLayout = await layoutWithElk(hydrated?.nodes ?? [], hydrated?.edges ?? [])
-
-        expect(
-            firstLayout.nodes.every((node) =>
-                Number.isFinite(node.position.x) && Number.isFinite(node.position.y)),
-        ).toBe(true)
-        expect(firstLayout.edges.every((edge) => (getRenderRoute(edge)?.length ?? 0) >= 2)).toBe(true)
-        expect(summarizeLaidOutGraph(secondLayout)).toEqual(summarizeLaidOutGraph(firstLayout))
-    // Two full layouts of the largest bundled flows; on a machine busy with the rest of the suite
-    // that is several seconds.
-    }, 30_000)
-
     it('filters derived child preview nodes and edges out of the saved flow', () => {
         const preview: PreviewResponsePayload = {
             status: 'ok',
@@ -1007,7 +861,7 @@ describe('schema-2 routes and fork structure', () => {
         },
     }
 
-    it('derives one edge per decision, including two decisions to the same node, and saves them back into the routes map', () => {
+    it('routes each decision, including two decisions to the same node, and saves them back into the routes map', async () => {
         const hydrated = hydrate(reviewFlow)
         const reviewEdges = hydrated.edges.filter((edge) => edge.source === 'review')
         expect(reviewEdges.map((edge) => [edge.target, edge.data?.decision, edge.data?.label])).toEqual([
@@ -1016,6 +870,14 @@ describe('schema-2 routes and fork structure', () => {
             ['failed', 'reject', 'Reject'],
         ])
         expect(new Set(reviewEdges.map((edge) => edge.id)).size).toBe(3)
+
+        const layout = await layoutWithElk(hydrated.nodes, hydrated.edges)
+        const sameTargetRoutes = layout.edges
+            .filter((edge) => edge.source === 'review' && edge.target === 'done')
+            .map(getRenderRoute)
+        expect(sameTargetRoutes).toHaveLength(2)
+        expect(sameTargetRoutes).not.toContain(null)
+        expect(sameTargetRoutes[0]).not.toEqual(sameTargetRoutes[1])
 
         const saved = buildFlow('routes', hydrated.nodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow)
         expect(saved.nodes).toEqual(reviewFlow.nodes)

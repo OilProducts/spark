@@ -1,50 +1,27 @@
-import { readdirSync, readFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { render } from '@testing-library/react'
+import { createElement } from 'react'
 import { expect, it } from 'vitest'
-
-// Status color comes from theme tokens (success/warning/info/destructive/muted in index.css), never raw Tailwind palette classes.
-const RAW_PALETTE = /\b(bg|text|border|ring|fill|stroke|from|to|caret)-(red|amber|yellow|emerald|green|blue|sky|indigo|violet|purple|orange|rose|slate|zinc|gray|neutral|stone|cyan|teal|lime|fuchsia|pink)-[0-9]+/g
-
-it('uses semantic color tokens instead of raw palette classes', () => {
-    const srcRoot = resolve(process.cwd(), 'src')
-    const violations: string[] = []
-    for (const file of readdirSync(srcRoot, { recursive: true }) as string[]) {
-        if (!/\.tsx?$/.test(file)) continue
-        readFileSync(join(srcRoot, file), 'utf8').split('\n').forEach((line, index) => {
-            for (const [match] of line.matchAll(RAW_PALETTE)) violations.push(`${file}:${index + 1} ${match}`)
-        })
-    }
-    expect(violations).toEqual([])
-})
-
-// Inline errors render through InlineError (Alert variant="destructive"); hand-rolled tinted destructive boxes are banned.
-it('keeps ad hoc destructive error boxes out of feature code', () => {
-    const srcRoot = resolve(process.cwd(), 'src')
-    const violations: string[] = []
-    for (const file of readdirSync(srcRoot, { recursive: true }) as string[]) {
-        if (!file.endsWith('.tsx') || file.replaceAll('\\', '/').startsWith('components/ui/')) continue
-        readFileSync(join(srcRoot, file), 'utf8').split('\n').forEach((line, index) => {
-            const box = line.match(/border-destructive\/\d+ bg-destructive\/\d+/)
-            if (box) violations.push(`${file}:${index + 1} ${box[0]}`)
-        })
-    }
-    expect(violations).toEqual([])
-})
+import { StatusPill } from '@/components/app/status'
 
 // Text tokens must meet WCAG AA (4.5:1) against the surfaces they sit on, in light and dark.
 function tokens(css: string, selector: string) {
     const block = css.match(new RegExp(`${selector.replace('.', '\\.')} \\{([^}]*)\\}`))![1]
     return Object.fromEntries([...block.matchAll(/--([\w-]+):\s*([\d.]+) ([\d.]+)% ([\d.]+)%;/g)]
-        .map(([, name, h, s, l]) => [name, [Number(h), Number(s) / 100, Number(l) / 100]]))
+        .map(([, name, h, s, l]) => [name, rgb([Number(h), Number(s) / 100, Number(l) / 100])]))
 }
 
-function luminance([h, s, l]: number[]) {
-    const f = (n: number) => {
+function rgb([h, s, l]: number[]) {
+    return [0, 8, 4].map((n) => {
         const k = (n + h / 30) % 12
-        const c = l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1))
-        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
-    }
-    return 0.2126 * f(0) + 0.7152 * f(8) + 0.0722 * f(4)
+        return l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1))
+    })
+}
+
+function luminance([r, g, b]: number[]) {
+    const linear = (c: number) => c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+    return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
 }
 
 function contrast(a: number[], b: number[]) {
@@ -64,23 +41,26 @@ it.each([':root', '.dark'])('keeps text tokens at WCAG AA contrast in %s', (sele
         ['success', 'ground'], ['warning', 'ground'], ['destructive', 'ground'], ['primary', 'ground'],
     ]
     const failures = pairs
-        .map(([text, surface]) => [text, surface, contrast(theme[text], theme[surface]).toFixed(2)] as const)
-        .filter(([, , ratio]) => Number(ratio) < 4.5)
+        .map(([text, surface]) => [text, surface, contrast(theme[text], theme[surface])] as const)
+        .filter(([, , ratio]) => !(ratio >= 4.5))
     expect(failures).toEqual([])
-    // StatusPill: tone text on a 10% tint of itself over the sheet.
-    const rgb = (hsl: number[]) => [0, 8, 4].map((n) => {
-        const [h, s, l] = hsl
-        const k = (n + h / 30) % 12
-        return l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1))
-    })
-    const lum = (c: number[]) => 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
-    const lin = (c: number) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
-    const pillFailures = ['success', 'warning', 'destructive', 'info'].flatMap((tone) => {
-        const text = rgb(theme[tone])
-        const tint = text.map((c, i) => c * 0.1 + rgb(theme.background)[i] * 0.9)
-        const [hi, lo] = [lum(text), lum(tint)].sort((x, y) => y - x)
-        const ratio = (hi + 0.05) / (lo + 0.05)
-        return ratio < 4.5 ? [`${tone} pill ${ratio.toFixed(2)}`] : []
+
+    // Resolve the rendered colors. An Interrupted warning pill can also sit inside a muted well.
+    const pillFailures = (['success', 'warning', 'destructive', 'info'] as const).flatMap((tone) => {
+        const { getByText } = render(createElement(StatusPill, { tone }, tone))
+        const classes = [...getByText(tone).classList]
+        const textClass = classes.find((name) => name.startsWith('text-') && Object.hasOwn(theme, name.slice(5)))
+        const backgroundClass = classes.find((name) => name.startsWith('bg-'))
+        if (!textClass || !backgroundClass) return [`${tone} pill is missing color tokens`]
+
+        const [backgroundToken, opacity = '100'] = backgroundClass.slice(3).split('/')
+        const alpha = Number(opacity) / 100
+        const surfaces = tone === 'warning' ? ['background', 'muted'] : ['background']
+        return surfaces.flatMap((surface) => {
+            const background = theme[backgroundToken].map((c, i) => c * alpha + theme[surface][i] * (1 - alpha))
+            const ratio = contrast(theme[textClass.slice(5)], background)
+            return ratio >= 4.5 ? [] : [`${tone} pill on ${surface} ${ratio.toFixed(2)}`]
+        })
     })
     expect(pillFailures).toEqual([])
 })

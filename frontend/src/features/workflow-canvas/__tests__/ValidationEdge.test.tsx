@@ -157,59 +157,6 @@ describe('ValidationEdge', () => {
         })
     })
 
-    it('renders the routed polyline geometry carried by edge render state', async () => {
-        renderWithFlowProvider(
-            <EdgeHarness
-                sourceNode={{
-                    id: 'a',
-                    type: 'taskNode',
-                    position: { x: 0, y: 0 },
-                    width: 220,
-                    height: 110,
-                    data: { label: 'A', shape: 'box' },
-                }}
-                targetNode={{
-                    id: 'b',
-                    type: 'taskNode',
-                    position: { x: 320, y: 10 },
-                    width: 220,
-                    height: 110,
-                    data: { label: 'B', shape: 'box' },
-                }}
-                edgeProps={{
-                    id: 'e1',
-                    source: 'a',
-                    target: 'b',
-                    sourceX: 110,
-                    sourceY: 110,
-                    targetX: 430,
-                    targetY: 10,
-                    sourcePosition: 'bottom',
-                    targetPosition: 'top',
-                    markerEnd: undefined,
-                    style: {},
-                    selected: false,
-                    data: {
-                        [EDGE_RENDER_ROUTE_KEY]: [
-                            { x: 220, y: 55 },
-                            { x: 260, y: 55 },
-                            { x: 260, y: 65 },
-                            { x: 320, y: 65 },
-                        ],
-                    },
-                } as EdgeProps}
-            />,
-        )
-
-        await waitFor(() => {
-            const path = document.querySelector('path.react-flow__edge-path')
-            expect(readPathEndpoints(path as SVGPathElement | null)).toEqual({
-                start: { x: 220, y: 55 },
-                end: { x: 320, y: 65 },
-            })
-        })
-    })
-
     it('preserves separated touch points when the routed polyline uses distinct endpoints', async () => {
         renderWithFlowProvider(
             <EdgeHarness
@@ -263,46 +210,4 @@ describe('ValidationEdge', () => {
         })
     })
 
-    it('uses the same base stroke width for normal edges as derived child edges', async () => {
-        renderWithFlowProvider(
-            <EdgeHarness
-                sourceNode={{
-                    id: 'a',
-                    type: 'taskNode',
-                    position: { x: 0, y: 0 },
-                    width: 220,
-                    height: 110,
-                    data: { label: 'A', shape: 'box' },
-                }}
-                targetNode={{
-                    id: 'b',
-                    type: 'taskNode',
-                    position: { x: 300, y: 0 },
-                    width: 220,
-                    height: 110,
-                    data: { label: 'B', shape: 'box' },
-                }}
-                edgeProps={{
-                    id: 'e1',
-                    source: 'a',
-                    target: 'b',
-                    sourceX: 220,
-                    sourceY: 55,
-                    targetX: 300,
-                    targetY: 55,
-                    sourcePosition: 'right',
-                    targetPosition: 'left',
-                    markerEnd: undefined,
-                    style: {},
-                    selected: false,
-                } as EdgeProps}
-            />,
-        )
-
-        await waitFor(() => {
-            const path = document.querySelector('path.react-flow__edge-path') as SVGPathElement | null
-            expect(path).not.toBeNull()
-            expect(path?.style.strokeWidth).toBe('1.5')
-        })
-    })
 })

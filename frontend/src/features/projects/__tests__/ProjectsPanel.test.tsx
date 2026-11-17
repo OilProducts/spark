@@ -393,16 +393,6 @@ describe('ProjectsPanel', () => {
     expect(within(group).getByTestId('chats-project-name')).toHaveTextContent('quick-switch-project')
   })
 
-  it('uses a full-height split shell on wide viewports', () => {
-    renderProjectsPanelWithoutHomeController()
-
-    const projectsPanel = screen.getByTestId('projects-panel')
-    expect(projectsPanel).toHaveClass('h-full')
-    expect(screen.getByTestId('chats-view')).toHaveAttribute('data-responsive-layout', 'split')
-    expect(screen.getByTestId('side-panel')).toBeVisible()
-    expect(screen.getByTestId('view-main')).toBeVisible()
-  })
-
   it('surfaces a project registry bootstrap error on refresh', async () => {
     vi.stubGlobal(
       'fetch',

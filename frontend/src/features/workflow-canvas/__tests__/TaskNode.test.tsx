@@ -4,7 +4,7 @@ import { nodeTypes } from '@/features/workflow-canvas/flowCanvasShared'
 import { TaskNode } from '@/features/workflow-canvas/TaskNode'
 import { getReactFlowNodeTypeForShape } from '@/lib/workflowNodeShape'
 import { useStore } from '@/store'
-import { ReactFlow, ReactFlowProvider, type Edge, type Node, useEdgesState, useNodesState } from '@xyflow/react'
+import { ReactFlow, ReactFlowProvider, type Node, useNodesState } from '@xyflow/react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -60,46 +60,21 @@ useStore.getState().setRunsSelectedRunId(null);
 }
 }
 
-const MixedShapeHarness = ({ nodes }: { nodes: Node[] }) => {
-    const [canvasNodes, , onNodesChange] = useNodesState(nodes)
-    const [canvasEdges, , onEdgesChange] = useEdgesState([])
-
-    return (
-        <CanvasSessionModeProvider mode="editor">
-            <div style={{ width: 1200, height: 700 }}>
-                <ReactFlow
-                    nodes={canvasNodes}
-                    edges={canvasEdges}
-                    onNodesChange={onNodesChange}
-                    onEdgesChange={onEdgesChange}
-                    nodeTypes={nodeTypes}
-                    fitView
-                />
-            </div>
-        </CanvasSessionModeProvider>
-    )
-}
-
-const SingleNodeHarness = ({
-    node,
+const CanvasHarness = ({
+    nodes,
     mode = 'editor',
-    edges = [],
 }: {
-    node: Node
+    nodes: Node[]
     mode?: 'editor' | 'runs'
-    edges?: Edge[]
 }) => {
-    const [canvasNodes, , onNodesChange] = useNodesState([node])
-    const [canvasEdges, , onEdgesChange] = useEdgesState(edges)
+    const [canvasNodes, , onNodesChange] = useNodesState(nodes)
 
     return (
         <CanvasSessionModeProvider mode={mode} runId="run-1">
             <div style={{ width: 900, height: 600 }}>
                 <ReactFlow
                     nodes={canvasNodes}
-                    edges={canvasEdges}
                     onNodesChange={onNodesChange}
-                    onEdgesChange={onEdgesChange}
                     nodeTypes={{ task: TaskNode, ...nodeTypes }}
                     fitView
                 />
@@ -111,9 +86,9 @@ const SingleNodeHarness = ({
 describe('TaskNode', () => {
     it('falls back to the node id when no label is authored', () => {
         renderWithFlowProvider(
-            <SingleNodeHarness
+            <CanvasHarness
                 mode="runs"
-                node={{ id: 'implement', type: 'task', position: { x: 0, y: 0 }, data: {} }}
+                nodes={[{ id: 'implement', type: 'task', position: { x: 0, y: 0 }, data: {} }]}
             />,
         )
         expect(screen.getByText('implement')).toBeInTheDocument()
@@ -129,44 +104,48 @@ describe('TaskNode', () => {
         cleanup()
     })
 
-    it('renders distinct frames for the canonical Attractor node shapes', () => {
-        const nodes: Node[] = [
-            { id: 'start', type: getReactFlowNodeTypeForShape('Mdiamond'), position: { x: 0, y: 0 }, data: { label: 'Start', shape: 'Mdiamond' } },
-            { id: 'exit', type: getReactFlowNodeTypeForShape('Msquare'), position: { x: 220, y: 0 }, data: { label: 'End', shape: 'Msquare' } },
-            { id: 'task', type: getReactFlowNodeTypeForShape('box'), position: { x: 440, y: 0 }, data: { label: 'Task', shape: 'box' } },
-            { id: 'human', type: getReactFlowNodeTypeForShape('hexagon'), position: { x: 0, y: 180 }, data: { label: 'Human', shape: 'hexagon' } },
-            { id: 'conditional', type: getReactFlowNodeTypeForShape('diamond'), position: { x: 220, y: 180 }, data: { label: 'Branch', shape: 'diamond' } },
-            { id: 'parallel', type: getReactFlowNodeTypeForShape('component'), position: { x: 440, y: 180 }, data: { label: 'Parallel', shape: 'component' } },
-            { id: 'fanin', type: getReactFlowNodeTypeForShape('tripleoctagon'), position: { x: 0, y: 360 }, data: { label: 'Join', shape: 'tripleoctagon' } },
-            { id: 'tool', type: getReactFlowNodeTypeForShape('parallelogram'), position: { x: 220, y: 360 }, data: { label: 'Tool', shape: 'parallelogram' } },
-            { id: 'manager', type: getReactFlowNodeTypeForShape('house'), position: { x: 440, y: 360 }, data: { label: 'Manager', shape: 'house' } },
-        ]
+    it('draws the canonical frame on each step in a mixed graph', () => {
+        const shapes = ['Mdiamond', 'Msquare', 'box', 'hexagon', 'diamond', 'component', 'tripleoctagon', 'parallelogram', 'house'] as const
+        const nodes = shapes.map((shape, index) => ({
+            id: shape,
+            type: getReactFlowNodeTypeForShape(shape),
+            position: { x: (index % 3) * 220, y: Math.floor(index / 3) * 180 },
+            data: { label: `Step ${index + 1}`, shape },
+        }))
+        renderWithFlowProvider(<CanvasHarness nodes={nodes} />)
 
-        renderWithFlowProvider(<MixedShapeHarness nodes={nodes} />)
+        for (const { id, data } of nodes) {
+            const frame = screen.getByTestId(`workflow-node-frame-${id}`)
+            expect(frame.closest('.react-flow__node')).toHaveTextContent(data.label)
+            if (id !== 'box') {
+                expect(frame.querySelector('path[d]:not([d=""]), rect[width][height]')).not.toBeNull()
+            }
+        }
+        const humanGateOutline = screen.getByTestId('workflow-node-frame-hexagon').querySelector('path')?.getAttribute('d') ?? ''
+        expect(humanGateOutline.match(/[MLHV]/g)).toHaveLength(6)
 
-        expect(screen.getByTestId('workflow-node-frame-Mdiamond')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-Msquare')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-hexagon')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-diamond')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-component')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-tripleoctagon')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-parallelogram')).toBeInTheDocument()
-        expect(screen.getByTestId('workflow-node-frame-house')).toBeInTheDocument()
+        const switchFrame = screen.getByTestId('workflow-node-frame-diamond')
+        const [, , width, height] = (switchFrame.getAttribute('viewBox') ?? '').split(/\s+/).map(Number)
+        const outline = switchFrame.querySelector('path')?.getAttribute('d') ?? ''
+        const vertices = [...outline.matchAll(/[ML]\s+([\d.]+)\s+([\d.]+)/g)].map(([, x, y]) => [Number(x), Number(y)])
+        expect(vertices).toHaveLength(4)
+        expect(vertices).toEqual(expect.arrayContaining([
+            [width / 2, 0], [width, height / 2], [width / 2, height], [0, height / 2],
+        ]))
     })
 
     it('moves to the step settings from the canvas Edit button', () => {
         renderWithFlowProvider(
             <>
                 <nav data-testid="inspector-panel"><h2 tabIndex={-1}>Step settings</h2></nav>
-                <SingleNodeHarness
-                    node={{
+                <CanvasHarness
+                    nodes={[{
                         id: 'task',
                         type: 'task',
                         position: { x: 0, y: 0 },
                         selected: true,
                         data: { label: 'Task', kind: 'agent_task', config: { kind: 'agent_task' }, shape: 'box' },
-                    }}
+                    }]}
                 />
             </>,
         )
@@ -185,8 +164,8 @@ describe('TaskNode', () => {
         }))
 
         renderWithFlowProvider(
-            <SingleNodeHarness
-                node={{
+            <CanvasHarness
+                nodes={[{
                     id: 'task',
                     type: 'task',
                     position: { x: 0, y: 0 },
@@ -198,7 +177,7 @@ describe('TaskNode', () => {
                         shape: 'box',
                         prompt: 'Implement the feature',
                     },
-                }}
+                }]}
             />,
         )
 
@@ -235,9 +214,9 @@ nodeDiagnostics: {
 }
 
         const { container } = renderWithFlowProvider(
-            <SingleNodeHarness
+            <CanvasHarness
                 mode="runs"
-                node={{
+                nodes={[{
                     id: 'human',
                     type: getReactFlowNodeTypeForShape('hexagon'),
                     position: { x: 0, y: 0 },
@@ -246,7 +225,7 @@ nodeDiagnostics: {
                         shape: 'hexagon',
                         status: 'waiting',
                     },
-                }}
+                }]}
             />,
         )
 

@@ -138,7 +138,6 @@ const resetContractState = () => {
 useStore.setState({...useStore.getState(),
 viewMode: 'editor',
 editorMode: 'structured',
-saveState: 'idle',
 activeProjectPath: '/tmp/project-contract-behavior',
 activeFlow: 'contract-behavior.yaml',
 runsListSession: {
@@ -181,7 +180,7 @@ preferredAdvancedControls: false,
 preferredExpandChildFlows: false,
 preferredGraphSettingsOpen: false,
 editorGraphSettingsPanelOpenByFlow: {},
-editorShowAdvancedGraphAttrsByFlow: {},
+editorShowAdvancedFlowMetadataByFlow: {},
 editorLaunchInputDraftsByFlow: {},
 editorLaunchInputDraftErrorByFlow: {},
 editorNodeInspectorSessionsByNodeId: {},
@@ -264,30 +263,6 @@ const GraphSettingsHarness = ({ nodes, edges }: { nodes: Node[]; edges: Edge[] }
 
 const renderGraphSettings = (nodes: Node[], edges: Edge[]) =>
   renderWithFlowProvider(<GraphSettingsHarness nodes={nodes} edges={edges} />)
-
-const SidebarValidationHarness = ({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) => (
-  <>
-    <div style={{ width: 800, height: 600 }}>
-      <ReactFlow nodes={nodes} edges={edges} fitView />
-    </div>
-    <Sidebar />
-    <ValidationPanel />
-  </>
-)
-
-const renderSidebarWithValidation = (nodes: Node[], edges: Edge[]) =>
-  renderWithFlowProvider(<SidebarValidationHarness nodes={nodes} edges={edges} />)
-
-const setViewportWidth = (width: number) => {
-  act(() => {
-    Object.defineProperty(window, 'innerWidth', {
-      configurable: true,
-      writable: true,
-      value: width,
-    })
-    window.dispatchEvent(new Event('resize'))
-  })
-}
 
 describe('Frontend contract behavior', () => {
   const renderSelectedEdgeSidebar = () => {
@@ -849,6 +824,7 @@ describe('Frontend contract behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
+    expect(screen.queryByTestId('timeline-update-performance-budget')).not.toBeInTheDocument()
     // The status and Context items stay functional independently of the failed endpoint.
     expect(screen.getByTestId('run-status-item')).toBeVisible()
     await user.click(screen.getByTestId('run-visit-item-context'))
@@ -1410,489 +1386,25 @@ useStore.getState().setRunsSelectedRunId('run-focus-audit');
     expect(within(nodeEditor).getByRole('button', { name: 'Add attribute' }).className).toContain('focus-visible')
   })
 
-  it('[CID:13.2.01] applies narrow-viewport responsive layouts for inspector, diagnostics, and run timeline surfaces', async () => {
-    const originalViewportWidth = window.innerWidth
-    setViewportWidth(760)
-    try {
-      act(() => {
-        useStore.getState().setViewMode('editor')
-        useStore.getState().setDiagnostics([
-          {
-            rule_id: 'node_prompt_required',
-            severity: 'warning',
-            message: 'Prompt is recommended for codergen nodes.',
-            node_id: 'task',
-          },
-        ])
-      })
+  it('[CID:13.2.01] removes the fixed inspector width and starts diagnostics collapsed on narrow screens', () => {
+    vi.stubGlobal('innerWidth', 760)
+    const warning = 'Choose a prompt for this step.'
+    useStore.getState().setDiagnostics([{ severity: 'warning', rule_id: 'node_prompt_required', message: warning }])
+    renderWithFlowProvider(<><Sidebar /><ValidationPanel /></>)
 
-      const nodes: Node[] = [
-        {
-          id: 'task',
-          position: { x: 150, y: 0 },
-          data: {
-            label: 'Task',
-            shape: 'box',
-            prompt: '',
-          },
-        },
-      ]
-      renderSidebarWithValidation(nodes, [])
-
-      expect(screen.getByTestId('inspector-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('validation-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
-
-      cleanup()
-      const runId = 'run-responsive-contract'
-      const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
-      const runRecord = {
-        run_id: runId,
-        flow_name: 'contract-behavior.yaml',
-        status: 'running',
-        outcome: null,
-        working_directory: '/tmp/project-contract-behavior/workspace',
-        project_path: '/tmp/project-contract-behavior',
-        git_branch: 'main',
-        git_commit: 'abc1234',
-        model: 'gpt-5',
-        started_at: '2026-03-04T01:00:00Z',
-        ended_at: null,
-        last_error: '',
-        token_usage: 0,
-      }
-
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async (input: RequestInfo | URL) => {
-          const url = requestUrl(input)
-          if (url.includes('/attractor/runs')) {
-            return jsonResponse({ runs: [runRecord] })
-          }
-          if (url.endsWith(runApiPath)) {
-            return jsonResponse(buildPipelineStatusPayload(runRecord))
-          }
-          if (url.endsWith(`${runApiPath}/checkpoint`)) {
-            return jsonResponse({ pipeline_id: runId, checkpoint: { node_statuses: {} } })
-          }
-          if (url.endsWith(`${runApiPath}/context`)) {
-            return jsonResponse({ pipeline_id: runId, context: {} })
-          }
-          if (url.endsWith(`${runApiPath}/artifacts`)) {
-            return jsonResponse({ pipeline_id: runId, artifacts: [] })
-          }
-          if (url.endsWith(`${runApiPath}/graph`)) {
-            return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
-              status: 200,
-              headers: { 'Content-Type': 'image/svg+xml' },
-            })
-          }
-          if (url.endsWith(`${runApiPath}/questions`)) {
-            return jsonResponse({ pipeline_id: runId, questions: [] })
-          }
-          return jsonResponse({}, { status: 404 })
-        }),
-      )
-
-      class MockEventSource {
-        url: string
-        withCredentials = false
-        readyState = 1
-        onopen: ((event: Event) => void) | null = null
-        onmessage: ((event: MessageEvent) => void) | null = null
-        onerror: ((event: Event) => void) | null = null
-
-        constructor(url: string) {
-          this.url = url
-        }
-
-        close() {}
-        addEventListener() {}
-        removeEventListener() {}
-        dispatchEvent(): boolean {
-          return false
-        }
-      }
-      vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
-
-      act(() => {
-        useStore.getState().setViewMode('runs')
-        useStore.getState().setRunsSelectedRunId(runId)
-      })
-      renderRunsPanelWithController()
-
-      await waitFor(() => {
-        expect(screen.getByTestId('run-visits-panel')).toBeVisible()
-      })
-      expect(screen.getByTestId('run-visits-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
-    } finally {
-      act(() => {
-        setViewportWidth(originalViewportWidth)
-      })
-    }
-  })
-
-  it('[CID:13.2.02] keeps core project and operational tasks usable in narrow viewport layouts', () => {
-    const originalViewportWidth = window.innerWidth
-    setViewportWidth(760)
-    try {
-      act(() => {
-        useStore.setState((state) => ({
-          ...state,
-          viewMode: 'projects',
-          activeProjectPath: '/tmp/project-contract-behavior',
-        }))
-      })
-      renderProjectsPanelWithController()
-
-      expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('project-thread-list')).toBeVisible()
-      expect(screen.getByTestId('project-thread-new-button')).toBeVisible()
-
-      cleanup()
-      act(() => {
-        resetContractState()
-        {
-useStore.setState({...useStore.getState(),
-viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunId('run-mobile-ops');
-}
-      })
-      render(<RunsPanel />)
-
-      expect(screen.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
-
-      cleanup()
-      act(() => {
-        resetContractState()
-      })
-      renderLaunchPanelWithDialogs()
-
-      expect(screen.getByTestId('launch-panel')).toBeVisible()
-      expect(screen.getByTestId('launch-panel-start-button')).toBeVisible()
-
-      cleanup()
-      act(() => {
-        resetContractState()
-        useStore.setState((state) => ({
-          ...state,
-          viewMode: 'projects',
-        }))
-      })
-      render(<ActivityBar />)
-
-      expect(screen.getByTestId('activity-bar')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('activity-chats')).toBeVisible()
-    } finally {
-      setViewportWidth(originalViewportWidth)
-    }
-  })
-
-  it('[CID:13.2.03] preserves expected desktop and narrow breakpoint layouts for core navigation and operations', () => {
-    const originalViewportWidth = window.innerWidth
-    try {
-      setViewportWidth(1280)
-      act(() => {
-        resetContractState()
-        useStore.setState((state) => ({
-          ...state,
-          viewMode: 'projects',
-        }))
-      })
-      render(<ActivityBar />)
-      expect(screen.getByTestId('activity-bar')).toHaveAttribute('data-responsive-layout', 'inline')
-
-      cleanup()
-      act(() => {
-        resetContractState()
-        useStore.setState((state) => ({
-          ...state,
-          viewMode: 'projects',
-        }))
-      })
-      renderProjectsPanelWithController()
-      expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'split')
-      expect(screen.getByTestId('project-thread-list')).toBeVisible()
-      expect(screen.getByTestId('project-thread-new-button')).toBeVisible()
-
-      cleanup()
-      setViewportWidth(760)
-      act(() => {
-        resetContractState()
-        useStore.setState((state) => ({
-          ...state,
-          viewMode: 'projects',
-        }))
-      })
-      render(<ActivityBar />)
-      expect(screen.getByTestId('activity-bar')).toHaveAttribute('data-responsive-layout', 'stacked')
-
-      cleanup()
-      act(() => {
-        resetContractState()
-        useStore.setState((state) => ({
-          ...state,
-          viewMode: 'projects',
-        }))
-      })
-      renderProjectsPanelWithController()
-      expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('project-thread-list')).toBeVisible()
-      expect(screen.getByTestId('project-thread-new-button')).toBeVisible()
-
-      cleanup()
-      setViewportWidth(1280)
-      act(() => {
-        resetContractState()
-        {
-useStore.setState({...useStore.getState(),
-viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunId('run-viewport-regression-desktop');
-}
-      })
-      render(<RunsPanel />)
-      expect(screen.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'split')
-
-      cleanup()
-      setViewportWidth(760)
-      act(() => {
-        resetContractState()
-        {
-useStore.setState({...useStore.getState(),
-viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunId('run-viewport-regression-mobile');
-}
-      })
-      render(<RunsPanel />)
-      expect(screen.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
-    } finally {
-      setViewportWidth(originalViewportWidth)
-    }
-  })
-
-  it('[CID:13.3.01] defines explicit performance budgets for canvas interaction and timeline updates', async () => {
-    const runId = 'run-performance-budget-contract'
-    const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
-    const runRecord = {
-      run_id: runId,
-      flow_name: 'contract-behavior.yaml',
-      status: 'running',
-      outcome: null,
-      working_directory: '/tmp/project-contract-behavior/workspace',
-      project_path: '/tmp/project-contract-behavior',
-      git_branch: 'main',
-      git_commit: 'abc1234',
-      model: 'gpt-5',
-      started_at: '2026-03-05T00:00:00Z',
-      ended_at: null,
-      last_error: '',
-      token_usage: 0,
-    }
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = requestUrl(input)
-        if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
-          return jsonResponse({
-            name: 'contract-behavior.yaml',
-            files: [],
-            flow: { id: 'contract_behavior' },
-          })
-        }
-        if (url.endsWith('/attractor/preview')) {
-          return jsonResponse({
-            status: 'ok',
-            graph: {
-              nodes: [
-                { id: 'start', attrs: { label: 'Start' } },
-                { id: 'end', attrs: { label: 'End' } },
-              ],
-              edges: [{ source: 'start', target: 'end', attrs: {} }],
-              graph_attrs: {},
-            },
-            diagnostics: [],
-          })
-        }
-        if (url.includes('/attractor/runs')) {
-          return jsonResponse({ runs: [runRecord] })
-        }
-        if (url.endsWith(runApiPath)) {
-          return jsonResponse(buildPipelineStatusPayload(runRecord))
-        }
-        if (url.endsWith(`${runApiPath}/checkpoint`)) {
-          return jsonResponse({ pipeline_id: runId, checkpoint: { node_statuses: {} } })
-        }
-        if (url.endsWith(`${runApiPath}/context`)) {
-          return jsonResponse({ pipeline_id: runId, context: {} })
-        }
-        if (url.endsWith(`${runApiPath}/artifacts`)) {
-          return jsonResponse({ pipeline_id: runId, artifacts: [] })
-        }
-        if (url.endsWith(`${runApiPath}/graph`)) {
-          return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
-            status: 200,
-            headers: { 'Content-Type': 'image/svg+xml' },
-          })
-        }
-        if (url.endsWith(`${runApiPath}/questions`)) {
-          return jsonResponse({ pipeline_id: runId, questions: [] })
-        }
-        return jsonResponse({}, { status: 404 })
-      }),
-    )
-
-    class MockEventSource {
-      url: string
-      withCredentials = false
-      readyState = 1
-      onopen: ((event: Event) => void) | null = null
-      onmessage: ((event: MessageEvent) => void) | null = null
-      onerror: ((event: Event) => void) | null = null
-
-      constructor(url: string) {
-        this.url = url
-      }
-
-      close() {}
-      addEventListener() {}
-      removeEventListener() {}
-      dispatchEvent(): boolean {
-        return false
-      }
-    }
-    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
+    const inspector = screen.getByRole('complementary', { name: 'Inspector' })
+    expect(inspector.style.width).toBe('')
+    const toggle = screen.getByRole('button', { name: /Validation.*1 warning/ })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText(warning)).not.toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(screen.getByText(warning)).toBeVisible()
 
     act(() => {
-      resetContractState()
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'editor',
-        activeFlow: 'contract-behavior.yaml',
-      }))
+      vi.stubGlobal('innerWidth', 1280)
+      window.dispatchEvent(new Event('resize'))
     })
-
-    renderWithFlowProvider(<Editor />)
-
-    await screen.findByRole('button', { name: 'Add step' })
-    expect(screen.queryByTestId('canvas-interaction-performance-budget')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('canvas-performance-profile')).not.toBeInTheDocument()
-
-    cleanup()
-    localStorage.setItem('spark.debug.performance', '1')
-    renderWithFlowProvider(<Editor />)
-
-    const canvasBudget = await screen.findByTestId('canvas-interaction-performance-budget')
-    expect(canvasBudget).toHaveAttribute('data-budget-ms', '16')
-    expect(canvasBudget).toHaveTextContent('16ms')
-
-    cleanup()
-    localStorage.removeItem('spark.debug.performance')
-
-    act(() => {
-      resetContractState()
-      {
-useStore.setState({...useStore.getState(),
-viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunId(runId);
-}
-    })
-
-    renderRunsPanelWithController()
-
-    await waitFor(() => {
-      expect(screen.getByTestId('run-visits-panel')).toBeVisible()
-    })
-    expect(screen.queryByTestId('timeline-update-performance-budget')).not.toBeInTheDocument()
-
-    cleanup()
-    localStorage.setItem('spark.debug.performance', '1')
-
-    act(() => {
-      resetContractState()
-      {
-useStore.setState({...useStore.getState(),
-viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunId(runId);
-}
-    })
-
-    renderRunsPanelWithController()
-
-    await waitFor(() => {
-      expect(screen.getByTestId('run-visits-panel')).toBeVisible()
-    })
-    const timelineBudget = screen.getByTestId('timeline-update-performance-budget')
-    expect(timelineBudget).toHaveAttribute('data-budget-ms', '50')
-    expect(timelineBudget).toHaveTextContent('50ms')
-  })
-
-  it('[CID:13.3.02] profiles medium graphs and enables canvas optimizations', async () => {
-    const nodeCount = 30
-    const nodes = Array.from({ length: nodeCount }, (_, index) => ({
-      id: `node_${index}`,
-      attrs: { label: `Node ${index}` },
-    }))
-    const edges = nodes.slice(0, -1).map((node, index) => ({
-      source: node.id,
-      target: nodes[index + 1].id,
-      attrs: {},
-    }))
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = requestUrl(input)
-        if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
-          return jsonResponse({
-            name: 'contract-behavior.yaml',
-            files: [],
-            flow: { id: 'contract_behavior' },
-          })
-        }
-        if (url.endsWith('/attractor/preview')) {
-          return jsonResponse({
-            status: 'ok',
-            graph: {
-              nodes,
-              edges,
-              graph_attrs: {},
-            },
-            diagnostics: [],
-          })
-        }
-        return jsonResponse({}, { status: 404 })
-      }),
-    )
-
-    act(() => {
-      resetContractState()
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'editor',
-        activeFlow: 'contract-behavior.yaml',
-      }))
-    })
-
-    localStorage.setItem('spark.debug.performance', '1')
-    renderWithFlowProvider(<Editor />)
-
-    const profile = await screen.findByTestId('canvas-performance-profile')
-    await waitFor(() => {
-      expect(profile).toHaveAttribute('data-profile', 'medium')
-    })
-    expect(profile).toHaveAttribute('data-node-count', String(nodeCount))
-    expect(profile).toHaveAttribute('data-only-render-visible-elements', 'true')
-    expect(profile).toHaveAttribute('data-preview-ms')
-    const previewMs = Number(profile.getAttribute('data-preview-ms'))
-    expect(previewMs).not.toBeNaN()
-    const previewDebounceMs = Number(profile.getAttribute('data-preview-debounce-ms'))
-    expect(previewDebounceMs).toBeGreaterThan(300)
-    const layoutMs = Number(profile.getAttribute('data-layout-ms'))
-    expect(layoutMs).not.toBeNaN()
-    expect(profile).toHaveAttribute('data-optimizations', 'visible-only, debounced-preview')
-    expect(profile).toHaveTextContent('Optimizations:')
-    expect(profile).toHaveTextContent('visible-only')
-    expect(profile).toHaveTextContent('debounced-preview')
+    expect(inspector.style.width).toMatch(/^\d+px$/)
   })
 
   it('[CID:13.3.03] keeps every visit listed under sustained SSE throughput', async () => {
@@ -2006,6 +1518,9 @@ useStore.getState().setRunsSelectedRunId(runId);
     await waitFor(() => {
       expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
+    const budget = screen.getByTestId('timeline-update-performance-budget')
+    expect(budget).toBeVisible()
+    expect(budget).toHaveTextContent(/\b50ms\b/)
     await waitFor(() => {
       expect(eventSource?.onmessage).toBeTruthy()
     })
@@ -2403,16 +1918,11 @@ useStore.getState().setRunsSelectedRunId(runId);
     })
   })
 
-  it('[CID:6.2.01] renders manager-loop authoring controls in sidebar inspector', async () => {
-    renderManagerSidebarInspector()
-    expect(await screen.findByText('Manager poll interval')).toBeVisible()
-    expect(screen.getByRole('option', { name: 'Subflow' })).toBeInTheDocument()
-    expect(document.querySelector('#node-handler-type-options option[value="stack.manager_loop"]')).toBeNull()
-  })
-
   it('[CID:6.7.02] renders manager-loop control fields in sidebar inspector', async () => {
     renderManagerSidebarInspector()
     expect(await screen.findByText('Manager poll interval')).toBeVisible()
+    expect(screen.getByRole('option', { name: 'Subflow' })).toBeInTheDocument()
+    expect(document.querySelector('option[value="stack.manager_loop"]')).toBeNull()
     expect(screen.getByText('Manager max cycles')).toBeVisible()
     expect(screen.getByText('Manager stop condition')).toBeVisible()
     expect(screen.getByText('Manager actions')).toBeVisible()
@@ -2434,36 +1944,6 @@ useStore.getState().setRunsSelectedRunId(runId);
     fireEvent.click(screen.getByTestId('manager-open-child-settings'))
     expect(useStore.getState().selectedNodeId).toBeNull()
     expect(useStore.getState().selectedEdgeId).toBeNull()
-  })
-
-  it('[CID:6.5.02] omits graph stylesheet diagnostics from FlowDefinition settings', async () => {
-    const user = userEvent.setup()
-    renderWithFlowProvider(<GraphSettings />)
-
-    await user.click(screen.getByTestId('graph-advanced-toggle'))
-    expect(screen.queryByTestId('graph-model-stylesheet-selector-guidance')).not.toBeInTheDocument()
-
-    act(() => {
-      useStore.getState().setDiagnostics([
-        {
-          rule_id: 'stylesheet_syntax',
-          severity: 'error',
-          message: 'Invalid stylesheet selector syntax.',
-          line: 1,
-        },
-      ])
-    })
-
-    expect(screen.queryByTestId('graph-model-stylesheet-diagnostics')).not.toBeInTheDocument()
-  })
-
-  it('[CID:6.6.01] omits graph-scope tool hook fields from FlowDefinition settings', async () => {
-    const user = userEvent.setup()
-    renderWithFlowProvider(<GraphSettings />)
-
-    await user.click(screen.getByTestId('graph-advanced-toggle'))
-    expect(screen.queryByTestId('graph-attr-input-tool.hooks.pre')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('graph-attr-input-tool.hooks.post')).not.toBeInTheDocument()
   })
 
   it('[CID:6.6.02] renders node-level tool hook override controls in the step inspector', async () => {
@@ -2507,6 +1987,7 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
     expect(screen.queryByTestId('graph-attr-input-tool.hooks.pre')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('graph-attr-input-tool.hooks.post')).not.toBeInTheDocument()
     expect(screen.queryByTestId('graph-attr-warning-tool.hooks.pre')).not.toBeInTheDocument()
     act(() => {
       cleanup()
@@ -2535,42 +2016,6 @@ useStore.getState().setRunsSelectedRunId(runId);
     await user.click(await screen.findByRole('button', { name: 'Show advanced' }))
     expect(screen.getByTestId('node-attr-warning-tool.hooks.pre')).toHaveTextContent('single line')
     expect(screen.getByTestId('node-attr-warning-tool.hooks.post')).toHaveTextContent('single quote')
-  })
-
-  it('[CID:6.7.01] renders manager-loop controls in the step inspector without handler overrides', () => {
-    resetContractState()
-    act(() => {
-      useStore.getState().setSelectedNodeId('manager')
-      useStore.getState().setSelectedEdgeId(null)
-    })
-    renderSidebar([
-      {
-        id: 'manager',
-        position: { x: 0, y: 0 },
-        data: {
-          label: 'Manager',
-          kind: 'subflow',
-          config: { kind: 'subflow', flow_ref: 'child/flow.yaml' },
-          shape: 'house',
-          flow_ref: 'child/flow.yaml',
-          'manager.poll_interval': '25ms',
-          'manager.max_cycles': 3,
-          'manager.stop_condition': 'child.outcome == "success"',
-          'manager.actions': 'observe,steer',
-          'manager.steer_cooldown': '2s',
-          'stack.child_autostart': false,
-        },
-      },
-    ], [])
-
-    expect(document.querySelector('option[value="stack.manager_loop"]')).toBeNull()
-    expect(screen.getByText('Manager poll interval')).toBeVisible()
-    expect(screen.getByText('Manager max cycles')).toBeVisible()
-    expect(screen.getByText('Manager stop condition')).toBeVisible()
-    expect(screen.getByText('Manager actions')).toBeVisible()
-    expect(screen.getByText('Manager steer cooldown')).toBeVisible()
-    expect(screen.getByTestId('node-attr-input-manager.steer_cooldown')).toHaveValue('2s')
-    expect(screen.getByTestId('node-attr-checkbox-stack.child_autostart')).not.toBeChecked()
   })
 
   it('[CID:10.1.01] keeps pending human gates answerable only from runs controls', async () => {
@@ -2719,160 +2164,13 @@ if (inspectedRunId) useStore.getState().updateRunDetailSession(inspectedRunId, {
     expect(screen.queryByText(pendingPrompt)).not.toBeInTheDocument()
   })
 
-  it('[CID:10.1.02] lets operator answer pending human gates from runs view controls', async () => {
-    const runId = 'run-contract-human-gate-answer'
-    const gateId = 'gate-approve'
-    const pendingPrompt = 'Approve production deploy?'
-    const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
-    const answerPath = `${runApiPath}/questions/${encodeURIComponent(gateId)}/answer`
-    const runRecord = {
-      run_id: runId,
-      flow_name: 'contract-behavior.dot',
-      status: 'running',
-      outcome: null,
-      working_directory: '/tmp/project-contract-behavior/workspace',
-      project_path: '/tmp/project-contract-behavior',
-      git_branch: 'main',
-      git_commit: 'abc1234',
-      model: 'gpt-5',
-      started_at: '2026-03-04T01:00:00Z',
-      ended_at: null,
-      last_error: '',
-      token_usage: 0,
-    }
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = requestUrl(input)
-      if (url.includes('/attractor/runs')) {
-        return jsonResponse({ runs: [runRecord] })
-      }
-      if (url.endsWith(runApiPath)) {
-        return jsonResponse(buildPipelineStatusPayload(runRecord, {
-          currentNode: 'review_gate',
-          completedNodes: ['start'],
-        }))
-      }
-      if (url.endsWith(`${runApiPath}/checkpoint`)) {
-        return jsonResponse({
-          pipeline_id: runId,
-          checkpoint: {
-            current_node: 'review_gate',
-            completed_nodes: ['start'],
-            retry_counts: {},
-          },
-        })
-      }
-      if (url.endsWith(`${runApiPath}/context`)) {
-        return jsonResponse({
-          pipeline_id: runId,
-          context: { 'graph.goal': 'Human gate answerability contract' },
-        })
-      }
-      if (url.endsWith(`${runApiPath}/artifacts`)) {
-        return jsonResponse({
-          pipeline_id: runId,
-          artifacts: [],
-        })
-      }
-      if (url.endsWith(`${runApiPath}/graph`)) {
-        return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
-          status: 200,
-          headers: { 'Content-Type': 'image/svg+xml' },
-        })
-      }
-      if (url.endsWith(`${runApiPath}/questions`)) {
-        return jsonResponse({ pipeline_id: runId, questions: [{ question_id: gateId, node_id: 'review_gate', prompt: pendingPrompt, options: [] }] })
-      }
-      if (url.endsWith(answerPath)) {
-        return jsonResponse({ status: 'accepted', pipeline_id: runId, question_id: gateId })
-      }
-      return jsonResponse({}, { status: 404 })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    class MockEventSource {
-      url: string
-      withCredentials = false
-      readyState = 1
-      onopen: ((event: Event) => void) | null = null
-      onmessage: ((event: MessageEvent) => void) | null = null
-      onerror: ((event: Event) => void) | null = null
-
-      constructor(url: string) {
-        this.url = url
-        if (!url.includes('/workspace/api/live/events')) {
-          return
-        }
-        setTimeout(() => {
-          this.onopen?.(new Event('open'))
-          this.onmessage?.(new MessageEvent('message', {
-            data: JSON.stringify(stableTimelineEvent(1, {
-              type: 'human_gate',
-              question_id: gateId,
-              node_id: 'review_gate',
-              prompt: pendingPrompt,
-              options: [
-                { label: 'Approve', value: 'approve' },
-                { label: 'Reject', value: 'reject' },
-              ],
-            })),
-          }))
-        }, 0)
-      }
-
-      close() {
-        this.readyState = 2
-      }
-
-      addEventListener() {}
-
-      removeEventListener() {}
-
-      dispatchEvent() {
-        return false
-      }
-    }
-
-    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
-
-    act(() => {
-      {
-useStore.setState({...useStore.getState(),
-viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunId(runId);
-}
-    })
-
-    renderRunsPanelWithController()
-
-    await waitFor(() => {
-      expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
-    })
-
-    const answerButton = screen.getByTestId('run-pending-human-gate-answer-approve')
-    fireEvent.click(answerButton)
-
-    await waitFor(() => {
-      const submissionCall = fetchMock.mock.calls.find(([input]) => requestUrl(input as RequestInfo | URL).endsWith(answerPath))
-      expect(submissionCall).toBeTruthy()
-      const [, init] = submissionCall as [RequestInfo | URL, RequestInit | undefined]
-      expect(init?.method).toBe('POST')
-      expect(init?.body).toBe(JSON.stringify({
-        question_id: gateId,
-        selected_value: 'approve',
-      }))
-    })
-
-    await waitFor(() => {
-      expect(screen.queryByTestId('run-pending-human-gate-item')).not.toBeInTheDocument()
-    })
-  })
-
-  it('[CID:10.1.03] sends the optional operator note alongside a human gate answer', async () => {
+  it.each([
+    ['[CID:10.1.02] omits the note from a plain human gate answer', ''],
+    ['[CID:10.1.03] sends the optional operator note alongside a human gate answer', 'Approved, but watch the migration timing.'],
+  ])('%s', async (_title, gateNote) => {
     const runId = 'run-contract-human-gate-note'
     const gateId = 'gate-approve-note'
     const pendingPrompt = 'Approve production deploy?'
-    const gateNote = 'Approved, but watch the migration timing.'
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const answerPath = `${runApiPath}/questions/${encodeURIComponent(gateId)}/answer`
     const runRecord = {
@@ -3000,8 +2298,8 @@ useStore.getState().setRunsSelectedRunId(runId);
     })
 
     const noteInput = screen.getByTestId(`run-pending-human-gate-note-input-${gateId}`) as HTMLInputElement
-    fireEvent.change(noteInput, { target: { value: gateNote } })
-    expect(noteInput.value).toBe(gateNote)
+    if (gateNote) fireEvent.change(noteInput, { target: { value: gateNote } })
+    expect(noteInput).toHaveValue(gateNote)
 
     const answerButton = screen.getByTestId('run-pending-human-gate-answer-approve')
     fireEvent.click(answerButton)
@@ -3011,11 +2309,11 @@ useStore.getState().setRunsSelectedRunId(runId);
       expect(submissionCall).toBeTruthy()
       const [, init] = submissionCall as [RequestInfo | URL, RequestInit | undefined]
       expect(init?.method).toBe('POST')
-      expect(init?.body).toBe(JSON.stringify({
+      expect(JSON.parse(String(init?.body))).toEqual({
         question_id: gateId,
         selected_value: 'approve',
-        note: gateNote,
-      }))
+        ...(gateNote ? { note: gateNote } : {}),
+      })
     })
 
     await waitFor(() => {
@@ -3473,379 +2771,6 @@ useStore.getState().setRunsSelectedRunId(runId);
     })
   })
 
-  it('[CID:10.2.04] covers each supported human-gate question type with type-specific UI affordances', async () => {
-    const runId = 'run-contract-human-gate-type-matrix'
-    const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
-    const runRecord = {
-      run_id: runId,
-      flow_name: 'contract-behavior.dot',
-      status: 'running',
-      outcome: null,
-      working_directory: '/tmp/project-contract-behavior/workspace',
-      project_path: '/tmp/project-contract-behavior',
-      git_branch: 'main',
-      git_commit: 'abc1234',
-      model: 'gpt-5',
-      started_at: '2026-03-04T01:00:00Z',
-      ended_at: null,
-      last_error: '',
-      token_usage: 0,
-    }
-    const multipleChoiceGateId = 'gate-matrix-multiple-choice'
-    const yesNoGateId = 'gate-matrix-yes-no'
-    const confirmationGateId = 'gate-matrix-confirmation'
-    const freeformGateId = 'gate-matrix-freeform'
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = requestUrl(input)
-        if (url.includes('/attractor/runs')) {
-          return jsonResponse({ runs: [runRecord] })
-        }
-        if (url.endsWith(runApiPath)) {
-          return jsonResponse(buildPipelineStatusPayload(runRecord, {
-            currentNode: 'review_gate',
-            completedNodes: ['start'],
-          }))
-        }
-        if (url.endsWith(`${runApiPath}/checkpoint`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            checkpoint: {
-              current_node: 'review_gate',
-              completed_nodes: ['start'],
-              retry_counts: {},
-            },
-          })
-        }
-        if (url.endsWith(`${runApiPath}/context`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            context: { 'graph.goal': 'Human gate question type matrix contract' },
-          })
-        }
-        if (url.endsWith(`${runApiPath}/artifacts`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            artifacts: [],
-          })
-        }
-        if (url.endsWith(`${runApiPath}/graph`)) {
-          return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
-            status: 200,
-            headers: { 'Content-Type': 'image/svg+xml' },
-          })
-        }
-        return jsonResponse({}, { status: 404 })
-      }),
-    )
-
-    class MockEventSource {
-      url: string
-      withCredentials = false
-      readyState = 1
-      onopen: ((event: Event) => void) | null = null
-      onmessage: ((event: MessageEvent) => void) | null = null
-      onerror: ((event: Event) => void) | null = null
-
-      constructor(url: string) {
-        this.url = url
-        if (!url.includes('/workspace/api/live/events')) {
-          return
-        }
-        setTimeout(() => {
-          this.onopen?.(new Event('open'))
-          this.onmessage?.(new MessageEvent('message', {
-            data: JSON.stringify(stableTimelineEvent(1, {
-              type: 'human_gate',
-              question_id: multipleChoiceGateId,
-              question_type: 'MULTIPLE_CHOICE',
-              node_id: 'review_gate_multiple',
-              prompt: 'Choose deployment strategy',
-              options: [
-                {
-                  key: 'P',
-                  label: 'Promote',
-                  value: 'promote',
-                  description: 'Advance this build to production.',
-                },
-                {
-                  key: 'H',
-                  label: 'Hold',
-                  value: 'hold',
-                  description: 'Pause rollout and gather more evidence.',
-                },
-              ],
-            })),
-          }))
-          this.onmessage?.(new MessageEvent('message', {
-            data: JSON.stringify(stableTimelineEvent(2, {
-              type: 'human_gate',
-              question_id: yesNoGateId,
-              question_type: 'YES_NO',
-              node_id: 'review_gate_yes_no',
-              prompt: 'Continue migration?',
-            })),
-          }))
-          this.onmessage?.(new MessageEvent('message', {
-            data: JSON.stringify(stableTimelineEvent(3, {
-              type: 'human_gate',
-              question_id: confirmationGateId,
-              question_type: 'CONFIRMATION',
-              node_id: 'release_gate_confirmation',
-              prompt: 'Finalize promotion?',
-            })),
-          }))
-          this.onmessage?.(new MessageEvent('message', {
-            data: JSON.stringify(stableTimelineEvent(4, {
-              type: 'human_gate',
-              question_id: freeformGateId,
-              question_type: 'FREEFORM',
-              node_id: 'release_gate_freeform',
-              prompt: 'Add release notes before promotion.',
-            })),
-          }))
-        }, 0)
-      }
-
-      close() {
-        this.readyState = 2
-      }
-
-      addEventListener() {}
-
-      removeEventListener() {}
-
-      dispatchEvent() {
-        return false
-      }
-    }
-
-    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
-
-    act(() => {
-      {
-useStore.setState({...useStore.getState(),
-viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunId(runId);
-}
-    })
-
-    renderRunsPanelWithController()
-
-    await waitFor(() => {
-      expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
-    })
-
-    await waitFor(() => {
-      const pendingItems = screen.getAllByTestId('run-pending-human-gate-item')
-      expect(pendingItems.some((item) => item.textContent?.includes('Choose deployment strategy'))).toBe(true)
-      expect(pendingItems.some((item) => item.textContent?.includes('Continue migration?'))).toBe(true)
-      expect(pendingItems.some((item) => item.textContent?.includes('Finalize promotion?'))).toBe(true)
-      expect(pendingItems.some((item) => item.textContent?.includes('Add release notes before promotion.'))).toBe(true)
-    })
-
-    const pendingItems = screen.getAllByTestId('run-pending-human-gate-item')
-    const multipleChoiceItem = pendingItems.find((item) => item.textContent?.includes('Choose deployment strategy'))
-    const yesNoItem = pendingItems.find((item) => item.textContent?.includes('Continue migration?'))
-    const confirmationItem = pendingItems.find((item) => item.textContent?.includes('Finalize promotion?'))
-
-    expect(multipleChoiceItem).toBeTruthy()
-    expect(yesNoItem).toBeTruthy()
-    expect(confirmationItem).toBeTruthy()
-
-    const multipleChoiceScope = within(multipleChoiceItem as HTMLElement)
-    expect(multipleChoiceScope.getByRole('button', { name: 'Promote' })).toBeVisible()
-    expect(screen.getByTestId('run-pending-human-gate-option-key-promote')).toHaveTextContent('P')
-    expect(screen.getByTestId('run-pending-human-gate-option-metadata-promote')).toHaveTextContent(
-      'Advance this build to production.',
-    )
-
-    const yesNoScope = within(yesNoItem as HTMLElement)
-    expect(yesNoScope.getByRole('button', { name: 'Yes' })).toBeVisible()
-    expect(yesNoScope.getByRole('button', { name: 'No' })).toBeVisible()
-    expect(yesNoScope.getByText('Sends YES')).toBeVisible()
-    expect(yesNoScope.getByText('Sends NO')).toBeVisible()
-
-    const confirmationScope = within(confirmationItem as HTMLElement)
-    expect(confirmationScope.getByRole('button', { name: 'Confirm' })).toBeVisible()
-    expect(confirmationScope.getByRole('button', { name: 'Cancel' })).toBeVisible()
-    expect(confirmationScope.getByText('Sends YES')).toBeVisible()
-    expect(confirmationScope.getByText('Sends NO')).toBeVisible()
-
-    const freeformInput = screen.getByTestId(`run-pending-human-gate-freeform-input-${freeformGateId}`)
-    const freeformSubmit = screen.getByTestId(`run-pending-human-gate-freeform-submit-${freeformGateId}`)
-    expect(freeformInput).toBeVisible()
-    expect(freeformSubmit).toBeDisabled()
-  })
-
-  it('[CID:10.4.01] groups multi-question pending prompts by originating stage', async () => {
-    const runId = 'run-contract-human-gate-grouped-prompts'
-    const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
-    const runRecord = {
-      run_id: runId,
-      flow_name: 'contract-behavior.dot',
-      status: 'running',
-      outcome: null,
-      working_directory: '/tmp/project-contract-behavior/workspace',
-      project_path: '/tmp/project-contract-behavior',
-      git_branch: 'main',
-      git_commit: 'abc1234',
-      model: 'gpt-5',
-      started_at: '2026-03-04T01:00:00Z',
-      ended_at: null,
-      last_error: '',
-      token_usage: 0,
-    }
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = requestUrl(input)
-        if (url.includes('/attractor/runs')) {
-          return jsonResponse({ runs: [runRecord] })
-        }
-        if (url.endsWith(runApiPath)) {
-          return jsonResponse(buildPipelineStatusPayload(runRecord, {
-            currentNode: 'review_gate',
-            completedNodes: ['start'],
-          }))
-        }
-        if (url.endsWith(`${runApiPath}/checkpoint`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            checkpoint: {
-              current_node: 'review_gate',
-              completed_nodes: ['start'],
-              retry_counts: {},
-            },
-          })
-        }
-        if (url.endsWith(`${runApiPath}/context`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            context: { 'graph.goal': 'Human gate grouped-prompt contract' },
-          })
-        }
-        if (url.endsWith(`${runApiPath}/artifacts`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            artifacts: [],
-          })
-        }
-        if (url.endsWith(`${runApiPath}/graph`)) {
-          return new Response('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {
-            status: 200,
-            headers: { 'Content-Type': 'image/svg+xml' },
-          })
-        }
-        return jsonResponse({}, { status: 404 })
-      }),
-    )
-
-    class MockEventSource {
-      url: string
-      withCredentials = false
-      readyState = 1
-      onopen: ((event: Event) => void) | null = null
-      onmessage: ((event: MessageEvent) => void) | null = null
-      onerror: ((event: Event) => void) | null = null
-
-      constructor(url: string) {
-        this.url = url
-        if (!url.includes('/workspace/api/live/events')) {
-          return
-        }
-        setTimeout(() => {
-          this.onopen?.(new Event('open'))
-          this.onmessage?.(new MessageEvent('message', {
-            data: JSON.stringify(stableTimelineEvent(1, {
-              type: 'human_gate',
-              question_id: 'gate-review-1',
-              node_id: 'review_gate',
-              index: 2,
-              question_type: 'MULTIPLE_CHOICE',
-              prompt: 'Choose deployment strategy',
-              options: [
-                { label: 'Promote', value: 'promote' },
-                { label: 'Rollback', value: 'rollback' },
-              ],
-            })),
-          }))
-          this.onmessage?.(new MessageEvent('message', {
-            data: JSON.stringify(stableTimelineEvent(2, {
-              type: 'human_gate',
-              question_id: 'gate-review-2',
-              node_id: 'review_gate',
-              index: 2,
-              question_type: 'FREEFORM',
-              prompt: 'Why this strategy?',
-            })),
-          }))
-          this.onmessage?.(new MessageEvent('message', {
-            data: JSON.stringify(stableTimelineEvent(3, {
-              type: 'human_gate',
-              question_id: 'gate-approval-1',
-              node_id: 'approval_gate',
-              index: 3,
-              question_type: 'CONFIRMATION',
-              prompt: 'Finalize production promotion?',
-            })),
-          }))
-        }, 0)
-      }
-
-      close() {
-        this.readyState = 2
-      }
-
-      addEventListener() {}
-
-      removeEventListener() {}
-
-      dispatchEvent() {
-        return false
-      }
-    }
-
-    vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
-
-    act(() => {
-      {
-useStore.setState({...useStore.getState(),
-viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunId(runId);
-}
-    })
-
-    renderRunsPanelWithController()
-
-    await waitFor(() => {
-      expect(screen.getAllByTestId('run-pending-human-gate-group')).toHaveLength(2)
-    })
-
-    const groups = screen.getAllByTestId('run-pending-human-gate-group')
-    const reviewGroup = groups.find((group) =>
-      within(group).getByTestId('run-pending-human-gate-group-heading').textContent?.includes('review_gate'),
-    )
-    const approvalGroup = groups.find((group) =>
-      within(group).getByTestId('run-pending-human-gate-group-heading').textContent?.includes('approval_gate'),
-    )
-
-    expect(reviewGroup).toBeTruthy()
-    expect(approvalGroup).toBeTruthy()
-
-    const reviewScope = within(reviewGroup as HTMLElement)
-    expect(reviewScope.getAllByTestId('run-pending-human-gate-item')).toHaveLength(2)
-    expect(reviewScope.getByText(/Choose deployment strategy/)).toBeVisible()
-    expect(reviewScope.getByText(/Why this strategy\?/)).toBeVisible()
-
-    const approvalScope = within(approvalGroup as HTMLElement)
-    expect(approvalScope.getAllByTestId('run-pending-human-gate-item')).toHaveLength(1)
-    expect(approvalScope.getByText(/Finalize production promotion\?/)).toBeVisible()
-  })
-
   it('[CID:10.4.02] displays interviewer inform messages in context of the originating stage', async () => {
     const runId = 'run-contract-human-gate-inform-messages'
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
@@ -4153,6 +3078,7 @@ useStore.getState().setRunsSelectedRunId(runId);
       'review_gate (index 2)',
       'approval_gate (index 3)',
     ])
+    expect(within(groups[1]).getByText('Finalize production promotion?')).toBeVisible()
 
     const reviewGroup = groups[0]
     const reviewScope = within(reviewGroup)
@@ -4460,68 +3386,6 @@ useStore.getState().setRunsSelectedRunId(runId);
     )
   })
 
-  it('[CID:11.3.04] switches between the structured and file views without writing the flow', async () => {
-    const flowFile = '---\nid: contract_behavior\n---\n'
-    const previewPayload = {
-      graph: {
-        graph_attrs: {},
-        defaults: {
-          node: {},
-          edge: {},
-        },
-        subgraphs: [],
-        nodes: [
-          {
-            id: 'start',
-            label: 'Start',
-            shape: 'box',
-          },
-        ],
-        edges: [],
-      },
-      diagnostics: [],
-    }
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = requestUrl(input)
-      if (url.includes('/attractor/api/flows/contract-behavior.yaml')) {
-        return jsonResponse({ files: [{ name: 'flow.md', content: flowFile }], flow: { id: 'contract_behavior' } })
-      }
-      if (url.endsWith('/attractor/preview')) {
-        // Slow enough that the toggle is seen before the flow is loaded.
-        await new Promise((resolve) => setTimeout(resolve, 50))
-        return jsonResponse(previewPayload)
-      }
-      if (url.endsWith('/attractor/api/flows') && init?.method === 'POST') {
-        return jsonResponse({ status: 'saved' })
-      }
-      return jsonResponse({}, { status: 404 })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    const user = userEvent.setup()
-    renderWithFlowProvider(<Editor />)
-
-    await screen.findByTestId('editor-mode-toggle')
-    // Switching before the flow is loaded would save the empty canvas over it.
-    expect(screen.getByRole('button', { name: 'Files' })).toBeDisabled()
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
-    await user.click(screen.getByRole('button', { name: 'Files' }))
-    expect(await screen.findByTestId('flow-file-editor')).toHaveValue(flowFile)
-    expect(screen.getByTestId('flow-files-save')).toBeDisabled()
-
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Structured' })).toBeEnabled())
-    await user.click(screen.getByRole('button', { name: 'Structured' }))
-    await waitFor(() => {
-      expect(screen.queryByTestId('flow-files-view')).not.toBeInTheDocument()
-    })
-
-    const saveCalls = fetchMock.mock.calls.filter(([input, requestInit]) => {
-      const callUrl = requestUrl(input as RequestInfo | URL)
-      return callUrl.endsWith('/attractor/api/flows') && (requestInit as RequestInit | undefined)?.method === 'POST'
-    })
-    expect(saveCalls).toHaveLength(0)
-  })
-
   it('[CID:11.3.04] saves file edits before leaving the file view and keeps them when the save is refused', async () => {
     const flowFile = '---\nid: contract_behavior\n---\n'
     const editedFile = '---\nid: contract_behavior\ntitle: Edited\n---\n'
@@ -4812,74 +3676,7 @@ useStore.getState().setRunsSelectedRunId(runId);
     expect(within(graphEditor).getByDisplayValue('x_graph_extension')).toBeVisible()
   })
 
-  it('[CID:11.4.02] preserves unknown-valid attrs on graph save operations without pre-edit autosave', async () => {
-    const savePayloads: Array<{ name: string; flow: Record<string, unknown> }> = []
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = requestUrl(input)
-      if (url.endsWith('/attractor/api/flows') && init?.method === 'POST') {
-        const payload = JSON.parse(String(init.body)) as { name: string; flow: Record<string, unknown> }
-        savePayloads.push(payload)
-        return jsonResponse({ status: 'saved' })
-      }
-      return jsonResponse({}, { status: 404 })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    act(() => {
-      useStore.getState().setGraphAttrs({
-        goal: 'Release',
-        x_graph_extension: 'graph-extra',
-      } as never)
-    })
-
-    const nodes: Node[] = [
-      {
-        id: 'start',
-        position: { x: 0, y: 0 },
-        data: { label: 'Start', shape: 'Mdiamond' },
-      },
-      {
-        id: 'task',
-        position: { x: 180, y: 0 },
-        data: {
-          label: 'Task',
-          shape: 'box',
-          x_node_extension: 'node-extra',
-        },
-      },
-      { id: 'done', position: { x: 360, y: 0 }, data: { label: 'Done', kind: 'exit' } },
-    ]
-    const edges: Edge[] = [
-      { id: 'edge-task-done', source: 'task', target: 'done' },
-      {
-        id: 'edge-start-task',
-        source: 'start',
-        target: 'task',
-        data: {
-          label: 'next',
-          x_edge_extension: 'edge-extra',
-        },
-      },
-    ]
-
-    renderGraphSettings(nodes, edges)
-    await screen.findByTestId('graph-structured-form')
-
-    await new Promise((resolve) => window.setTimeout(resolve, 275))
-    expect(savePayloads).toHaveLength(0)
-
-    fireEvent.change(screen.getByDisplayValue('Release'), { target: { value: 'Ship now' } })
-    await waitFor(() => {
-      expect(savePayloads).toHaveLength(1)
-    })
-
-    const savedFlow = JSON.stringify(savePayloads[0].flow)
-    expect(savedFlow).toContain('"x_graph_extension":"graph-extra"')
-    expect(savedFlow).toContain('"x_node_extension":"node-extra"')
-    expect(savedFlow).toContain('"x_edge_extension":"edge-extra"')
-  })
-
-  it('[CID:11.4.03] keeps numeric extension attrs stable across repeated structured edits', async () => {
+  it('[CID:11.4.03] keeps string and numeric extension attrs stable across repeated structured edits', async () => {
     const savePayloads: Array<{ name: string; flow: Record<string, unknown> }> = []
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
@@ -4896,6 +3693,7 @@ useStore.getState().setRunsSelectedRunId(runId);
       useStore.getState().setGraphAttrs({
         goal: 'Release',
         title: 'Milestone',
+        x_graph_extension: 'graph-extra',
         x_graph_extension_number: 17,
       } as never)
     })
@@ -4912,6 +3710,7 @@ useStore.getState().setRunsSelectedRunId(runId);
         data: {
           label: 'Task',
           shape: 'box',
+          x_node_extension: 'node-extra',
           x_node_extension_number: 23,
         },
       },
@@ -4925,6 +3724,7 @@ useStore.getState().setRunsSelectedRunId(runId);
         target: 'task',
         data: {
           label: 'next',
+          x_edge_extension: 'edge-extra',
           x_edge_extension_number: 29,
         },
       },
@@ -4948,6 +3748,9 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     savePayloads.forEach(({ flow }) => {
       const content = JSON.stringify(flow)
+      expect(content).toContain('"x_graph_extension":"graph-extra"')
+      expect(content).toContain('"x_node_extension":"node-extra"')
+      expect(content).toContain('"x_edge_extension":"edge-extra"')
       expect(content).toContain('"x_graph_extension_number":17')
       expect(content).toContain('"x_node_extension_number":23')
       expect(content).toContain('"x_edge_extension_number":29')

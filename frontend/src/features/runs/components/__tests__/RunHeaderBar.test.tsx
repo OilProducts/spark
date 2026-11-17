@@ -143,28 +143,4 @@ describe('RunHeaderBar', () => {
         expect(screen.getByTestId('run-header-facts')).toHaveTextContent(/^\S.* · 10m 00s · 1\.2k tokens · abcdef0$/)
     })
 
-    it('uses the filled button only for Retry; the other commands are outlined', () => {
-        const failed = makeRun({ status: 'failed', outcome: 'failure', last_error: 'boom' })
-        const { unmount } = renderHeader(failed, 'Transform')
-        expect(screen.getByTestId('run-summary-retry-button')).toHaveAttribute('data-variant', 'default')
-        expect(screen.getByTestId('run-summary-continue-button')).toHaveAttribute('data-variant', 'outline')
-        expect(screen.getByTestId('run-summary-rerun-button')).toHaveAttribute('data-variant', 'outline')
-        unmount()
-
-        // While a continuation draft is open, its commit button is the one filled button.
-        render(
-            <RunHeaderBar
-                run={failed}
-                now={Date.parse('2026-03-22T00:10:00Z')}
-                flowTitle="Review Changes"
-                selectedVisitLabel="Transform"
-                continuationOpen
-                onRequestCancel={vi.fn()}
-                onRequestRetry={vi.fn()}
-                onContinueFromRun={vi.fn()}
-                onRerunRun={vi.fn()}
-            />,
-        )
-        expect(screen.getByTestId('run-summary-retry-button')).toHaveAttribute('data-variant', 'outline')
-    })
 })

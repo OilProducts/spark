@@ -4,7 +4,7 @@ import { RunQuestionsPanel } from '../RunQuestionsPanel'
 import type { PendingInterviewGate } from '../../model/shared'
 import { useStore } from '@/store'
 
-it('offers suggested choices and a custom answer for the owning child run', () => {
+it('announces a failed submission and keeps the child run’s choices and custom answer available', () => {
   const gate: PendingInterviewGate = {
     eventId: 'question:q', questionId: 'q', runId: 'child', origin: 'agent_clarification',
     sequence: 1, receivedAt: '2026-09-08T00:00:00Z', nodeId: 'work', stageIndex: 1,
@@ -18,8 +18,9 @@ it('offers suggested choices and a custom answer for the owning child run', () =
     freeformAnswersByGateId={{ q: 'Designers' }} gateNotesByGateId={{}}
     groupedPendingInterviewGates={[{ key: 'child', heading: 'Child run', gates: [gate] }]} now={Date.now()}
     onFreeformAnswerChange={vi.fn()} onGateNoteChange={vi.fn()}
-    onSubmitPendingGateAnswer={submit} pendingGateActionError={null} submittingGateIds={{}}
+    onSubmitPendingGateAnswer={submit} pendingGateActionError="Unable to submit the answer. Try again." submittingGateIds={{}}
   />)
+  expect(screen.getByRole('alert')).toHaveTextContent('Unable to submit the answer. Try again.')
   expect(screen.getByText('Technical readers')).toBeInTheDocument()
   expect(screen.queryByTestId('run-pending-human-gate-keys-hint')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Developers' }))
