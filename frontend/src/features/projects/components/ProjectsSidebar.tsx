@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, useSyncExternalStore } from "react"
 import { ChevronDown, ChevronRight, Plus, Settings, Trash2 } from "lucide-react"
 
 import { useStore } from "@/store"
 import { cn } from "@/lib/utils"
 
 import type { ProjectConversationSummary } from "../model/types"
+import { chatStatus, markChatRead, readChatReadState, subscribeChatReadState, type ChatStatus } from "../model/chatReadState"
 import { groupChatsByProject, isFolderMissing, projectLabel } from "../model/projectChoices"
 import { InlineError } from "@/components/app/inline-error"
 import { SidePanelRow } from "@/components/app/side-panel-row"
@@ -44,6 +45,19 @@ export function StandingRoleChip({ state }: { state: 'idle' | 'working' | 'stopp
     )
 }
 
+// A chat row's status: a dot in the indent before its title, and words on its second line when it is busy or waits on you.
+const STATUS_DOT: Record<ChatStatus, string | null> = {
+    'needs-you': "bg-warning",
+    working: "bg-info animate-pulse",
+    unread: "bg-info",
+    read: null,
+}
+
+function subscribeVisibility(listener: () => void) {
+    document.addEventListener("visibilitychange", listener)
+    return () => document.removeEventListener("visibilitychange", listener)
+}
+
 const iconButtonClassName = "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
 // A project row's actions show on hover or focus, and always on touch screens, which cannot hover.
 const rowActionClassName = cn(iconButtonClassName, "opacity-0 transition-opacity focus-visible:opacity-100 group-hover/project:opacity-100 group-focus-within/project:opacity-100 pointer-coarse:opacity-100")
@@ -72,6 +86,19 @@ export function ProjectsSidebar({
         }
     }, [activeProjectPath, activeConversationId])
     const groups = groupChatsByProject(projectRegistry, conversationSummariesByProjectPath)
+
+    // The open chat is read while it is on screen: the Chats view is showing in a visible tab.
+    // ponytail: on a phone the list can show while a chat stays open; that chat still counts as seen.
+    const viewMode = useStore((state) => state.viewMode)
+    const pageVisible = useSyncExternalStore(subscribeVisibility, () => document.visibilityState === "visible")
+    const readState = useSyncExternalStore(subscribeChatReadState, readChatReadState)
+    const activeSummary = activeProjectPath && activeConversationId
+        ? conversationSummariesByProjectPath[activeProjectPath]?.find((chat) => chat.conversation_id === activeConversationId)
+        : undefined
+    const chatOnScreen = pageVisible && (viewMode === "home" || viewMode === "projects") && !projectPagePath
+    useEffect(() => {
+        if (chatOnScreen && activeSummary) markChatRead(activeSummary.conversation_id, activeSummary.revision)
+    }, [chatOnScreen, activeSummary])
 
     return (
         <ul data-testid="project-thread-list" aria-label="Chats by project" className="flex flex-col gap-1.5">
@@ -171,21 +198,29 @@ export function ProjectsSidebar({
                                         && projectPath === activeProjectPath
                                         && conversation.conversation_id === activeConversationId
                                     const isDeletingConversation = pendingDeleteConversationId === conversation.conversation_id
+                                    const chatState = chatStatus(conversation, readState)
                                     return (
                                         <li key={conversation.conversation_id} className="group/thread relative" title={conversation.title}>
+                                            {STATUS_DOT[chatState] ? (
+                                                <span aria-hidden="true" className={cn("pointer-events-none absolute left-3 top-[13px] size-[7px] rounded-full", STATUS_DOT[chatState])} />
+                                            ) : null}
                                             <SidePanelRow
                                                 data-testid="chats-chat-row"
                                                 data-conversation-id={conversation.conversation_id}
                                                 data-standing-role={conversation.standing_role?.name}
+                                                data-chat-status={chatState}
                                                 onClick={() => onSelectConversationThread(projectPath, conversation.conversation_id)}
                                                 selected={isActiveConversation}
                                                 // The row's name is its visible title; the ID and age are read as its description.
                                                 aria-describedby={`chat-row-meta-${conversation.conversation_id}`}
-                                                title={conversation.title}
+                                                title={chatState === "unread" ? <span className="font-semibold">{conversation.title}</span> : conversation.title}
                                                 meta={(
                                                     <span id={`chat-row-meta-${conversation.conversation_id}`} aria-hidden data-testid="chats-chat-row-meta">
+                                                        {chatState === "unread" ? <span className="sr-only">Unread · </span> : null}
                                                         {conversation.conversation_handle ? <><span className="font-mono">{conversation.conversation_handle}</span> · </> : null}
-                                                        {formatConversationAgeShort(conversation.updated_at)}
+                                                        {chatState === "needs-you" ? <span className="text-warning">Needs you</span>
+                                                            : chatState === "working" ? <span className="text-info">Working…</span>
+                                                            : formatConversationAgeShort(conversation.updated_at)}
                                                     </span>
                                                 )}
                                                 trailing={conversation.standing_role ? <StandingRoleChip state={conversation.standing_role.state} /> : null}
