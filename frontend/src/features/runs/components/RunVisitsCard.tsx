@@ -399,7 +399,7 @@ export function RunVisitsCard({
             </Well>
             {graphPane ? (
                 <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto">
-                    <div data-testid="run-graph-pane" className="flex h-[45%] min-h-64 shrink-0 flex-col">{graphPane}</div>
+                    <div data-testid="run-graph-pane" className="flex h-[45%] min-h-80 shrink-0 flex-col">{graphPane}</div>
                     {details}
                 </div>
             ) : details}
@@ -477,6 +477,8 @@ function RunVisitView({
         <StatusPill data-testid="run-visit-view-outcome" tone={OUTCOME_TONES[visit.outcome]}>{outcomeLabel}</StatusPill>
     )
     const workTitle = visit.kind === 'tool' ? 'Command' : visit.kind === 'subflow' ? 'Child run' : 'Transcript'
+    // Only agents, tools and subflows do work of their own; a gate, switch or fan-out has only its result.
+    const hasWork = visit.kind === 'agent_task' || visit.kind === 'tool' || visit.kind === 'subflow' || entries.length > 0
 
     return (
         <article data-testid="run-visit-view" data-visit-key={visit.key} className="flex flex-col gap-5 pb-6">
@@ -551,7 +553,13 @@ function RunVisitView({
                             {[errorKind, failure?.detail].filter(Boolean).join(': ')}
                         </FailureDetail>
                     ) : null}
-                    {branchResults.length > 0 ? <BranchResults results={branchResults} /> : null}
+                    {branchResults.length > 0 ? (
+                        <BranchResults
+                            results={branchResults}
+                            branchVisits={visits.filter((candidate) => candidate.parentKey === visit.key)}
+                            onSelectVisit={onSelectVisit}
+                        />
+                    ) : null}
                     {writes.length > 0 ? (
                         <ul data-testid="run-visit-writes" className="flex flex-col gap-1 text-xs text-muted-foreground">
                             {writes.map(([key, value]) => (
@@ -585,8 +593,9 @@ function RunVisitView({
                 </Well>
             ) : null}
 
-            <section className="flex flex-col gap-2">
-                <details data-testid="run-visit-instructions" className="group">
+            <section className="flex flex-col gap-2 empty:hidden">
+                {/* Only an agent is given instructions; another step shows them only when some were recorded. */}
+                {prompt || visit.kind === 'agent_task' ? <details data-testid="run-visit-instructions" className="group">
                     <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 text-sm [&::-webkit-details-marker]:hidden">
                         <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
                         <span className="shrink-0 font-semibold text-foreground">Instructions</span>
@@ -599,7 +608,7 @@ function RunVisitView({
                     <div className="mt-2 max-h-96 max-w-[72ch] overflow-y-auto whitespace-pre-wrap break-words pl-5.5 text-sm leading-6 text-foreground/90">
                         {prompt ?? <span className="text-muted-foreground">No instructions were recorded for this visit.</span>}
                     </div>
-                </details>
+                </details> : null}
                 {flowNode && flowNode.readsContext.length > 0 ? (
                     <p data-testid="run-visit-reads" className="flex flex-wrap items-center gap-1.5 pl-5.5 text-xs text-muted-foreground">
                         Reads
@@ -610,7 +619,7 @@ function RunVisitView({
                 ) : null}
             </section>
 
-            <section data-testid="run-visit-work" className="flex flex-col gap-3">
+            {hasWork ? <section data-testid="run-visit-work" className="flex flex-col gap-3">
                 <SectionHeading
                     as="h3"
                     action={hasThinking ? <ShowThinkingToggle pressed={showThinking} onPressedChange={setShowThinking} /> : null}
@@ -673,7 +682,7 @@ function RunVisitView({
                         <span aria-hidden="true" className="h-px flex-1 bg-border" />
                     </div>
                 ) : null}
-            </section>
+            </section> : null}
             {files.length > 0 ? (
                 <p data-testid="run-visit-files" className="text-xs text-muted-foreground">
                     Files:{' '}
@@ -701,14 +710,22 @@ const BRANCH_STATUS: Record<string, { label: string; tone: StatusTone }> = {
     completed: { label: 'Completed', tone: 'success' },
     error: { label: 'Error', tone: 'destructive' },
     terminal_result: { label: 'Reached an exit', tone: 'warning' },
-    canceled: { label: 'Canceled', tone: 'muted' },
+    // Its fork or the user's cancel stopped it, as its step in Steps says.
+    canceled: { label: 'Interrupted', tone: 'warning' },
 }
 
-// Each declared branch of a fan-out, with the evidence for any branch that did not complete.
-function BranchResults({ results }: { results: ReturnType<typeof parallelBranchResults> }) {
+// Each declared branch of a fan-out by its step's name, which opens that step, with the
+// evidence for any branch that did not complete.
+function BranchResults({ results, branchVisits, onSelectVisit }: {
+    results: ReturnType<typeof parallelBranchResults>
+    branchVisits: RunVisit[]
+    onSelectVisit: (visit: RunVisit) => void
+}) {
     return (
         <ul data-testid="run-visit-branches" className="flex flex-col gap-1.5 text-sm">
             {results.map((branch) => {
+                const branchVisit = branchVisits.find((candidate) => candidate.nodeId === branch.id) ?? null
+                const name = branchVisit?.label ?? humanizeNodeId(branch.id)
                 const status = BRANCH_STATUS[branch.status] ?? { label: branch.status, tone: 'muted' as StatusTone }
                 const error = branch.error
                 const terminal = branch.terminal
@@ -725,7 +742,16 @@ function BranchResults({ results }: { results: ReturnType<typeof parallelBranchR
                 return (
                     <li key={`${branch.index}-${branch.id}`} data-testid="run-visit-branch" data-status={branch.status} className="flex max-w-[72ch] flex-col gap-0.5">
                         <span className="flex flex-wrap items-center gap-2">
-                            <span className="font-medium text-foreground">{branch.id}</span>
+                            {branchVisit ? (
+                                <button
+                                    type="button"
+                                    data-testid="run-visit-branch-open"
+                                    onClick={() => onSelectVisit(branchVisit)}
+                                    className="rounded-sm font-medium text-foreground underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                                >
+                                    {name}
+                                </button>
+                            ) : <span className="font-medium text-foreground">{name}</span>}
                             <StatusPill tone={status.tone}>{status.label}</StatusPill>
                             {evidence ? <span data-testid="run-visit-branch-evidence" className="text-muted-foreground">{evidence}</span> : null}
                         </span>

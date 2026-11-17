@@ -94,6 +94,20 @@ describe('buildRunNodeStatuses', () => {
         expect(statuses.load).toBe('success')
     })
 
+    it('marks the steps a cancel stopped interrupted, even a fan-out its checkpoint completed', () => {
+        const statuses = buildRunNodeStatuses({
+            completedNodes: ['start', 'fork'],
+            nodeOutcomes: {},
+            currentNodeId: 'fork',
+            liveNodeStatuses: { lint: 'running' },
+            gateNodeId: null,
+            isRunActive: false,
+            runStatus: 'canceled',
+            interruptedNodeIds: ['fork', 'lint', 'unit'],
+        })
+        expect(statuses).toEqual({ start: 'success', fork: 'interrupted', lint: 'interrupted', unit: 'interrupted' })
+    })
+
     it('gives a pending human gate the final word', () => {
         const statuses = buildRunNodeStatuses({
             completedNodes: ['approve'],

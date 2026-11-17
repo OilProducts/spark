@@ -267,7 +267,9 @@ export function RunStatusItem({
                         {outcomeReason}
                     </p>
                 ) : null}
-                {resultRestatesReason ? null : <RunResult result={result} resultError={resultError} />}
+                {resultRestatesReason ? null : (
+                    <RunResult result={result} resultError={resultError} plain={Boolean(source && flowNodes[source]?.kind === 'human_gate')} />
+                )}
             </>
         )
     } else {
@@ -320,7 +322,8 @@ export function RunStatusItem({
     )
 }
 
-function RunResult({ result, resultError }: { result: PipelineResultResponse | null; resultError: string | null }) {
+// `plain`: the result is a person's gate note, which reads as written, not as Markdown.
+function RunResult({ result, resultError, plain }: { result: PipelineResultResponse | null; resultError: string | null; plain: boolean }) {
     if (resultError) {
         return <InlineError data-testid="run-result-error">{resultError}</InlineError>
     }
@@ -335,7 +338,9 @@ function RunResult({ result, resultError }: { result: PipelineResultResponse | n
     }
     return (
         <div data-testid="run-result-body" className="max-w-[72ch] text-sm">
-            <ProjectConversationMarkdown content={resultMarkdown(result.body_markdown || '')} keepLineBreaks />
+            {plain
+                ? <p className="whitespace-pre-wrap break-words leading-6">{result.body_markdown.trim()}</p>
+                : <ProjectConversationMarkdown content={resultMarkdown(result.body_markdown || '')} keepLineBreaks />}
             {result.summary_error ? (
                 <p data-testid="run-result-summary-error" className="mt-2 text-xs text-warning">
                     Summary unavailable: {result.summary_error}

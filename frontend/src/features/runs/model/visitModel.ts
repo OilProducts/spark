@@ -427,9 +427,12 @@ export function buildRunVisits({
     const runCanceled = runStatus !== null && CANCELED_RUN_STATUSES.has(runStatus)
     branchDrafts.forEach((draft) => {
         settle(draft, false)
-        // A branch of the fan-out a cancel stopped ends as it is killed, with no reason of its own:
-        // the cancel ended it, not an error.
-        if (runCanceled && draft.visit.outcome === 'error' && !draft.visit.reason && draft.parent === rootDrafts.at(-1)) {
+        // A branch the user's cancel or its fork stopped ends as it is killed, with no reason of its
+        // own: the stop ended it, not an error.
+        const canceledByFork = parallelBranchResults(draft.parent.visit)
+            .some((result) => result.index === draft.branchIndex && result.status === 'canceled')
+        if (draft.visit.outcome === 'error' && !draft.visit.reason
+            && (canceledByFork || (runCanceled && draft.parent === rootDrafts.at(-1)))) {
             draft.visit.outcome = 'interrupted'
             draft.visit.endedAt ??= runEndedAt
         }

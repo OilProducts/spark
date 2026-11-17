@@ -66,6 +66,7 @@ const NODE_STATUS_LABELS: Record<string, string> = {
     success: 'Succeeded',
     failed: 'Failed',
     waiting: 'Needs input',
+    interrupted: 'Interrupted',
 }
 
 type BaseWorkflowNodeProps = NodeProps & {

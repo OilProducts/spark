@@ -120,6 +120,21 @@ describe('RunStatusItem', () => {
     expect(screen.getByTestId('run-status-facts')).not.toHaveAttribute('open')
   })
 
+  it('keeps a gate note result as written, not as Markdown', () => {
+    const note = 'Ship it.\n  - keep the flag off\n\n\nThanks'
+    render(
+      <RunStatusItem
+        run={run({ outcome: 'success' })} kind="completed" now={Date.parse('2026-09-29T11:00:00Z')} visits={[]}
+        flowNodes={{ approve: { label: 'Approve', kind: 'human_gate', readsContext: [], command: null } }}
+        result={{ ...result, source_node_id: 'approve', body_markdown: note }} resultError={null}
+        artifactEntries={[]} question={null} onSelectVisit={vi.fn()} onViewArtifact={vi.fn()}
+      />,
+    )
+    const body = screen.getByTestId('run-result-body')
+    expect(body.querySelector('p')?.textContent).toBe(note.trim())
+    expect(body.querySelector('p')).toHaveClass('whitespace-pre-wrap')
+  })
+
   it('does not read a completed run that reached a failure exit as a success', () => {
     const blocked = run({ outcome: 'failure', outcome_reason_code: 'blocked', outcome_reason_message: 'review chose blocked: no tests' })
     const props = {
@@ -779,7 +794,15 @@ describe('RunVisitsCard returned evidence', () => {
     expect(runFailed).not.toHaveTextContent('line 19')
   })
 
-  it('lists each fan-out branch with failed, terminal-result and canceled evidence', () => {
+  it('shows a gate only its result: no empty transcript or instructions', () => {
+    openOnly([visit('approve', 1, 'completed', { kind: 'human_gate', decision: 'approve', status: { status: 'completed', decision: 'approve' } })])
+    expect(screen.getByTestId('run-visit-view-outcome')).toHaveTextContent('Completed')
+    expect(screen.queryByTestId('run-visit-work')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-visit-instructions')).not.toBeInTheDocument()
+    expect(screen.queryByText('No transcript was recorded for this visit.')).not.toBeInTheDocument()
+  })
+
+  it('lists each fan-out branch by its step name with failed, terminal-result and interrupted evidence', () => {
     const results = [
       { id: 'lint', index: 0, status: 'completed', started: true, context: {}, route_trace: [], decisions: [], notes: '' },
       { id: 'typecheck', index: 1, status: 'error', started: true, context: {}, route_trace: [], decisions: [], notes: '', error: { node: 'tsc', kind: 'runtime', tolerable: false, reason: 'tsc exited 2', attempts: 2 } },
@@ -789,18 +812,22 @@ describe('RunVisitsCard returned evidence', () => {
     const returned = openOnly([visit('fan_out', 1, 'error', {
       kind: 'parallel', failureKind: 'runtime', tolerable: false,
       status: { status: 'error', failure_kind: 'runtime', tolerable: false, context_updates: { 'parallel.results': results } },
-    })])
+    }), visit('lint', 1, 'completed', { key: 'lint-branch', label: 'Run the linter', parentKey: 'fan_out-1' })])
     const branches = within(returned).getAllByTestId('run-visit-branch')
     expect(branches.map((branch) => branch.getAttribute('data-status'))).toEqual(['completed', 'error', 'terminal_result', 'canceled'])
-    expect(branches[0]).toHaveTextContent(/^lintCompleted$/)
+    // A branch reads as its step's name, which opens that step; one never started is named from its ID.
+    expect(branches[0]).toHaveTextContent(/^Run the linterCompleted$/)
     expect(within(branches[1]).getByTestId('run-visit-branch-evidence')).toHaveTextContent(/^at tsc · 2 attempts$/)
     expect(within(branches[1]).getByTestId('run-visit-branch-reason')).toHaveTextContent('tsc exited 2')
     expect(within(branches[1]).getByTestId('run-visit-branch-reason-detail')).toHaveTextContent(/^runtime error, not tolerable$/)
     expect(branches[2]).toHaveTextContent('Reached an exit')
     expect(within(branches[2]).getByTestId('run-visit-branch-evidence')).toHaveTextContent('result blocked · failure · from judge')
-    expect(branches[3]).toHaveTextContent(/^docsCanceled$/)
+    // A canceled branch reads as its step does in Steps.
+    expect(branches[3]).toHaveTextContent(/^DocsInterrupted$/)
     // parallel.results is runtime bookkeeping, so it is counted, not listed, among the writes.
     expect(within(returned).getByTestId('run-visit-system-writes')).toHaveTextContent('1 system key written')
+    fireEvent.click(within(branches[0]).getByTestId('run-visit-branch-open'))
+    expect(screen.getByTestId('run-visit-view')).toHaveAttribute('data-visit-key', 'lint-branch')
   })
 })
 

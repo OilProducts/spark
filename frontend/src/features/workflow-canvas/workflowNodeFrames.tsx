@@ -51,7 +51,7 @@ export function getWorkflowNodeFramePalette({
             nestedStrokeColor: 'hsl(var(--primary) / 0.4)',
         };
     }
-    if (isWaiting) return statusPalette('warning');
+    if (isWaiting || status === 'interrupted') return statusPalette('warning');
     if (status === 'running') return statusPalette('info');
     if (status === 'failed') return statusPalette('destructive');
     if (status === 'success') return statusPalette('success');

@@ -86,7 +86,8 @@ export function RunHeaderBar({
     const facts = [
         when,
         formatDuration(run.started_at, run.ended_at, run.status, now),
-        ...(typeof tokens === 'number' ? [`${formatCompactCount(tokens)} tokens${run.token_usage_breakdown?.coverage === 'partial' ? ' (partial)' : ''}`] : []),
+        // A run with no model work yet, such as tools only, has no tokens to report.
+        ...(typeof tokens === 'number' && tokens > 0 ? [`${formatCompactCount(tokens)} tokens${run.token_usage_breakdown?.coverage === 'partial' ? ' (partial)' : ''}`] : []),
         ...(commit ? [commit.slice(0, 7)] : []),
     ].filter((fact) => fact && fact !== '—')
     // The title is the one the run list shows. The flow's own title joins the breadcrumb
@@ -112,12 +113,13 @@ export function RunHeaderBar({
                         {showFlow ? <span data-testid="run-header-flow">{flow}</span> : null}
                     </p>
                 ) : null}
+                {/* The title wraps, so a phone shows it whole; only a very long one is clamped. */}
                 <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                     <h1
                         id={headingId(run.run_id)}
                         data-testid="run-header-title"
                         tabIndex={-1}
-                        className="min-w-0 truncate rounded-sm text-xl font-semibold tracking-tight text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="line-clamp-3 min-w-0 rounded-sm text-xl font-semibold tracking-tight text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring"
                         title={`${title} · ${run.run_id}`}
                     >
                         {title}

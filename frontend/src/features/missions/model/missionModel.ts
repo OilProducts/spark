@@ -1,5 +1,5 @@
 import type { StatusTone } from '@/components/app/status'
-import { flowTitle, formatRunDate, runStatusKind, type RunStatusKind } from '@/features/runs/model/runOverviewModel'
+import { flowTitle, formatRunDate, runFlowTitle, runStatusKind, type RunStatusKind } from '@/features/runs/model/runOverviewModel'
 import { formatDuration, STATUS_LABELS, type RunRecord } from '@/features/runs/model/shared'
 import type { Mission, RosterEntry } from '../MissionsPanel'
 
@@ -121,8 +121,9 @@ export function joinRuns(roster: RosterEntry[], runs: RunRecord[], now = Date.no
         const duration = run ? formatDuration(run.started_at, run.ended_at, run.status, now) : formatDuration(missionTime(entry.launched_at), null, status, now)
         return {
             runId: entry.run_id,
-            title: run?.title?.trim() || entry.summary || flowTitle(entry.flow_name),
-            flowTitle: flowTitle(run?.flow_name ?? entry.flow_name),
+            title: run?.title?.trim() || entry.summary || (run ? runFlowTitle(run) : flowTitle(entry.flow_name)),
+            // The flow's declared title, as the Runs page names it.
+            flowTitle: run ? runFlowTitle(run) : flowTitle(entry.flow_name),
             status,
             kind: runStatusKind(status, false),
             duration: duration === '—' ? '' : duration,

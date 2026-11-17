@@ -76,6 +76,8 @@ export function MissionTranscript({ conversation, project, runs, closed = false 
     const launchesById = new Map(getConversationFlowLaunches(record).map(launch => [launch.id, launch]))
     const firstTurnId = entries.find(entry => entry.kind === 'message' && entry.role === 'user')?.id
     const title = (runId: string | null, fallback: string) => (runId && runs.get(runId)?.title) || fallback || runId || 'Run'
+    // A run's flow by its declared title, as the Runs page names it; the file name until the run is known.
+    const flowOf = (runId: string | null, flowName: string | null | undefined) => (runId && runs.get(runId)?.flowTitle) || flowTitle(flowName)
     const when = (at: string) => <time dateTime={at}>{formatTime(at)}</time>
 
     /** The mission's own rows: user turns carry its events, launches and recoveries are run cards, and the agent's questions are answered here. */
@@ -97,7 +99,7 @@ export function MissionTranscript({ conversation, project, runs, closed = false 
                     </EventLine></li>
                 }
                 const run = runs.get(launch.run_id)
-                return <li><RunCard data-testid="mission-run-card" kicker={`Launched run · ${flowTitle(launch.flow_name)}`}
+                return <li><RunCard data-testid="mission-run-card" kicker={`Launched run · ${flowOf(launch.run_id, launch.flow_name)}`}
                     title={<RunLink runId={launch.run_id}>{title(launch.run_id, launch.summary)}</RunLink>}
                     tone={run ? runKinds[run.kind].tone : 'neutral'} status={run ? runStatusLabel(run) : 'Launched'} duration={run?.duration || undefined} /></li>
             }
@@ -139,11 +141,11 @@ export function MissionTranscript({ conversation, project, runs, closed = false 
                     // Why it ended, in plain words and in full under the line; a cancel says so already.
                     const reason = event.error && !isCancelReason(event.error) ? describeFailure(event.error).summary : ''
                     return <li key={key}><EventLine data-testid="mission-event" icon={<Icon className={statusTextClassName(runKinds[kind].tone)} />} at={at}>
-                        <RunLink runId={event.runId}>{title(event.runId, event.summary || flowTitle(event.flowName))}</RunLink> {event.status === 'waiting' ? 'is waiting on a recovery decision' : `ended · ${STATUS_LABELS[event.status] || event.status}`}
+                        <RunLink runId={event.runId}>{title(event.runId, event.summary || flowOf(event.runId, event.flowName))}</RunLink> {event.status === 'waiting' ? 'is waiting on a recovery decision' : `ended · ${STATUS_LABELS[event.status] || event.status}`}
                     </EventLine>{reason ? <EventDetail>{reason}</EventDetail> : null}</li>
                 }
                 case 'question': return <li key={key}><EventLine data-testid="mission-event" icon={<CircleHelp className={statusTextClassName('warning')} />} at={at}>
-                    {event.runId ? <RunLink runId={event.runId}>{title(event.runId, flowTitle(event.flowName))}</RunLink> : flowTitle(event.flowName)} asked
+                    {event.runId ? <RunLink runId={event.runId}>{title(event.runId, flowOf(event.runId, event.flowName))}</RunLink> : flowTitle(event.flowName)} asked
                 </EventLine><EventDetail>{event.prompt}</EventDetail></li>
                 // What the runtime told the agent (a trigger fired, the mission was edited) is an event, not prose; the full text is the tooltip.
                 case 'event': return <li key={key}><EventLine data-testid="mission-event" icon={event.text.startsWith('Trigger fired') ? <Zap /> : <Pencil />} at={at} title={event.text}>{event.text.split('\n')[0]}</EventLine></li>

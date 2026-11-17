@@ -8,6 +8,8 @@ interface BuildRunNodeStatusesArgs {
     gateNodeId: string | null
     isRunActive: boolean
     runStatus: string | null
+    /** Nodes whose latest visit a cancel or its fork stopped, as the run's steps say. */
+    interruptedNodeIds?: string[]
 }
 
 const TERMINAL_NODE_STATUSES = new Set<NodeStatus>(['success', 'failed'])
@@ -16,7 +18,8 @@ const TERMINAL_NODE_STATUSES = new Set<NodeStatus>(['success', 'failed'])
 // the per-node status map the run graph renders. Precedence, lowest to highest:
 // checkpoint completions, per-node checkpoint statuses (an errored node sits in
 // completed_nodes too, so the error must override), live stage statuses, the
-// active current node, the failed run's terminal node, and a pending gate.
+// active current node, the steps the run's visits say were interrupted, the failed run's
+// terminal node, and a pending gate.
 export function buildRunNodeStatuses({
     completedNodes,
     nodeOutcomes,
@@ -25,6 +28,7 @@ export function buildRunNodeStatuses({
     gateNodeId,
     isRunActive,
     runStatus,
+    interruptedNodeIds = [],
 }: BuildRunNodeStatusesArgs): Record<string, NodeStatus> {
     const statuses: Record<string, NodeStatus> = {}
     for (const nodeId of completedNodes) {
@@ -46,6 +50,9 @@ export function buildRunNodeStatuses({
         && !TERMINAL_NODE_STATUSES.has(statuses[currentNodeId] ?? 'idle')
     ) {
         statuses[currentNodeId] = 'running'
+    }
+    for (const nodeId of interruptedNodeIds) {
+        statuses[nodeId] = 'interrupted'
     }
     if (runStatus === 'failed' && currentNodeId) {
         statuses[currentNodeId] = 'failed'

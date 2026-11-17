@@ -2177,6 +2177,18 @@ impl RuntimeHandlerRunner {
                 ..Outcome::completed("")
             });
         }
+        // The user's cancel stopped branches: the fork ends as the cancel stopped
+        // it, as a stopped tool does, so it is never recorded as completed.
+        if completed < results.len() && run_cancel_requested(&runtime) {
+            return Ok(Outcome {
+                context_updates,
+                ..Outcome::error(
+                    FailureKind::Runtime,
+                    "parallel fan-out stopped by cancellation",
+                    Some(false),
+                )
+            });
+        }
         Ok(Outcome {
             context_updates,
             notes: format!("{completed} of {} branches completed", results.len()),

@@ -102,6 +102,20 @@ describe('timelineModel', () => {
     expect(journalEntriesShown([asked, delivered])).toEqual([asked, delivered])
   })
 
+  it('says a checkpoint saved again at the exit once', () => {
+    const entry = (sequence: number, rawType: string, node: string) => toTimelineEvent({
+      id: `journal-${sequence}`, sequence, emitted_at: '2026-07-08T10:00:00Z', kind: 'checkpoint', raw_type: rawType,
+      summary: rawType, severity: 'info', source_scope: 'root', node_id: node, payload: { current_node: node },
+    })!
+    const arrived = entry(1, 'CheckpointSaved', 'done')
+    const ended = entry(2, 'CheckpointSaved', 'done')
+    const finished = entry(3, 'PipelineCompleted', 'done')
+    expect(journalEntriesShown([arrived, ended, finished])).toEqual([arrived, finished])
+    // A loop that saves at the same node after other work says each save.
+    const review = [entry(1, 'CheckpointSaved', 'review'), entry(2, 'StageStarted', 'review'), entry(3, 'CheckpointSaved', 'review')]
+    expect(journalEntriesShown(review)).toEqual(review)
+  })
+
   it('tells a canceled run as canceled: its stopped branches, its end, and no status echoes', () => {
     const entry = (sequence: number, rawType: string, payload: Record<string, unknown>, severity = 'info') => toTimelineEvent({
       id: `journal-${sequence}`, sequence, emitted_at: '2026-07-08T10:00:00Z', kind: 'other', raw_type: rawType,

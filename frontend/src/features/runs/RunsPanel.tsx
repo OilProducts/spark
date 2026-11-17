@@ -321,6 +321,11 @@ export function RunsPanel() {
         window.addEventListener('keydown', onKeyDown)
         return () => window.removeEventListener('keydown', onKeyDown)
     }, [])
+    // The graph marks a step interrupted when its latest visit in Steps was, as a cancel leaves it.
+    const interruptedNodeIds = useMemo(() => {
+        const latestOutcome = new Map(visits.map((visit) => [visit.nodeId, visit.outcome]))
+        return [...latestOutcome].flatMap(([nodeId, outcome]) => (outcome === 'interrupted' ? [nodeId] : []))
+    }, [visits])
     const runNodeStatuses = useMemo(() => buildRunNodeStatuses({
         completedNodes: completedNodesSnapshot ?? [],
         nodeOutcomes: checkpointNodeOutcomes,
@@ -329,8 +334,10 @@ export function RunsPanel() {
         gateNodeId,
         isRunActive: isSelectedRunActive,
         runStatus: selectedRunStatus,
+        interruptedNodeIds,
     }), [
         checkpointNodeOutcomes,
+        interruptedNodeIds,
         completedNodesSnapshot,
         currentNodeForSummary,
         gateNodeId,

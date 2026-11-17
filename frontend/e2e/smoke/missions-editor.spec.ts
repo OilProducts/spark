@@ -97,7 +97,9 @@ for (const theme of ['light', 'dark']) test(`missions conversation view ${theme}
   await expect(events).toHaveCount(3)
   await expect(events.nth(0)).toContainText('Mission started')
   await expect(events.nth(1)).toContainText('Rank search results by relevance ended · Completed')
-  await expect(events.nth(2)).toContainText('Review the ranking diff asked “Ship the ranking change?”')
+  // A question reads "<run> asked", with its prompt in full under the line.
+  await expect(events.nth(2)).toHaveText(/Review the ranking diff asked/)
+  await expect(events.nth(2).locator('xpath=ancestor::li[1]')).toContainText('Ship the ranking change?')
   await expect(detail.getByText('Keep the diff small.')).toBeVisible()
   const ask = detail.getByRole('region', { name: 'Waiting on you' })
   const thread = detail.getByTestId('mission-conversation')

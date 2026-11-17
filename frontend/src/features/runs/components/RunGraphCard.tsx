@@ -87,7 +87,7 @@ function RunGraphCanvasInner({
     const activeLoadRef = useRef(0)
     const paneRef = useRef<HTMLDivElement>(null)
     const frame = useReadableFraming(paneRef)
-    // Open on the step that needs attention: the selected one, else the one waiting, running or failed.
+    // Open on the step that needs attention: the selected one, else the one waiting, running, failed or interrupted.
     const focusNodeIdRef = useRef<string | null>(null)
     const matchingVariant = runDetailSession?.graphExpanded === (runDetailSession?.expandChildFlows ?? false)
     const nodes = matchingVariant ? runDetailSession?.graphNodes ?? EMPTY_GRAPH_NODES : EMPTY_GRAPH_NODES
@@ -128,6 +128,7 @@ function RunGraphCanvasInner({
             ?? statusIds.find((id) => nodeStatusesById[id] === 'waiting')
             ?? statusIds.find((id) => nodeStatusesById[id] === 'running')
             ?? statusIds.find((id) => nodeStatusesById[id] === 'failed')
+            ?? statusIds.find((id) => nodeStatusesById[id] === 'interrupted')
             ?? null
     })
 
@@ -327,9 +328,10 @@ export function RunGraphCard({
         >
             <CardHeader className="px-0">
                 {/* One row: which graph, then how it is viewed. Narrow, it drops the zoom buttons and
-                    minimap as the editor's toolbar does (the wheel still zooms), and Open in editor its words. */}
+                    minimap as the editor's toolbar does (the wheel still zooms), Open in editor its words,
+                    and its heading, which the pressed Graph toggle beside it already says. */}
                 <div className="@container/canvas-toolbar flex flex-wrap items-center gap-x-3 gap-y-2">
-                    <h2 className="shrink-0 whitespace-nowrap text-base font-semibold text-foreground">
+                    <h2 className="shrink-0 whitespace-nowrap text-base font-semibold text-foreground @max-md/canvas-toolbar:sr-only">
                         Run graph
                     </h2>
                     <ChildFlowExpansionToggle

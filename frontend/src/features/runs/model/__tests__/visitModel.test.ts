@@ -280,6 +280,35 @@ describe('buildRunVisits', () => {
     ])
   })
 
+  it('marks a branch its fork stopped interrupted, as the fork\'s branch results say', () => {
+    const journal = [
+      started('fan_out', 0),
+      branchStarted('lint', 0),
+      branchStarted('typecheck', 1),
+      nodeStarted('lint', 0, 0, 0),
+      nodeStarted('typecheck', 0, 0, 1),
+      nodeCompleted('typecheck', 0, 0, 'error', 1),
+      branchCompleted('typecheck', 1, false),
+      nodeCompleted('lint', 0, 0, 'error', 0),
+      branchCompleted('lint', 0, false),
+      failed('fan_out', 0),
+    ]
+    const results = [
+      { id: 'lint', index: 0, status: 'canceled' },
+      { id: 'typecheck', index: 1, status: 'error', error: { node: 'typecheck', reason: 'tsc exited 2' } },
+    ]
+    const executions = [
+      execution('fan_out', 0, { status: 'error', failure_reason: 'branch typecheck failed', context_updates: { 'parallel.results': results } }),
+      execution('typecheck', 0, { status: 'error', failure_reason: 'tsc exited 2' }),
+    ]
+    const visits = build({ journal, executions, runStatus: 'failed' })
+    expect(visits.map((visit) => [visit.label, visit.outcome])).toEqual([
+      ['Fan out', 'failed'],
+      ['Lint', 'interrupted'],
+      ['Typecheck', 'error'],
+    ])
+  })
+
   it('nests parallel branches under their fan-out visit, one visit per invocation with its execution', () => {
     const journal = [
       started('fan_out', 0),

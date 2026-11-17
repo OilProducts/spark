@@ -380,6 +380,11 @@ const journalEntriesShown = (journal: TimelineEventEntry[]): TimelineEventEntry[
                 sameSource(other, event) && lifecycleStatus(other) === event.payload.status
             ))
         }
+        // A run ending at an exit saves the checkpoint it saved on arriving there again; one line says it.
+        if (event.type === 'CheckpointSaved') {
+            const previous = journal.slice(0, index).reverse().find((other) => sameSource(other, event) && other.type !== 'runtime')
+            return !(previous?.type === 'CheckpointSaved' && previous.payload.current_node === event.payload.current_node)
+        }
         // A branch whose only step is its first node says so already as the branch.
         if (event.type === 'ParallelBranchNodeStarted' || event.type === 'ParallelBranchNodeCompleted') {
             return event.payload.branch_node_id !== event.payload.branch

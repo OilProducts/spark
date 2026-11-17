@@ -300,6 +300,7 @@ const STATUS_TONES: Record<string, StatusTone> = {
     pause_requested: 'warning',
     abort_requested: 'warning',
     cancel_requested: 'warning',
+    interrupted: 'warning',
     completed: 'success',
     success: 'success',
     failed: 'destructive',
