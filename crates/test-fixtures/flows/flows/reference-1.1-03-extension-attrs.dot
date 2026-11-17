@@ -1,8 +1,0 @@
-digraph reference_1_1_03_extension_attrs {
-  graph [label="Raw DOT extension attrs baseline", ui_default_llm_model="gpt-5.3-codex-spark", ui_default_llm_provider="openai", ui_extension.graph_policy="strict", ui_extension.routing_mode="manual"];
-  exit [allow_partial=false, auto_status=false, error_policy="continue", goal_gate=false, join_policy="wait_all", label="exit", max_parallel=4, reasoning_effort="high", shape="Msquare"];
-  review [allow_partial=false, auto_status=false, custom.node_behavior="review", error_policy="continue", goal_gate=false, join_policy="wait_all", label="review", max_parallel=4, prompt="Review extension behavior", reasoning_effort="high", shape="box"];
-  start [allow_partial=false, auto_status=false, custom.node_behavior="ingest", custom.node_priority="p1", error_policy="continue", goal_gate=false, join_policy="wait_all", label="start", max_parallel=4, reasoning_effort="high", shape="Mdiamond"];
-  review -> exit [custom.edge_hint="finalize", loop_restart=false];
-  start -> review [custom.edge_hint="handoff", custom.edge_priority=7, loop_restart=false];
-}

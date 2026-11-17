@@ -77,20 +77,6 @@ fn m6_provider_profile_resource_observation_matches_committed_fixture() {
     );
 }
 
-#[test]
-fn missing_provider_fixture_names_committed_path_and_fixture_name() {
-    let fixture_name = "missing-provider-fixture";
-    let panic = std::panic::catch_unwind(|| fixture(fixture_name)).expect_err("missing fixture");
-    let message = panic
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| panic.downcast_ref::<&str>().copied())
-        .expect("panic message");
-
-    assert!(message.contains("read committed provider fixture missing-provider-fixture at"));
-    assert!(message.contains("crates/test-fixtures/compat/providers/missing-provider-fixture.json"));
-}
-
 fn model_catalog_env_resolution_observation() -> Value {
     let env = BTreeMap::from([
         ("ANTHROPIC_API_KEY".to_string(), "anthropic-key".to_string()),

@@ -15,29 +15,6 @@ fn spark_bin() -> &'static str {
 }
 
 #[test]
-fn process_flow_validate_dir_observes_stdout_json() {
-    let temp_dir = temp_dir("process-validate");
-    let flow_path = temp_dir.join("valid-flow");
-    crate::write_flow_json(&flow_path, valid_flow());
-
-    let output = Command::new(spark_bin())
-        .args(["flow", "validate", "--dir"])
-        .arg(&flow_path)
-        .env_clear()
-        .env("HOME", temp_dir.to_string_lossy().to_string())
-        .output()
-        .expect("run spark");
-
-    assert_eq!(output.status.code(), Some(0));
-    assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
-    let payload: Value = serde_json::from_slice(&output.stdout).expect("stdout is validation JSON");
-    assert_eq!(payload["name"], "valid-flow");
-    assert_eq!(payload["status"], "ok");
-    assert_eq!(payload["diagnostics"], Value::Array(Vec::new()));
-    let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
 fn process_flow_validate_dir_exit_code_follows_the_report() {
     let temp = tempfile::tempdir().expect("tempdir");
     let valid_dir = temp.path().join("valid");
@@ -78,8 +55,19 @@ fn process_flow_validate_dir_exit_code_follows_the_report() {
 
     let output = validate(&valid_dir, &[]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
     let payload: Value = serde_json::from_slice(&output.stdout).expect("validation JSON");
+    assert_eq!(payload["name"], "valid");
+    assert_eq!(
+        payload["path"],
+        fs::canonicalize(&valid_dir)
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
     assert_eq!(payload["status"], "ok");
+    assert_eq!(payload["diagnostics"], Value::Array(Vec::new()));
+    assert_eq!(payload["errors"], Value::Array(Vec::new()));
 
     let output = validate(&valid_dir, &["--text"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");

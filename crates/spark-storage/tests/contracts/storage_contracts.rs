@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::json;
 use spark_storage::{
@@ -233,44 +231,4 @@ a_extra = false
     )
     .expect("collect toml unknown fields");
     assert_eq!(collected.unknown_fields(), ["a_extra", "z_extra"]);
-}
-
-#[test]
-fn m0_filesystem_fixture_samples_load_as_generic_values_and_rewrite_through_codecs() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let fixture_dir = repo_root().join("crates/test-fixtures/compat/filesystem");
-
-    let layout: serde_json::Value =
-        read_json(fixture_dir.join("project-conversation-layout.json")).expect("layout fixture");
-    let handles = layout["durable_state"]["after"]["conversation_handles"]["data"].clone();
-    assert!(handles.is_object());
-    let handles_path = temp.path().join("conversation-handles.json");
-    write_json_atomic(&handles_path, &handles, JsonWriteOptions::default())
-        .expect("rewrite handles");
-    let loaded_handles: serde_json::Value = read_json(&handles_path).expect("read handles");
-    assert_eq!(loaded_handles["schema_version"], 1);
-
-    let project_data = layout["durable_state"]["after"]["project"]["data"].clone();
-    let project_toml = toml::Value::try_from(project_data).expect("project toml value");
-    let project_path = temp.path().join("project.toml");
-    write_toml_atomic(&project_path, &project_toml).expect("rewrite project");
-    let loaded_project: toml::Value = read_toml(&project_path).expect("read project");
-    assert!(loaded_project.get("project_id").is_some());
-
-    let run_request: serde_json::Value =
-        read_json(fixture_dir.join("convo-run-request-state.json")).expect("run request fixture");
-    let request_state = run_request["durable_state"]["after"]["flow_run_requests"]["data"].clone();
-    let journal_path = temp.path().join("requests.jsonl");
-    append_jsonl(&journal_path, &request_state).expect("append request state");
-    let loaded_requests: Vec<serde_json::Value> =
-        read_jsonl(&journal_path, JsonLinesOptions::strict()).expect("read request state");
-    assert_eq!(loaded_requests, vec![request_state]);
-}
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate under workspace root")
-        .to_path_buf()
 }

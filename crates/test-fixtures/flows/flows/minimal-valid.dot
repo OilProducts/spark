@@ -1,5 +1,0 @@
-digraph minimal_valid {
-  done [label="Done", shape="Msquare"];
-  start [label="Start", shape="Mdiamond"];
-  start -> done;
-}

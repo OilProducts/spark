@@ -1,5 +1,5 @@
 use serde_json::json;
-use unified_llm_adapter::{parse_sse_stream, provider_json_event_name, SseParser};
+use unified_llm_adapter::SseParser;
 
 #[test]
 fn shared_sse_parser_handles_provider_stream_records_and_partial_chunks() {
@@ -29,12 +29,14 @@ fn shared_sse_parser_handles_provider_stream_records_and_partial_chunks() {
     );
     assert_eq!(records[0].retry, Some(2500));
     assert_eq!(records[0].payload.as_ref().unwrap()["delta"], json!("Hel"));
+    assert!(records[0].payload_error.is_none());
     assert_eq!(
         records[0].data,
         "{\"type\":\"response.output_text.delta\",\n\"delta\":\"Hel\"}"
     );
 
     assert_eq!(records[1].event.as_deref(), Some("malformed.payload"));
+    assert!(records[1].payload.is_none());
     assert_eq!(records[1].payload_error.as_ref().unwrap().raw, "{not-json}");
     assert!(!records[1]
         .payload_error
@@ -45,20 +47,6 @@ fn shared_sse_parser_handles_provider_stream_records_and_partial_chunks() {
 
     assert!(records[2].done);
     assert_eq!(records[2].data, "[DONE]");
-}
-
-#[test]
-fn parse_sse_stream_uses_provider_json_event_names() {
-    let records = parse_sse_stream(
-        "event: provider.wrapper\ndata: {\"event\":\"provider.payload\",\"value\":1}\n\n",
-    );
-
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].event.as_deref(), Some("provider.payload"));
-    assert_eq!(records[0].sse_event.as_deref(), Some("provider.wrapper"));
-    assert_eq!(records[0].json_event.as_deref(), Some("provider.payload"));
-    assert_eq!(
-        provider_json_event_name(records[0].payload.as_ref().unwrap()).as_deref(),
-        Some("provider.payload")
-    );
+    assert!(records[2].payload.is_none());
+    assert!(records[2].payload_error.is_none());
 }

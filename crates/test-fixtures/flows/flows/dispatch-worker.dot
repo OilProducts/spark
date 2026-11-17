@@ -1,7 +1,0 @@
-digraph dispatch_worker {
-  done [label="Done", shape="Msquare"];
-  implement [label="Implement", prompt="Implement the approved work item.", shape="box"];
-  start [label="Start", shape="Mdiamond"];
-  implement -> done;
-  start -> implement;
-}

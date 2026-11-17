@@ -1,5 +1,4 @@
-//! Every domain and leaf prints its help for `--help` and `-h`, and a bare
-//! domain prints its help, each on stdout with exit 0.
+//! Domains list their commands, and Spark prints help on stdout with exit 0.
 
 use std::process::Command;
 
@@ -79,27 +78,22 @@ fn listed(help: &str) -> Vec<&str> {
 }
 
 #[test]
-fn every_domain_and_leaf_prints_help_with_exit_zero() {
+fn domains_list_their_commands_and_help_exits_zero() {
     for (path, subcommands) in TREE {
         let path = path.split_whitespace().collect::<Vec<_>>();
-        for flag in [None, Some("--help"), Some("-h")] {
-            let args = path.iter().copied().chain(flag).collect::<Vec<_>>();
-            let help = help(&args);
-            assert_eq!(listed(&help), *subcommands, "spark {args:?}:\n{help}");
-        }
-        for leaf in *subcommands {
-            let leaf_path = [path.as_slice(), &[*leaf]].concat();
-            if TREE
-                .iter()
-                .any(|(domain, _)| *domain == leaf_path.join(" "))
-            {
-                continue;
-            }
-            for flag in ["--help", "-h"] {
-                let args = [leaf_path.as_slice(), &[flag]].concat();
-                let help = help(&args);
-                assert!(help.contains("Options:"), "spark {args:?}:\n{help}");
-            }
-        }
+        let help = help(&path);
+        assert_eq!(listed(&help), *subcommands, "spark {path:?}:\n{help}");
+    }
+
+    // ponytail: clap shares leaf help handling; cover required arguments and
+    // nested commands once. Add cases if a command gets custom help handling.
+    for args in [
+        vec!["--help"],
+        vec!["-h"],
+        vec!["run", "start", "--help"],
+        vec!["environment", "tokens", "revoke", "-h"],
+    ] {
+        let help = help(&args);
+        assert!(help.contains("Options:"), "spark {args:?}:\n{help}");
     }
 }

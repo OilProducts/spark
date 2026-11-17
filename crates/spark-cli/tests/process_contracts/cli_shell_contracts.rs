@@ -10,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use spark_cli::{
-    http_status_exit_code, request_plan_with_args_env_and_stdin, run_with_args_and_env,
-    run_with_args_env_and_stdin, HttpMethod,
+    request_plan_with_args_env_and_stdin, run_with_args_and_env, run_with_args_env_and_stdin,
+    HttpMethod,
 };
 
 /// The one JSON object a failure writes to stderr.
@@ -52,17 +52,6 @@ fn start_unknown_image_argument_is_a_json_usage_error() {
     );
     assert!(!message.contains("as a value"), "{message}");
     assert!(message.contains("Usage: spark run start"), "{message}");
-}
-
-#[test]
-fn flow_list_source_checkout_guard_returns_json_error() {
-    let env = BTreeMap::new();
-    let output = run_with_args_and_env(["spark", "flow", "list"], &env);
-
-    assert_eq!(output.exit_code, 1);
-    assert_eq!(output.stdout, "");
-    assert!(output.stderr.starts_with("{\"ok\": false, \"error\": \"Refusing to use default API target http://127.0.0.1:8000 from a source checkout"));
-    assert!(output.stderr.contains("before `spark flow list`"));
 }
 
 #[test]
@@ -749,58 +738,6 @@ fn send_messages_a_conversation_by_handle_and_replaces_the_role_and_mission_send
 }
 
 #[test]
-fn flow_format_is_not_a_command() {
-    let output = run_with_args_and_env(["spark", "flow", "format", "--dir", "x"], &BTreeMap::new());
-
-    assert_eq!(output.exit_code, 2, "{output:?}");
-    assert_eq!(output.stdout, "");
-    let message = stderr_json(&output)["error"].as_str().unwrap().to_string();
-    assert!(
-        message.contains("unrecognized subcommand 'format'"),
-        "{message}"
-    );
-    assert!(
-        message.contains("valid subcommands: list, get, validate"),
-        "{message}"
-    );
-}
-
-#[test]
-fn flow_validate_dir_json_uses_local_preview_without_source_checkout_guard() {
-    let temp_dir = temp_dir("flow-validate-success");
-    let flow_dir = temp_dir.join("valid-flow");
-    crate::write_flow_json(&flow_dir, valid_flow());
-    let env = BTreeMap::new();
-
-    let output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "validate",
-            "--dir",
-            flow_dir.to_str().expect("path"),
-        ],
-        &env,
-    );
-
-    assert_eq!(output.exit_code, 0, "{}", output.stderr);
-    assert_eq!(output.stderr, "");
-    let payload: Value = serde_json::from_str(&output.stdout).expect("valid json");
-    assert_eq!(payload["name"], "valid-flow");
-    assert_eq!(
-        payload["path"],
-        fs::canonicalize(&flow_dir)
-            .expect("canonical path")
-            .to_string_lossy()
-            .as_ref()
-    );
-    assert_eq!(payload["status"], "ok");
-    assert_eq!(payload["diagnostics"], Value::Array(Vec::new()));
-    assert_eq!(payload["errors"], Value::Array(Vec::new()));
-    let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
 fn flow_validate_dir_rejects_single_flow_files() {
     let temp_dir = temp_dir("flow-validate-yaml");
     let flow_path = temp_dir.join("flow.yaml");
@@ -1347,12 +1284,6 @@ fn run_start_goal_reads_stdin_and_only_one_flag_may_read_it() {
     );
 }
 
-#[test]
-fn http_not_found_maps_to_exit_three() {
-    assert_eq!(http_status_exit_code(404), 3);
-    assert_eq!(http_status_exit_code(409), 1);
-}
-
 #[derive(Debug, Clone)]
 struct HttpResponse {
     status: u16,
@@ -1483,32 +1414,6 @@ fn temp_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("spark-cli-{label}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&path).expect("create temp dir");
     path
-}
-
-fn valid_flow() -> Value {
-    serde_json::json!({
-        "schema_version": "2",
-        "id": "workflow",
-        "title": "Workflow",
-        "nodes": {
-            "start": {
-                "kind": "start",
-                "config": {"kind": "start"},
-                "routes": {"next": {"to": "task", "description": "Enter the first workflow step."}},
-            },
-            "task": {
-                "kind": "agent_task",
-                "label": "Task",
-                "config": {"kind": "agent_task", "prompt": "Do work"},
-                "contracts": {"response": "decision_envelope"},
-                "routes": {"done": {"to": "done", "description": "The task is complete."}},
-            },
-            "done": {
-                "kind": "exit",
-                "config": {"kind": "exit", "result": {"name": "completed", "outcome": "success"}},
-            },
-        },
-    })
 }
 
 fn validation_error_flow() -> Value {

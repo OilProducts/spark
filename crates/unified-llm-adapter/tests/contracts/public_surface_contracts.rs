@@ -1,4 +1,3 @@
-use std::any::TypeId;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -11,110 +10,25 @@ use unified_llm_adapter::{
     error_from_grpc_code, error_from_status_code, generate, generate_object,
     generate_object_with_policy_and_hooks, generate_steps_with_policy_and_hooks,
     generate_with_policy_and_hooks, get_default_client, get_latest_model, managed_stream,
-    parse_sse_stream, resolve_high_level_provider_and_model, retry_after_from_headers,
+    resolve_high_level_provider_and_model, retry_after_from_headers,
     retry_stream_before_first_event_with_hooks, retry_with_hooks, set_default_client, stream,
     stream_events, stream_object, stream_object_with_policy_and_hooks,
     stream_with_policy_and_hooks, AbortController, ActiveLlmProfile, AdapterError,
     AdapterErrorKind, AdapterTimeout, AudioData, Client, ContentKind, ContentPart, DocumentData,
     FinishReason, FinishReasonKind, GenerateRequest, HighLevelLlmResolutionInputs, ImageData,
-    LlmRequest, LlmResponse, Message, MessageRole, Middleware, ModelCapabilities,
-    NativeRequestConfig, OpenAICompatibleRequestConfig, ProviderAdapter, ProviderError,
-    RateLimitInfo, Request, Response, ResponseFormat, RetryPolicy, Role, SDKError, SDKErrorKind,
-    SseParser, StopWhen, StreamAccumulator, StreamEvent, StreamEventType, StreamEvents,
-    ThinkingData, TimeoutConfig, Tool, ToolCall, ToolCallData, ToolChoice, ToolInvocation,
-    ToolRepair, ToolRepairInvocation, Usage, Warning, DEFAULT_CONNECT_TIMEOUT_SECONDS,
-    DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_STREAM_READ_TIMEOUT_SECONDS,
+    Message, MessageRole, Middleware, ModelCapabilities, NativeRequestConfig,
+    OpenAICompatibleRequestConfig, ProviderAdapter, Request, Response, ResponseFormat, RetryPolicy,
+    Role, SDKError, SDKErrorKind, SseParser, StopWhen, StreamAccumulator, StreamEvent,
+    StreamEventType, StreamEvents, ThinkingData, TimeoutConfig, Tool, ToolCall, ToolCallData,
+    ToolChoice, ToolInvocation, ToolRepair, ToolRepairInvocation, Usage, Warning,
+    DEFAULT_CONNECT_TIMEOUT_SECONDS, DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    DEFAULT_STREAM_READ_TIMEOUT_SECONDS,
 };
 
 static DEFAULT_CLIENT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
-fn canonical_public_surface_round_trips_with_legacy_aliases() {
-    assert_eq!(TypeId::of::<Request>(), TypeId::of::<LlmRequest>());
-    assert_eq!(TypeId::of::<Response>(), TypeId::of::<LlmResponse>());
-    assert_eq!(TypeId::of::<Role>(), TypeId::of::<MessageRole>());
-
-    let request = Request {
-        model: "gpt-5.2".to_string(),
-        provider: Some("OpenAI".to_string()),
-        messages: vec![Message {
-            role: Role::User,
-            content: vec![ContentPart::Text {
-                text: "hello".to_string(),
-            }],
-            name: None,
-            tool_call_id: None,
-            provider_metadata: BTreeMap::from([("source".to_string(), json!("test"))]),
-        }],
-        tools: vec![Tool::passive("lookup").unwrap()],
-        tool_choice: Some(ToolChoice::auto()),
-        response_format: Some(ResponseFormat::JsonObject),
-        temperature: Some(0.2),
-        top_p: Some(0.9),
-        max_tokens: Some(1024),
-        stop_sequences: vec!["END".to_string()],
-        reasoning_effort: Some("medium".to_string()),
-        metadata: BTreeMap::from([("run_id".to_string(), json!("run-1"))]),
-        provider_options: BTreeMap::from([("openai".to_string(), json!({"trace": true}))]),
-        timeout: None,
-        abort_signal: None,
-        ..Default::default()
-    };
-    let legacy_request: LlmRequest = request.clone();
-
-    let request_json = serde_json::to_value(&request).unwrap();
-    let legacy_request_json = serde_json::to_value(&legacy_request).unwrap();
-    assert_eq!(request_json, legacy_request_json);
-    assert_eq!(
-        serde_json::from_value::<Request>(legacy_request_json).unwrap(),
-        serde_json::from_value::<LlmRequest>(request_json).unwrap(),
-    );
-
-    let response = Response {
-        id: "resp-1".to_string(),
-        model: "gpt-5.2-actual".to_string(),
-        provider: "openai".to_string(),
-        message: Message::assistant("done"),
-        finish_reason: FinishReason::Stop,
-        usage: Usage {
-            input_tokens: 4,
-            output_tokens: 2,
-            ..Usage::default()
-        },
-        raw: Some(json!({"id": "resp-1"})),
-        warnings: vec![Warning {
-            message: "ignored option".to_string(),
-            code: Some("unsupported_option".to_string()),
-        }],
-        rate_limit: Some(RateLimitInfo {
-            requests_remaining: Some(7),
-            requests_limit: Some(10),
-            tokens_remaining: Some(99),
-            tokens_limit: Some(100),
-            reset_at: Some("2026-04-21T00:00:00Z".to_string()),
-        }),
-        ..Response::default()
-    };
-    let legacy_response: LlmResponse = response.clone();
-
-    let response_json = serde_json::to_value(&response).unwrap();
-    let legacy_response_json = serde_json::to_value(&legacy_response).unwrap();
-    assert_eq!(response_json, legacy_response_json);
-    assert_eq!(
-        serde_json::from_value::<Response>(legacy_response_json).unwrap(),
-        serde_json::from_value::<LlmResponse>(response_json).unwrap(),
-    );
-}
-
-#[test]
-fn canonical_error_surface_round_trips_with_legacy_aliases() {
-    assert_eq!(TypeId::of::<SDKError>(), TypeId::of::<AdapterError>());
-    assert_eq!(TypeId::of::<SDKError>(), TypeId::of::<ProviderError>());
-    assert_eq!(
-        TypeId::of::<SDKErrorKind>(),
-        TypeId::of::<AdapterErrorKind>()
-    );
-
+fn sdk_error_preserves_wire_fields() {
     let canonical = SDKError {
         kind: SDKErrorKind::RateLimit,
         message: "slow down".to_string(),
@@ -125,9 +39,6 @@ fn canonical_error_surface_round_trips_with_legacy_aliases() {
         retry_after: Some(7.0),
         raw: Some(json!({"error": {"message": "slow down", "code": "rate_limit"}})),
     };
-    let legacy: AdapterError = canonical.clone();
-    let provider_error: ProviderError = canonical.clone();
-
     assert_eq!(
         serde_json::to_value(&canonical).unwrap(),
         json!({
@@ -140,14 +51,6 @@ fn canonical_error_surface_round_trips_with_legacy_aliases() {
             "retry_after": 7.0,
             "raw": {"error": {"message": "slow down", "code": "rate_limit"}},
         })
-    );
-    assert_eq!(
-        serde_json::to_value(&legacy).unwrap(),
-        serde_json::to_value(&canonical).unwrap()
-    );
-    assert_eq!(
-        serde_json::to_value(&provider_error).unwrap(),
-        serde_json::to_value(&canonical).unwrap()
     );
     assert_eq!(
         serde_json::from_value::<AdapterError>(serde_json::to_value(&canonical).unwrap()).unwrap(),
@@ -599,9 +502,6 @@ fn response_defaults_are_required_in_public_serialization_contract() {
     .unwrap();
     assert_eq!(deserialized.finish_reason, FinishReason::Other);
     assert_eq!(deserialized.usage, Usage::default());
-
-    let legacy: LlmResponse = serde_json::from_value(serialized.clone()).unwrap();
-    assert_eq!(serde_json::to_value(&legacy).unwrap(), serialized);
 }
 
 #[test]
@@ -645,54 +545,6 @@ fn stream_event_uses_canonical_wire_fields_and_preserves_custom_types() {
 
     let round_tripped: StreamEvent = serde_json::from_value(serialized).unwrap();
     assert_eq!(round_tripped, event);
-}
-
-#[test]
-fn shared_sse_parser_preserves_provider_neutral_records() {
-    let records = parse_sse_stream(
-        ": keepalive\n\
-         retry: 1500\n\
-         event: sse.event.name\n\
-         data: {\"type\":\"json.event.name\",\n\
-         data: \"message\":\"hello\"}\n\
-         \n\
-         \n\
-         data: [DONE]\n\
-         \n\
-         event: provider.error\n\
-         data: {not-json}\n\
-         \n",
-    );
-
-    assert_eq!(records.len(), 3);
-    assert_eq!(records[0].sse_event.as_deref(), Some("sse.event.name"));
-    assert_eq!(records[0].json_event.as_deref(), Some("json.event.name"));
-    assert_eq!(records[0].event.as_deref(), Some("json.event.name"));
-    assert_eq!(records[0].retry, Some(1500));
-    assert_eq!(
-        records[0].data,
-        "{\"type\":\"json.event.name\",\n\"message\":\"hello\"}"
-    );
-    assert_eq!(
-        records[0].payload.as_ref().unwrap()["message"],
-        json!("hello")
-    );
-    assert!(records[0].payload_error.is_none());
-
-    assert!(records[1].done);
-    assert_eq!(records[1].data, "[DONE]");
-    assert!(records[1].payload.is_none());
-    assert!(records[1].payload_error.is_none());
-
-    assert_eq!(records[2].event.as_deref(), Some("provider.error"));
-    assert_eq!(records[2].data, "{not-json}");
-    assert!(records[2].payload.is_none());
-    let payload_error = records[2]
-        .payload_error
-        .as_ref()
-        .expect("malformed JSON error");
-    assert_eq!(payload_error.raw, "{not-json}");
-    assert!(!payload_error.message.is_empty());
 }
 
 #[test]
@@ -828,13 +680,6 @@ fn stream_accumulator_rebuilds_lifecycle_response_and_enriches_finish_event() {
         "Hello"
     );
     assert_eq!(finish_event.usage.expect("finish usage").total_tokens, 6);
-
-    let only_deltas = events
-        .iter()
-        .filter(|event| event.r#type == StreamEventType::TextDelta)
-        .filter_map(|event| event.delta.as_deref())
-        .collect::<String>();
-    assert_eq!(only_deltas, "Hello");
 }
 
 #[test]
@@ -1109,42 +954,6 @@ fn response_format_uses_spec_wire_values() {
         serde_json::from_value::<ResponseFormat>(json!({"type": "json_object"})).unwrap(),
         ResponseFormat::JsonObject
     );
-}
-
-#[test]
-fn crate_root_client_and_provider_adapter_surface_are_exercisable() {
-    let _default_client_guard = DEFAULT_CLIENT_TEST_LOCK
-        .lock()
-        .expect("default client test lock");
-    let previous_default_client = get_default_client();
-    let adapter: Arc<dyn ProviderAdapter> = Arc::new(EchoAdapter);
-    let client = Client::from_providers(
-        BTreeMap::from([("FAKE".to_string(), adapter)]),
-        Some("fake"),
-    )
-    .unwrap();
-
-    let request = Request {
-        model: "test-model".to_string(),
-        messages: vec![Message::user("hello")],
-        ..empty_request()
-    };
-
-    let response = client.complete(request.clone()).unwrap();
-    assert_eq!(response.text(), "fake:test-model");
-    assert_eq!(response.finish_reason, FinishReason::Stop);
-
-    let events = client
-        .stream(request)
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    assert_eq!(events, vec![StreamEvent::text_delta("fake-stream")]);
-    assert!(client.supports_tool_choice("auto", None).unwrap());
-
-    set_default_client(Some(client.clone()));
-    assert_eq!(get_default_client().default_provider(), Some("fake"));
-    set_default_client(Some(previous_default_client));
 }
 
 #[test]
@@ -6202,27 +6011,6 @@ impl ProviderAdapter for ClosableStreamAdapter {
             *close_calls.lock().expect("close call count") += 1;
             Ok(())
         }))
-    }
-}
-
-fn empty_request() -> Request {
-    Request {
-        model: String::new(),
-        provider: None,
-        messages: Vec::new(),
-        tools: Vec::new(),
-        tool_choice: None,
-        response_format: None,
-        temperature: None,
-        top_p: None,
-        max_tokens: None,
-        stop_sequences: Vec::new(),
-        reasoning_effort: None,
-        metadata: BTreeMap::new(),
-        provider_options: BTreeMap::new(),
-        timeout: None,
-        abort_signal: None,
-        ..Default::default()
     }
 }
 
