@@ -9,6 +9,7 @@ import {
   formatRunDate,
   formatCompactCount,
   runDayLabel,
+  runMatchesSearch,
   runStatusKind,
 } from '../runOverviewModel'
 import { canContinueRun, canRetryRun, formatRunStatusLabel } from '../shared'
@@ -154,6 +155,15 @@ describe('runTitle', () => {
     expect(runTitle({ title: '  ', flow_name: 'Implement Task', launch_context: null })).toBe('Implement Task')
     // The runs list carries only the first input.
     expect(runTitle({ flow_name: 'merge-change.yaml', first_launch_input: 'changes/CR-2/request.md' })).toBe('changes/CR-2/request.md')
+    // A flow's own title names it, as its run header does.
+    expect(runTitle({ flow_name: 'release-check.yaml', flow_title: 'Release readiness' })).toBe('Release readiness')
+  })
+
+  it("finds a run by its flow's own title as well as its file name", () => {
+    const run = { run_id: 'run-1', status: 'completed', working_directory: '', flow_name: 'release-check.yaml', flow_title: 'Release readiness', title: 'Ship 1.2' }
+    expect(runMatchesSearch(run, 'release readiness')).toBe(true)
+    expect(runMatchesSearch(run, 'release check')).toBe(true)
+    expect(runMatchesSearch(run, 'nightly')).toBe(false)
   })
 })
 

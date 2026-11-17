@@ -29,7 +29,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { statusTextClassName } from "@/components/app/status"
 import { RunLink } from "@/features/missions/MissionTranscript"
-import { flowTitle } from "@/features/runs/model/runOverviewModel"
+import { runFlowTitle } from "@/features/runs/model/runOverviewModel"
 import { formatRunStatusLabel, runRecordTone, type RunRecord } from "@/features/runs/model/shared"
 
 type HistoryEntry = { status: string; run_id?: string | null; message: string }
@@ -45,7 +45,7 @@ function FiringResult({ entry, run }: { entry: HistoryEntry; run: RunRecord | un
       {run ? (
         <><span className={statusTextClassName(runRecordTone(run))}>{formatRunStatusLabel(run)}</span>{' · '}</>
       ) : null}
-      <RunLink runId={entry.run_id}>{run ? flowTitle(run.flow_name) : 'Started a run'}</RunLink>
+      <RunLink runId={entry.run_id}>{run ? runFlowTitle(run) : 'Started a run'}</RunLink>
     </span>
   )
 }

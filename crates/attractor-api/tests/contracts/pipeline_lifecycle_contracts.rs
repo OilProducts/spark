@@ -73,6 +73,8 @@ fn start_pipeline_from_a_saved_flow_persists_run_and_returns_launch_metadata() {
     let record = bundle.record.expect("record");
     // A name given at launch is the run's title, kept through the run's later record writes.
     assert_eq!(record.title.as_deref(), Some("Docs pass for api"));
+    // The run names its flow as the flow titles itself, not by its file name.
+    assert_eq!(record.flow_title.as_deref(), Some("API Lifecycle"));
     // The run's flow snapshot is the JSON definition, which the hash covers.
     let flow_dir = bundle.paths.artifacts_dir().join("flow");
     let mut snapshot = fs::read_dir(&flow_dir)

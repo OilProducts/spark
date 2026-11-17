@@ -296,6 +296,8 @@ impl RuntimeControls {
         let mut record = source_record.clone();
         record.run_id = new_run_id.clone();
         record.flow_name = flow_name.clone();
+        record.flow_title =
+            Some(request.flow.title.trim().to_string()).filter(|title| !title.is_empty());
         record.status = "running".to_string();
         record.outcome = None;
         record.outcome_reason_code = None;

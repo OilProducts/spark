@@ -13,7 +13,7 @@ import {
     formatTimestamp,
     runRecordTone,
 } from '../model/shared'
-import { formatCompactCount, formatRunDate, flowTitle as flowTitleFromName, runTitle, runTrigger } from '../model/runOverviewModel'
+import { formatCompactCount, formatRunDate, runFlowTitle, runTitle, runTrigger } from '../model/runOverviewModel'
 import { openTrigger } from '@/app/useAttention'
 import { useStore } from '@/store'
 import { normalizeProjectPath } from '@/lib/projectPaths'
@@ -87,8 +87,8 @@ export function RunHeaderBar({
     // The title is the one the run list shows. The flow's own title joins the breadcrumb
     // only under a title of the run's own; a title made from the flow's name says it already.
     const title = runTitle(run)
-    const flow = flowTitle?.trim() || flowTitleFromName(run.flow_name)
-    const showFlow = title !== flowTitleFromName(run.flow_name) && flow.toLowerCase() !== title.toLowerCase()
+    const flow = flowTitle?.trim() || runFlowTitle(run)
+    const showFlow = title !== runFlowTitle(run) && flow.toLowerCase() !== title.toLowerCase()
     const tone = runRecordTone(run)
     const trigger = runTrigger(run)
     const triggerProject = run.project_path || run.working_directory

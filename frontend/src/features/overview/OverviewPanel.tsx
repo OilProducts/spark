@@ -14,7 +14,7 @@ import { triggerKey } from '@/lib/api/triggersApi'
 import { missionTime } from '@/features/missions/model/missionModel'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
-import { flowTitle, formatRunDate, runTitle } from '@/features/runs/model/runOverviewModel'
+import { formatRunDate, runFlowTitle, runTitle } from '@/features/runs/model/runOverviewModel'
 import { formatDuration, formatRunStatusLabel, isCompletedFailure } from '@/features/runs/model/shared'
 import { openRunFlowDialog } from '@/features/launch'
 import { useOverviewChats } from './hooks/useOverviewChats'
@@ -142,7 +142,7 @@ function SourceLink({ source }: { source: Source | null }) {
 const itemTitle = (item: Started) => (item.kind === 'run' ? runTitle(item.run) : item.mission.fields.title || 'Untitled mission')
 // A run's flow is worth naming under its title only when the title doesn't already say it.
 const distinctFlowTitle = (item: Started & { kind: 'run' }) => {
-    const flow = flowTitle(item.run.flow_name)
+    const flow = runFlowTitle(item.run)
     return flow.toLowerCase() === itemTitle(item).toLowerCase() ? null : flow
 }
 const openItem = (item: Started) => (item.kind === 'run' ? openRun(item.id) : openMission(item.id, item.mission.project_path))
@@ -372,7 +372,7 @@ export function OverviewPanel() {
                                             <MarkDot mark={item.mark} />
                                             <TitleLink onClick={() => openItem(item)}>{itemTitle(item)}</TitleLink>
                                             <span className="ml-auto flex shrink-0 items-baseline text-xs text-muted-foreground">
-                                                {item.kind === 'mission' ? 'Mission' : flowTitle(item.run.flow_name)} · {when(item.at, now)}
+                                                {item.kind === 'mission' ? 'Mission' : runFlowTitle(item.run)} · {when(item.at, now)}
                                                 <ExceptionWord item={item} />
                                             </span>
                                         </li>

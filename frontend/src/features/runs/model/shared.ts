@@ -34,6 +34,8 @@ export interface RunRecord {
     /** The runs list's stand-in for launch_context: its first input, cut to a line. */
     first_launch_input?: string | null
     flow_name: string
+    /** The launched flow's own title, when it has one. */
+    flow_title?: string | null
     status: string
     outcome?: 'success' | 'failure' | null
     outcome_reason_code?: string | null

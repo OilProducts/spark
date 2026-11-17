@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react"
+import { ChevronRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { RunCard } from "@/components/app/transcript/SegmentRows"
 import type { StatusTone } from "@/components/app/status"
 import { Well } from "@/components/app/well"
-import { flowTitle } from "@/features/runs/model/runOverviewModel"
+import { flowTitle, runFlowTitle } from "@/features/runs/model/runOverviewModel"
 import { formatDuration, formatRunStatusLabel, runRecordTone } from "@/features/runs/model/shared"
 import type { PipelineResultResponse } from "@/lib/attractorClient"
 import { useStore } from "@/store"
@@ -95,10 +96,13 @@ function FlowArtifactCard({
     openRunTestId,
     onOpenFlowRun,
     formatConversationTimestamp,
+    inputsOpen = false,
     children,
 }: {
     artifact: FlowArtifact
     kicker: string
+    /** Show the launch inputs unfolded, as for a request still to review. */
+    inputsOpen?: boolean
     presentation: { label: string; tone: StatusTone }
     testId?: string
     openRunTestId?: string
@@ -108,12 +112,12 @@ function FlowArtifactCard({
 }) {
     // The run's own record, when the runs list has it, gives the card its live status.
     const run = useStore((state) => artifact.run_id ? state.runsListSession.runs.find((entry) => entry.run_id === artifact.run_id) : undefined)
-    const launchContextText = artifact.launch_context ? JSON.stringify(artifact.launch_context, null, 2) : null
+    const inputs = Object.entries(artifact.launch_context ?? {})
     return (
         <div data-testid={testId} className="w-full max-w-[72ch] rounded-xl border border-border">
             <RunCard
                 className="rounded-none border-0 p-3"
-                kicker={`${kicker} · ${flowTitle(artifact.flow_name)}`}
+                kicker={`${kicker} · ${run ? runFlowTitle(run) : flowTitle(artifact.flow_name)}`}
                 title={artifact.run_id ? (
                     <button
                         type="button"
@@ -131,19 +135,28 @@ function FlowArtifactCard({
             <div className="space-y-2 px-3 pb-3 text-xs text-muted-foreground">
                 <p>
                     Flow: <span className="font-mono text-foreground">{artifact.flow_name}</span>
-                    {" · "}<span className="font-mono">{artifact.id}</span>
                     {" · "}Updated {formatConversationTimestamp(artifact.updated_at)}
                 </p>
                 {artifact.goal ? (
                     <p className="whitespace-pre-wrap rounded-lg bg-muted px-3 py-2 text-sm text-foreground">{artifact.goal}</p>
                 ) : null}
-                {launchContextText ? (
-                    <div className="space-y-1">
-                        <p>Launch context:</p>
-                        <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-muted px-3 py-2 font-mono text-xs text-muted-foreground">
-                            {launchContextText}
-                        </pre>
-                    </div>
+                {inputs.length > 0 ? (
+                    <details data-testid="flow-artifact-inputs" open={inputsOpen} className="group">
+                        <summary className="flex cursor-pointer list-none items-center gap-1 [&::-webkit-details-marker]:hidden">
+                            <ChevronRight aria-hidden="true" className="size-3.5 transition-transform group-open:rotate-90" />
+                            Launch inputs ({inputs.length})
+                        </summary>
+                        <dl className="mt-1.5 space-y-2 rounded-lg bg-muted px-3 py-2">
+                            {inputs.map(([key, value]) => (
+                                <div key={key} data-testid="flow-artifact-input" data-key={key}>
+                                    <dt className="font-mono text-muted-foreground" title={key}>{key.replace(/^context\./, "")}</dt>
+                                    <dd className="whitespace-pre-wrap break-words text-sm text-foreground">
+                                        {typeof value === "string" ? value : JSON.stringify(value, null, 2)}
+                                    </dd>
+                                </div>
+                            ))}
+                        </dl>
+                    </details>
                 ) : null}
                 {artifact.model ? <p>Model override: <span className="font-mono text-foreground">{artifact.model}</span></p> : null}
                 {artifact.llm_provider ? <p>Provider override: <span className="font-mono text-foreground">{artifact.llm_provider}</span></p> : null}
@@ -184,6 +197,7 @@ export function ProjectFlowRunRequestEntry({
         <FlowArtifactCard
             artifact={flowRunRequest}
             kicker="Run request"
+            inputsOpen={canReview}
             presentation={getFlowRunRequestStatusPresentation(flowRunRequest.status)}
             testId={isLatestFlowRunRequest ? "project-flow-run-request-surface" : undefined}
             openRunTestId={isLatestFlowRunRequest ? "project-flow-run-request-open-run-button" : undefined}

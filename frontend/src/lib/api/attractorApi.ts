@@ -289,6 +289,7 @@ export interface RunRecordResponse {
     title?: string | null
     first_launch_input?: string | null
     flow_name: string
+    flow_title?: string | null
     status: string
     outcome?: 'success' | 'failure' | null
     outcome_reason_code?: string | null
@@ -835,6 +836,7 @@ function parseRunRecord(
         title: asOptionalNullableString(record.title),
         first_launch_input: asOptionalNullableString(record.first_launch_input),
         flow_name: typeof record.flow_name === 'string' ? record.flow_name : '',
+        flow_title: asOptionalNullableString(record.flow_title),
         status: record.status,
         outcome: asOptionalNullableString(record.outcome) as RunRecordResponse['outcome'],
         outcome_reason_code: asOptionalNullableString(record.outcome_reason_code),

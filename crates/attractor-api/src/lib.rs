@@ -1949,6 +1949,7 @@ impl AttractorApiService {
             };
         let mut record = RunRecord::new(&run_id, &working_directory);
         record.flow_name = flow_name.clone();
+        record.flow_title = trimmed_option(Some(flow.title.as_str()));
         record.working_directory = working_directory.clone();
         record.project_path = project_path;
         record.model = display_model.clone();

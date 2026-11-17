@@ -17,7 +17,7 @@ import { projectLabel } from '@/features/projects/model/projectChoices'
 import type { RunRecord } from '../model/shared'
 import { formatDuration, formatRunStatusLabel, formatTimestamp, isCompletedFailure, runHasEnded, runRecordTone } from '../model/shared'
 import { requestRunsTransportReconnect } from '../services/runsTransportReconnect'
-import { flowTitle, formatRunDate, formatRunTime, runDayLabel, runKind, runMatchesSearch, runTitle, type RunStatusKind } from '../model/runOverviewModel'
+import { formatRunDate, formatRunTime, runDayLabel, runFlowTitle, runKind, runMatchesSearch, runTitle, type RunStatusKind } from '../model/runOverviewModel'
 
 const ACTIVE_LIST_STATUSES = new Set([
     'running',
@@ -198,8 +198,8 @@ export function RunList({
     ) => {
         const runProject = depth === 0 && showProject && run.project_path ? projectLabel(projectRegistry, run.project_path) : null
         const attention = attentionOf(run)?.label === stated ? null : attentionOf(run)
-        const title = depth === 0 ? runTitle(run) : flowTitle(run.flow_name)
-        const flowPart = title === flowTitle(run.flow_name) ? null : flowTitle(run.flow_name)
+        const title = depth === 0 ? runTitle(run) : runFlowTitle(run)
+        const flowPart = title === runFlowTitle(run) ? null : runFlowTitle(run)
         const metaParts = [
             underDay ? formatRunTime(run.started_at) : formatRunDate(run.started_at, now),
             formatDuration(run.started_at, run.ended_at, run.status, now),
@@ -316,7 +316,7 @@ export function RunList({
         const open = (selectedIndex >= 0) !== expandedParents.has(key)
         const attention = attentionOf(latest)
         const runProject = showProject && latest.project_path ? projectLabel(projectRegistry, latest.project_path) : null
-        const flowPart = runTitle(latest) === flowTitle(latest.flow_name) ? null : flowTitle(latest.flow_name)
+        const flowPart = runTitle(latest) === runFlowTitle(latest) ? null : runFlowTitle(latest)
         const shown = Math.max(foldShown[key] ?? REPEATS_PAGE, selectedIndex + 1)
         const more = repeatRuns.length - shown
         return (

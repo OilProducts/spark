@@ -101,8 +101,8 @@ interface RunVisitsCardProps {
     onViewArtifact: (entry: ArtifactListEntry) => void
     /** The run graph toggle, shown in the rail's view control. */
     graph?: { shown: boolean; onToggle: () => void }
-    /** Put the rail above the details, leaving the width to the graph beside them. */
-    railAbove?: boolean
+    /** The run graph, shown above the details so the rail keeps its full height beside both. */
+    graphPane?: ReactNode
 }
 
 export function RunVisitsCard({
@@ -126,7 +126,7 @@ export function RunVisitsCard({
     artifactEntries,
     onViewArtifact,
     graph,
-    railAbove = false,
+    graphPane,
 }: RunVisitsCardProps) {
     // An exit node that simply completed says nothing the status item doesn't.
     const visits = useMemo(
@@ -195,13 +195,41 @@ export function RunVisitsCard({
         }
     }
 
+    // On a phone the details lead (a question to answer, a result, why it failed); the steps follow.
+    const details = (
+        <div ref={detailsRef} data-testid="run-visit-details" className={cn('min-w-0 flex-1', isNarrowViewport ? 'order-first scroll-mt-16' : 'min-h-0 overflow-y-auto')}>
+            {showJournal ? (
+                <RunJournal journal={journal} flowNodes={flowNodes} timelineError={timelineError} />
+            ) : selected === 'status' ? (
+                renderStatus(select)
+            ) : selected === 'context' ? (
+                <div key={contextFocusKey ?? ''}>{renderContext(contextFocusKey, select)}</div>
+            ) : (
+                <RunVisitView
+                    key={selected.key}
+                    visit={selected}
+                    visits={visits}
+                    flowNode={flowNodes[selected.nodeId] ?? null}
+                    segments={segments}
+                    prompts={prompts}
+                    now={now}
+                    artifactEntries={artifactEntries}
+                    onViewArtifact={onViewArtifact}
+                    onSelectVisit={(visit) => select(visit)}
+                    onOpenContextKey={openContextKey}
+                    onOpenRun={onOpenRun}
+                />
+            )}
+        </div>
+    )
+
     return (
         <section
             data-testid="run-visits-panel"
-            data-responsive-layout={isNarrowViewport || railAbove ? 'stacked' : 'split'}
-            className={cn('flex gap-6', isNarrowViewport ? 'flex-col' : railAbove ? 'h-full min-h-0 flex-col gap-5' : 'h-full min-h-0')}
+            data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
+            className={cn('flex gap-6', isNarrowViewport ? 'flex-col' : 'h-full min-h-0')}
         >
-            <Well className={cn('flex shrink-0 flex-col gap-0.5 p-2', isNarrowViewport || railAbove ? undefined : 'min-h-0 w-64')}>
+            <Well className={cn('flex shrink-0 flex-col gap-0.5 p-2', isNarrowViewport ? undefined : 'min-h-0 w-64')}>
                 {/* Steps and Journal exclude each other; the graph is additive, so it is its own
                     one-segment track beside them (a pressed segment beside a pressed segment reads wrong). */}
                 <div className="mb-1.5 flex items-center gap-1.5">
@@ -256,7 +284,7 @@ export function RunVisitsCard({
                     data-own-keys="jk"
                     data-testid="run-visit-list"
                     onKeyDown={onListKeyDown}
-                    className={cn('space-y-0.5 overflow-y-auto', isNarrowViewport || railAbove ? 'max-h-72' : 'min-h-0 flex-1')}
+                    className={cn('space-y-0.5 overflow-y-auto', isNarrowViewport ? 'max-h-72' : 'min-h-0 flex-1')}
                 >
                     {(['status', 'context'] as const).map((item) => (
                         <button
@@ -368,31 +396,12 @@ export function RunVisitsCard({
                     })}
                 </div>
             </Well>
-            {/* On a phone the details lead (a question to answer, a result, why it failed); the steps follow. */}
-            <div ref={detailsRef} data-testid="run-visit-details" className={cn('min-w-0 flex-1', isNarrowViewport ? 'order-first scroll-mt-16' : 'min-h-0 overflow-y-auto')}>
-                {showJournal ? (
-                    <RunJournal journal={journal} flowNodes={flowNodes} timelineError={timelineError} />
-                ) : selected === 'status' ? (
-                    renderStatus(select)
-                ) : selected === 'context' ? (
-                    <div key={contextFocusKey ?? ''}>{renderContext(contextFocusKey, select)}</div>
-                ) : (
-                    <RunVisitView
-                        key={selected.key}
-                        visit={selected}
-                        visits={visits}
-                        flowNode={flowNodes[selected.nodeId] ?? null}
-                        segments={segments}
-                        prompts={prompts}
-                        now={now}
-                        artifactEntries={artifactEntries}
-                        onViewArtifact={onViewArtifact}
-                        onSelectVisit={(visit) => select(visit)}
-                        onOpenContextKey={openContextKey}
-                        onOpenRun={onOpenRun}
-                    />
-                )}
-            </div>
+            {graphPane ? (
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5">
+                    <div data-testid="run-graph-pane" className="flex h-[45%] min-h-64 shrink-0 flex-col">{graphPane}</div>
+                    {details}
+                </div>
+            ) : details}
         </section>
     )
 }

@@ -907,6 +907,11 @@ describe('ProjectsPanel', () => {
     expect(screen.getByTestId('chat-handle')).toHaveAccessibleName('Copy chat ID amber-otter')
     expect(screen.getByTestId('chat-handle')).toHaveTextContent('amber-otter')
     expect(screen.getByTestId('chats-chat-row-meta')).toHaveTextContent(/^amber-otter · /)
+    // A browser that refuses the clipboard is said so, not silently ignored.
+    vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValueOnce(new DOMException('Write permission denied.', 'NotAllowedError'))
+    await user.click(screen.getByTestId('chat-handle'))
+    expect(await screen.findByTestId('chat-handle-copy-failed')).toHaveTextContent('Couldn’t copy')
+    expect(screen.getByTestId('chat-handle')).toHaveTextContent('amber-otter')
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Can I interrupt?')
 

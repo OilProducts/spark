@@ -211,6 +211,9 @@ pub struct RunRecord {
     pub estimated_model_cost: Option<Value>,
     #[serde(default)]
     pub launch_context: Option<crate::context::ContextMap>,
+    /// The launched flow's own title, so a run names its flow as the flow does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_title: Option<String>,
     /// Utility-generated title of a root run. Written once, after launch;
     /// deliberately absent from the record writer's known fields so a stale
     /// in-memory record written later keeps the stored title.

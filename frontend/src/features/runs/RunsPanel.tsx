@@ -42,7 +42,7 @@ import { requestNavigation } from '@/state/workspaceSlice'
 const EMPTY_NODE_STATUSES = {}
 const EMPTY_FLOW_NODES: Record<string, VisitFlowNode> = {}
 // The rail (16rem + gap) plus details and graph columns of 28rem each.
-const RAIL_BESIDE_GRAPH_MIN_WIDTH = 1200
+const GRAPH_COLUMN_MIN_WIDTH = 1200
 
 // The rail's first row; a dot only when the run needs attention.
 const STATUS_ROWS: Record<RunStatusKind, { label: string; tone?: StatusTone }> = {
@@ -456,9 +456,9 @@ export function RunsPanel() {
             fillHeight={!isNarrowViewport}
         />
     ) : null
-    // With the graph open, the Steps rail keeps its own column only when the details and the
-    // graph still get a readable column each; otherwise it sits above the details.
-    const railBeside = runBodyWidth >= RAIL_BESIDE_GRAPH_MIN_WIDTH
+    // With the graph open, it takes a column of its own only when the details still get a readable
+    // one beside it; otherwise it sits above the details, and the Steps rail keeps its full height.
+    const graphColumn = graphCard && (isNarrowViewport || runBodyWidth >= GRAPH_COLUMN_MIN_WIDTH) ? graphCard : null
 
     const runFlowAction = (
         <Button type="button" variant="outline" size="sm" data-testid="runs-empty-run-flow-button" onClick={() => openRunFlowDialog({ projectPath: useStore.getState().runsListSession.projectFilter })}>
@@ -598,7 +598,7 @@ export function RunsPanel() {
                     >
                         <div className={isNarrowViewport
                             ? undefined
-                            : cn('flex min-h-0 min-w-0 flex-col', !graphCard ? 'flex-[1_1_0%]' : railBeside ? 'flex-[1_1_17.5rem]' : 'flex-[2_1_0%]')}
+                            : cn('flex min-h-0 min-w-0 flex-col', graphColumn ? 'flex-[1_1_17.5rem]' : 'flex-[1_1_0%]')}
                         >
                         <div
                             ref={detailsScrollRef}
@@ -623,7 +623,7 @@ export function RunsPanel() {
                                 artifactEntries={artifactEntries}
                                 onViewArtifact={openArtifact}
                                 graph={{ shown: showGraph, onToggle: () => setShowGraph((current) => !current) }}
-                                railAbove={Boolean(graphCard) && !railBeside}
+                                graphPane={graphColumn ? undefined : graphCard}
                                 statusRow={{
                                     ...STATUS_ROWS[statusKind],
                                     detail: formatDuration(selectedRun.started_at, selectedRun.ended_at, selectedRun.status, now),
@@ -702,13 +702,9 @@ export function RunsPanel() {
                         {/* After the details, so on a phone a question to answer comes first and the
                             rail's Graph toggle sits just above the graph; beside them it never moves the
                             Steps rail. A continuation picks its restart node on it. */}
-                        {graphCard ? (
-                        <div className={isNarrowViewport
-                            ? undefined
-                            // With the rail above the details, the graph takes the larger share.
-                            : cn('flex min-h-0 min-w-0 flex-col', railBeside ? 'flex-[1_1_0%]' : 'flex-[3_1_0%]')}
-                        >
-                            {graphCard}
+                        {graphColumn ? (
+                        <div className={isNarrowViewport ? undefined : 'flex min-h-0 min-w-0 flex-[1_1_0%] flex-col'}>
+                            {graphColumn}
                         </div>
                         ) : null}
                     </div>

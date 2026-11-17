@@ -16,6 +16,11 @@ export function flowTitle(flowName: string | null | undefined): string {
         : base.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
 
+/** A run's flow as the flow titles itself when it launched, else as its file name reads. */
+export const runFlowTitle = (run: Pick<RunRecord, 'flow_name' | 'flow_title'>): string => (
+    run.flow_title?.trim() || flowTitle(run.flow_name)
+)
+
 // Shared formatters: building one per call dominates rendering a long run list.
 const TIME_FORMAT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
 const MONTH_DAY_FORMAT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' })
@@ -85,13 +90,13 @@ export function runTrigger(run: Pick<RunRecord, 'launch_context'>): { id: string
 }
 
 /** The run's generated title, else the first launch input it was given, else its flow title. */
-export function runTitle(run: Pick<RunRecord, 'title' | 'flow_name' | 'launch_context' | 'first_launch_input'>): string {
+export function runTitle(run: Pick<RunRecord, 'title' | 'flow_name' | 'flow_title' | 'launch_context' | 'first_launch_input'>): string {
     const title = run.title?.trim()
     if (title) {
         return title
     }
     const input = firstLaunchInput(run)
-    return input ?? flowTitle(run.flow_name)
+    return input ?? runFlowTitle(run)
 }
 
 // The runtime's error text is the only record of what failed: a backend,
@@ -128,6 +133,7 @@ const STATUS_SEARCH_WORDS: Record<RunStatusKind, string> = {
 export function runMatchesSearch(run: RunRecord, query: string): boolean {
     return !query
         || runTitle(run).toLowerCase().includes(query)
+        || runFlowTitle(run).toLowerCase().includes(query)
         || flowTitle(run.flow_name).toLowerCase().includes(query)
         || run.flow_name.toLowerCase().includes(query)
         // Word starts only, so "fail" finds failed runs but "in" doesn't find every waiting one.
