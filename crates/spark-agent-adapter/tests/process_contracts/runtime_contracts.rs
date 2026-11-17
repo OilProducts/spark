@@ -192,6 +192,7 @@ fn session_lifecycle_transitions_emit_observable_events_and_allow_reuse() {
     let mut session = Session::default();
     assert_eq!(session.config.default_command_timeout_ms, 10_000);
     assert_eq!(session.config.max_command_timeout_ms, 600_000);
+    assert_eq!(session.config.loop_detection_window, 10);
     let start = session.next_event().expect("SESSION_START");
     assert_eq!(start.kind, EventKind::SessionStart);
     assert_eq!(start.session_id, Some(session.id));

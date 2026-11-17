@@ -5019,7 +5019,7 @@ fn module_default_client_override_replaces_lazy_env_backed_default() {
     let previous_default_client = get_default_client();
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(EchoAdapter);
     let override_client = Client::from_providers(
-        BTreeMap::from([("fake".to_string(), adapter)]),
+        BTreeMap::from([("FAKE".to_string(), adapter)]),
         Some("fake"),
     )
     .unwrap();
