@@ -34,7 +34,7 @@ Write a design document for the change in context.request.objective, respecting 
 
 Independent reviewers will read only this document and the files it references, so it must stand on its own. It has these sections:
 - Problem.
-- Goals and non-goals.
+- Goals and non-goals. State the outcomes the request asks for. Phrase a goal as a guarantee over every path, such as "no edit is ever lost", only when the request asks for that guarantee: reviewers hold the design to every path it covers.
 - Approach.
 - Alternatives considered: at least one other viable approach and why it lost, taken from context.approach.rejected when it is present.
 - Risks.
