@@ -422,8 +422,12 @@ describe('ProjectConversationHistory', () => {
 
     it('shows what Spark delivered to the agent as events, not as a message you sent', async () => {
         const onOpenFlowRun = vi.fn()
+        const timestamp = '2020-10-01T12:00:00Z'
+        const eventDate = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+            .format(new Date(timestamp))
         renderHistory([makeMessageEntry({
             role: 'user',
+            timestamp,
             // Sent into the agent's running turn, which the batch still says.
             status: 'delivered',
             content: [
@@ -438,6 +442,7 @@ describe('ProjectConversationHistory', () => {
         const events = screen.getAllByTestId('project-inbox-event')
         expect(events).toHaveLength(4)
         expect(events[0]).toHaveTextContent('Ship 3.1.0 ended · Completed')
+        expect(within(events[0]).getByText(eventDate)).toBeVisible()
         expect(events[1]).toHaveTextContent('Message from conversation thread-9 (Planner), project /tmp/project:')
         expect(events[1]).toHaveTextContent('Please rebase first.')
         // A cancel needs no reason; a failure's reads in plain words, in full under its line.

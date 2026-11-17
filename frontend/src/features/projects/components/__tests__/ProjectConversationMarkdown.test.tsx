@@ -16,6 +16,14 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); isTauri.
 const markdown = (content: string, enableCodeCopy = true) => <ProjectConversationMarkdown content={content} enableCodeCopy={enableCodeCopy} />
 
 describe('shared Markdown', () => {
+    it('exposes named table headers and read-only task states', () => {
+        render(markdown('| Step | Owner |\n| --- | --- |\n| Review | Ada |\n\n- [x] Reviewed\n- [ ] Shipped'))
+        expect(screen.getByRole('columnheader', { name: 'Step' })).toBeVisible()
+        expect(screen.getByRole('columnheader', { name: 'Owner' })).toBeVisible()
+        expect(screen.getByRole('checkbox', { checked: true })).toBeDisabled()
+        expect(screen.getByRole('checkbox', { checked: false })).toBeDisabled()
+    })
+
     it('copies exact fences, highlights known languages, and keeps nested/unknown code plain', async () => {
         const writeText = vi.fn().mockResolvedValue(undefined)
         vi.stubGlobal('navigator', { clipboard: { writeText } })

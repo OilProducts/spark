@@ -197,7 +197,7 @@ it('locks effort while inheriting and sets it only with an explicitly chosen mod
     expect(chosen.model).not.toBe('parent-model')
 })
 
-it('uses model levels and provider fallbacks without replacing known empty levels', async () => {
+it('keeps a saved effort on a model with no levels and uses fallbacks only for unlisted models', async () => {
     const user = userEvent.setup()
     vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({
         ...catalog,
@@ -207,13 +207,16 @@ it('uses model levels and provider fallbacks without replacing known empty level
             { provider: 'openai', id: 'empty', display: 'Empty', is_default: false, supported_reasoning_efforts: [] },
         ],
     })
-    render(<Editor value={{ ...initial, provider: 'openai', model: 'known' }} />)
-    await user.click(await screen.findByRole('button', { name: 'Model: Known · None' }))
+    render(<Editor value={{ ...initial, provider: 'openai', model: 'empty', reasoning_effort: 'high' }} />)
+    await user.click(await screen.findByRole('button', { name: 'Model: Empty · High' }))
     const buttons = () => within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button').map(button => button.textContent)
-    expect(buttons()).toEqual(['Default', 'None', 'Minimal'])
-    await user.click(screen.getByRole('option', { name: 'Empty', exact: true }))
     expect(buttons()).toEqual(['Default'])
     expect(screen.queryByText(/unverified/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Default', exact: true }))
+    await user.click(screen.getByRole('button', { name: 'Model: Empty · Default effort' }))
+    await user.click(screen.getByRole('option', { name: 'Known', exact: true }))
+    expect(screen.getByRole('button', { name: 'Model: Known · None' })).toBeInTheDocument()
+    expect(buttons()).toEqual(['Default', 'None', 'Minimal'])
     await user.type(screen.getByRole('combobox'), 'unlisted')
     await user.click(screen.getByRole('option', { name: 'Use "unlisted" as a custom model' }))
     expect(buttons()).toEqual(['Default', 'None', 'Minimal', 'High'])

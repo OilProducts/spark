@@ -2137,11 +2137,13 @@ if (inspectedRunId) useStore.getState().updateRunDetailSession(inspectedRunId, {
     expect(screen.queryByText(pendingPrompt)).not.toBeInTheDocument()
   })
 
-  it('[CID:10.1.03] sends the optional operator note alongside a human gate answer', async () => {
+  it.each([
+    ['[CID:10.1.02] omits the note from a plain human gate answer', ''],
+    ['[CID:10.1.03] sends the optional operator note alongside a human gate answer', 'Approved, but watch the migration timing.'],
+  ])('%s', async (_title, gateNote) => {
     const runId = 'run-contract-human-gate-note'
     const gateId = 'gate-approve-note'
     const pendingPrompt = 'Approve production deploy?'
-    const gateNote = 'Approved, but watch the migration timing.'
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const answerPath = `${runApiPath}/questions/${encodeURIComponent(gateId)}/answer`
     const runRecord = {
@@ -2269,8 +2271,8 @@ useStore.getState().setRunsSelectedRunId(runId);
     })
 
     const noteInput = screen.getByTestId(`run-pending-human-gate-note-input-${gateId}`) as HTMLInputElement
-    fireEvent.change(noteInput, { target: { value: gateNote } })
-    expect(noteInput.value).toBe(gateNote)
+    if (gateNote) fireEvent.change(noteInput, { target: { value: gateNote } })
+    expect(noteInput).toHaveValue(gateNote)
 
     const answerButton = screen.getByTestId('run-pending-human-gate-answer-approve')
     fireEvent.click(answerButton)
@@ -2280,11 +2282,11 @@ useStore.getState().setRunsSelectedRunId(runId);
       expect(submissionCall).toBeTruthy()
       const [, init] = submissionCall as [RequestInfo | URL, RequestInit | undefined]
       expect(init?.method).toBe('POST')
-      expect(init?.body).toBe(JSON.stringify({
+      expect(JSON.parse(String(init?.body))).toEqual({
         question_id: gateId,
         selected_value: 'approve',
-        note: gateNote,
-      }))
+        ...(gateNote ? { note: gateNote } : {}),
+      })
     })
 
     await waitFor(() => {

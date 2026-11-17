@@ -258,6 +258,8 @@ describe('flowCanvasShared', () => {
         const restored = await layoutWithElk(hydrated?.nodes ?? [], hydrated?.edges ?? [], { savedLayout })
         expect(restored.nodes.find((node) => node.id === 'task')?.position).toEqual(movedTask)
         expect(restored.layout.edgeLayouts).toEqual(savedLayout.edgeLayouts)
+        const restoredEdge = restored.edges.find((edge) => edge.source === 'start' && edge.target === 'task')
+        expect(getRenderRoute(restoredEdge ?? {})).toEqual(savedLayout.edgeLayouts['start->task#0'].route)
     })
 
     it('routes reciprocal edges as distinct polylines', async () => {
@@ -373,6 +375,9 @@ describe('flowCanvasShared', () => {
         const layout = await layoutWithElk(hydrated?.nodes ?? [], hydrated?.edges ?? [])
         const childLink = layout.edges.find((edge) => edge.id === 'e-manager-child-preview-link')
         expect(getRenderRoute(childLink ?? {})).not.toBeNull()
+        const childRoute = layout.edges.find((edge) => edge.source === '__child_preview__manager__child_start'
+            && edge.target === '__child_preview__manager__nested_manager')
+        expect(getRenderRoute(childRoute ?? {})).not.toBeNull()
     })
 
     it('hydrates typed FlowDefinition previews, expands children, and round-trips the FlowDefinition without metadata loss', () => {

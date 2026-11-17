@@ -4,7 +4,7 @@ import { nodeTypes } from '@/features/workflow-canvas/flowCanvasShared'
 import { TaskNode } from '@/features/workflow-canvas/TaskNode'
 import { getReactFlowNodeTypeForShape } from '@/lib/workflowNodeShape'
 import { useStore } from '@/store'
-import { ReactFlow, ReactFlowProvider, type Edge, type Node, useEdgesState, useNodesState } from '@xyflow/react'
+import { ReactFlow, ReactFlowProvider, type Node, useNodesState } from '@xyflow/react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -60,26 +60,21 @@ useStore.getState().setRunsSelectedRunId(null);
 }
 }
 
-const SingleNodeHarness = ({
-    node,
+const CanvasHarness = ({
+    nodes,
     mode = 'editor',
-    edges = [],
 }: {
-    node: Node
+    nodes: Node[]
     mode?: 'editor' | 'runs'
-    edges?: Edge[]
 }) => {
-    const [canvasNodes, , onNodesChange] = useNodesState([node])
-    const [canvasEdges, , onEdgesChange] = useEdgesState(edges)
+    const [canvasNodes, , onNodesChange] = useNodesState(nodes)
 
     return (
         <CanvasSessionModeProvider mode={mode} runId="run-1">
             <div style={{ width: 900, height: 600 }}>
                 <ReactFlow
                     nodes={canvasNodes}
-                    edges={canvasEdges}
                     onNodesChange={onNodesChange}
-                    onEdgesChange={onEdgesChange}
                     nodeTypes={{ task: TaskNode, ...nodeTypes }}
                     fitView
                 />
@@ -91,9 +86,9 @@ const SingleNodeHarness = ({
 describe('TaskNode', () => {
     it('falls back to the node id when no label is authored', () => {
         renderWithFlowProvider(
-            <SingleNodeHarness
+            <CanvasHarness
                 mode="runs"
-                node={{ id: 'implement', type: 'task', position: { x: 0, y: 0 }, data: {} }}
+                nodes={[{ id: 'implement', type: 'task', position: { x: 0, y: 0 }, data: {} }]}
             />,
         )
         expect(screen.getByText('implement')).toBeInTheDocument()
@@ -109,18 +104,34 @@ describe('TaskNode', () => {
         cleanup()
     })
 
+    it('draws the canonical frame on each step in a mixed graph', () => {
+        const shapes = ['Mdiamond', 'Msquare', 'box', 'hexagon', 'diamond', 'component', 'tripleoctagon', 'parallelogram', 'house'] as const
+        const nodes = shapes.map((shape, index) => ({
+            id: shape,
+            type: getReactFlowNodeTypeForShape(shape),
+            position: { x: (index % 3) * 220, y: Math.floor(index / 3) * 180 },
+            data: { label: `Step ${index + 1}`, shape },
+        }))
+        renderWithFlowProvider(<CanvasHarness nodes={nodes} />)
+
+        for (const { id, data } of nodes) {
+            const frame = screen.getByTestId(`workflow-node-frame-${id}`)
+            expect(frame.closest('.react-flow__node')).toHaveTextContent(data.label)
+        }
+    })
+
     it('moves to the step settings from the canvas Edit button', () => {
         renderWithFlowProvider(
             <>
                 <nav data-testid="inspector-panel"><h2 tabIndex={-1}>Step settings</h2></nav>
-                <SingleNodeHarness
-                    node={{
+                <CanvasHarness
+                    nodes={[{
                         id: 'task',
                         type: 'task',
                         position: { x: 0, y: 0 },
                         selected: true,
                         data: { label: 'Task', kind: 'agent_task', config: { kind: 'agent_task' }, shape: 'box' },
-                    }}
+                    }]}
                 />
             </>,
         )
@@ -139,8 +150,8 @@ describe('TaskNode', () => {
         }))
 
         renderWithFlowProvider(
-            <SingleNodeHarness
-                node={{
+            <CanvasHarness
+                nodes={[{
                     id: 'task',
                     type: 'task',
                     position: { x: 0, y: 0 },
@@ -152,7 +163,7 @@ describe('TaskNode', () => {
                         shape: 'box',
                         prompt: 'Implement the feature',
                     },
-                }}
+                }]}
             />,
         )
 
@@ -189,9 +200,9 @@ nodeDiagnostics: {
 }
 
         const { container } = renderWithFlowProvider(
-            <SingleNodeHarness
+            <CanvasHarness
                 mode="runs"
-                node={{
+                nodes={[{
                     id: 'human',
                     type: getReactFlowNodeTypeForShape('hexagon'),
                     position: { x: 0, y: 0 },
@@ -200,7 +211,7 @@ nodeDiagnostics: {
                         shape: 'hexagon',
                         status: 'waiting',
                     },
-                }}
+                }]}
             />,
         )
 

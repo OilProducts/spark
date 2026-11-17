@@ -385,10 +385,20 @@ describe('Editor structured metadata', () => {
     const user = userEvent.setup()
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: 'saved', name: 'bundled-flow' }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
+    const preview = createDeferred<EditorPreviewResponse>()
+    vi.mocked(loadEditorPreview).mockReturnValueOnce(preview.promise)
     renderEditor()
-    await waitFor(() => expect(useStore.getState().flowMetadata.software_development).toBeDefined())
+    await waitFor(() => expect(loadEditorPreview).toHaveBeenCalled())
 
-    await user.click(screen.getByRole('button', { name: 'Files' }))
+    const filesButton = screen.getByRole('button', { name: 'Files' })
+    expect(filesButton).toBeDisabled()
+    await user.click(filesButton)
+    expect(useStore.getState().editorMode).toBe('structured')
+    expect(flowSaveRequests(fetchMock)).toEqual([])
+
+    await act(async () => preview.resolve({ ...buildPreview(0), graph: { nodes: [], edges: [], metadata }, flow }))
+    await waitFor(() => expect(filesButton).toBeEnabled())
+    await user.click(filesButton)
     await screen.findByTestId('flow-file-editor')
 
     expect(flowSaveRequests(fetchMock)).toEqual([])
@@ -396,6 +406,7 @@ describe('Editor structured metadata', () => {
 
     await user.click(screen.getByRole('button', { name: 'Structured' }))
     await waitFor(() => expect(useStore.getState().editorMode).toBe('structured'))
+    expect(flowSaveRequests(fetchMock)).toEqual([])
     act(() => useStore.getState().updateFlowMetadata('title', 'Edited title'))
     await user.click(screen.getByRole('button', { name: 'Files' }))
     await screen.findByTestId('flow-file-editor')
