@@ -125,16 +125,18 @@ describe('classifyRunFailure', () => {
 })
 
 describe('describeFailure', () => {
+  // The detail is the command's stderr, nothing for a bare exit code, else the runtime's text.
   it.each([
     ['tool exited with unmapped code 1; stderr: lint broke', 'The command failed (exit code 1).', 'lint broke'],
-    ['tool exited with code 2 instead of 0 with a JSON verdict decision', 'The command failed (exit code 2).', null],
-    ['tool returned undeclared decision "maybe"', 'The command’s output did not name a decision this step can take.', null],
-    ['codergen backend failed: codex app-server error: codex app-server turn timed out waiting for activity', 'The agent could not run: it stopped responding.', null],
-    ['codergen backend failed: usage limit reached', 'The agent could not run: its usage limit was reached.', null],
-    ['codergen backend failed: codex app-server exited unexpectedly', 'The agent could not run.', null],
-    ['stage_failed', 'The step failed without giving a reason.', null],
-  ])('rewords %s and keeps its stderr, else the text, as the detail', (reason, summary, stderr) => {
-    expect(describeFailure(reason)).toEqual({ summary, detail: stderr ?? reason })
+    ['tool exited with unmapped code 3', 'The command failed (exit code 3).', null],
+    ['tool exited with code 2 instead of 0 with a JSON verdict decision', 'The command failed (exit code 2).', 'as written'],
+    ['tool returned undeclared decision "maybe"', 'The command’s output did not name a decision this step can take.', 'as written'],
+    ['codergen backend failed: codex app-server error: codex app-server turn timed out waiting for activity', 'The agent could not run: it stopped responding.', 'as written'],
+    ['codergen backend failed: usage limit reached', 'The agent could not run: its usage limit was reached.', 'as written'],
+    ['codergen backend failed: codex app-server exited unexpectedly', 'The agent could not run.', 'as written'],
+    ['stage_failed', 'The step failed without giving a reason.', 'as written'],
+  ])('rewords %s', (reason, summary, detail) => {
+    expect(describeFailure(reason)).toEqual({ summary, detail: detail === 'as written' ? reason : detail })
   })
 
   it("names a fork's failing branch by its step and says its error plainly", () => {

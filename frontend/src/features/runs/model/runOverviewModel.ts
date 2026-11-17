@@ -179,7 +179,7 @@ export const isCancelReason = (reason: unknown): boolean => reason === 'aborted_
 
 /**
  * A failure reason in plain words, with the runtime's own text as the detail when it was reworded:
- * a command's stderr alone when it has one. A fork's error names its branch's step by `nodeLabel`.
+ * a command's stderr alone when it has one, nothing for a bare exit code. A fork's error names its branch's step by `nodeLabel`.
  */
 export function describeFailure(
     reason: string,
@@ -195,7 +195,9 @@ export function describeFailure(
     for (const [pattern, words] of FAILURE_WORDINGS) {
         const match = text.match(pattern)
         if (match) {
-            return { summary: words(match), detail: text.match(/^tool [^;]*; stderr: ([\s\S]+)$/)?.[1] ?? text }
+            // A bare exit code says nothing the summary doesn't.
+            const stderr = text.match(/^tool [^;]*; stderr: ([\s\S]+)$/)?.[1]
+            return { summary: words(match), detail: stderr ?? (/^tool exited with (?:unmapped )?code -?\d+$/.test(text) ? null : text) }
         }
     }
     return { summary: text, detail: null }
