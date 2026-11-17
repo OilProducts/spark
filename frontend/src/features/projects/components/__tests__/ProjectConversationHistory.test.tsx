@@ -420,6 +420,31 @@ describe('ProjectConversationHistory', () => {
         expect(screen.getByText('This chat is no longer available.')).toBeInTheDocument()
     })
 
+    it('shows what Spark delivered to the agent as events, not as a message you sent', async () => {
+        const onOpenFlowRun = vi.fn()
+        renderHistory([makeMessageEntry({
+            role: 'user',
+            // Sent into the agent's running turn, which the batch still says.
+            status: 'delivered',
+            content: [
+                '[Inbox: 2 events delivered asynchronously. Run reports, triggers and messages from other conversations concern earlier or outside work; they are not new requests from the user.]',
+                '[event evt-1 from run-7]\nRun run-7 (release-check, "Ship 3.1.0") ended completed.',
+                '[event evt-2 from conversation-9]\nMessage from conversation thread-9 (Planner), project /tmp/project:\nPlease rebase first.',
+            ].join('\n\n'),
+        })], { onOpenFlowRun })
+
+        const events = screen.getAllByTestId('project-inbox-event')
+        expect(events).toHaveLength(2)
+        expect(events[0]).toHaveTextContent('Ship 3.1.0 ended · Completed')
+        expect(events[1]).toHaveTextContent('Message from conversation thread-9 (Planner), project /tmp/project:')
+        expect(events[1]).toHaveTextContent('Please rebase first.')
+        expect(screen.queryByText(/\[Inbox:|evt-1/)).toBeNull()
+        expect(screen.queryByText('You:')).toBeNull()
+        expect(screen.getByTestId('message-delivery')).toHaveTextContent('Sent into the running turn')
+        await userEvent.click(within(events[0]).getByRole('button', { name: 'Ship 3.1.0' }))
+        expect(onOpenFlowRun).toHaveBeenCalledWith({ run_id: 'run-7', flow_name: 'release-check' })
+    })
+
     it.each(['reasoning', 'plan'] as const)('offers Retry on a failed chat turn with only a %s segment', async (kind) => {
         const at = '2026-03-10T10:00:00Z'
         const entries = getConversationTimelineEntries(applyConversationPage(undefined, parseConversationPageResponse(conversationPage({

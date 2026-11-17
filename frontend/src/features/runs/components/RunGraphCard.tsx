@@ -1,6 +1,6 @@
 import { buildDiagnosticMaps, normalizeGraphAttrs } from '@/state/store-helpers'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { RefreshCw, SquarePen } from 'lucide-react'
 import {
     Background,
     MarkerType,
@@ -326,8 +326,9 @@ export function RunGraphCard({
             className={fillHeight ? 'flex h-full min-h-0 flex-col gap-2 border-0 py-0' : 'gap-2 border-0 py-0'}
         >
             <CardHeader className="px-0">
-                {/* One row when there is room: which graph, then how it is viewed. */}
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                {/* One row: which graph, then how it is viewed. Narrow, it drops the zoom buttons and
+                    minimap as the editor's toolbar does (the wheel still zooms), and Open in editor its words. */}
+                <div className="@container/canvas-toolbar flex flex-wrap items-center gap-x-3 gap-y-2">
                     <h2 className="shrink-0 whitespace-nowrap text-base font-semibold text-foreground">
                         Run graph
                     </h2>
@@ -359,7 +360,8 @@ export function RunGraphCard({
                                 disabled={Boolean(openInEditorDisabledReason)}
                                 title={openInEditorDisabledReason ?? 'Open this flow in the Editor with the selected node focused'}
                             >
-                                Open in editor
+                                <SquarePen aria-hidden="true" />
+                                <span className="@max-xl/canvas-toolbar:sr-only">Open in editor</span>
                             </Button>
                         ) : null}
                     </div>
@@ -421,6 +423,9 @@ export function RunGraphCard({
                     role="separator"
                     aria-label="Resize run graph"
                     aria-orientation="horizontal"
+                    aria-valuenow={paneHeight}
+                    aria-valuemin={MIN_GRAPH_PANE_HEIGHT}
+                    aria-valuemax={MAX_GRAPH_PANE_HEIGHT}
                     tabIndex={0}
                     onPointerDown={(event) => {
                         event.preventDefault()

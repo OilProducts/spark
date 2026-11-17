@@ -527,6 +527,27 @@ describe('TriggersPanel', () => {
     expect(screen.getByTestId('trigger-create-button')).toBeEnabled()
   })
 
+  it('says the triggers couldn’t load instead of offering a first one, and loads them on Try again', async () => {
+    let available = false
+    vi.mocked(global.fetch).mockImplementation(async (input) => {
+      const url = resolveRequestUrl(input as RequestInfo | URL)
+      if (isFlowList(url)) return jsonResponse(PROJECT_FLOWS)
+      if (url.startsWith('/workspace/api/triggers')) {
+        return available ? jsonResponse([makeTrigger({ id: 'nightly', name: 'Nightly' })]) : new Response('Bad Gateway', { status: 502 })
+      }
+      return jsonResponse([])
+    })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const failed = await screen.findByTestId('triggers-load-failed')
+    expect(failed).toHaveTextContent('Triggers couldn’t load')
+    expect(screen.queryByText('No triggers yet')).toBeNull()
+    available = true
+    await user.click(within(failed).getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByTestId('trigger-row-nightly')).toBeVisible()
+    expect(screen.queryByTestId('triggers-load-failed')).toBeNull()
+  })
+
   it('marks a trigger whose last firing failed in the list, with the reason on hover', async () => {
     const failing = makeTrigger({ id: 'nightly', name: 'Nightly' })
     failing.state = { ...failing.state, last_result: 'failed', last_error: 'Release version is required.' }

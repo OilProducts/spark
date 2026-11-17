@@ -439,6 +439,14 @@ export function AssistantTurnHeader({ meta, className, ...props }: ComponentProp
  * a mode change). Wrap it in the list's `<li>`. Links and `<b>` inside read in the
  * foreground colour so the subject stands out from the verb.
  */
+/** A message sent while a turn ran: queued behind it, delivered into it, or not sent. */
+export const messageDelivery = (entry: Pick<TranscriptMessageEntry, 'role' | 'status' | 'error'>): string | null => entry.role !== 'user' ? null
+    : entry.status === 'queued' ? 'Queued · starts when the current turn ends'
+        : entry.status === 'delivered' ? 'Sent into the running turn'
+            : entry.status === 'delivery_pending' ? 'Sending into the running turn…'
+                : entry.status === 'failed' ? (entry.error || 'Not sent')
+                    : null
+
 export function EventLine({
     icon,
     at,
@@ -571,13 +579,7 @@ export const MessageRow = memo(function MessageRow({
     const turnId = entry.turnId
     const retry = entry.role === 'assistant' && entry.status === 'failed' && turnId && onRetryTurn
         ? () => onRetryTurn(turnId) : undefined
-    // A message sent while a turn ran: queued behind it, delivered into it, or not sent.
-    const delivery = entry.role !== 'user' ? null
-        : entry.status === 'queued' ? 'Queued · starts when the current turn ends'
-            : entry.status === 'delivered' ? 'Sent into the running turn'
-                : entry.status === 'delivery_pending' ? 'Sending into the running turn…'
-                : entry.status === 'failed' ? (entry.error || 'Not sent')
-                    : null
+    const delivery = messageDelivery(entry)
     const canCopy = enableCopy && (
         (entry.role === 'user' && entry.content.length > 0)
         || (

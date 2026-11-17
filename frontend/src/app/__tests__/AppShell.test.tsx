@@ -870,7 +870,7 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('add-project-button'))
     expect(await screen.findByTestId('project-browser-dialog')).toBeVisible()
-    expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/tmp/project-shell')
+    expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/tmp/project-shell')
     await user.click(screen.getByTestId('project-browser-select-button'))
 
     // The new project joins the Chats panel, ready for a chat in it.
@@ -959,15 +959,15 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('add-project-button'))
     expect(await screen.findByTestId('project-browser-dialog')).toBeVisible()
-    expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home/spark')
+    expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/home/spark')
     await user.click(screen.getByTestId('project-browser-root--projects'))
     await waitFor(() => {
-      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/projects')
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/projects')
     })
     expect(screen.getByTestId('project-browser-entry-mounted-app')).toBeVisible()
     await user.click(screen.getByTestId('project-browser-root--home-spark'))
     await waitFor(() => {
-      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home/spark')
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/home/spark')
     })
 
     await user.click(screen.getByTestId('project-browser-entry-broken'))
@@ -975,22 +975,32 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('project-browser-entry-repo'))
     await waitFor(() => {
-      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home/spark/repo')
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/home/spark/repo')
     })
 
     await user.click(screen.getByTestId('project-browser-parent-button'))
     await waitFor(() => {
-      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home/spark')
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/home/spark')
     })
 
     await user.click(screen.getByRole('button', { name: 'Root' }))
     await waitFor(() => {
-      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/')
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/')
     })
 
     await user.click(screen.getByTestId('project-browser-entry-home'))
     await waitFor(() => {
-      expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home')
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/home')
+    })
+
+    // A pasted path goes straight there; until it does, the dialog won't select the folder still shown.
+    await user.clear(screen.getByTestId('project-browser-current-path'))
+    await user.type(screen.getByTestId('project-browser-current-path'), '/home/spark/repo')
+    expect(screen.getByTestId('project-browser-select-button')).toBeDisabled()
+    await user.keyboard('{Enter}')
+    await waitFor(() => {
+      expect(screen.getByTestId('project-browser-current-path')).toHaveValue('/home/spark/repo')
+      expect(screen.getByTestId('project-browser-select-button')).toBeEnabled()
     })
   })
 

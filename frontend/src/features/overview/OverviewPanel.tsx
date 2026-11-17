@@ -453,8 +453,8 @@ export function OverviewPanel() {
                                     </span>
                                     {isNew ? <span data-testid="overview-finished-new" className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">New</span> : null}
                                     <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground max-sm:hidden">{itemDuration(item)}</span>
-                                    {/* When it finished, where Runs lists when each started. */}
-                                    <span className="min-w-12 shrink-0 text-right text-xs text-muted-foreground" title={item.at ? `Finished ${formatTimestamp(new Date(item.at).toISOString())}` : undefined}>{when(item.at, now)}</span>
+                                    {/* When it finished, said so: Runs lists when each started. */}
+                                    <span className="min-w-12 shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground" title={item.at ? `Finished ${formatTimestamp(new Date(item.at).toISOString())}` : undefined}>{item.at ? `ended ${when(item.at, now)}` : ''}</span>
                                 </li>
                             ))}
                         </ul>

@@ -156,6 +156,7 @@ export function TriggersPanel() {
 
   const createFormOpen = triggersSession.createFormOpen
   const nothingPicked = !createFormOpen && !(selectedTrigger && editTriggerForm)
+  const listFailed = status === 'error' && visibleTriggers.length === 0
   const openCreateForm = () => {
     // An untouched draft starts in the project worked in most recently, as Run a flow does.
     if (!newTriggerForm.name.trim() && !newTriggerForm.projectPath) {
@@ -258,7 +259,7 @@ export function TriggersPanel() {
     {isNarrowViewport && nothingPicked && !error && issues.length === 0 ? null : (
     <section data-testid="triggers-panel" className="flex h-full flex-col overflow-auto p-6">
       <div className="flex w-full max-w-3xl flex-col gap-6">
-        {error ? (
+        {error && !(nothingPicked && listFailed) ? (
           <InlineError>{error}</InlineError>
         ) : null}
 
@@ -442,7 +443,18 @@ export function TriggersPanel() {
             </Card>
           ) : null}
       </div>
-      {nothingPicked && !isNarrowViewport ? (
+      {/* A list that never loaded can't say there are no triggers. */}
+      {nothingPicked && listFailed ? (
+        <SheetEmpty
+          data-testid="triggers-load-failed"
+          icon={Zap}
+          title="Triggers couldn’t load"
+          className="h-auto flex-1"
+          action={<Button type="button" variant="outline" size="sm" onClick={() => void refreshTriggers()}>Try again</Button>}
+        >
+          {error}
+        </SheetEmpty>
+      ) : nothingPicked && !isNarrowViewport ? (
         <SheetEmpty
           icon={Zap}
           title={visibleTriggers.length ? 'No trigger selected' : 'No triggers yet'}

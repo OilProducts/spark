@@ -203,10 +203,10 @@ useStore.getState().setRunsSelectedRunId(null);
     expect(screen.queryByTestId('execution-launch-input-error-context.topic')).toBeNull()
   })
 
-  it('hands focus to the first required input once loaded, keeps Enter for new lines, and runs on Ctrl+Enter', async () => {
+  it('hands focus to the first required input once loaded, and keeps Enter for new lines in a multi-line one, running on Ctrl+Enter', async () => {
     const fetchMock = installLaunchFetchMock({
       inputs: [
-        { key: 'context.notes', label: 'Notes', type: 'string' },
+        { key: 'context.notes', label: 'Notes', type: 'string', multiline: true },
         { key: 'context.version', label: 'Version', type: 'string', required: true },
       ],
     })
@@ -216,13 +216,33 @@ useStore.getState().setRunsSelectedRunId(null);
     const version = await screen.findByTestId('execution-launch-input-context.version')
     await waitFor(() => expect(version).toHaveFocus())
     await waitFor(() => expect(screen.getByTestId('launch-panel-start-button')).toBeEnabled())
-    await user.keyboard('1.4.0{Enter}rc')
-    expect(version).toHaveValue('1.4.0\nrc')
+    expect(screen.getByTestId('launch-panel-run-shortcut')).toHaveTextContent('Enter runs from any field')
+    await user.keyboard('1.4.0')
+    await user.click(screen.getByTestId('execution-launch-input-context.notes'))
+    await user.keyboard('Line one{Enter}Line two')
+    expect(screen.getByTestId('execution-launch-input-context.notes')).toHaveValue('Line one\nLine two')
     expect(onLaunched).not.toHaveBeenCalled()
     await user.keyboard('{Control>}{Enter}{/Control}')
 
     await waitFor(() => expect(onLaunched).toHaveBeenCalledWith('run-123', false))
-    expect(startedPipelinePayload(fetchMock)).toMatchObject({ launch_context: { 'context.version': '1.4.0\nrc' } })
+    expect(startedPipelinePayload(fetchMock)).toMatchObject({ launch_context: { 'context.version': '1.4.0', 'context.notes': 'Line one\nLine two' } })
+  })
+
+  it('runs on Enter from a one-line text input', async () => {
+    const fetchMock = installLaunchFetchMock({
+      inputs: [{ key: 'context.version', label: 'Version', type: 'string', required: true }],
+    })
+    const user = userEvent.setup()
+    const { onLaunched } = renderLaunchPanel()
+
+    const version = await screen.findByTestId('execution-launch-input-context.version')
+    await waitFor(() => expect(version).toHaveFocus())
+    await waitFor(() => expect(screen.getByTestId('launch-panel-start-button')).toBeEnabled())
+    expect(screen.queryByTestId('launch-panel-run-shortcut')).toBeNull()
+    await user.keyboard('3.1.0{Enter}')
+
+    await waitFor(() => expect(onLaunched).toHaveBeenCalledWith('run-123', false))
+    expect(startedPipelinePayload(fetchMock)).toMatchObject({ launch_context: { 'context.version': '3.1.0' } })
   })
 
   it('closes on Escape from inside the panel', async () => {

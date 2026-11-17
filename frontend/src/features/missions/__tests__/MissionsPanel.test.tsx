@@ -409,6 +409,20 @@ it('preserves drafts across refresh and tab activation, and reconciles concurren
     expect(task.fields.description).toBe('Server objective')
 })
 
+it('says the board couldn’t load, in words, instead of offering a first mission', async () => {
+    // A proxy's plain-text gateway error while Spark is down.
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('Error: connect ECONNREFUSED 127.0.0.1:8000', { status: 502 }))
+    render(<MissionsPanel active />)
+    const state = await screen.findByTestId('missions-load-state')
+    expect(state).toHaveTextContent('Missions couldn’t load')
+    expect(state).toHaveTextContent('Couldn’t reach Spark')
+    expect(screen.queryByText('No missions yet')).toBeNull()
+    expect(screen.queryByText(/not valid JSON|ECONNREFUSED/)).toBeNull()
+    fireEvent.click(within(state).getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('button', { name: /Deliver search/ })).toBeInTheDocument()
+    expect(screen.queryByTestId('missions-load-state')).toBeNull()
+})
+
 it('loads once without polling and preserves drafts when opening other missions', async () => {
     const view = render(<MissionsPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))

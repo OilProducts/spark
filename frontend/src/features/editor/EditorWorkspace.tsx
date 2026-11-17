@@ -205,6 +205,9 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                                     role="separator"
                                     aria-label="Resize editor sidebar"
                                     aria-orientation="vertical"
+                                    aria-valuenow={sidebarWidth}
+                                    aria-valuemin={MIN_EDITOR_SIDEBAR_WIDTH}
+                                    aria-valuemax={Math.max(sidebarWidth, clampEditorSidebarWidth(MAX_EDITOR_SIDEBAR_WIDTH, workspaceWidth))}
                                     tabIndex={0}
                                     onPointerDown={onEditorSidebarResizePointerDown}
                                     onKeyDown={onEditorSidebarResizeKeyDown}

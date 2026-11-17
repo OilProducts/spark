@@ -257,6 +257,29 @@ describe('buildRunVisits', () => {
     expect(visits.map((visit) => visit.label)).toEqual(['Start', 'Done'])
   })
 
+  it('marks the branches a cancel stopped interrupted, and keeps a branch error that has a reason', () => {
+    const journal = [
+      started('fan_out', 0),
+      branchStarted('lint', 0),
+      branchStarted('typecheck', 1),
+      nodeStarted('lint', 0, 0, 0),
+      nodeStarted('typecheck', 0, 0, 1),
+      nodeCompleted('typecheck', 0, 0, 'error', 1),
+      branchCompleted('typecheck', 1, false),
+      nodeCompleted('lint', 0, 0, 'error', 0),
+      branchCompleted('lint', 0, false),
+    ]
+    const executions = [
+      execution('typecheck', 0, { status: 'error', failure_reason: 'tsc exited 2' }),
+    ]
+    const visits = build({ journal, executions, runStatus: 'canceled' })
+    expect(visits.map((visit) => [visit.label, visit.outcome])).toEqual([
+      ['Fan out', 'interrupted'],
+      ['Lint', 'interrupted'],
+      ['Typecheck', 'error'],
+    ])
+  })
+
   it('nests parallel branches under their fan-out visit, one visit per invocation with its execution', () => {
     const journal = [
       started('fan_out', 0),

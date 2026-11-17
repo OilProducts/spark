@@ -93,7 +93,7 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     const liveGroup = page.locator(`[data-testid="chats-project-group"][data-project-path="${projectPath}"]`)
     await liveGroup.locator('[data-testid="chats-chat-row"]:not([data-standing-role])').first().click()
     // The finished run's report was sent into the running turn, so it sits before the output that followed it.
-    await expect(history).toContainText(/Half done\. Still going\.[\s\S]*live-turn-smoke[^\n]*ended completed\.Sent into the running turn[\s\S]*All done\./)
+    await expect(history).toContainText(/Half done\. Still going\.[\s\S]*Launch the live turn smoke flow\. ended · Completed[^\n]*Sent into the running turn[\s\S]*All done\./)
     await expect(page.getByTestId('project-chat-stop')).toHaveCount(0)
     await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)
 })

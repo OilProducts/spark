@@ -424,7 +424,16 @@ export function buildRunVisits({
             ?? (visit.childRun ? null : asString(status?.notes) ?? draft.journalReason)
     }
     rootDrafts.forEach((draft, index) => settle(draft, index === rootDrafts.length - 1))
-    branchDrafts.forEach((draft) => settle(draft, false))
+    const runCanceled = runStatus !== null && CANCELED_RUN_STATUSES.has(runStatus)
+    branchDrafts.forEach((draft) => {
+        settle(draft, false)
+        // A branch of the fan-out a cancel stopped ends as it is killed, with no reason of its own:
+        // the cancel ended it, not an error.
+        if (runCanceled && draft.visit.outcome === 'error' && !draft.visit.reason && draft.parent === rootDrafts.at(-1)) {
+            draft.visit.outcome = 'interrupted'
+            draft.visit.endedAt ??= runEndedAt
+        }
+    })
 
     // Where each visit went next, and whether that went back to a node that
     // first ran no later than this one: a loop-back, whatever the outcome.

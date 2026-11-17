@@ -25,7 +25,7 @@ import { launchErrorMessage, useStartPipeline } from '../hooks/useStartPipeline'
 import type { LaunchFailureDiagnostics, LaunchTarget } from '../model/launchTypes'
 import { ExecutionProfileSection } from './ExecutionProfileSection'
 import { diagnosticSentence } from '@/lib/problemText'
-import { LaunchInputsForm } from './LaunchInputsForm'
+import { LaunchInputsForm, RUN_SHORTCUT_LABEL } from './LaunchInputsForm'
 import { LaunchNoticeStack } from './LaunchNoticeStack'
 
 export interface LaunchPanelProps {
@@ -112,6 +112,7 @@ export function LaunchPanel({
 
     // Once the inputs load, a still-untouched panel hands focus to the first one the run needs.
     const firstRequiredKey = parsedLaunchInputs.entries.find((entry) => entry.required)?.key
+    const hasTextBox = parsedLaunchInputs.entries.some((entry) => entry.type !== 'boolean' && entry.type !== 'number' && (entry.type !== 'string' || entry.multiline))
     useEffect(() => {
         if (!firstRequiredKey || document.activeElement !== panelRef.current) return
         panelRef.current?.querySelector<HTMLElement>(`[data-testid="execution-launch-input-${CSS.escape(firstRequiredKey)}"]`)?.focus()
@@ -448,6 +449,11 @@ export function LaunchPanel({
             <div className="sticky bottom-0 -mb-px mt-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2 border-t border-border bg-background pt-3">
                 {!canRun && executeDisabledReason && !isLoadingPreview && !isLaunching ? (
                     <p data-testid="launch-panel-disabled-reason" className="min-w-0 flex-1 text-xs text-muted-foreground">{executeDisabledReason}</p>
+                ) : hasTextBox && !launchInputsCollapsed ? (
+                    // In a text box Enter starts a new line, so the way to run from there is said.
+                    <p data-testid="launch-panel-run-shortcut" className="min-w-0 flex-1 text-xs text-muted-foreground">
+                        <kbd className="font-sans font-medium text-foreground">{RUN_SHORTCUT_LABEL}</kbd> runs from any field
+                    </p>
                 ) : null}
                 <Button
                     type="button"

@@ -21,6 +21,10 @@ interface LaunchInputsFormProps {
     onInputChange: (entry: LaunchInputDefinition, value: string) => void
 }
 
+const IS_APPLE = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
+/** How to run from a text box, where Enter starts a new line. */
+export const RUN_SHORTCUT_LABEL = IS_APPLE ? '⌘Enter' : 'Ctrl+Enter'
+
 /** One field per row, label and description above the control, so the panel's width never squeezes them. */
 export function LaunchInputsForm({
     title = 'What this run needs',
@@ -108,13 +112,22 @@ export function LaunchInputsForm({
                                         </p>
                                     ) : null}
                                 </div>
-                                {entry.type === 'string' ? (
-                                    // Text may be a sentence or a bug report: one row that grows with its lines.
+                                {entry.type === 'string' && entry.multiline ? (
+                                    // Text the flow takes over several lines, such as a bug report: Enter starts a new
+                                    // line, and the box grows with them.
                                     <Textarea
                                         {...common}
                                         onChange={(event) => onInputChange(entry, event.target.value)}
-                                        rows={1}
-                                        className="max-h-72 min-h-8 px-2 py-1.5 text-sm"
+                                        rows={3}
+                                        aria-keyshortcuts="Meta+Enter Control+Enter"
+                                        className="max-h-72 min-h-20 px-2 py-1.5 text-sm"
+                                    />
+                                ) : entry.type === 'string' ? (
+                                    // A name, a version or a path: one line, and Enter runs.
+                                    <Input
+                                        {...common}
+                                        onChange={(event) => onInputChange(entry, event.target.value)}
+                                        className="h-8 text-sm"
                                     />
                                 ) : entry.type === 'string[]' ? (
                                     <Textarea

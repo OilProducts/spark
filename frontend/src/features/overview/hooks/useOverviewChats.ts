@@ -18,8 +18,8 @@ export function useOverviewChats() {
     const [failed, setFailed] = useState(false)
     const [attempt, setAttempt] = useState(0)
     useEffect(() => {
+        // Fetched before the projects list too: with Spark unreachable, it fails and says so instead of loading forever.
         let disposed = false
-        if (!paths) return
         void fetchProjectConversationListValidated(null)
             .then((snapshot) => {
                 if (disposed) return

@@ -12,11 +12,13 @@ inputs:
 - key: context.request.conjecture
   label: Conjecture
   type: string
+  multiline: true
   description: The conjecture to attack, stated precisely enough that a proof attempt and a counterexample search target the same claim.
   required: true
 - key: context.request.notes
   label: Notes
   type: string
+  multiline: true
   description: Optional known results, definitions, constraints, or prior-session pointers worth starting from.
   required: false
 - key: context.request.max_rounds

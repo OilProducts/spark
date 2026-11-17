@@ -143,6 +143,17 @@ describe('Overview last chat', () => {
         await waitFor(() => expect(screen.getByTestId('overview-last-chat-title').textContent).toBe('Ship the fix'))
         expect(screen.queryByTestId('overview-chats-error')).toBeNull()
     })
+
+    it('says the chats could not load when Spark is down before any project has loaded', async () => {
+        reset()
+        const initialRegistry = useStore.getState().projectRegistry
+        onTestFinished(() => { chatsDown = false; useStore.setState({ projectRegistry: initialRegistry }) })
+        act(() => { useStore.setState({ projectRegistry: {} }) })
+        chatsDown = true
+        render(<OverviewPanel />)
+        expect(await screen.findByTestId('overview-chats-error')).toHaveTextContent('Couldn’t load your chats.')
+        expect(screen.queryByText('Loading chats…')).toBeNull()
+    })
 })
 
 describe('Overview needs you seen', () => {

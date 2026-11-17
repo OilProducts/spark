@@ -8,6 +8,7 @@ inputs:
 - key: context.request.objective
   label: Objective
   type: string
+  multiline: true
   description: What to improve and for whom, with any constraints the changes must keep and any other work to compare against.
   required: true
 - key: context.request.target_score

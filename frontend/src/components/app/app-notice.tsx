@@ -4,9 +4,8 @@ import { TriangleAlert, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 /**
- * A problem with the whole app, such as settings that couldn't load. It floats over the corner of
- * the screen so it never moves the view under it; several stack. Its close button hides it so it
- * never stays over what it covers; give it a new `key` to show a new problem again.
+ * A problem with the whole app, such as settings that couldn't load, as a banner above the open
+ * view; several stack. Its close button hides it; give it a new `key` to show a new problem again.
  */
 export function AppNotice({ title, actions, className, children, ...props }: ComponentProps<'div'> & { title?: ReactNode; actions?: ReactNode }) {
     const [dismissed, setDismissed] = useState(false)
@@ -14,7 +13,7 @@ export function AppNotice({ title, actions, className, children, ...props }: Com
     return (
         <div
             role="alert"
-            className={cn('pointer-events-auto flex w-full gap-3 rounded-lg border border-border bg-background p-3 text-sm shadow-lg', className)}
+            className={cn('flex w-full gap-3 rounded-lg border border-border bg-background p-3 text-sm', className)}
             {...props}
         >
             <TriangleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-destructive" />

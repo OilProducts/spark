@@ -8,6 +8,7 @@ inputs:
 - key: context.request.objective
   label: Objective
   type: string
+  multiline: true
   description: The change wanted, as the requester stated it, with the relevant decisions, constraints and prior attempts the requester knows of.
   required: true
 - key: context.request.target_paths

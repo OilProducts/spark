@@ -1,5 +1,5 @@
 import { ActivityBar } from "@/app/ActivityBar"
-import { AppSessionControllers } from "@/app/AppSessionControllers"
+import { AppNotices, AppSessionControllers } from "@/app/AppSessionControllers"
 import { EditorWorkspace } from "@/features/editor"
 import { ProjectsPanel } from "@/features/projects"
 import { RunStream, RunsPanel } from "@/features/runs"
@@ -42,50 +42,53 @@ function App() {
         </button>
         <ActivityBar />
         <main id="app-main" tabIndex={-1} data-testid="app-main" className="flex-1 min-w-0 min-h-0 relative flex flex-col overflow-hidden outline-none">
-          <div
-            data-testid="canvas-workspace-primary"
-            data-canvas-active={String(isCanvasMode)}
-            className={`absolute inset-0 ${
-              isCanvasMode ? 'block pointer-events-auto' : 'hidden pointer-events-none'
-            }`}
-          >
-            <EditorWorkspace isActive={viewMode === 'editor'} />
+          <AppNotices />
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            <div
+              data-testid="canvas-workspace-primary"
+              data-canvas-active={String(isCanvasMode)}
+              className={`absolute inset-0 ${
+                isCanvasMode ? 'block pointer-events-auto' : 'hidden pointer-events-none'
+              }`}
+            >
+              <EditorWorkspace isActive={viewMode === 'editor'} />
+            </div>
+            <div
+              data-testid="home-workspace-primary"
+              data-home-active={String(isHomeMode)}
+              className={`absolute inset-0 ${
+                isHomeMode ? 'block pointer-events-auto' : 'hidden pointer-events-none'
+              }`}
+            >
+              <ProjectsPanel />
+            </div>
+            <div
+              data-testid="runs-workspace-primary"
+              data-runs-active={String(isRunsMode)}
+              className={`absolute inset-0 ${
+                isRunsMode ? 'block pointer-events-auto' : 'hidden pointer-events-none'
+              }`}
+            >
+              <RunsPanel />
+            </div>
+            <div
+              data-testid="triggers-workspace-primary"
+              data-triggers-active={String(isTriggersMode)}
+              className={`absolute inset-0 ${
+                isTriggersMode ? 'block pointer-events-auto' : 'hidden pointer-events-none'
+              }`}
+            >
+              <TriggersPanel />
+            </div>
+            {viewMode === 'overview' ? (
+              <div className="absolute inset-0 flex"><Sheet><OverviewPanel /></Sheet></div>
+            ) : null}
+            <div hidden={viewMode !== 'missions'} className="absolute inset-0"><MissionsPanel active={viewMode === 'missions'} /></div>
+            {viewMode === 'roles' ? <div className="absolute inset-0"><RolesPanel /></div> : null}
+            {isSettingsMode ? (
+              <SettingsPanel />
+            ) : null}
           </div>
-          <div
-            data-testid="home-workspace-primary"
-            data-home-active={String(isHomeMode)}
-            className={`absolute inset-0 ${
-              isHomeMode ? 'block pointer-events-auto' : 'hidden pointer-events-none'
-            }`}
-          >
-            <ProjectsPanel />
-          </div>
-          <div
-            data-testid="runs-workspace-primary"
-            data-runs-active={String(isRunsMode)}
-            className={`absolute inset-0 ${
-              isRunsMode ? 'block pointer-events-auto' : 'hidden pointer-events-none'
-            }`}
-          >
-            <RunsPanel />
-          </div>
-          <div
-            data-testid="triggers-workspace-primary"
-            data-triggers-active={String(isTriggersMode)}
-            className={`absolute inset-0 ${
-              isTriggersMode ? 'block pointer-events-auto' : 'hidden pointer-events-none'
-            }`}
-          >
-            <TriggersPanel />
-          </div>
-          {viewMode === 'overview' ? (
-            <div className="absolute inset-0 flex"><Sheet><OverviewPanel /></Sheet></div>
-          ) : null}
-          <div hidden={viewMode !== 'missions'} className="absolute inset-0"><MissionsPanel active={viewMode === 'missions'} /></div>
-          {viewMode === 'roles' ? <div className="absolute inset-0"><RolesPanel /></div> : null}
-          {isSettingsMode ? (
-            <SettingsPanel />
-          ) : null}
         </main>
       </div>
     </DialogProvider>

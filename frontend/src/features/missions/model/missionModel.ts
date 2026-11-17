@@ -68,6 +68,9 @@ export type TurnEvent =
 const EVENT = /^(?:Run \S+ \(|Run question in run |User: |Trigger fired: |The user updated this mission)/
 const EVENT_START = new RegExp(`\n\n(?=\\[Inbox: |\\[event |${EVENT.source.slice(1)})`)
 const HEADER = /^\[Inbox: [^\n]*\]$/
+
+/** A turn Spark wrote to deliver its inbox to the agent, rather than one a person typed. */
+export const isInboxBatch = (content: string): boolean => content.split(EVENT_START).some((chunk) => HEADER.test(chunk))
 const MARK = /^\[event \S+ from \S+\]\n/
 const RUNTIME_EVENT = /^(?:Trigger fired: |The user updated this mission)/
 const RESULT = /^Run (\S+) \(([^,]*), ("(?:[^"\\]|\\.)*")\) (?:ended (\w*)|is waiting on a recovery decision)(?:: ([\s\S]*))?\.$/

@@ -120,7 +120,9 @@ export function RunList({
     const [foldShown, setFoldShown] = useState<Record<string, number>>({})
     const now = useNow(runs.some((run) => !run.ended_at && !runHasEnded(run.status) && run.status !== 'queued'))
     const query = searchQuery.trim().toLowerCase()
+    // Each state's count is of the runs the search matches, so a chip says what picking it lists.
     const statusCounts = runs.reduce<Partial<Record<RunStatusKind, number>>>((counts, run) => {
+        if (!runMatchesSearch(run, query)) return counts
         const kind = runKind(run)
         counts[kind] = (counts[kind] ?? 0) + 1
         return counts
@@ -409,7 +411,7 @@ export function RunList({
                 {onStatusFilterChange && runs.length > 0 ? (
                     <div role="group" aria-label="Show runs that are" data-testid="run-list-status-filter" className="flex flex-wrap gap-1">
                         {[{ kind: null, label: 'All', className: undefined }, ...STATUS_FILTERS].map(({ kind, label, className }) => {
-                            const count = kind ? statusCounts[kind] ?? 0 : runs.length
+                            const count = kind ? statusCounts[kind] ?? 0 : Object.values(statusCounts).reduce((sum, value) => sum + (value ?? 0), 0)
                             // A state with no runs has nothing to show, unless it is the one chosen.
                             if (kind && count === 0 && statusFilter !== kind) return null
                             const pressed = statusFilter === kind

@@ -8,6 +8,7 @@ inputs:
 - key: context.request.objective
   label: Objective
   type: string
+  multiline: true
   description: Inline task objective. Provide this or artifact_path.
   required: false
 - key: context.request.artifact_path

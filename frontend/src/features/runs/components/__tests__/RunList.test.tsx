@@ -64,6 +64,9 @@ describe('RunList', () => {
 
         fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'failed' } })
         expect(ids()).toEqual(['run-bad'])
+        // The chips count what the search matches.
+        expect(screen.getByTestId('run-list-status-filter-all')).toHaveTextContent('All1')
+        expect(screen.queryByTestId('run-list-status-filter-completed')).toBeNull()
         fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'needs input' } })
         expect(ids()).toEqual(['run-ask'])
     })

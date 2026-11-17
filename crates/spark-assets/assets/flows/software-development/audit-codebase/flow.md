@@ -8,6 +8,7 @@ inputs:
 - key: context.request.objective
   label: Audit Focus
   type: string
+  multiline: true
   description: Optional focus areas or subsystems to weight the audit toward.
   required: false
 defaults:

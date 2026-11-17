@@ -167,7 +167,9 @@ config:
 - `schema_version`: required; the only accepted value is `'2'`. A missing
   version or `'1'` is rejected.
 - `inputs`: launch inputs with `key`, `label`, `type`, `description`, `required`,
-  and optional `default`.
+  and optional `default`. Mark a `string` written over several lines, such as
+  a bug report or an objective, `multiline: true`: the launch form gives it a
+  text box. Other strings, such as a path or a version, get one line.
 - `defaults`: common model, provider, reasoning, and retry defaults.
 - `metadata` and `extensions`: compatibility and experimental metadata.
 
