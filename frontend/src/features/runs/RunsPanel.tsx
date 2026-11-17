@@ -29,7 +29,7 @@ import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { formatDuration, runHasEnded, type RunRecord } from './model/shared'
 import { buildRunNodeStatuses, VISIT_NODE_STATUSES } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
-import { buildRunContextOverview, listKeepsRun, runKind, runMatchesSearch, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
+import { buildRunContextOverview, listShowsRun, runKind, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
 import type { StatusTone } from '@/components/app/status'
 import { ListBackLink, SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
@@ -68,19 +68,19 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const { error, scopedRuns, status } = useRunsList({ selectedRunId, manageSync: false })
     const isNarrowViewport = useNarrowViewport()
     const missingRunId = useStore((state) => state.runsListSession.missingRunId ?? null)
+    const fetched = useStore((state) => Boolean(state.runsListSession.fetched))
     const projectFilter = useStore((state) => state.runsListSession.projectFilter)
     const statusFilter = useStore((state) => state.runsListSession.statusFilter ?? null)
     const searchQuery = useStore((state) => state.runsListSession.searchQuery ?? '')
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
-    // A desktop opens on the run you most likely came for, once the list has loaded or kept its last
-    // runs; a phone opens on the list. A run picked or restored (even while it loads) stays, as does a
-    // missing run's notice. Only runs the list shows count.
+    // A desktop opens on the run you most likely came for, once the list has loaded (a refresh may be
+    // out) or kept its last runs; a phone opens on the list. A run picked or restored (even while it
+    // loads) stays, as does a missing run's notice. Only runs the list shows count.
     const query = searchQuery.trim().toLowerCase()
-    const matches = (run: RunRecord) => (!statusFilter || runKind(run) === statusFilter) && runMatchesSearch(run, query)
     // ponytail: O(n^2) while filters are on and nothing is open; index children by parent if lists grow large.
-    const autoRunId = selectedRunId || missingRunId || isNarrowViewport || (status !== 'ready' && status !== 'error')
+    const autoRunId = selectedRunId || missingRunId || isNarrowViewport || !(fetched || status === 'ready' || status === 'error')
         ? null
-        : mostRelevantRun(runs.filter((run) => listKeepsRun(runs, run, matches)))?.run_id ?? null
+        : mostRelevantRun(runs.filter((run) => listShowsRun(runs, run, statusFilter, query)))?.run_id ?? null
     useEffect(() => {
         if (!autoRunId) return
         const state = useStore.getState()

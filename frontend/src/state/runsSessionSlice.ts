@@ -1,4 +1,4 @@
-import { listKeepsRun, runKind, searchHidesRun } from '@/features/runs/model/runOverviewModel'
+import { listShowsRun, type RunStatusKind } from '@/features/runs/model/runOverviewModel'
 import { unconfirmRunQuestions } from './runsSessionScope'
 import { type StateCreator } from 'zustand'
 import type { AppState } from './store-types'
@@ -18,10 +18,16 @@ const DEFAULT_RUNS_LIST_SESSION_STATE: RunsListSessionState = {
 
 function filtersHiding(session: RunsListSessionState, runId: string): Partial<RunsListSessionState> {
     const run = session.runs.find((candidate) => candidate.run_id === runId)
+    if (!run) return { ...session.statusFilter ? { statusFilter: null } : {}, ...session.projectFilter ? { projectFilter: null } : {} }
+    const query = session.searchQuery?.trim().toLowerCase() ?? ''
+    const shows = (statusFilter: RunStatusKind | null | undefined, search: string) => listShowsRun(session.runs, run, statusFilter, search)
     return {
-        ...session.statusFilter && (!run || !listKeepsRun(session.runs, run, (candidate) => runKind(candidate) === session.statusFilter)) ? { statusFilter: null } : {},
-        ...session.projectFilter && run?.project_path !== session.projectFilter ? { projectFilter: null } : {},
-        ...searchHidesRun(session.runs, runId, session.searchQuery?.trim().toLowerCase() ?? '') ? { searchQuery: '' } : {},
+        // The state filter and the search narrow the list together; the state filter goes first.
+        ...shows(session.statusFilter, query) ? {}
+            : shows(null, query) ? { statusFilter: null }
+                : shows(session.statusFilter, '') ? { searchQuery: '' }
+                    : { statusFilter: null, searchQuery: '' },
+        ...session.projectFilter && run.project_path !== session.projectFilter ? { projectFilter: null } : {},
     }
 }
 

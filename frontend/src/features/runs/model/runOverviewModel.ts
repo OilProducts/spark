@@ -124,10 +124,12 @@ export function runMatchesSearch(run: RunRecord, query: string): boolean {
 }
 
 /**
- * Whether a run list narrowed to the runs `matches` finds still lists a run. The list keeps a run that
- * matches, one with a matching descendant (on the path to it), and every child of a matching parent.
+ * Whether the run list, narrowed to one state (none: every state) and a search (lower-cased, trimmed),
+ * lists a run. It keeps a run that matches both, one with such a descendant (on the path to it), and
+ * every child of a matching parent.
  */
-export function listKeepsRun(runs: RunRecord[], run: RunRecord, matches: (run: RunRecord) => boolean): boolean {
+export function listShowsRun(runs: RunRecord[], run: RunRecord, statusFilter: RunStatusKind | null | undefined, query: string): boolean {
+    const matches = (candidate: RunRecord) => (!statusFilter || runKind(candidate) === statusFilter) && runMatchesSearch(candidate, query)
     const parent = run.parent_run_id ? runs.find((candidate) => candidate.run_id === run.parent_run_id) : undefined
     if (matches(run) || (parent && matches(parent))) return true
     const seen = new Set([run.run_id])
@@ -142,13 +144,6 @@ export function listKeepsRun(runs: RunRecord[], run: RunRecord, matches: (run: R
         }
     }
     return false
-}
-
-/** Whether a search (lower-cased, trimmed) would leave a run out of the run list. */
-export function searchHidesRun(runs: RunRecord[], runId: string, query: string): boolean {
-    const run = runs.find((candidate) => candidate.run_id === runId)
-    if (!query || !run) return false
-    return !listKeepsRun(runs, run, (candidate) => runMatchesSearch(candidate, query))
 }
 
 export type RunFailureKind = 'infrastructure' | 'flow'

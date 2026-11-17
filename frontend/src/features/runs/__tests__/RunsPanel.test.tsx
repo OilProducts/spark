@@ -3771,18 +3771,21 @@ describe('RunsPanel', () => {
       }
     })
 
-    it('opens a run from the runs a failed refresh kept', async () => {
-      let refreshFails = false
+    it.each([
+      ['a failed refresh kept', 'error', () => Promise.resolve(new Response('', { status: 503 }))],
+      ['shown while a refresh is out', 'loading', () => new Promise<Response>(() => {})],
+    ] as const)('opens a run from the runs %s', async (_, refreshStatus, refresh) => {
+      let refreshing = false
       vi.mocked(global.fetch).mockImplementation(async (input) => {
         if (!resolveRequestUrl(input).endsWith('/attractor/runs')) return new Promise<Response>(() => {})
-        return refreshFails ? new Response('', { status: 503 }) : jsonResponse({ runs: [finishedLate, activeNew] })
+        return refreshing ? refresh() : jsonResponse({ runs: [finishedLate, activeNew] })
       })
       useStore.setState({ viewMode: 'overview' })
       renderRunsWorkspace()
       await waitFor(() => expect(useStore.getState().runsListSession.status).toBe('ready'))
-      refreshFails = true
+      refreshing = true
       act(() => { window.dispatchEvent(new Event('spark:runs-overview-resync-required')) })
-      await waitFor(() => expect(useStore.getState().runsListSession.status).toBe('error'))
+      await waitFor(() => expect(useStore.getState().runsListSession.status).toBe(refreshStatus))
 
       act(() => useStore.getState().setViewMode('runs'))
       expect(selected()).toBe('active-new')
@@ -3809,7 +3812,7 @@ describe('RunsPanel', () => {
     })
 
     it('adds no history entry for the run it opens, so Back leaves Runs', async () => {
-      window.history.replaceState(null, '', '#/overview')
+      window.history.pushState(null, '', '#/overview')
       useStore.setState({ viewMode: 'overview' })
       useStore.getState().updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting] })
       render(<DialogProvider><HistoryRoutingController /><RunsPanel /></DialogProvider>)
@@ -3825,12 +3828,11 @@ describe('RunsPanel', () => {
     })
 
     it('adds a history entry for a run you open from a list with none open, so Back returns to Runs', async () => {
-      window.history.replaceState(null, '', '#/overview')
-      useStore.setState({ viewMode: 'overview' })
-      // A refresh is out, so nothing is open yet.
-      useStore.getState().updateRunsListSession({ status: 'loading', runs: [finishedLate, waiting] })
+      window.history.pushState(null, '', '#/runs')
+      // A linked run wasn't there, so its notice shows and nothing is open.
+      useStore.getState().updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting], missingRunId: 'gone' })
       render(<DialogProvider><HistoryRoutingController /><RunsPanel /></DialogProvider>)
-      await act(async () => useStore.getState().setViewMode('runs'))
+      expect(screen.getByTestId('run-missing')).toBeVisible()
       expect(selected()).toBeNull()
       const start = window.history.length
 
@@ -3838,23 +3840,32 @@ describe('RunsPanel', () => {
       expect(window.location.hash).toBe('#/runs/finished-late')
       expect(window.history.length).toBe(start + 1)
 
+      // Back is Runs with none open, which opens its most relevant run in that same entry.
       act(() => window.history.back())
-      await waitFor(() => expect(window.location.hash).toBe('#/runs'))
+      await waitFor(() => expect(selected()).toBe('waiting'))
       expect(useStore.getState().viewMode).toBe('runs')
-      expect(selected()).toBeNull()
+      expect(window.location.hash).toBe('#/runs/waiting')
+      expect(window.history.length).toBe(start + 1)
     })
 
-    it('offers to start a run when there are none, and says when the project filter leaves none', () => {
-      const state = useStore.getState()
-      state.updateRunsListSession({ status: 'ready', runs: [] })
-      render(<DialogProvider><RunsPanel /></DialogProvider>)
-      expect(screen.getByText('No runs yet')).toBeVisible()
-      expect(screen.getByTestId('runs-empty-run-flow-button')).toBeVisible()
+    it('reveals a linked run that the search and state filter hide together, and keeps filters that show it', async () => {
+      const failedParent = makeRun({ run_id: 'failed-parent', flow_name: 'review.dot', status: 'failed', outcome: 'failure' })
+      const deployChild = makeRun({ run_id: 'deploy-child', flow_name: 'deploy-check.dot', parent_run_id: 'failed-parent' })
+      const failedDeploy = makeRun({ run_id: 'failed-deploy', flow_name: 'deploy-fix.dot', status: 'failed', outcome: 'failure' })
+      window.history.pushState(null, '', '#/overview')
+      useStore.setState({ viewMode: 'overview' })
+      useStore.getState().updateRunsListSession({ status: 'ready', runs: [failedDeploy, deployChild, failedParent], statusFilter: 'failed', searchQuery: 'deploy' })
+      render(<DialogProvider><HistoryRoutingController /><RunsPanel /></DialogProvider>)
+      const currentRow = () => runList().getAllByTestId('run-history-row').find((row) => row.getAttribute('aria-current') === 'true')?.dataset.runId
 
-      act(() => state.updateRunsListSession({ runs: [waiting], projectFilter: '/tmp/project-one' }))
-      expect(selected()).toBeNull()
-      expect(screen.getByTestId('run-selection-empty-state')).toHaveTextContent('No runs match the project filter.')
-      expect(screen.queryByTestId('runs-empty-run-flow-button')).toBeNull()
+      act(() => { window.location.hash = '#/runs/failed-deploy' })
+      await waitFor(() => expect(currentRow()).toBe('failed-deploy'))
+      expect(useStore.getState().runsListSession).toMatchObject({ statusFilter: 'failed', searchQuery: 'deploy' })
+
+      // Each filter alone shows the failed parent, one for itself and one for its child; together they don't.
+      act(() => { window.location.hash = '#/runs/failed-parent' })
+      await waitFor(() => expect(currentRow()).toBe('failed-parent'))
+      expect(useStore.getState().runsListSession).toMatchObject({ statusFilter: null, searchQuery: 'deploy' })
     })
   })
 })
