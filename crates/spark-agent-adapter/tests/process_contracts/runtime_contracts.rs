@@ -117,10 +117,7 @@ fn subagent_depth_limit_decrements_and_blocks_recursive_spawn() {
     let mut session = Session::new(
         ProviderProfile::new("fake-provider", "fake-model"),
         ExecutionEnvironment::local(workspace.path().join("workspace")),
-        SessionConfig {
-            max_subagent_depth: 1,
-            ..SessionConfig::default()
-        },
+        SessionConfig::default(),
     );
 
     let child_handle = session
@@ -193,6 +190,8 @@ fn subagent_working_directory_is_scoped_and_escape_rejected_before_registration(
 #[test]
 fn session_lifecycle_transitions_emit_observable_events_and_allow_reuse() {
     let mut session = Session::default();
+    assert_eq!(session.config.default_command_timeout_ms, 10_000);
+    assert_eq!(session.config.max_command_timeout_ms, 600_000);
     let start = session.next_event().expect("SESSION_START");
     assert_eq!(start.kind, EventKind::SessionStart);
     assert_eq!(start.session_id, Some(session.id));
