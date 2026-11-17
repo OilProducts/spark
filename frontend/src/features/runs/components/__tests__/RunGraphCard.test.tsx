@@ -170,7 +170,11 @@ describe('RunGraphCard', () => {
         expect(goTo).toHaveValue('')
     })
 
-    it('keeps the view controls out of the canvas and shows the minimap only when asked', async () => {
+    it('keeps the view controls out of the canvas and shows the minimap only when asked and while its toggle fits', async () => {
+        // React Flow reads its canvas size from offsetWidth/offsetHeight, which jsdom leaves at 0.
+        let canvasWidth = 1024
+        vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(() => canvasWidth)
+        vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(() => 400)
         const run = makeRun('run-controls')
         useStore.getState().setRunsSelectedRunId(run.run_id)
         loadRunGraphPreviewMock.mockResolvedValue({
@@ -209,6 +213,10 @@ describe('RunGraphCard', () => {
         })
         expect(canvas.querySelector('.react-flow__minimap')).not.toBeNull()
         expect(screen.getByTestId('canvas-minimap-toggle')).toHaveAttribute('aria-pressed', 'true')
+        // Narrower than its toggle, the minimap goes with it, so it is never left with no way to hide it.
+        canvasWidth = 400
+        act(() => window.dispatchEvent(new Event('resize')))
+        expect(canvas.querySelector('.react-flow__minimap')).toBeNull()
     })
 })
 

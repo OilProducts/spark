@@ -1,5 +1,5 @@
 import { LocateFixed, Lock, LockOpen, Map as MapIcon, Maximize, Minus, Plus } from 'lucide-react'
-import { useReactFlow, useStore, useStoreApi, type ReactFlowState } from '@xyflow/react'
+import { MiniMap, useReactFlow, useStore, useStoreApi, type MiniMapProps, type ReactFlowState } from '@xyflow/react'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -15,6 +15,13 @@ type CanvasViewControlsProps = {
 
 /** The narrowest toolbar that shows the minimap toggle (`@2xl/canvas-toolbar`, 42rem), so a minimap shown unasked can be hidden. */
 export const MINIMAP_TOGGLE_MIN_WIDTH = 672
+
+const hasMinimapToggleRoom = (state: ReactFlowState) => state.width >= MINIMAP_TOGGLE_MIN_WIDTH
+
+/** The minimap, drawn only while the canvas is wide enough for its toolbar toggle, so it can always be hidden. */
+export function CanvasMiniMap(props: MiniMapProps) {
+    return useStore(hasMinimapToggleRoom) ? <MiniMap pannable zoomable {...props} /> : null
+}
 
 const isInteractiveSelector = (state: { nodesDraggable: boolean; nodesConnectable: boolean; elementsSelectable: boolean }) => (
     state.nodesDraggable || state.nodesConnectable || state.elementsSelectable

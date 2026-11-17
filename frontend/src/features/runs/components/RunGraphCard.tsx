@@ -1,14 +1,15 @@
 import { buildDiagnosticMaps, normalizeGraphAttrs } from '@/state/store-helpers'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw, SquarePen } from 'lucide-react'
 import {
     Background,
     MarkerType,
-    MiniMap,
     ReactFlow,
     ReactFlowProvider,
+    type Dimensions,
     type Edge,
     type Node,
+    type NodeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
@@ -16,12 +17,12 @@ import { isAbortError } from '@/lib/abortError'
 import { useStore, type NodeStatus } from '@/store'
 import {
     buildHydratedFlowGraph,
+    CanvasMiniMap,
     CanvasSessionModeProvider,
     CanvasViewControls,
     ChildFlowExpansionToggle,
     edgeTypes,
     layoutWithElk,
-    MINIMAP_TOGGLE_MIN_WIDTH,
     nodeTypes,
     nowMs,
     useReadableFraming,
@@ -71,7 +72,7 @@ type RunGraphCanvasInnerProps = {
     onSelectNode: (nodeId: string | null) => void
     paneHeight: number | 'fill'
     showMinimap: boolean
-    /** Told, as each loaded graph opens, whether some of it is out of view, with the minimap toggle on hand. */
+    /** Told, as each loaded graph opens, whether some of it is out of view. */
     onFramed: (overflows: boolean) => void
 }
 
@@ -108,23 +109,35 @@ function RunGraphCanvasInner({
             : edge
     )), [graphEdges, takenRoutes])
 
+    // React Flow measures each step but keeps the size to itself unless it is handed back;
+    // the minimap draws only steps whose size it is given.
+    const [measured, setMeasured] = useState<ReadonlyMap<string, Dimensions>>(new Map())
+    const onNodesChange = useCallback((changes: NodeChange[]) => {
+        const sized = changes.flatMap((change) => (
+            change.type === 'dimensions' && change.dimensions ? [[change.id, change.dimensions] as const] : []
+        ))
+        if (sized.length > 0) setMeasured((current) => new Map([...current, ...sized]))
+    }, [])
+
     const decoratedNodes = useMemo(() => (
         nodes.map((node) => {
             const status = nodeStatusesById[node.id] ?? 'idle'
             const selected = node.id === selectedNodeId
-            if ((node.data?.status ?? 'idle') === status && Boolean(node.selected) === selected) {
+            const size = measured.get(node.id)
+            if ((node.data?.status ?? 'idle') === status && Boolean(node.selected) === selected && node.measured === size) {
                 return node
             }
             return {
                 ...node,
                 selected,
+                measured: size,
                 data: {
                     ...node.data,
                     status,
                 },
             }
         })
-    ), [nodes, nodeStatusesById, selectedNodeId])
+    ), [nodes, nodeStatusesById, selectedNodeId, measured])
 
     useEffect(() => {
         const statusIds = Object.keys(nodeStatusesById)
@@ -139,7 +152,7 @@ function RunGraphCanvasInner({
     // Each loaded graph opens whole when it stays readable, else readable around its focus.
     useEffect(() => {
         const fits = frame(nodes, { padding: FRAME_PADDING, focusNodeId: focusNodeIdRef.current })
-        if (fits !== null) onFramed(!fits && (paneRef.current?.clientWidth ?? 0) >= MINIMAP_TOGGLE_MIN_WIDTH)
+        if (fits !== null) onFramed(!fits)
         // eslint-disable-next-line react-hooks/exhaustive-deps -- framed once per loaded graph
     }, [nodes, frame])
 
@@ -249,6 +262,7 @@ function RunGraphCanvasInner({
             <ReactFlow
                 id="run-graph"
                 nodes={decoratedNodes}
+                onNodesChange={onNodesChange}
                 edges={edges}
                 nodesDraggable={false}
                 nodesConnectable={false}
@@ -271,7 +285,7 @@ function RunGraphCanvasInner({
                 proOptions={{ hideAttribution: true }}
             >
                 {showMinimap ? (
-                    <MiniMap pannable zoomable position="bottom-right" style={MINIMAP_SIZE} />
+                    <CanvasMiniMap position="bottom-right" style={MINIMAP_SIZE} />
                 ) : null}
                 <Background gap={24} size={1} />
             </ReactFlow>

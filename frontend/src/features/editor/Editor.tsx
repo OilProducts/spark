@@ -2,7 +2,6 @@ import { completePreferenceInteraction } from '@/features/settings/services/clie
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type SetStateAction } from 'react';
 import {
     ReactFlow,
-    MiniMap,
     Background,
     MarkerType,
     useNodesState,
@@ -60,6 +59,7 @@ import { routeFixedNodeGraphInWorker } from '@/lib/flowLayoutRouterClient';
 import { routeIntersectsRect, type NodeRect, type RouteSide } from '@/lib/edgeRouting';
 import {
     buildHydratedFlowGraph,
+    CanvasMiniMap,
     edgeTypes,
     EDGE_CLASS,
     EDGE_INTERACTION_WIDTH,
@@ -67,7 +67,6 @@ import {
     filterAuthoredEdges,
     filterAuthoredNodes,
     layoutWithElk,
-    MINIMAP_TOGGLE_MIN_WIDTH,
     nodeTypes,
     nowMs,
     useReadableFraming,
@@ -437,7 +436,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         const graphKey = `${flowName}:${expandChildFlowsRef.current}`;
         if (framedGraphRef.current === graphKey) return;
         framedGraphRef.current = graphKey;
-        setGraphOverflows(frame(graphNodes, { padding: FRAME_PADDING }) === false && (canvasPaneRef.current?.clientWidth ?? 0) >= MINIMAP_TOGGLE_MIN_WIDTH);
+        setGraphOverflows(frame(graphNodes, { padding: FRAME_PADDING }) === false);
     }, [frame, flowName]);
     const isExpandedReadOnlyPreview = editorMode === 'structured' && expandChildFlows;
     // The file view edits the files; its canvas only selects nodes.
@@ -1901,11 +1900,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                         >
                             {/* The expanded preview's nodes never reach the minimap, so it would show an empty box. */}
                             {showMinimap && !isExpandedReadOnlyPreview ? (
-                                <MiniMap
-                                    pannable
-                                    zoomable
-                                    style={MINIMAP_SIZE}
-                                />
+                                <CanvasMiniMap style={MINIMAP_SIZE} />
                             ) : null}
                             <Background gap={20} size={1} color="hsl(var(--border))" />
                         </ReactFlow>

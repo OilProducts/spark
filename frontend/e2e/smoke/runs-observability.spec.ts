@@ -724,6 +724,41 @@ test('run graph panel renders /pipelines/{id}/graph-preview output for item 9.5-
   await graphPanel.screenshot({ path: screenshotPath('08n-runs-panel-run-graph.png') })
 })
 
+test('a run graph too big to show whole opens with a minimap of its steps, gone once its toggle no longer fits', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const projectPath = `/tmp/ui-smoke-project-runs-minimap-${Date.now()}`
+  const run = buildSmokeRun(projectPath, { run_id: `run-minimap-${Date.now()}`, flow_name: 'LongFlow' })
+  const ids = Array.from({ length: 20 }, (_, index) => `step_${index}`)
+
+  await stubRunSummary(page, run)
+  await page.route(`**/attractor/pipelines/${run.run_id}/graph-preview`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'ok',
+        graph: {
+          nodes: ids.map((id) => ({ id, label: id, shape: 'box' })),
+          edges: ids.slice(1).map((id, index) => ({ from: ids[index], to: id, kind: 'route', decision: 'next', description: '', label: '' })),
+        },
+        diagnostics: [],
+        errors: [],
+      }),
+    })
+  })
+
+  await openRunsForSmokeTest(page, projectPath)
+  await page.getByTestId('run-graph-toggle').click()
+  const canvas = page.getByTestId('run-graph-canvas')
+  await expect(canvas.locator('.react-flow__minimap')).toBeVisible()
+  await expect(canvas.locator('.react-flow__minimap-node')).toHaveCount(ids.length)
+  await page.getByTestId('run-graph-panel').screenshot({ path: screenshotPath('08o-runs-panel-run-graph-minimap.png') })
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(canvas.locator('.react-flow__node').first()).toBeVisible()
+  await expect(canvas.locator('.react-flow__minimap')).toHaveCount(0)
+})
+
 test('a failed run shows its failure, the visit it stopped in, and that visit\'s files', async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-runs-failed-${Date.now()}`
   const run = buildSmokeRun(projectPath, {
