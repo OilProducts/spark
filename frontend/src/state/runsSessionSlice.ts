@@ -1,4 +1,4 @@
-import { runKind, searchHidesRun } from '@/features/runs/model/runOverviewModel'
+import { listKeepsRun, runKind, searchHidesRun } from '@/features/runs/model/runOverviewModel'
 import { unconfirmRunQuestions } from './runsSessionScope'
 import { type StateCreator } from 'zustand'
 import type { AppState } from './store-types'
@@ -19,7 +19,7 @@ const DEFAULT_RUNS_LIST_SESSION_STATE: RunsListSessionState = {
 function filtersHiding(session: RunsListSessionState, runId: string): Partial<RunsListSessionState> {
     const run = session.runs.find((candidate) => candidate.run_id === runId)
     return {
-        ...session.statusFilter && (!run || runKind(run) !== session.statusFilter) ? { statusFilter: null } : {},
+        ...session.statusFilter && (!run || !listKeepsRun(session.runs, run, (candidate) => runKind(candidate) === session.statusFilter)) ? { statusFilter: null } : {},
         ...session.projectFilter && run?.project_path !== session.projectFilter ? { projectFilter: null } : {},
         ...searchHidesRun(session.runs, runId, session.searchQuery?.trim().toLowerCase() ?? '') ? { searchQuery: '' } : {},
     }
@@ -205,7 +205,7 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
                         selectedNodeId: null,
                     },
                 } } : {}),
-                runsListSession: { ...state.runsListSession, selectedRunId: runId, missingRunId: null, ...unfiltered },
+                runsListSession: { ...state.runsListSession, selectedRunId: runId, missingRunId: null, autoOpenedRunId: null, ...unfiltered },
             }
         }),
     updateRunDetailSession: (runId, patch) =>

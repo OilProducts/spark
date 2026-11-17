@@ -47,8 +47,10 @@ export interface RunsListSessionState {
     statusFilter?: RunStatusKind | null
     /** The run list's search, as typed. */
     searchQuery?: string
-    /** A run that was opened but isn't there (a stale link, a deleted run), until another opens. */
+    /** A run that was opened but isn't there (a stale link, a deleted run), until another opens or Runs is left. */
     missingRunId?: string | null
+    /** The open run, when a desktop's Runs opened it by itself with none open; that adds no history entry. */
+    autoOpenedRunId?: string | null
     status: ResourceStatus
     error: string | null
     runs: RunRecord[]

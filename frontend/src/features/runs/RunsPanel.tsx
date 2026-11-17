@@ -29,7 +29,7 @@ import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { formatDuration, runHasEnded, type RunRecord } from './model/shared'
 import { buildRunNodeStatuses, VISIT_NODE_STATUSES } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
-import { buildRunContextOverview, runKind, runMatchesSearch, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
+import { buildRunContextOverview, listKeepsRun, runKind, runMatchesSearch, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
 import type { StatusTone } from '@/components/app/status'
 import { ListBackLink, SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
@@ -72,14 +72,20 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const statusFilter = useStore((state) => state.runsListSession.statusFilter ?? null)
     const searchQuery = useStore((state) => state.runsListSession.searchQuery ?? '')
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
-    // A desktop opens on the run you most likely came for; a phone opens on the list. A run picked
-    // or restored (even while it loads) stays, as does a missing run's notice. Only runs the list shows count.
+    // A desktop opens on the run you most likely came for, once the list has loaded or kept its last
+    // runs; a phone opens on the list. A run picked or restored (even while it loads) stays, as does a
+    // missing run's notice. Only runs the list shows count.
     const query = searchQuery.trim().toLowerCase()
-    const autoRunId = selectedRunId || missingRunId || isNarrowViewport || status !== 'ready'
+    const matches = (run: RunRecord) => (!statusFilter || runKind(run) === statusFilter) && runMatchesSearch(run, query)
+    // ponytail: O(n^2) while filters are on and nothing is open; index children by parent if lists grow large.
+    const autoRunId = selectedRunId || missingRunId || isNarrowViewport || (status !== 'ready' && status !== 'error')
         ? null
-        : mostRelevantRun(runs.filter((run) => (!statusFilter || runKind(run) === statusFilter) && runMatchesSearch(run, query)))?.run_id ?? null
+        : mostRelevantRun(runs.filter((run) => listKeepsRun(runs, run, matches)))?.run_id ?? null
     useEffect(() => {
-        if (autoRunId) useStore.getState().setRunsSelectedRunId(autoRunId)
+        if (!autoRunId) return
+        const state = useStore.getState()
+        state.setRunsSelectedRunId(autoRunId)
+        state.updateRunsListSession({ autoOpenedRunId: autoRunId })
     }, [autoRunId])
     return (
         <div className="flex h-full min-h-0 flex-col gap-2">
@@ -150,6 +156,12 @@ export function RunsPanel() {
     const isRunsView = useStore((state) => state.viewMode === 'runs')
     const setActiveFlow = useStore((state) => state.setActiveFlow)
     const setPendingEditorNodeSelection = useStore((state) => state.setPendingEditorNodeSelection)
+    // A missing run's notice lasts the visit it shows in; the next visit to Runs opens a run.
+    useEffect(() => {
+        if (!isRunsView && useStore.getState().runsListSession.missingRunId) {
+            useStore.getState().updateRunsListSession({ missingRunId: null })
+        }
+    }, [isRunsView])
     const [continuationDraft, setContinuationDraft] = useState<ContinuationDraft | null>(null)
     const [rerunRun, setRerunRun] = useState<RunRecord | null>(null)
     // A re-run's dialog closes onto the new run: focus goes to its heading, not to the page.

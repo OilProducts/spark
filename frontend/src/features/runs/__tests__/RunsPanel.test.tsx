@@ -2,7 +2,7 @@ import { RunVisitsCard } from '../components/RunVisitsCard'
 import { RunGraphCard } from '../components/RunGraphCard'
 import { runDayLabel } from '../model/runOverviewModel'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
-import { RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
+import { HistoryRoutingController, RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { RunsPanel } from '@/features/runs/RunsPanel'
 import { openRun } from '@/features/missions/MissionTranscript'
 import { RunStream } from '@/features/runs/RunStream'
@@ -3738,17 +3738,110 @@ describe('RunsPanel', () => {
       expect(screen.queryByTestId('runs-empty-run-flow-button')).toBeNull()
     })
 
-    it('on a phone, opens on the list', () => {
+    it('on a phone, opens on the list; widened, opens the waiting parent a search keeps for its child', () => {
+      const parent = makeRun({ run_id: 'parent', flow_name: 'review.dot', status: 'waiting', outcome: null, started_at: '2026-03-22T00:00:00Z', ended_at: null })
+      const child = makeRun({ run_id: 'child', flow_name: 'deploy-check.dot', parent_run_id: 'parent', started_at: '2026-03-22T00:01:00Z', ended_at: '2026-03-22T00:02:00Z' })
+      const otherWaiting = makeRun({ run_id: 'other-waiting', flow_name: 'triage.dot', status: 'waiting', outcome: null, started_at: '2026-03-22T01:00:00Z', ended_at: null })
       window.innerWidth = 390
       window.dispatchEvent(new Event('resize'))
       try {
-        useStore.getState().updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting] })
+        useStore.getState().updateRunsListSession({ status: 'ready', runs: [otherWaiting, child, parent], searchQuery: 'deploy' })
         render(<DialogProvider><RunsPanel /></DialogProvider>)
         expect(selected()).toBeNull()
+        // The search finds the finished child, so the list shows its waiting parent under Needs input.
+        expect(within(screen.getByTestId('run-list-group-needs-input')).getAllByTestId('run-history-row').map((row) => row.dataset.runId)).toEqual(['parent', 'child'])
+
+        act(() => {
+          window.innerWidth = 1400
+          window.dispatchEvent(new Event('resize'))
+        })
+        expect(selected()).toBe('parent')
+        expect(useStore.getState().runsListSession.searchQuery).toBe('deploy')
+
+        // A state filter keeps the parent for its child too, and opening the parent keeps the filter.
+        act(() => {
+          useStore.getState().updateRunsListSession({ searchQuery: '', statusFilter: 'completed' })
+          useStore.getState().setRunsSelectedRunId(null)
+        })
+        expect(selected()).toBe('parent')
+        expect(useStore.getState().runsListSession.statusFilter).toBe('completed')
       } finally {
         window.innerWidth = 1024
         window.dispatchEvent(new Event('resize'))
       }
+    })
+
+    it('opens a run from the runs a failed refresh kept', async () => {
+      let refreshFails = false
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        if (!resolveRequestUrl(input).endsWith('/attractor/runs')) return new Promise<Response>(() => {})
+        return refreshFails ? new Response('', { status: 503 }) : jsonResponse({ runs: [finishedLate, activeNew] })
+      })
+      useStore.setState({ viewMode: 'overview' })
+      renderRunsWorkspace()
+      await waitFor(() => expect(useStore.getState().runsListSession.status).toBe('ready'))
+      refreshFails = true
+      act(() => { window.dispatchEvent(new Event('spark:runs-overview-resync-required')) })
+      await waitFor(() => expect(useStore.getState().runsListSession.status).toBe('error'))
+
+      act(() => useStore.getState().setViewMode('runs'))
+      expect(selected()).toBe('active-new')
+      expect(runList().getByText('Finished Late')).toBeVisible()
+    })
+
+    it('says a restored run is gone for that visit, and opens a run on the next', async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = resolveRequestUrl(input)
+        if (url.endsWith('/attractor/runs')) return jsonResponse({ runs: [finishedLate, activeNew] })
+        if (url.endsWith('/attractor/pipelines/gone')) return new Response(JSON.stringify({ detail: 'Unknown pipeline' }), { status: 404 })
+        return new Promise<Response>(() => {})
+      })
+      useStore.getState().setRunsSelectedRunId('gone')
+      renderRunsWorkspace()
+      expect(await screen.findByTestId('run-missing')).toHaveTextContent('gone')
+      expect(await runList().findByText('Finished Late')).toBeVisible()
+      expect(selected()).toBeNull()
+
+      act(() => useStore.getState().setViewMode('overview'))
+      act(() => useStore.getState().setViewMode('runs'))
+      expect(selected()).toBe('active-new')
+      expect(screen.queryByTestId('run-missing')).toBeNull()
+    })
+
+    it('adds no history entry for the run it opens, so Back leaves Runs', async () => {
+      window.history.replaceState(null, '', '#/overview')
+      useStore.setState({ viewMode: 'overview' })
+      useStore.getState().updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting] })
+      render(<DialogProvider><HistoryRoutingController /><RunsPanel /></DialogProvider>)
+      const start = window.history.length
+
+      await act(async () => useStore.getState().setViewMode('runs'))
+      expect(selected()).toBe('waiting')
+      expect(window.location.hash).toBe('#/runs/waiting')
+      expect(window.history.length).toBe(start + 1)
+
+      act(() => window.history.back())
+      await waitFor(() => expect(useStore.getState().viewMode).toBe('overview'))
+    })
+
+    it('adds a history entry for a run you open from a list with none open, so Back returns to Runs', async () => {
+      window.history.replaceState(null, '', '#/overview')
+      useStore.setState({ viewMode: 'overview' })
+      // A refresh is out, so nothing is open yet.
+      useStore.getState().updateRunsListSession({ status: 'loading', runs: [finishedLate, waiting] })
+      render(<DialogProvider><HistoryRoutingController /><RunsPanel /></DialogProvider>)
+      await act(async () => useStore.getState().setViewMode('runs'))
+      expect(selected()).toBeNull()
+      const start = window.history.length
+
+      await act(async () => fireEvent.click(runList().getByText('Finished Late')))
+      expect(window.location.hash).toBe('#/runs/finished-late')
+      expect(window.history.length).toBe(start + 1)
+
+      act(() => window.history.back())
+      await waitFor(() => expect(window.location.hash).toBe('#/runs'))
+      expect(useStore.getState().viewMode).toBe('runs')
+      expect(selected()).toBeNull()
     })
 
     it('offers to start a run when there are none, and says when the project filter leaves none', () => {
