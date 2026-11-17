@@ -1,5 +1,6 @@
 import { parseFormQuestion } from '@/lib/forms'
 import { ApiHttpError } from '@/lib/attractorClient'
+import { describeFailure } from './runOverviewModel'
 import type {
     PendingInterviewGate,
     PendingInterviewGateGroup,
@@ -212,7 +213,7 @@ const timelineSummaryFromEvent = (
     }
     if (type === 'PipelineFailed') {
         const error = asTrimmedString(payload.error)
-        return error ? `${sourcePrefix}Run failed: ${error}` : `${sourcePrefix}Run failed`
+        return error ? `${sourcePrefix}Run failed: ${failureLines(error)}` : `${sourcePrefix}Run failed`
     }
     if (type === 'PipelinePaused') {
         return `${sourcePrefix}Run paused at ${step(asTrimmedString(payload.current_node) ?? nodeId, 'checkpoint')}`
@@ -239,7 +240,7 @@ const timelineSummaryFromEvent = (
     }
     if (type === 'StageFailed') {
         const error = asTrimmedString(payload.error)
-        return error ? `${sourcePrefix}${node} failed: ${error}` : `${sourcePrefix}${node} failed`
+        return error ? `${sourcePrefix}${node} failed: ${failureLines(error)}` : `${sourcePrefix}${node} failed`
     }
     if (type === 'StageRetrying') {
         const attempt = asFiniteNumber(payload.attempt)
@@ -296,6 +297,12 @@ const timelineSummaryFromEvent = (
         return `${sourcePrefix}Checkpoint saved at ${step(asTrimmedString(payload.current_node) ?? nodeId, 'current node')}`
     }
     return null
+}
+
+// A failure in plain words first; the runtime's own text, such as a command's output, on the lines after.
+const failureLines = (error: string): string => {
+    const { summary, detail } = describeFailure(error)
+    return detail ? `${summary}\n${detail}` : summary
 }
 
 /** A journal entry's line, with steps named by `nodeLabel`; kinds the UI does not word keep the runtime's summary. */

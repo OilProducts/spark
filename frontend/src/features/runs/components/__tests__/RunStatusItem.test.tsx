@@ -187,6 +187,19 @@ describe('RunStatusItem', () => {
     expect(screen.queryByTestId('run-output-commit')).not.toBeInTheDocument()
   })
 
+  it("shows a long failure output's last lines, where its error is, until asked for all", () => {
+    const output = [...Array.from({ length: 400 }, (_, index) => `Compiling crate-${index}`), 'error: test failed'].join('\n')
+    renderStatus(run({ status: 'failed', last_error: `tool exited with code 101; stderr: ${output}` }), [])
+    const detail = screen.getByTestId('run-status-failure-detail')
+    expect(detail).toHaveTextContent(/error: test failed$/)
+    expect(detail).not.toHaveTextContent('crate-0 ')
+    expect(detail.textContent!.split('\n')).toHaveLength(13)
+    const toggle = within(detail).getByRole('button', { name: 'Show 389 earlier lines' })
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(detail).toHaveTextContent('Compiling crate-0')
+  })
+
   it('keeps lock, spec, plan and a separate project path among the run facts', () => {
     renderStatus(run({
       project_path: '/tmp/project',
@@ -459,7 +472,7 @@ describe('RunVisitsCard', () => {
     expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveTextContent('Completed')
     expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveAttribute('data-tone', 'success')
     expect(within(returned).getByTestId('run-visit-decision')).toHaveTextContent('Decision revise')
-    expect(within(returned).queryByTestId('run-visit-error-kind')).toBeNull()
+    expect(within(returned).queryByTestId('run-visit-reason-detail')).toBeNull()
     expect(returned).toHaveTextContent('Sent back to')
     expect(screen.getByTestId('run-visit-next')).toHaveTextContent('Implement 2')
     expect(screen.getByTestId('run-visit-reason')).toHaveTextContent('Missing a test.')
@@ -679,7 +692,7 @@ describe('RunVisitsCard returned evidence', () => {
     expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveTextContent('Error')
     expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveAttribute('data-tone', 'warning')
     // Tolerance is a fork's concern, so a visit outside one doesn't state it.
-    expect(within(returned).getByTestId('run-visit-error-kind')).toHaveTextContent(/^contract error$/)
+    expect(within(returned).getByTestId('run-visit-reason-detail')).toHaveTextContent(/^contract error$/)
     expect(within(returned).queryByTestId('run-visit-decision')).toBeNull()
     expect(within(returned).getByTestId('run-visit-reason')).toHaveTextContent('response named no declared decision')
   })

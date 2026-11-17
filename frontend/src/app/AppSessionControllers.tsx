@@ -682,8 +682,11 @@ export function HistoryRoutingController() {
 export function AppSessionControllers() {
     return (
         <>
-            <ModelDefaultsController />
-            <ClientPreferencesController />
+            {/* Their notices float over the bottom corner, so they never push the app down. */}
+            <div className="pointer-events-none fixed inset-x-4 bottom-4 z-50 flex flex-col items-end gap-2 sm:left-auto sm:w-96">
+                <ModelDefaultsController />
+                <ClientPreferencesController />
+            </div>
             <WorkspaceLiveEventsController />
             <HomeSessionController />
             <RunsSessionController />

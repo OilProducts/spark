@@ -38,6 +38,7 @@ import {
 } from '../model/visitModel'
 import { describeFailure, formatRunTime } from '../model/runOverviewModel'
 import { useRunActions, type SteerResult } from '../hooks/useRunActions'
+import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { FailureDetail } from './RunStatusItem'
 
 // Colour marks exceptions: a completed visit carries no icon, a visit that was sent
@@ -84,14 +85,16 @@ interface RunVisitsCardProps {
     isLive: boolean
     /** Why the journal couldn't load; the steps it lists are then unknown, not none. */
     timelineError: string | null
+    /** The journal hasn't loaded yet, so no steps says nothing. */
+    stepsLoading?: boolean
     /** The node selected on the graph; its visits are highlighted. */
     selectedNodeId: string | null
     onSelectNode: (nodeId: string | null) => void
     onOpenRun: (runId: string) => void
     /** The status item's row: what it says and whether it needs attention. */
     statusRow: { label: string; tone?: StatusTone; detail?: string }
-    /** How many keys the Context item lists; null when the context couldn't load. */
-    contextKeyCount: number | null
+    /** How many keys the Context item lists; null when the context couldn't load, 'loading' until it has. */
+    contextKeyCount: number | null | 'loading'
     renderStatus: (selectVisit: (visit: RunVisit) => void) => ReactNode
     renderContext: (focusKey: string | null, selectVisit: (visit: RunVisit) => void) => ReactNode
     artifactEntries: ArtifactListEntry[]
@@ -112,6 +115,7 @@ export function RunVisitsCard({
     isNarrowViewport,
     isLive,
     timelineError,
+    stepsLoading = false,
     selectedNodeId,
     onSelectNode,
     onOpenRun,
@@ -273,20 +277,24 @@ export function RunVisitsCard({
                                 {item === 'status' ? statusRow.label : 'Context'}
                             </span>
                             <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-                                {item === 'status' ? statusRow.detail : contextKeyCount === null ? 'Not loaded' : `${contextKeyCount} ${contextKeyCount === 1 ? 'key' : 'keys'}`}
+                                {item === 'status' ? statusRow.detail : contextKeyCount === null ? 'Not loaded' : contextKeyCount === 'loading' ? 'Loading…' : `${contextKeyCount} ${contextKeyCount === 1 ? 'key' : 'keys'}`}
                             </span>
                         </button>
                     ))}
                     <div className="flex items-center justify-between gap-2 px-2.5 pb-1 pt-3 text-xs font-semibold text-muted-foreground">
                         <span>Steps</span>
                         <span className="font-normal">
-                            {stepsUnavailable ? null : <>{visits.length} {visits.length === 1 ? 'visit' : 'visits'}</>}
+                            {stepsUnavailable || (stepsLoading && visits.length === 0) ? null : <>{visits.length} {visits.length === 1 ? 'visit' : 'visits'}</>}
                             {isLive ? <span className="ml-1.5 text-info">Live</span> : null}
                         </span>
                     </div>
                     {stepsUnavailable ? (
                         <p data-testid="run-visits-unavailable" className="px-2.5 py-2 text-sm text-muted-foreground">
                             The steps couldn’t load.
+                        </p>
+                    ) : visits.length === 0 && stepsLoading ? (
+                        <p data-testid="run-visits-loading" className="px-2.5 py-2 text-sm text-muted-foreground" aria-live="polite">
+                            Loading the steps…
                         </p>
                     ) : visits.length === 0 ? (
                         <p data-testid="run-visits-empty" className="px-2.5 py-2 text-sm text-muted-foreground">
@@ -519,15 +527,18 @@ function RunVisitView({
                             </span>
                         ) : null}
                     </div>
-                    {failure ? (
+                    {/* A step's own notes are Markdown, as its agent wrote them; an error reads as written. */}
+                    {failure && visit.outcome === 'completed' && !failure.detail ? (
+                        <div data-testid="run-visit-reason" className="max-w-[72ch] text-sm text-foreground">
+                            <ProjectConversationMarkdown content={failure.summary} keepLineBreaks />
+                        </div>
+                    ) : failure ? (
                         <p data-testid="run-visit-reason" className="max-w-[72ch] whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{failure.summary}</p>
                     ) : null}
                     {/* The error's kind and the runtime's own words are for whoever debugs the flow. */}
                     {errorKind || failure?.detail ? (
                         <FailureDetail data-testid="run-visit-reason-detail" className="max-w-[72ch]">
-                            {errorKind ? <span data-testid="run-visit-error-kind">{errorKind}</span> : null}
-                            {errorKind && failure?.detail ? ': ' : ''}
-                            {failure?.detail}
+                            {[errorKind, failure?.detail].filter(Boolean).join(': ')}
                         </FailureDetail>
                     ) : null}
                     {branchResults.length > 0 ? <BranchResults results={branchResults} /> : null}
@@ -817,6 +828,17 @@ function ToolWork({ visit, command }: { visit: RunVisit; command: string | null 
 }
 
 // The journal names the day once and each entry by its time of day, as the run list does.
+// An entry's first line is its news; an error's further lines, such as a command's output, are detail.
+function JournalEntryText({ text, className }: { text: string; className?: string }) {
+    const [line, ...more] = text.split('\n')
+    return (
+        <div className="flex min-w-0 flex-col gap-1">
+            <span className={cn('break-words', className)}>{line}</span>
+            {more.length > 0 ? <FailureDetail>{more.join('\n')}</FailureDetail> : null}
+        </div>
+    )
+}
+
 const JOURNAL_DAY = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
 
 function RunJournal({ journal, flowNodes, timelineError }: {
@@ -850,13 +872,10 @@ function RunJournal({ journal, flowNodes, timelineError }: {
                                 <span className="w-20 shrink-0 text-xs leading-5 tabular-nums text-muted-foreground" title={formatTimestamp(event.receivedAt)}>
                                     {valid ? formatRunTime(event.receivedAt) : '—'}
                                 </span>
-                                <span className={cn(
-                                    'min-w-0 break-words',
-                                    event.severity === 'error' ? 'text-destructive' : event.severity === 'warning' ? 'text-warning' : undefined,
-                                )}
-                                >
-                                    {journalEntrySummary(event, nodeLabel)}
-                                </span>
+                                <JournalEntryText
+                                    text={journalEntrySummary(event, nodeLabel)}
+                                    className={event.severity === 'error' ? 'text-destructive' : event.severity === 'warning' ? 'text-warning' : undefined}
+                                />
                             </li>
                         </Fragment>
                     )

@@ -160,6 +160,7 @@ export function RunsPanel() {
         contextStatus,
         degradedDetailPanels,
         fetchContext,
+        isArtifactLoading,
         isArtifactViewerLoading,
         pendingQuestionSnapshots,
         resultData,
@@ -185,6 +186,7 @@ export function RunsPanel() {
         groupedPendingInterviewGates,
         hasOlderTimelineEvents,
         isTimelineLive,
+        isTimelineLoading,
         isTimelineLoadingOlder,
         loadOlderTimelineEvents,
         pendingGateActionError,
@@ -614,6 +616,7 @@ export function RunsPanel() {
                                 isNarrowViewport={isNarrowViewport}
                                 isLive={isTimelineLive && isSelectedRunActive}
                                 timelineError={timelineError}
+                                stepsLoading={isTimelineLoading}
                                 selectedNodeId={selectedNodeId}
                                 onSelectNode={selectNode}
                                 onOpenRun={openRun}
@@ -625,7 +628,11 @@ export function RunsPanel() {
                                     ...STATUS_ROWS[statusKind],
                                     detail: formatDuration(selectedRun.started_at, selectedRun.ended_at, selectedRun.status, now),
                                 }}
-                                contextKeyCount={contextError ? null : contextOverview.namespaces.reduce((count, namespace) => count + namespace.keys.length, 0)}
+                                contextKeyCount={contextError
+                                    ? null
+                                    : isTimelineLoading || (contextStatus !== 'ready' && !contextData)
+                                        ? 'loading'
+                                        : contextOverview.namespaces.reduce((count, namespace) => count + namespace.keys.length, 0)}
                                 renderStatus={(selectVisit) => (
                                     <RunStatusItem
                                         run={selectedRun}
@@ -637,6 +644,7 @@ export function RunsPanel() {
                                         resultError={resultError}
                                         artifactEntries={artifactEntries}
                                         artifactsUnavailable={Boolean(artifactError)}
+                                        artifactsLoading={isArtifactLoading && artifactEntries.length === 0}
                                         onSelectVisit={selectVisit}
                                         onViewArtifact={openArtifact}
                                         question={

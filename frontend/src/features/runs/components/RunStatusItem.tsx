@@ -1,9 +1,10 @@
-import type { ComponentProps, ReactNode } from 'react'
+import { useState, type ComponentProps, type ReactNode } from 'react'
 import { ChevronRight } from 'lucide-react'
 
 import type { PipelineResultResponse } from '@/lib/attractorClient'
 import type { TokenUsageBucketResponse } from '@/lib/api/attractorApi'
 import { InlineError } from '@/components/app/inline-error'
+import { StatusDot } from '@/components/app/status'
 import { SectionHeading } from '@/components/app/section-heading'
 import { Well } from '@/components/app/well'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
@@ -32,7 +33,7 @@ import {
     runFailureMessage,
     type RunStatusKind,
 } from '../model/runOverviewModel'
-import { visitContextWrites, type RunVisit, type VisitFlowNode } from '../model/visitModel'
+import { formatVisitDuration, visitContextWrites, visitDurationMs, type RunVisit, type VisitFlowNode } from '../model/visitModel'
 
 type ViewArtifact = (entry: { path: string; viewable: boolean }) => void
 
@@ -47,6 +48,8 @@ interface RunStatusItemProps {
     artifactEntries: ArtifactListEntry[]
     /** The output file list failed to load, so an empty list says nothing. */
     artifactsUnavailable?: boolean
+    /** The output file list is still loading, so an empty list says nothing yet. */
+    artifactsLoading?: boolean
     /** The pending question, answered in place. */
     question: ReactNode
     onSelectVisit: (visit: RunVisit) => void
@@ -67,9 +70,32 @@ export function VisitLink({ visit, onSelect }: { visit: RunVisit; onSelect: (vis
     )
 }
 
+// A command's output ends with its error, so a long one shows its last lines until asked for all.
+const FAILURE_DETAIL_TAIL = 12
+
 /** The runtime's own words for a failure, muted under the plain ones, for whoever debugs the flow. */
-export function FailureDetail({ className, ...props }: ComponentProps<'span'>) {
-    return <span className={cn('block whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground', className)} {...props} />
+export function FailureDetail({ className, children, ...props }: ComponentProps<'div'>) {
+    const [expanded, setExpanded] = useState(false)
+    const lines = typeof children === 'string' ? children.split('\n') : null
+    const hidden = lines && lines.length > FAILURE_DETAIL_TAIL ? lines.length - FAILURE_DETAIL_TAIL : 0
+    return (
+        <div className={cn('flex flex-col items-start gap-1 font-mono text-xs text-muted-foreground', className)} {...props}>
+            {hidden > 0 ? (
+                <button
+                    type="button"
+                    data-testid="failure-detail-toggle"
+                    aria-expanded={expanded}
+                    onClick={() => setExpanded((value) => !value)}
+                    className="font-sans text-xs text-primary underline-offset-4 hover:underline"
+                >
+                    {expanded ? `Show only the last ${FAILURE_DETAIL_TAIL} lines` : `Show ${hidden} earlier lines`}
+                </button>
+            ) : null}
+            <span className={cn('block max-w-full whitespace-pre-wrap break-words', expanded && 'max-h-[60vh] overflow-auto')}>
+                {hidden > 0 && !expanded ? `…\n${lines!.slice(-FAILURE_DETAIL_TAIL).join('\n')}` : children}
+            </span>
+        </div>
+    )
 }
 
 /** A clock time or date, with the full timestamp on hover. */
@@ -112,6 +138,7 @@ export function RunStatusItem({
     resultError,
     artifactEntries,
     artifactsUnavailable = false,
+    artifactsLoading = false,
     question,
     onSelectVisit,
     onViewArtifact,
@@ -155,13 +182,38 @@ export function RunStatusItem({
             </>
         )
     } else if (kind === 'running') {
-        const current = [...visits].reverse().find((visit) => visit.outcome === 'running')
+        const running = visits.filter((visit) => visit.outcome === 'running')
+        const step = [...running].reverse().find((visit) => visit.parentKey === null)
+        // A fan-out runs while its branches do; the branches are where the work is.
+        const branches = step ? running.filter((visit) => visit.parentKey === step.key) : []
+        const current = branches.length > 0 ? branches : step ? [step] : []
+        const finished = rootVisits.filter((visit) => visit.outcome !== 'running' && visit.outcome !== 'waiting').length
         heading = 'Running'
         meta = <>for {duration}</>
         body = (
-            <p data-testid="run-status-running" className="text-sm text-muted-foreground">
-                {current ? <>Now in {link(current)}.</> : 'Starting…'}
-            </p>
+            <div className="flex flex-col gap-2 text-sm text-muted-foreground">
+                {current.length > 1 ? (
+                    <>
+                        <p data-testid="run-status-running">{current.length} steps are running at the same time:</p>
+                        <ul className="flex flex-col gap-1">
+                            {current.map((visit) => (
+                                <li key={visit.key} data-testid="run-status-running-step" className="flex items-center gap-2">
+                                    <StatusDot tone="info" />
+                                    {link(visit)}
+                                    <span className="tabular-nums">{formatVisitDuration(visitDurationMs(visit, now))}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    </>
+                ) : (
+                    <p data-testid="run-status-running">{current[0] ? <>Now in {link(current[0])}.</> : 'Starting…'}</p>
+                )}
+                {finished > 0 ? (
+                    <p data-testid="run-status-finished-count">
+                        {finished} {finished === 1 ? 'step' : 'steps'} finished so far. Pick a step to follow its work.
+                    </p>
+                ) : null}
+            </div>
         )
     } else if (kind === 'completed') {
         const source = result?.source_node_id
@@ -252,7 +304,7 @@ export function RunStatusItem({
                 </Well>
             ) : null}
             {kind === 'completed' || kind === 'failed' ? (
-                <RunOutputs run={run} withCommit={kind === 'completed'} artifactEntries={artifactEntries} unavailable={artifactsUnavailable} onViewArtifact={onViewArtifact} />
+                <RunOutputs run={run} withCommit={kind === 'completed'} artifactEntries={artifactEntries} unavailable={artifactsUnavailable} loading={artifactsLoading} onViewArtifact={onViewArtifact} />
             ) : null}
             <RunFacts run={run} now={now} />
         </article>
@@ -302,12 +354,14 @@ function RunOutputs({
     withCommit,
     artifactEntries,
     unavailable,
+    loading,
     onViewArtifact,
 }: {
     run: RunRecord
     withCommit: boolean
     artifactEntries: ArtifactListEntry[]
     unavailable: boolean
+    loading: boolean
     onViewArtifact: ViewArtifact
 }) {
     const resultFiles = artifactEntries.filter((entry) => (
@@ -359,6 +413,10 @@ function RunOutputs({
             ) : unavailable ? (
                 <p data-testid="run-status-outputs-unavailable" className="text-sm text-muted-foreground">
                     The output files couldn’t load.
+                </p>
+            ) : loading ? (
+                <p data-testid="run-status-outputs-loading" className="text-sm text-muted-foreground">
+                    Loading the output files…
                 </p>
             ) : (
                 <p data-testid="run-status-no-outputs" className="text-sm text-muted-foreground">
