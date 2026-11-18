@@ -46,6 +46,7 @@ fn route_dispatch_keeps_root_and_api_subroutes_distinct() {
 
     let moved = handle_attractor_request("GET", "/attractor/llm-profiles", "", settings);
     assert_eq!(moved.status_code, 404);
+    assert_eq!(moved.content_type, "application/json");
     assert_eq!(moved.body, json!({"detail": "Not Found"}));
 }
 

@@ -426,45 +426,6 @@ fn tool_definition_requires_object_root_json_schema_and_defaults_to_empty_object
 }
 
 #[test]
-fn registry_register_unregister_get_definitions_and_names_are_latest_wins() {
-    let first_definition = definition("lookup", "first", json!({"type": "object"}));
-    let second_definition = definition("lookup", "second", json!({"type": "object"}));
-
-    let mut registry = ToolRegistry::new();
-    let previous = registry.register(RegisteredTool::new::<Value, _>(
-        first_definition.clone(),
-        |_| Ok(json!("first")),
-    ));
-    assert!(previous.is_none());
-
-    let previous = registry.register(RegisteredTool::new::<Value, _>(
-        second_definition.clone(),
-        |_| Ok(json!("second")),
-    ));
-    assert_eq!(
-        previous.expect("replaced").definition.description,
-        first_definition.description
-    );
-    assert_eq!(registry.names(), ["lookup"]);
-    assert_eq!(registry.definitions(), [second_definition.clone()]);
-    assert_eq!(
-        registry
-            .dispatch(
-                ToolCall::new("call-1", "lookup", json!({})),
-                ToolDispatchContext::default(),
-            )
-            .content,
-        json!("second")
-    );
-
-    let removed = registry.unregister("lookup").expect("removed");
-    assert_eq!(removed.definition, second_definition);
-    assert!(registry.get("lookup").is_none());
-    assert!(registry.definitions().is_empty());
-    assert!(registry.names().is_empty());
-}
-
-#[test]
 fn dispatch_executes_valid_calls_then_invokes_truncation_and_event_hooks_before_result() {
     let observations = Arc::new(Mutex::new(Vec::<String>::new()));
     let executor_observations = observations.clone();

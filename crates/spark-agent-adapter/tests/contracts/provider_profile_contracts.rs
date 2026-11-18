@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use spark_agent_adapter::{
     create_anthropic_profile, create_gemini_profile, create_gemini_profile_with_options,
     create_openai_compatible_profile, create_openai_profile, create_provider_profile,
-    normalize_provider_selector, GeminiProfileOptions, ProviderFamily, SessionConfig, ToolRegistry,
+    normalize_provider_selector, GeminiProfileOptions, ProviderFamily, SessionConfig,
 };
 use unified_llm_adapter::Tool;
 
@@ -339,18 +339,17 @@ fn custom_tool_registration_is_latest_wins_by_name_after_profile_creation() {
         Some("second custom read")
     );
 
-    let mut registry = ToolRegistry::new();
-    registry.register(Tool::passive("lookup").unwrap());
-    registry.register(
-        Tool::passive_with_schema("lookup", Some("replacement".to_string()), None).unwrap(),
-    );
-    assert_eq!(registry.names(), ["lookup"]);
     assert_eq!(
-        registry
-            .get("lookup")
-            .map(|tool| tool.definition.description.as_str()),
-        Some("replacement")
+        profile
+            .tool_registry
+            .unregister("read_file")
+            .unwrap()
+            .definition
+            .description,
+        "second custom read"
     );
+    assert!(profile.tool_registry.get("read_file").is_none());
+    assert!(!profile.tools().iter().any(|tool| tool.name == "read_file"));
 }
 
 #[test]

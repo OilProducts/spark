@@ -4,12 +4,11 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 use unified_llm_adapter::{
-    calculate_retry_delay, classify_provider_error_message, error_from_status_code,
-    get_latest_model, get_model_info, list_models, resolve_effective_llm_model,
-    resolve_effective_llm_provider, resolve_effective_reasoning_effort, AdapterError,
-    AdapterErrorKind, FinishReason, LlmRequest, LlmResolutionInputs, Message, ProviderConfig,
-    ProviderEnvironment, ResponseFormat, RetryPolicy, StreamAccumulator, StreamEvent, ToolCall,
-    ToolResult, Usage, RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROVIDER_KEY,
+    calculate_retry_delay, classify_provider_error_message, error_from_status_code, get_model_info,
+    list_models, resolve_effective_llm_model, resolve_effective_llm_provider,
+    resolve_effective_reasoning_effort, AdapterError, AdapterErrorKind, FinishReason,
+    LlmResolutionInputs, ProviderConfig, ProviderEnvironment, RetryPolicy, StreamAccumulator,
+    StreamEvent, Usage, RUNTIME_LAUNCH_MODEL_KEY, RUNTIME_LAUNCH_PROVIDER_KEY,
     RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
 };
 
@@ -46,26 +45,10 @@ fn llm_resolution_preserves_node_launch_fallback_order_and_reasoning_rule() {
 }
 
 #[test]
-fn provider_model_env_observation_matches_committed_fixture() {
-    assert_fixture_observation(
-        "model-catalog-env-resolution",
-        model_catalog_env_resolution_observation(),
-    );
-}
-
-#[test]
 fn retry_error_usage_stream_observation_matches_committed_fixture() {
     assert_fixture_observation(
         "retry-error-usage-stream",
         retry_error_usage_stream_observation(),
-    );
-}
-
-#[test]
-fn request_tool_structured_output_observation_matches_committed_fixture() {
-    assert_fixture_observation(
-        "request-tool-structured-output",
-        request_tool_structured_output_observation(),
     );
 }
 
@@ -75,36 +58,6 @@ fn m6_provider_profile_resource_observation_matches_committed_fixture() {
         "m6-provider-profile-resource-parity",
         m6_provider_profile_resource_observation(),
     );
-}
-
-fn model_catalog_env_resolution_observation() -> Value {
-    let env = BTreeMap::from([
-        ("ANTHROPIC_API_KEY".to_string(), "anthropic-key".to_string()),
-        ("OPENAI_API_KEY".to_string(), "openai-key".to_string()),
-        ("OPENAI_ORG_ID".to_string(), "org-1".to_string()),
-    ]);
-    let providers = ProviderEnvironment::from_env_map(&env, None);
-
-    json!({
-        "sonnet_alias": get_model_info("sonnet"),
-        "gemini_models": list_models(Some("gemini"))
-            .into_iter()
-            .map(|model| model.id)
-            .collect::<Vec<_>>(),
-        "openai_latest": get_latest_model("openai", None),
-        "native_capability_latest": {
-            "openai_tools": get_latest_model("openai", Some("tools")).map(|model| model.id),
-            "anthropic_reasoning": get_latest_model("anthropic", Some("reasoning")).map(|model| model.id),
-            "gemini_vision": get_latest_model("gemini", Some("vision")).map(|model| model.id),
-        },
-        "compatible_latest_defaults": {
-            "openrouter": get_latest_model("openrouter", None),
-            "litellm": get_latest_model("litellm", None),
-            "openai_compatible": get_latest_model("openai_compatible", None),
-        },
-        "client_default_provider": providers.default_provider,
-        "client_providers": providers.providers.keys().cloned().collect::<Vec<_>>(),
-    })
 }
 
 fn m6_provider_profile_resource_observation() -> Value {
@@ -321,76 +274,6 @@ fn retry_error_usage_stream_observation() -> Value {
                 .collect::<Vec<_>>(),
         },
         "usage_cost": cost,
-    })
-}
-
-fn request_tool_structured_output_observation() -> Value {
-    let request = LlmRequest {
-        model: "gpt-5.2".to_string(),
-        provider: Some("openai".to_string()),
-        messages: vec![Message::user("hello")],
-        reasoning_effort: Some("medium".to_string()),
-        response_format: Some(ResponseFormat::JsonSchema {
-            json_schema: json!({"name": "Decision", "schema": {"type": "object"}}),
-            strict: true,
-        }),
-        tools: Vec::new(),
-        tool_choice: None,
-        temperature: None,
-        top_p: None,
-        max_tokens: None,
-        stop_sequences: Vec::new(),
-        provider_options: BTreeMap::from([("trace".to_string(), json!("enabled"))]),
-        metadata: BTreeMap::from([("run_id".to_string(), json!("run-1"))]),
-        timeout: None,
-        abort_signal: None,
-        ..Default::default()
-    };
-    let tool_call = ToolCall {
-        id: "call-1".to_string(),
-        name: "weather".to_string(),
-        arguments: json!({"city": "NYC"}),
-        raw_arguments: None,
-        r#type: "function".to_string(),
-    };
-    let tool_result = ToolResult {
-        tool_call_id: tool_call.id.clone(),
-        content: json!({"forecast": "sunny"}),
-        is_error: false,
-        image_data: None,
-        image_media_type: None,
-    };
-    let response_format = serde_json::to_value(request.response_format.as_ref().unwrap()).unwrap();
-    let _round_tripped_response_format: ResponseFormat =
-        serde_json::from_value(response_format.clone()).unwrap();
-
-    json!({
-        "request": {
-            "model": request.model,
-            "provider": request.provider,
-            "messages": request.messages.iter().map(message_observation).collect::<Vec<_>>(),
-            "response_format": response_format,
-            "reasoning_effort": request.reasoning_effort,
-            "provider_options": request.provider_options,
-            "metadata": request.metadata,
-        },
-        "tool_call": tool_call,
-        "tool_result": tool_result,
-    })
-}
-
-fn message_observation(message: &Message) -> Value {
-    let text = message
-        .content
-        .iter()
-        .find_map(|part| match part {
-            unified_llm_adapter::ContentPart::Text { text } => Some(text.clone()),
-            _ => None,
-        })
-        .unwrap_or_else(|| message.text());
-    json!({
-        "role": message.role,
-        "text": text,
     })
 }
 

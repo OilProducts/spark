@@ -678,13 +678,6 @@ pub(crate) fn profile_mounts(
     Ok(mounts)
 }
 
-/// Test-only re-export of the profile mount parser.
-pub fn profile_mounts_for_test(
-    profile: &crate::profile::ExecutionProfile,
-) -> Result<Vec<String>, RuntimeNodeError> {
-    profile_mounts(profile)
-}
-
 /// The project's work directory, read/write at the same absolute path, so
 /// agents never see a path the container lacks.
 fn project_work_mount(work: &Path, declared: &[String]) -> Result<String, RuntimeNodeError> {

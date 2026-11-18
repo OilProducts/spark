@@ -640,56 +640,35 @@ fn history_turns_convert_to_unified_llm_messages() {
         image_media_type: None,
     }]));
 
-    let messages = history_to_messages(&[system, user, assistant, tool_results]);
+    let mut session = Session::default();
+    session.history = vec![
+        system,
+        user,
+        HistoryTurn::Steering(SteeringTurn::new("steer")),
+        assistant,
+        tool_results,
+    ];
+    let messages = session.history_messages();
 
-    assert_eq!(messages.len(), 4);
+    assert_eq!(messages.len(), 5);
     assert_eq!(messages[0].role, MessageRole::System);
     assert_eq!(messages[0].text(), "System prompt");
     assert_eq!(messages[1].role, MessageRole::User);
     assert_eq!(messages[1].text(), "User request");
-    assert_eq!(messages[2].role, MessageRole::Assistant);
-    assert_eq!(messages[2].text(), "Assistant reply");
-    assert!(messages[2]
+    assert_eq!(messages[2].role, MessageRole::User);
+    assert_eq!(messages[2].text(), "steer");
+    assert_eq!(messages[3].role, MessageRole::Assistant);
+    assert_eq!(messages[3].text(), "Assistant reply");
+    assert!(messages[3]
         .content
         .iter()
         .any(|part| matches!(part, ContentPart::Thinking { .. })));
-    assert!(messages[2]
+    assert!(messages[3]
         .content
         .iter()
         .any(|part| matches!(part, ContentPart::ToolCall { .. })));
-    assert_eq!(messages[3].role, MessageRole::Tool);
-    assert_eq!(messages[3].tool_call_id.as_deref(), Some("call_1"));
-}
-
-#[test]
-fn session_history_messages_preserve_turn_order_and_tool_result_types() {
-    let mut session = Session::default();
-    session
-        .history
-        .push(HistoryTurn::System(SystemTurn::new("system")));
-    session
-        .history
-        .push(HistoryTurn::User(UserTurn::new("user")));
-    session
-        .history
-        .push(HistoryTurn::Steering(SteeringTurn::new("steer")));
-    session
-        .history
-        .push(HistoryTurn::ToolResults(ToolResultsTurn::new([
-            ToolResult::success("call_1", json!("tool output")),
-        ])));
-
-    let messages = session.history_messages();
-
-    assert_eq!(messages.len(), 4);
-    assert_eq!(messages[0].role, MessageRole::System);
-    assert_eq!(messages[0].text(), "system");
-    assert_eq!(messages[1].role, MessageRole::User);
-    assert_eq!(messages[1].text(), "user");
-    assert_eq!(messages[2].role, MessageRole::User);
-    assert_eq!(messages[2].text(), "steer");
-    assert_eq!(messages[3].role, MessageRole::Tool);
-    assert_eq!(messages[3].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(messages[4].role, MessageRole::Tool);
+    assert_eq!(messages[4].tool_call_id.as_deref(), Some("call_1"));
 }
 
 #[test]

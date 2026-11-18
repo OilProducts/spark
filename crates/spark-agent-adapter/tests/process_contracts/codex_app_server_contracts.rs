@@ -738,39 +738,6 @@ fn oversized_message_is_refused_at_once_and_never_sent() {
 }
 
 #[test]
-fn a_sink_can_steer_the_turn_it_is_receiving() {
-    let _lock = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let temp = tempfile::tempdir().expect("tempdir");
-    let _env = fake_codex(temp.path(), "gated");
-    let path = temp.path().to_string_lossy().into_owned();
-    let (accepted, accepted_receiver) = mpsc::channel();
-    let steered = std::sync::Once::new();
-    let request = turn_request(temp.path(), "codex-sink-steers");
-    let turn = thread::spawn(move || {
-        CodexAppServerBackend::new().run_agent_turn_with_event_sink(
-            request,
-            Some(Arc::new(move |_event| {
-                steered.call_once(|| {
-                    let _ = accepted.send(CodexAppServerBackend::new().send_message(
-                        &path,
-                        "codex-sink-steers",
-                        "note-1",
-                        "Use the docs.",
-                    ));
-                });
-            })),
-        )
-    });
-    assert_eq!(accepted_receiver.recv_timeout(PROMPTLY), Ok(true));
-    fs::write(temp.path().join("continue"), "").expect("continue gate");
-    fs::write(temp.path().join("finish"), "").expect("finish gate");
-    let output = turn.join().expect("turn thread").expect("turn");
-    assert_eq!(delivered_ids(&output), ["note-1"]);
-}
-
-#[test]
 fn a_message_sent_once_the_turn_has_completed_is_refused_at_once() {
     let _lock = ENV_LOCK
         .lock()
@@ -875,8 +842,12 @@ fn a_sink_that_steers_while_far_behind_still_steers_and_sees_every_event() {
     thread::spawn(move || {
         let _ = turn_sender.send(CodexAppServerBackend::new().run_agent_turn_with_event_sink(
             request,
-            Some(Arc::new(move |_event| {
-                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(Arc::new(move |event| {
+                if event.kind == TurnStreamEventKind::ContentDelta
+                    && event.source.item_id.as_deref() == Some("msg-burst")
+                {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
                 steered.call_once(|| {
                     let _ = accepted.send(CodexAppServerBackend::new().send_message(
                         &path,
@@ -892,11 +863,12 @@ fn a_sink_that_steers_while_far_behind_still_steers_and_sees_every_event() {
     // The sink waits on its own message while the output it has not taken
     // piles up behind it; the worker keeps going, so the steer lands.
     assert_eq!(accepted_receiver.recv_timeout(PROMPTLY), Ok(true));
-    turn.recv_timeout(PROMPTLY)
+    let output = turn
+        .recv_timeout(PROMPTLY)
         .expect("turn ended")
         .expect("a slow sink does not fail the turn");
-    // Every one of the burst's 300 deltas reached it.
-    assert!(seen.load(std::sync::atomic::Ordering::SeqCst) > 300);
+    assert_eq!(delivered_ids(&output), ["note-1"]);
+    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 300);
 }
 
 #[cfg(unix)]
