@@ -825,6 +825,46 @@ fn a_steer_left_unread_past_its_deadline_is_refused_only_once_it_cannot_be_read(
 }
 
 #[test]
+fn a_sink_can_get_steering_acknowledgement_before_the_turn_finishes() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _env = fake_codex(temp.path(), "gated");
+    let path = temp.path().to_string_lossy().into_owned();
+    let (accepted, accepted_receiver) = mpsc::channel();
+    let steered = std::sync::Once::new();
+    let request = turn_request(temp.path(), "codex-sink-steers");
+    let (turn_sender, turn) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = turn_sender.send(CodexAppServerBackend::new().run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |_event| {
+                steered.call_once(|| {
+                    let _ = accepted.send(CodexAppServerBackend::new().send_message(
+                        &path,
+                        "codex-sink-steers",
+                        "note-1",
+                        "Use the docs.",
+                    ));
+                });
+            })),
+        ));
+    });
+
+    // Let the fake finish on timeout too so the turn can clean up.
+    let acknowledgement = accepted_receiver.recv_timeout(PROMPTLY);
+    fs::write(temp.path().join("continue"), "").expect("continue gate");
+    fs::write(temp.path().join("finish"), "").expect("finish gate");
+    let output = turn
+        .recv_timeout(PROMPTLY)
+        .expect("turn ended")
+        .expect("turn");
+    assert_eq!(acknowledgement, Ok(true));
+    assert_eq!(delivered_ids(&output), ["note-1"]);
+}
+
+#[test]
 fn a_sink_that_steers_while_far_behind_still_steers_and_sees_every_event() {
     let _lock = ENV_LOCK
         .lock()

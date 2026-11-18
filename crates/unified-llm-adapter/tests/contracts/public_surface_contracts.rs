@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use serde::ser::{Error as SerdeError, Serialize, Serializer};
@@ -548,6 +548,13 @@ fn stream_event_uses_canonical_wire_fields_and_preserves_custom_types() {
             "type": "function"
         })
     );
+    let parsed_arguments_call = ToolCall::new("call-2", "lookup", json!({"city": "NYC"}));
+    assert_eq!(
+        serde_json::to_value(parsed_arguments_call)
+            .unwrap()
+            .get("raw_arguments"),
+        Some(&Value::Null)
+    );
     assert_eq!(
         serde_json::to_value(unified_llm_adapter::ToolResult::success(
             "call-1",
@@ -950,17 +957,16 @@ fn response_format_uses_spec_wire_values() {
         serde_json::to_value(ResponseFormat::JsonObject).unwrap(),
         json!({"type": "json"})
     );
+    let schema = json!({"name": "Decision", "schema": {"type": "object"}});
+    let format = ResponseFormat::JsonSchema {
+        json_schema: schema.clone(),
+        strict: true,
+    };
+    let wire_format = json!({"type": "json_schema", "json_schema": schema, "strict": true});
+    assert_eq!(serde_json::to_value(&format).unwrap(), wire_format);
     assert_eq!(
-        serde_json::to_value(ResponseFormat::JsonSchema {
-            json_schema: json!({"name": "Decision", "schema": {"type": "object"}}),
-            strict: true,
-        })
-        .unwrap(),
-        json!({
-            "type": "json_schema",
-            "json_schema": {"name": "Decision", "schema": {"type": "object"}},
-            "strict": true
-        })
+        serde_json::from_value::<ResponseFormat>(wire_format).unwrap(),
+        format
     );
 
     assert_eq!(
@@ -2149,6 +2155,52 @@ fn high_level_generate_executes_active_tool_calls_concurrently_and_batches_order
             .map(|message| message.tool_call_id.as_deref().unwrap_or_default())
             .collect::<Vec<_>>(),
         vec!["call_slow", "call_fast"]
+    );
+}
+
+#[test]
+fn high_level_generate_returns_an_error_result_for_a_tool_called_without_definitions() {
+    let adapter = Arc::new(ScriptedCompleteAdapter::new(
+        "high",
+        Arc::new(Mutex::new(Vec::new())),
+        vec![
+            Ok(Response {
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentPart::ToolCall {
+                        tool_call: ToolCall::new("call_missing", "missing", json!({})),
+                    }],
+                    ..Message::default()
+                },
+                finish_reason: FinishReason::ToolCalls,
+                ..Response::default()
+            }),
+            Ok(Response::from_text("continued after tool error")),
+        ],
+    ));
+    let requests = adapter.requests();
+    let client =
+        Client::from_adapters([adapter as Arc<dyn ProviderAdapter>], Some("high")).unwrap();
+    let result = generate(
+        &client,
+        Request::new(
+            "tool-model",
+            vec![Message::user("Run an unadvertised tool")],
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(result.text, "continued after tool error");
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].tools.is_empty());
+    assert_eq!(
+        requests[1].messages.last(),
+        Some(&Message::tool_result(
+            "call_missing",
+            json!("Unknown tool 'missing'"),
+            true
+        ))
     );
 }
 
@@ -4760,6 +4812,91 @@ fn client_errors_when_provider_cannot_resolve_without_model_inference() {
         unified_llm_adapter::AdapterErrorKind::Configuration
     );
     assert!(error.message.contains("Unknown default provider"));
+}
+
+#[test]
+fn client_complete_and_stream_overlap_through_middleware() {
+    const GATE_TIMEOUT: Duration = Duration::from_secs(10);
+
+    struct PauseComplete {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl Middleware for PauseComplete {
+        fn complete(
+            &self,
+            request: Request,
+            next: &unified_llm_adapter::CompleteNext<'_>,
+        ) -> Result<Response, AdapterError> {
+            self.entered.send(()).expect("notify test");
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(GATE_TIMEOUT)
+                .expect("stream finishes while complete is in middleware");
+            next(request)
+        }
+    }
+
+    let (entered, complete_entered) = mpsc::channel();
+    let (stream_finished, release) = mpsc::channel();
+    let gate: Arc<dyn Middleware> = Arc::new(PauseComplete {
+        entered,
+        release: Mutex::new(release),
+    });
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observer: Arc<dyn Middleware> = Arc::new(RequestRecordingMiddleware {
+        calls: Arc::clone(&observed),
+    });
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let default: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("default", Arc::clone(&calls)));
+    let explicit: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("explicit", Arc::clone(&calls)));
+    let client = Client::from_adapters([default, explicit], Some("default"))
+        .unwrap()
+        .with_middleware([observer, gate]);
+
+    std::thread::scope(|scope| {
+        let complete = scope.spawn(|| {
+            client.complete(Request::new("complete-model", vec![Message::user("hello")]))
+        });
+        complete_entered
+            .recv_timeout(GATE_TIMEOUT)
+            .expect("complete reaches middleware");
+        let stream = client
+            .stream(Request {
+                provider: Some("EXPLICIT".to_string()),
+                ..Request::new("stream-model", vec![Message::user("hello")])
+            })
+            .and_then(|events| events.collect::<Result<Vec<_>, _>>());
+        stream_finished.send(()).expect("release complete");
+
+        let response = complete.join().unwrap().unwrap();
+        assert_eq!(response.provider, "default");
+        assert_eq!(response.model, "complete-model");
+        assert_eq!(
+            stream.unwrap(),
+            [StreamEvent::text_delta("explicit stream")]
+        );
+    });
+    assert_eq!(
+        call_log(&observed),
+        [
+            "middleware-complete:default:complete-model",
+            "middleware-stream:explicit:stream-model",
+        ]
+    );
+    assert_eq!(
+        call_log(&calls),
+        [
+            "initialize:default",
+            "initialize:explicit",
+            "stream:explicit:stream-model",
+            "complete:default:complete-model",
+        ]
+    );
 }
 
 #[test]

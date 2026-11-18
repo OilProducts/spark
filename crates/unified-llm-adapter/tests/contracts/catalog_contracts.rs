@@ -9,10 +9,9 @@ use unified_llm_adapter::{
 
 #[test]
 fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
-    assert_eq!(
-        get_model_info("sonnet").expect("sonnet alias").id,
-        "claude-sonnet-4-5"
-    );
+    let sonnet = get_model_info("sonnet").expect("sonnet alias");
+    assert_eq!(sonnet.id, "claude-sonnet-4-5");
+    assert_eq!(sonnet.supported_thinking, ["budget", "off"]);
     let gpt = get_model_info("gpt5.2").expect("gpt alias");
     assert_eq!(gpt.id, "gpt-5.2");
     assert_eq!(gpt.provider, "openai");
@@ -61,6 +60,20 @@ fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
             .map(|model| model.id)
             .as_deref(),
         Some("gemini-3.1-pro-preview")
+    );
+    assert_eq!(
+        list_models(Some("gemini"))
+            .into_iter()
+            .map(|model| model.id)
+            .collect::<Vec<_>>(),
+        [
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+        ]
     );
     assert_eq!(
         get_latest_model("openai", Some("structured_output"))
