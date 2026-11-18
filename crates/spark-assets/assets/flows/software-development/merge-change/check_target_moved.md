@@ -6,9 +6,6 @@ config:
     'false': tested
   on: context.integration.target_moved
   otherwise: untested
-contracts:
-  reads_context:
-  - context.integration.target_moved
 routes:
   tested:
     to: finish_merge

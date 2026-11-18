@@ -49,7 +49,7 @@ describe('buildRunContextOverview', () => {
         'context.review.findings': 'still missing test',
         'context.review.passed': false,
         'context.task.artifact_path': 'changes/CR-1/request.md',
-        'context.stack.child.depth': 1,
+        'stack.child.status': 'completed',
         outcome: 'success',
       },
     })
@@ -68,7 +68,7 @@ describe('buildRunContextOverview', () => {
     expect(input.history).toEqual([{ value: 'changes/CR-1/request.md', visit: null }])
 
     // System keys are counted, not listed among the namespaces.
-    expect(overview.systemKeys).toEqual(['_attractor.runtime.x', 'context.stack.child.depth', 'outcome'])
+    expect(overview.systemKeys).toEqual(['_attractor.runtime.x', 'outcome', 'stack.child.status'])
     expect(overview.namespaces.flatMap((namespace) => namespace.keys.map((key) => key.key))).not.toContain('outcome')
   })
 

@@ -415,6 +415,23 @@ fn writing_principles_live_in_the_authoring_guide_and_roles_stand_alone() {
 /// No bundled instruction keeps working data in the project checkout: it
 /// belongs in the project's private work area.
 #[test]
+fn the_guide_lists_exactly_the_readable_spark_keys() {
+    let guide = guides::flow_definition_authoring_guide()
+        .expect("authoring guide")
+        .text()
+        .expect("utf-8")
+        .to_string();
+    let section = &guide[guide.find("## Context Keys").expect("context keys section")..];
+    let table = &section[section.find("| Data |").expect("readable keys table")..];
+    let listed: Vec<&str> = table
+        .lines()
+        .take_while(|line| line.starts_with('|'))
+        .flat_map(|line| line.split('`').skip(1).step_by(2))
+        .collect();
+    assert_eq!(listed, attractor_core::READABLE_SPARK_KEYS);
+}
+
+#[test]
 fn bundled_instructions_keep_working_data_out_of_the_checkout() {
     let mut texts = Vec::new();
     for name in flows::starter_flow_names().expect("names") {

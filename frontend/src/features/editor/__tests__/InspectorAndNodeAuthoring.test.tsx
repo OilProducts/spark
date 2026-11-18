@@ -265,7 +265,7 @@ describe('Inspector and node authoring behavior', () => {
             flow_ref: 'child.yaml',
             'manager.poll_interval': '25ms',
             'manager.max_cycles': '4',
-            'manager.stop_condition': 'context.stack.child.ready=true',
+            'manager.stop_condition': 'stack.child.outcome=success',
             'manager.actions': 'observe,steer',
             'manager.steer_cooldown': '2s',
             'stack.child_autostart': false,

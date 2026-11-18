@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use attractor_core::{
-    evaluate_condition, AttractorContext, CheckpointState, ContextMap, FailureKind, FlowDefinition,
-    LaunchContext, ManagerLoopConfig, NodeConfig, Outcome, RunRecord, RUNTIME_SESSIONS_KEY,
+    evaluate_condition, readable_spark_keys, AttractorContext, CheckpointState, ContextMap,
+    FailureKind, FlowDefinition, LaunchContext, ManagerLoopConfig, NodeConfig, Outcome, RunRecord,
+    RUNTIME_SESSIONS_KEY,
 };
 use serde_json::{json, Value};
 
@@ -25,30 +26,6 @@ use crate::routing::resolve_start_node;
 use crate::store::RunStore;
 
 const AUTO_STEER_ATTEMPT_LIMIT: u64 = 1;
-const CHILD_KEYS: &[&str] = &[
-    "context.stack.child.run_id",
-    "context.stack.child.status",
-    "context.stack.child.outcome",
-    "context.stack.child.outcome_reason_code",
-    "context.stack.child.outcome_reason_message",
-    "context.stack.child.active_stage",
-    "context.stack.child.completed_nodes",
-    "context.stack.child.route_trace",
-    "context.stack.child.failure_reason",
-    "context.stack.child.failure_kind",
-    "context.stack.child.retry_count",
-    "context.stack.child.retry_counts",
-    "context.stack.child.artifact_count",
-    "context.stack.child.event_count",
-    "context.stack.child.checkpoint_timestamp",
-    "context.stack.child.latest_event_at",
-    "context.stack.child.started_at",
-    "context.stack.child.ended_at",
-    "context.stack.child.intervention",
-    "context.stack.child.intervention_status",
-    "context.stack.child.intervention_delivery_mode",
-    "context.stack.child.intervention_reason",
-];
 
 pub(crate) fn execute_manager_loop(
     runner: &RuntimeHandlerRunner,
@@ -94,7 +71,7 @@ pub(crate) fn execute_manager_loop(
         if cycle > max_cycles {
             observing = false;
             // Without a child there is nothing to wait for.
-            if context_string(&context, "context.stack.child.run_id").is_empty() {
+            if context_string(&context, "stack.child.run_id").is_empty() {
                 return Ok(outcome_with_context_updates(
                     &runtime,
                     fail_outcome(format!(
@@ -165,7 +142,7 @@ pub(crate) fn execute_manager_loop(
             }
             // The next cycle reads the child's terminal status and resolves it.
             if stopping_since.elapsed() < CHILD_SETTLE_GRACE
-                && !context_string(&context, "context.stack.child.run_id").is_empty()
+                && !context_string(&context, "stack.child.run_id").is_empty()
             {
                 std::thread::sleep(Duration::from_millis(50));
                 continue;
@@ -220,7 +197,7 @@ fn autostart_child_pipeline(
         .and_then(|request| request.target.child.as_ref());
     let linked_child_run_id = retry_child
         .map(|target| target.run_id.clone())
-        .unwrap_or_else(|| context_string(context, "context.stack.child.run_id"));
+        .unwrap_or_else(|| context_string(context, "stack.child.run_id"));
     let mut invocation_reset: Option<String> = None;
     if !linked_child_run_id.is_empty() {
         if let Some(mut child_result) = resolve_child_result(runner, runtime, &linked_child_run_id)
@@ -283,8 +260,7 @@ fn autostart_child_pipeline(
                 ),
             )
             .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-    } else if context_string(context, "context.stack.child.status").eq_ignore_ascii_case("running")
-    {
+    } else if context_string(context, "stack.child.status").eq_ignore_ascii_case("running") {
         return Ok(None);
     }
 
@@ -456,12 +432,8 @@ fn autostart_child_pipeline(
     let input_map = child_input_map(runtime);
     let child_launch_context = mapped_child_context(&parent_context, &input_map, &runtime.node_id);
 
-    set_context(
-        context,
-        "context.stack.child.run_id",
-        json!(child_run_id.clone()),
-    );
-    set_context(context, "context.stack.child.status", json!("running"));
+    set_context(context, "stack.child.run_id", json!(child_run_id.clone()));
+    set_context(context, "stack.child.status", json!("running"));
     runner
         .emit(
             runtime,
@@ -686,7 +658,7 @@ const CHILD_SETTLE_GRACE: Duration = Duration::from_secs(60);
 /// Asks the observed child to cancel; true once the request is accepted. The
 /// child's record may not exist yet, so a false answer is retried.
 fn request_child_cancel(runtime: &HandlerRuntime, context: &ContextMap) -> bool {
-    let child_run_id = context_string(context, "context.stack.child.run_id");
+    let child_run_id = context_string(context, "stack.child.run_id");
     let Some(paths) = runtime.run_paths.as_ref() else {
         return false;
     };
@@ -1036,7 +1008,7 @@ fn ingest_child_telemetry(
     runtime: &HandlerRuntime,
     context: &mut ContextMap,
 ) {
-    let child_run_id = context_string(context, "context.stack.child.run_id");
+    let child_run_id = context_string(context, "stack.child.run_id");
     if child_run_id.is_empty() {
         return;
     }
@@ -1173,28 +1145,28 @@ fn apply_child_run_result(
     if !child_result.run_id.trim().is_empty() {
         set_context(
             context,
-            "context.stack.child.run_id",
+            "stack.child.run_id",
             json!(child_result.run_id.clone()),
         );
     }
     set_context(
         context,
-        "context.stack.child.status",
+        "stack.child.status",
         json!(child_result.status.clone()),
     );
     set_context(
         context,
-        "context.stack.child.outcome",
+        "stack.child.outcome",
         json!(child_result.outcome.clone().unwrap_or_default()),
     );
     set_context(
         context,
-        "context.stack.child.outcome_reason_code",
+        "stack.child.outcome_reason_code",
         json!(child_result.outcome_reason_code.clone().unwrap_or_default()),
     );
     set_context(
         context,
-        "context.stack.child.outcome_reason_message",
+        "stack.child.outcome_reason_message",
         json!(child_result
             .outcome_reason_message
             .clone()
@@ -1202,32 +1174,32 @@ fn apply_child_run_result(
     );
     set_context(
         context,
-        "context.stack.child.active_stage",
+        "stack.child.active_stage",
         json!(child_result.current_node.clone()),
     );
     set_context(
         context,
-        "context.stack.child.completed_nodes",
+        "stack.child.completed_nodes",
         json!(child_result.completed_nodes.clone()),
     );
     set_context(
         context,
-        "context.stack.child.route_trace",
+        "stack.child.route_trace",
         json!(child_result.route_trace.clone()),
     );
     set_context(
         context,
-        "context.stack.child.failure_reason",
+        "stack.child.failure_reason",
         json!(child_result.failure_reason.clone()),
     );
     set_context(
         context,
-        "context.stack.child.failure_kind",
+        "stack.child.failure_kind",
         json!(child_result.failure_kind),
     );
     set_context(
         context,
-        "context.stack.child.retry_count",
+        "stack.child.retry_count",
         child_result
             .retry_count
             .map(Value::from)
@@ -1235,12 +1207,12 @@ fn apply_child_run_result(
     );
     set_context(
         context,
-        "context.stack.child.retry_counts",
+        "stack.child.retry_counts",
         json!(child_result.retry_counts.clone()),
     );
     set_context(
         context,
-        "context.stack.child.artifact_count",
+        "stack.child.artifact_count",
         child_result
             .artifact_count
             .map(|value| json!(value))
@@ -1248,7 +1220,7 @@ fn apply_child_run_result(
     );
     set_context(
         context,
-        "context.stack.child.event_count",
+        "stack.child.event_count",
         child_result
             .event_count
             .map(|value| json!(value))
@@ -1256,34 +1228,34 @@ fn apply_child_run_result(
     );
     set_context(
         context,
-        "context.stack.child.checkpoint_timestamp",
+        "stack.child.checkpoint_timestamp",
         json!(child_result.checkpoint_timestamp.clone()),
     );
     set_context(
         context,
-        "context.stack.child.latest_event_at",
+        "stack.child.latest_event_at",
         json!(child_result.latest_event_at.clone()),
     );
     set_context(
         context,
-        "context.stack.child.started_at",
+        "stack.child.started_at",
         json!(child_result.started_at.clone()),
     );
     set_context(
         context,
-        "context.stack.child.ended_at",
+        "stack.child.ended_at",
         json!(child_result.ended_at.clone().unwrap_or_default()),
     );
 }
 
 fn clear_child_snapshot(context: &mut ContextMap) {
-    for key in CHILD_KEYS {
-        let value = match *key {
-            "context.stack.child.completed_nodes" | "context.stack.child.route_trace" => json!([]),
-            "context.stack.child.retry_counts" => json!({}),
+    for key in readable_spark_keys("stack.child.") {
+        let value = match key {
+            "stack.child.completed_nodes" | "stack.child.route_trace" => json!([]),
+            "stack.child.retry_counts" => json!({}),
             _ => json!(""),
         };
-        set_context(context, *key, value);
+        set_context(context, key, value);
     }
 }
 
@@ -1299,8 +1271,8 @@ fn request_child_intervention(
         return Ok(None);
     }
 
-    let child_run_id = context_string(context, "context.stack.child.run_id");
-    let target_node_id = non_empty(context_string(context, "context.stack.child.active_stage"));
+    let child_run_id = context_string(context, "stack.child.run_id");
+    let target_node_id = non_empty(context_string(context, "stack.child.active_stage"));
     if child_run_id.is_empty() {
         let result = ChildInterventionResult {
             run_id: String::new(),
@@ -1341,14 +1313,10 @@ fn request_child_intervention(
     }
     automatic_steer_attempts.insert(auto_steer_key, prior_attempts + 1);
 
-    let mut message = context_string(context, "context.stack.child.intervention");
+    let mut message = context_string(context, "stack.child.intervention");
     if message.is_empty() {
         message = default_intervention_message(context, &failure_reason);
-        set_context(
-            context,
-            "context.stack.child.intervention",
-            json!(message.clone()),
-        );
+        set_context(context, "stack.child.intervention", json!(message.clone()));
     }
     let parent_run_id = non_empty(context_string(context, "internal.run_id"))
         .unwrap_or_else(|| runtime.run_id.clone());
@@ -1399,17 +1367,17 @@ fn apply_intervention_result(
     };
     set_context(
         context,
-        "context.stack.child.intervention_status",
+        "stack.child.intervention_status",
         json!(status.clone()),
     );
     set_context(
         context,
-        "context.stack.child.intervention_delivery_mode",
+        "stack.child.intervention_delivery_mode",
         json!(result.delivery_mode.clone()),
     );
     set_context(
         context,
-        "context.stack.child.intervention_reason",
+        "stack.child.intervention_reason",
         json!(intervention_reason.clone()),
     );
     let parent_run_id = non_empty(context_string(context, "internal.run_id"))
@@ -1440,16 +1408,16 @@ fn apply_intervention_result(
 /// unmapped child is an execution error carrying the child's identity and
 /// reason; it is never mapped to a business result.
 fn resolve_child_status(runtime: &HandlerRuntime, context: &ContextMap) -> Option<Outcome> {
-    let child_status = context_string(context, "context.stack.child.status").to_lowercase();
+    let child_status = context_string(context, "stack.child.status").to_lowercase();
     if !matches!(
         child_status.as_str(),
         "completed" | "failed" | "aborted" | "canceled" | "cancelled"
     ) {
         return None;
     }
-    let child_run_id = context_string(context, "context.stack.child.run_id");
+    let child_run_id = context_string(context, "stack.child.run_id");
     if child_status == "completed" {
-        let result = context_string(context, "context.stack.child.outcome_reason_code");
+        let result = context_string(context, "stack.child.outcome_reason_code");
         let results = match runtime.node.config.as_ref() {
             Some(NodeConfig::Subflow { results, .. }) => results.clone(),
             _ => BTreeMap::new(),
@@ -1458,7 +1426,7 @@ fn resolve_child_status(runtime: &HandlerRuntime, context: &ContextMap) -> Optio
             Some(decision) => Outcome {
                 notes: non_empty(context_string(
                     context,
-                    "context.stack.child.outcome_reason_message",
+                    "stack.child.outcome_reason_message",
                 ))
                 .unwrap_or_else(|| format!("Child {child_run_id} reached {result}")),
                 ..Outcome::completed(decision.clone())
@@ -1471,11 +1439,11 @@ fn resolve_child_status(runtime: &HandlerRuntime, context: &ContextMap) -> Optio
         });
     }
     if child_status == "failed" {
-        let failure_reason = context_string(context, "context.stack.child.failure_reason");
+        let failure_reason = context_string(context, "stack.child.failure_reason");
         // The child's own error class carries over: a child routing or
         // visit-budget failure stays fatal inside a tolerant fork.
         let kind = context
-            .get("context.stack.child.failure_kind")
+            .get("stack.child.failure_kind")
             .and_then(|value| serde_json::from_value::<FailureKind>(value.clone()).ok())
             .unwrap_or(FailureKind::Runtime);
         return Some(Outcome::error(
@@ -1615,14 +1583,9 @@ fn apply_child_input_map(
     parent_context: &ContextMap,
     input_map: &BTreeMap<String, String>,
 ) {
-    for (child_key, parent_path) in input_map {
-        let child_key = child_key.trim();
-        let parent_path = parent_path.trim();
-        if child_key.is_empty() || parent_path.is_empty() {
-            continue;
-        }
-        if let Some(value) = context_path_value(parent_context, parent_path) {
-            set_context(child_context, child_key, value);
+    for (child_key, parent_key) in input_map {
+        if let Some(value) = parent_context.get(parent_key) {
+            set_context(child_context, child_key, value.clone());
         }
     }
 }
@@ -1665,8 +1628,8 @@ pub(crate) fn resolve_context_workdir(
     workdir_key: &str,
     field: &str,
 ) -> std::result::Result<PathBuf, String> {
-    let raw_value = context_path_value(context, workdir_key)
-        .as_ref()
+    let raw_value = context
+        .get(workdir_key)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1735,68 +1698,6 @@ fn context_path(context: &ContextMap, key: &str) -> Option<PathBuf> {
     non_empty(context_string(context, key)).map(PathBuf::from)
 }
 
-pub(crate) fn context_path_value(context: &ContextMap, path: &str) -> Option<Value> {
-    let path = path.trim();
-    if path.is_empty() {
-        return None;
-    }
-    for candidate in flat_path_candidates(path) {
-        if let Some(value) = context.get(&candidate) {
-            return Some(value.clone());
-        }
-    }
-    for candidate in nested_path_candidates(path) {
-        if let Some(value) = lookup_nested_value(context, &candidate) {
-            return Some(value.clone());
-        }
-        if let Some(value) = lookup_flat_prefix_nested_value(context, &candidate) {
-            return Some(value.clone());
-        }
-    }
-    None
-}
-
-fn flat_path_candidates(path: &str) -> Vec<String> {
-    if let Some(stripped) = path.strip_prefix("context.") {
-        vec![path.to_string(), stripped.to_string()]
-    } else {
-        vec![path.to_string(), format!("context.{path}")]
-    }
-}
-
-fn nested_path_candidates(path: &str) -> Vec<String> {
-    if let Some(stripped) = path.strip_prefix("context.") {
-        vec![path.to_string(), stripped.to_string()]
-    } else {
-        vec![path.to_string(), format!("context.{path}")]
-    }
-}
-
-fn lookup_nested_value<'a>(context: &'a ContextMap, path: &str) -> Option<&'a Value> {
-    let mut parts = path.split('.');
-    let first = parts.next()?;
-    let mut current = context.get(first)?;
-    for part in parts {
-        current = current.as_object()?.get(part)?;
-    }
-    Some(current)
-}
-
-fn lookup_flat_prefix_nested_value<'a>(context: &'a ContextMap, path: &str) -> Option<&'a Value> {
-    let parts = path.split('.').collect::<Vec<_>>();
-    for split_at in (1..parts.len()).rev() {
-        let flat_key = parts[..split_at].join(".");
-        let Some(mut current) = context.get(&flat_key) else {
-            continue;
-        };
-        for part in &parts[split_at..] {
-            current = current.as_object()?.get(*part)?;
-        }
-        return Some(current);
-    }
-    None
-}
-
 fn steer_cooldown_elapsed(
     now: Instant,
     last_steer_at: Option<Instant>,
@@ -1807,16 +1708,16 @@ fn steer_cooldown_elapsed(
 
 fn child_failure_context(context: &ContextMap) -> String {
     for key in [
-        "context.stack.child.failure_reason",
-        "context.stack.child.outcome_reason_message",
-        "context.stack.child.outcome_reason_code",
+        "stack.child.failure_reason",
+        "stack.child.outcome_reason_message",
+        "stack.child.outcome_reason_code",
     ] {
         let value = context_string(context, key);
         if !value.is_empty() {
             return value;
         }
     }
-    if context_string(context, "context.stack.child.outcome").eq_ignore_ascii_case("failure") {
+    if context_string(context, "stack.child.outcome").eq_ignore_ascii_case("failure") {
         "child reported failure outcome".to_string()
     } else {
         String::new()
@@ -1824,8 +1725,8 @@ fn child_failure_context(context: &ContextMap) -> String {
 }
 
 fn default_intervention_message(context: &ContextMap, failure_reason: &str) -> String {
-    let stage = context_string(context, "context.stack.child.active_stage");
-    let child_run_id = context_string(context, "context.stack.child.run_id");
+    let stage = context_string(context, "stack.child.active_stage");
+    let child_run_id = context_string(context, "stack.child.run_id");
     let mut target = if child_run_id.is_empty() {
         "the child run".to_string()
     } else {
@@ -1859,41 +1760,35 @@ fn telemetry_payload(context: &ContextMap, node_id: &str, cycle: u64) -> BTreeMa
         ),
         (
             "child_status".to_string(),
-            json!(context_value(context, "context.stack.child.status")),
+            json!(context_value(context, "stack.child.status")),
         ),
         (
             "child_outcome".to_string(),
-            json!(context_value(context, "context.stack.child.outcome")),
+            json!(context_value(context, "stack.child.outcome")),
         ),
         (
             "child_active_stage".to_string(),
-            json!(context_value(context, "context.stack.child.active_stage")),
+            json!(context_value(context, "stack.child.active_stage")),
         ),
         (
             "child_retry_count".to_string(),
-            json!(context_value(context, "context.stack.child.retry_count")),
+            json!(context_value(context, "stack.child.retry_count")),
         ),
         (
             "child_artifact_count".to_string(),
-            json!(context_value(context, "context.stack.child.artifact_count")),
+            json!(context_value(context, "stack.child.artifact_count")),
         ),
         (
             "child_event_count".to_string(),
-            json!(context_value(context, "context.stack.child.event_count")),
+            json!(context_value(context, "stack.child.event_count")),
         ),
         (
             "child_checkpoint_timestamp".to_string(),
-            json!(context_value(
-                context,
-                "context.stack.child.checkpoint_timestamp"
-            )),
+            json!(context_value(context, "stack.child.checkpoint_timestamp")),
         ),
         (
             "child_latest_event_at".to_string(),
-            json!(context_value(
-                context,
-                "context.stack.child.latest_event_at"
-            )),
+            json!(context_value(context, "stack.child.latest_event_at")),
         ),
     ])
 }
@@ -1918,11 +1813,11 @@ fn intervention_payload(
         ),
         (
             "child_status".to_string(),
-            json!(context_value(context, "context.stack.child.status")),
+            json!(context_value(context, "stack.child.status")),
         ),
         (
             "child_active_stage".to_string(),
-            json!(context_value(context, "context.stack.child.active_stage")),
+            json!(context_value(context, "stack.child.active_stage")),
         ),
         (
             "target_node_id".to_string(),
@@ -1930,28 +1825,22 @@ fn intervention_payload(
         ),
         (
             "instruction".to_string(),
-            json!(context_value(context, "context.stack.child.intervention")),
+            json!(context_value(context, "stack.child.intervention")),
         ),
         (
             "intervention_status".to_string(),
-            json!(context_value(
-                context,
-                "context.stack.child.intervention_status"
-            )),
+            json!(context_value(context, "stack.child.intervention_status")),
         ),
         (
             "intervention_delivery_mode".to_string(),
             json!(context_value(
                 context,
-                "context.stack.child.intervention_delivery_mode"
+                "stack.child.intervention_delivery_mode"
             )),
         ),
         (
             "intervention_reason".to_string(),
-            json!(context_value(
-                context,
-                "context.stack.child.intervention_reason"
-            )),
+            json!(context_value(context, "stack.child.intervention_reason")),
         ),
         (
             "result_message".to_string(),
@@ -1960,21 +1849,15 @@ fn intervention_payload(
         ("failure_reason".to_string(), json!(failure_reason)),
         (
             "child_failure_reason".to_string(),
-            json!(context_value(context, "context.stack.child.failure_reason")),
+            json!(context_value(context, "stack.child.failure_reason")),
         ),
         (
             "child_outcome_reason_code".to_string(),
-            json!(context_value(
-                context,
-                "context.stack.child.outcome_reason_code"
-            )),
+            json!(context_value(context, "stack.child.outcome_reason_code")),
         ),
         (
             "child_outcome_reason_message".to_string(),
-            json!(context_value(
-                context,
-                "context.stack.child.outcome_reason_message"
-            )),
+            json!(context_value(context, "stack.child.outcome_reason_message")),
         ),
     ])
 }
@@ -2010,7 +1893,7 @@ fn outcome_with_context_updates(
     let mut updates: ContextMap = current
         .iter()
         .filter(|(key, value)| {
-            key.starts_with("context.stack.child.") && original.get(key.as_str()) != Some(*value)
+            key.starts_with("stack.child.") && original.get(key.as_str()) != Some(*value)
         })
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();

@@ -1,8 +1,8 @@
-use attractor_core::{parse_context_write_contract, DotGraph, OutcomeStatus};
+use attractor_core::{parse_context_write_contract, DotGraph, Outcome, OutcomeStatus};
 use serde_json::{json, Value};
 use spark_agent_adapter::{
     coerce_structured_text_outcome, decision_envelope_json_schema, declared_decisions,
-    StructuredTextOutcome,
+    validate_write_contract_violation, StructuredTextOutcome,
 };
 
 const CONTRACT: &str = "decision_envelope";
@@ -153,6 +153,28 @@ fn a_valid_decision_keeps_its_context_updates_and_notes() {
         json!("fix tests")
     );
     assert!(outcome.failure_reason.is_empty());
+}
+
+#[test]
+fn context_updates_match_the_write_contract_literally_or_go_to_repair() {
+    let contract = parse_context_write_contract(Some(r#"["context.review.notes"]"#));
+    let violation = |key: &str| {
+        let mut outcome = Outcome::completed("approve");
+        outcome.context_updates.insert(key.to_string(), json!("x"));
+        validate_write_contract_violation(&outcome, Some(&contract), CONTRACT, "{}")
+            .map(|violation| violation.reason)
+    };
+    assert_eq!(violation("context.review.notes"), None);
+    // Shorthand, padded and Spark-owned keys are never mapped onto a declared key.
+    for key in [
+        "review.notes",
+        "context.review.notes ",
+        "tool.output",
+        "_attractor.runtime.sessions",
+    ] {
+        let reason = violation(key).unwrap_or_else(|| panic!("{key:?} must need repair"));
+        assert!(reason.contains(key), "{key:?}: {reason}");
+    }
 }
 
 #[test]

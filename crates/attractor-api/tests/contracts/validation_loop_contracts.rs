@@ -70,7 +70,7 @@ fn fix_loop_flow(gate_command: &str) -> serde_json::Value {
                 "config": {
                     "kind": "tool",
                     "command": "printf '{\"summary\":\"diagnosed: %s\"}' \"$SPARK_GATE_OUTPUT\"",
-                    "env_map": {"SPARK_GATE_OUTPUT": "context.tool.output"},
+                    "env_map": {"SPARK_GATE_OUTPUT": "tool.output"},
                     "output_map": {"context.review.summary": "summary"},
                     "exit_codes": {"0": "done"}
                 },
@@ -329,6 +329,7 @@ fn contest_reaches_evaluate_through_output_map_and_visit_limit_ends_the_loop() {
             "schema_version": "2",
             "id": "contest_child",
             "title": "Contest Child",
+            "inputs": [{"key": "context.project", "label": "Project"}],
             "nodes": {
                 "start": {
                     "kind": "start",
@@ -366,6 +367,7 @@ fn contest_reaches_evaluate_through_output_map_and_visit_limit_ends_the_loop() {
             "schema_version": "2",
             "id": "contest_parent",
             "title": "Contest Parent",
+            "inputs": [{"key": "context.project", "label": "Project"}],
             "nodes": {
                 "start": {
                     "kind": "start",

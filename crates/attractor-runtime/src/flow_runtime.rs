@@ -278,11 +278,6 @@ pub fn node_attrs_for_handler(node_id: &str, node: &FlowNode) -> BTreeMap<String
             );
         }
     }
-    for (key, value) in &node.context {
-        if !is_core_node_attr_key(key) {
-            attrs.insert(key.clone(), json_attr(key, value.clone()));
-        }
-    }
     for (key, value) in &node.extensions {
         if !is_core_node_attr_key(key) {
             attrs

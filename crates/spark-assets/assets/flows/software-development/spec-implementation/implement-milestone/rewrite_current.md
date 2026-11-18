@@ -22,9 +22,9 @@ contracts:
   - context.validation.item_id
   - context.validation.status
   - context.validation.summary
-  - missing_prerequisites
-  - validation_message
-  - validation_exit_code
+  - context.missing_prerequisites
+  - context.validation_message
+  - context.validation_exit_code
   response: decision_envelope
 execution:
   llm_provider: claude-code

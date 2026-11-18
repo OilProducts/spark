@@ -69,8 +69,6 @@ struct NodeFile {
     role: Option<String>,
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     config: serde_json::Map<String, Value>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    context: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime: Option<NodeRuntimeConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -673,7 +671,6 @@ fn parse_node_file(node_id: &str, text: &str) -> Result<FlowNode, FlowSourceErro
         description: file.description,
         role: file.role,
         config: Some(config),
-        context: file.context,
         runtime: file.runtime,
         contracts: file.contracts,
         manager: file.manager,
@@ -716,7 +713,6 @@ fn render_node_file(node: &FlowNode) -> Result<String, FlowSourceError> {
         description: node.description.clone(),
         role: node.role.clone(),
         config,
-        context: node.context.clone(),
         runtime: node.runtime.clone(),
         contracts: node.contracts.clone(),
         manager: node.manager.clone(),

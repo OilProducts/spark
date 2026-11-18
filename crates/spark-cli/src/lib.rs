@@ -2198,7 +2198,6 @@ fn flow_definition_preview_payload(flow: &FlowDefinition) -> Value {
                 "kind": node.kind,
                 "description": node.description,
                 "config": node.config,
-                "context": node.context,
                 "runtime": node.runtime,
                 "contracts": node.contracts,
                 "manager": node.manager,

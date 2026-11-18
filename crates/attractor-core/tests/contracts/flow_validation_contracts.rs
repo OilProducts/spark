@@ -139,6 +139,10 @@ fn typed_sections_reject_unknown_and_misplaced_fields_and_open_maps_stay_open() 
     let mut value = review_loop();
     value["inputs"] = json!([{"key": "context.request", "goal_gate": true}]);
     assert!(parse_error(value).contains("unknown field `goal_gate`"));
+    // Nodes no longer author context of their own.
+    let mut value = review_loop();
+    value["nodes"]["work"]["context"] = json!({"context.any": 1});
+    assert!(parse_error(value).contains("unknown field `context`"));
     let mut value = review_loop();
     value["execution_lock"] = json!({"scope": "project", "key": "main", "retry_target": "done"});
     assert!(parse_error(value).contains("unknown field `retry_target`"));
@@ -147,7 +151,6 @@ fn typed_sections_reject_unknown_and_misplaced_fields_and_open_maps_stay_open() 
     open["metadata"] = json!({"owner": {"team": "any"}});
     open["extensions"] = json!({"vendor.flag": true});
     open["defaults"] = json!({"extensions": {"vendor.flag": true}});
-    open["nodes"]["work"]["context"] = json!({"context.any": {"shape": 1}});
     open["nodes"]["work"]["extensions"] = json!({"vendor.flag": true});
     open["nodes"]["work"]["routes"]["unfinished"]["extensions"] = json!({"vendor.flag": true});
     let parsed = FlowDefinition::from_json_str(&open.to_string()).expect("open maps");
@@ -471,7 +474,7 @@ fn switch_flow(cases: Value, otherwise: &str, reads: Value, writer: bool) -> Val
 }
 
 #[test]
-fn switches_need_complete_scalar_cases_a_read_and_an_upstream_writer() {
+fn switches_need_complete_scalar_cases_and_an_upstream_writer() {
     let reads = json!(["context.count"]);
     assert_eq!(
         rules(switch_flow(
@@ -482,24 +485,28 @@ fn switches_need_complete_scalar_cases_a_read_and_an_upstream_writer() {
         )),
         Vec::new()
     );
-    let found = rules(switch_flow(
-        json!({"0": "clean"}),
-        "conflicts",
-        json!([]),
-        true,
-    ));
-    assert!(
-        has(&found, "decision_domain", "must be listed in reads_context"),
-        "{found:?}"
+    // `on` is the switch's declared read; reads_context need not repeat it.
+    assert_eq!(
+        rules(switch_flow(
+            json!({"0": "clean"}),
+            "conflicts",
+            json!([]),
+            true
+        )),
+        Vec::new()
     );
     let found = rules(switch_flow(
         json!({"0": "clean"}),
         "conflicts",
-        reads.clone(),
+        json!([]),
         false,
     ));
     assert!(
-        has(&found, "switch_writer", "writes 'context.count'"),
+        has(
+            &found,
+            "context_source",
+            "check.md: config.on reads 'context.count'"
+        ),
         "{found:?}"
     );
     let found = rules(switch_flow(
@@ -534,6 +541,222 @@ fn switches_need_complete_scalar_cases_a_read_and_an_upstream_writer() {
         .unwrap()
         .remove("otherwise");
     assert!(serde_json::from_value::<FlowDefinition>(no_otherwise).is_err());
+}
+
+/// One agent step `work` between start and exit, with `extra` merged into it.
+fn one_step(extra: Value) -> Value {
+    let mut value = flow(json!({
+        "start": start("work"),
+        "work": agent(json!({"done": route("done")})),
+        "done": exit("completed", "success"),
+    }));
+    for (key, field) in extra.as_object().unwrap() {
+        value["nodes"]["work"][key] = field.clone();
+    }
+    value
+}
+
+#[test]
+fn context_keys_are_literal_and_flow_writes_stay_in_context() {
+    let reads = |keys: Value| {
+        rules(one_step(
+            json!({"contracts": {"response": "decision_envelope", "reads_context": keys}}),
+        ))
+    };
+    let writes = |keys: Value| {
+        rules(one_step(
+            json!({"contracts": {"response": "decision_envelope", "writes_context": keys}}),
+        ))
+    };
+    assert_eq!(
+        reads(json!([
+            "internal.run_id",
+            "tool.output",
+            "stack.child.status",
+            "parallel.results",
+            "human.gate.note"
+        ])),
+        Vec::new()
+    );
+    assert_eq!(writes(json!(["context.review.summary"])), Vec::new());
+
+    // Shorthand and padded keys are never expanded or trimmed.
+    let found = reads(json!(["review.summary"]));
+    assert!(
+        has(
+            &found,
+            "context_key",
+            "work.md: contracts.reads_context key 'review.summary' is not a context.* key"
+        ),
+        "{found:?}"
+    );
+    let found = writes(json!(["summary"]));
+    assert!(
+        has(
+            &found,
+            "context_key",
+            "key 'summary' is not a context.* key"
+        ),
+        "{found:?}"
+    );
+    let found = reads(json!([" context.review.summary"]));
+    assert!(
+        has(
+            &found,
+            "context_key",
+            "key ' context.review.summary' is invalid: keys must not contain whitespace"
+        ),
+        "{found:?}"
+    );
+    let found = writes(json!(["context.review.summary "]));
+    assert!(
+        has(&found, "context_key", "must not contain whitespace"),
+        "{found:?}"
+    );
+
+    // A flow writes only context.* keys, wherever the write comes from.
+    let found = writes(json!(["tool.output"]));
+    assert!(
+        has(
+            &found,
+            "context_write",
+            "work.md: contracts.writes_context writes 'tool.output', which Spark owns"
+        ),
+        "{found:?}"
+    );
+    let mut input = one_step(json!({}));
+    input["inputs"] = json!([{"key": "internal.run_id", "label": "Run"}]);
+    let found = rules(input);
+    assert!(
+        has(&found, "context_write", "inputs writes 'internal.run_id'"),
+        "{found:?}"
+    );
+    let tool = rules(flow(json!({
+        "start": start("probe"),
+        "probe": {"kind": "tool", "config": {"kind": "tool", "command": "true", "exit_codes": {"0": "next"},
+            "output_map": {"stack.child.status": "status"}}, "routes": {"next": route("done")}},
+        "done": exit("completed", "success"),
+    })));
+    assert!(
+        has(
+            &tool,
+            "context_write",
+            "probe.md: config.output_map writes 'stack.child.status'"
+        ),
+        "{tool:?}"
+    );
+
+    // Spark keys outside the readable list are private.
+    for key in [
+        "graph.goal",
+        "internal.llm_profiles_snapshot",
+        "_attractor.runtime.sessions",
+        "stack.child_flow_ref",
+    ] {
+        let found = reads(json!([key]));
+        assert!(
+            has(
+                &found,
+                "private_context_read",
+                &format!("contracts.reads_context reads '{key}', which is private to Spark")
+            ),
+            "{key}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn every_context_read_needs_a_writer_that_can_run_before_it() {
+    // Each read field is checked and reported with its node and field.
+    let unsourced = rules(flow(json!({
+        "start": start("gate"),
+        "gate": {"kind": "tool", "config": {"kind": "tool", "command": "true", "exit_codes": {"0": "next"},
+            "env_map": {"PLAN": "context.plan"}}, "routes": {"next": route("work")}},
+        "work": {"kind": "agent_task", "runtime": {"workdir_from": "context.workspace.path"},
+            "contracts": {"response": "decision_envelope", "reads_context": ["context.review.summary"]},
+            "routes": {"done": route("child")}},
+        "child": {"kind": "subflow", "config": {"kind": "subflow", "flow_ref": "child",
+            "input_map": {"context.task": "context.task.objective"}, "results": {"completed": "done"}},
+            "manager": {"child_workdir_from": "context.child.path", "stop_condition": "stack.child.status=done && context.halt=true"},
+            "routes": {"done": route("done")}},
+        "done": exit("completed", "success"),
+    })));
+    for (node, field, key) in [
+        ("gate", "config.env_map", "context.plan"),
+        ("work", "runtime.workdir_from", "context.workspace.path"),
+        ("work", "contracts.reads_context", "context.review.summary"),
+        ("child", "config.input_map", "context.task.objective"),
+        ("child", "manager.child_workdir_from", "context.child.path"),
+        ("child", "manager.stop_condition", "context.halt"),
+    ] {
+        assert!(
+            has(
+                &unsourced,
+                "context_source",
+                &format!("{node}.md: {field} reads '{key}'")
+            ),
+            "{node} {field} {key}: {unsourced:?}"
+        );
+    }
+    assert_eq!(unsourced.len(), 6, "{unsourced:?}");
+
+    // A flow input or an earlier writer is a source.
+    let mut sourced = one_step(
+        json!({"contracts": {"response": "decision_envelope", "reads_context": ["context.request.objective"]}}),
+    );
+    sourced["inputs"] = json!([{"key": "context.request.objective", "label": "Objective"}]);
+    assert_eq!(rules(sourced), Vec::new());
+
+    // A node's own write counts only when a loop can bring it back.
+    let own = |self_route: bool| {
+        let mut routes = json!({"done": route("done")});
+        if self_route {
+            routes["again"] = route("work");
+        }
+        rules(one_step(json!({
+            "contracts": {"response": "decision_envelope", "reads_context": ["context.notes"], "writes_context": ["context.notes"]},
+            "routes": routes,
+        })))
+    };
+    assert!(has(&own(false), "context_source", "reads 'context.notes'"));
+    assert_eq!(own(true), Vec::new());
+
+    // Branch writes are visible later in the same branch only: never to a
+    // sibling, the join or anything after it.
+    let writer = json!({"kind": "agent_task", "contracts": {"response": "decision_envelope",
+        "writes_context": ["context.review.lens_findings"]}, "routes": {"done": route("a_check")}});
+    let reader = |next: &str| {
+        json!({"kind": "agent_task", "contracts": {"response": "decision_envelope",
+        "reads_context": ["context.review.lens_findings"]}, "routes": {"done": route(next)}})
+    };
+    let found = rules(flow(json!({
+        "start": start("fork"),
+        "fork": {"kind": "parallel", "config": {"kind": "parallel", "branches": ["a", "b"], "join": "join"}},
+        "a": writer,
+        "a_check": reader("join"),
+        "b": reader("join"),
+        "join": {"kind": "fan_in", "routes": {"next": route("after")}},
+        "after": reader("done"),
+        "done": exit("completed", "success"),
+    })));
+    assert!(!has(&found, "context_source", "a_check.md"), "{found:?}");
+    assert!(
+        has(
+            &found,
+            "context_source",
+            "b.md: contracts.reads_context reads 'context.review.lens_findings'"
+        ),
+        "{found:?}"
+    );
+    assert!(
+        has(
+            &found,
+            "context_source",
+            "after.md: contracts.reads_context reads 'context.review.lens_findings'"
+        ),
+        "{found:?}"
+    );
+    assert_eq!(found.len(), 2, "{found:?}");
 }
 
 #[test]

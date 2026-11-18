@@ -3,22 +3,22 @@ type: agent_task
 title: Summarize Success
 contracts:
   reads_context:
-  - context.stack.child.status
-  - context.stack.child.outcome
-  - context.stack.child.outcome_reason_code
-  - context.stack.child.outcome_reason_message
-  - context.stack.child.active_stage
-  - context.stack.child.completed_nodes
-  - context.stack.child.route_trace
-  - context.stack.child.failure_reason
-  - context.stack.child.retry_count
-  - context.stack.child.retry_counts
-  - context.stack.child.artifact_count
-  - context.stack.child.event_count
-  - context.stack.child.checkpoint_timestamp
-  - context.stack.child.latest_event_at
-  - context.stack.child.started_at
-  - context.stack.child.ended_at
+  - stack.child.status
+  - stack.child.outcome
+  - stack.child.outcome_reason_code
+  - stack.child.outcome_reason_message
+  - stack.child.active_stage
+  - stack.child.completed_nodes
+  - stack.child.route_trace
+  - stack.child.failure_reason
+  - stack.child.retry_count
+  - stack.child.retry_counts
+  - stack.child.artifact_count
+  - stack.child.event_count
+  - stack.child.checkpoint_timestamp
+  - stack.child.latest_event_at
+  - stack.child.started_at
+  - stack.child.ended_at
   response: decision_envelope
 execution:
   llm_model: gpt-6.2-sol

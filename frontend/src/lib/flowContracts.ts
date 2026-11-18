@@ -41,13 +41,27 @@ function isLaunchInputType(value: unknown): value is LaunchInputType {
     return typeof value === 'string' && LAUNCH_INPUT_TYPES.includes(value as LaunchInputType)
 }
 
-function normalizeContextKey(value: unknown): string {
-    return typeof value === 'string' ? value.trim() : ''
+// Keys are literal, never trimmed or prefixed: dot-separated identifiers, as the server requires.
+const CONTEXT_KEY_PATTERN = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/
+
+function keyText(value: unknown): string {
+    return typeof value === 'string' ? value : ''
+}
+
+function invalidKeyReason(key: string): string | null {
+    if (!key) {
+        return 'Context keys are required.'
+    }
+    if (!CONTEXT_KEY_PATTERN.test(key)) {
+        return `Context keys must be dot-separated identifiers, with no spaces or empty segments: "${key}"`
+    }
+    return null
 }
 
 function validateContextKey(key: string): string | null {
-    if (!key) {
-        return 'Context keys are required.'
+    const invalid = invalidKeyReason(key)
+    if (invalid) {
+        return invalid
     }
     if (!key.startsWith('context.')) {
         return `Context keys must use the context.* namespace: ${key}`
@@ -55,15 +69,17 @@ function validateContextKey(key: string): string | null {
     return null
 }
 
-// A step may also read and write what Spark supplies, such as parallel.results and
-// internal.project_work_dir, and bare keys: the namespaces the server allows.
-const CONTRACT_KEY_PREFIXES = ['context.', 'graph.', 'internal.', 'parallel.', 'stack.', 'human.gate.', 'work.', '_attractor.']
+// A flow owns its context.* keys; Spark owns the other namespaces the server allows,
+// such as parallel.results, tool.output and internal.project_work_dir. The server
+// checks which of Spark's keys a step may read.
+const CONTRACT_KEY_PREFIXES = ['context.', 'graph.', 'internal.', 'parallel.', 'stack.', 'human.gate.', 'tool.', '_attractor.']
 
 function validateContractKey(key: string): string | null {
-    if (!key) {
-        return 'Context keys are required.'
+    const invalid = invalidKeyReason(key)
+    if (invalid) {
+        return invalid
     }
-    if (key.includes('.') && !CONTRACT_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+    if (!CONTRACT_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) {
         return `Context keys must use the context.* namespace or one Spark supplies, such as parallel.* or internal.*: ${key}`
     }
     return null
@@ -72,7 +88,7 @@ function validateContractKey(key: string): string | null {
 export function validateLaunchInputDefinitions(entries: LaunchInputDefinition[]): string | null {
     const seenKeys = new Set<string>()
     for (const entry of entries) {
-        const key = normalizeContextKey(entry.key)
+        const { key } = entry
         const keyError = validateContextKey(key)
         if (keyError) {
             return keyError
@@ -94,7 +110,7 @@ export function validateLaunchInputDefinitions(entries: LaunchInputDefinition[])
 export function serializeLaunchInputDefinitions(entries: LaunchInputDefinition[]): string {
     const normalizedEntries = entries
         .map((entry) => ({
-            key: normalizeContextKey(entry.key),
+            key: entry.key,
             label: entry.label.trim(),
             type: entry.type,
             ...(entry.type === 'string' && entry.multiline ? { multiline: true } : {}),
@@ -125,7 +141,7 @@ export function parseLaunchInputDefinitions(raw: unknown): ParsedLaunchInputDefi
             if (!record) {
                 return { entries: [], error: 'Each launch input must be an object.' }
             }
-            const key = normalizeContextKey(record.key)
+            const key = keyText(record.key)
             const label = typeof record.label === 'string' ? record.label.trim() : ''
             const type = record.type
             const description = typeof record.description === 'string' ? record.description.trim() : ''
@@ -161,7 +177,7 @@ export function parseContextKeyList(raw: unknown): ParsedContextKeyList {
         if (!Array.isArray(parsed)) {
             return { keys: [], error: 'Context key declarations must be a JSON array.' }
         }
-        const keys = parsed.map((value) => normalizeContextKey(value)).filter((value) => value.length > 0)
+        const keys = parsed.map(keyText)
         for (const key of keys) {
             const keyError = validateContractKey(key)
             if (keyError) {
@@ -177,9 +193,7 @@ export function parseContextKeyList(raw: unknown): ParsedContextKeyList {
 export function serializeContextKeyList(keys: string[]): string {
     const normalizedKeys = Array.from(
         new Set(
-            keys
-                .map((key) => normalizeContextKey(key))
-                .filter((key) => key.length > 0),
+            keys.filter((key) => key.length > 0),
         ),
     )
     if (normalizedKeys.length === 0) {
@@ -189,10 +203,10 @@ export function serializeContextKeyList(keys: string[]): string {
 }
 
 export function parseContextKeyDraft(value: string): ParsedContextKeyList {
+    // A padded line is reported, not trimmed: a key is kept exactly as written.
     const keys = value
         .split(/\r?\n/)
-        .map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0)
+        .filter((entry) => entry.trim().length > 0)
     for (const key of keys) {
         const keyError = validateContractKey(key)
         if (keyError) {

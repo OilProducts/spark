@@ -122,19 +122,23 @@ fn is_bare_condition_key(value: &str) -> bool {
 }
 
 fn resolve_condition_key(key: &str, context: &AttractorContext) -> String {
-    if let Some(unprefixed_key) = key.strip_prefix("context.") {
-        if let Some(value) = context.get(key) {
-            return context_value_to_string(value);
-        }
-        if let Some(value) = context.get(unprefixed_key) {
-            return context_value_to_string(value);
-        }
-        return context.get_context_path(unprefixed_key);
-    }
-    if let Some(value) = context.get(key) {
-        return context_value_to_string(value);
-    }
-    String::new()
+    context
+        .get(key)
+        .map(context_value_to_string)
+        .unwrap_or_default()
+}
+
+/// The context keys a manager `stop_condition` reads, in clause order.
+pub fn condition_keys(condition: &str) -> Vec<String> {
+    split_condition_clauses(condition)
+        .iter()
+        .map(|clause| clause.trim())
+        .filter_map(|clause| match parse_comparison_clause(clause) {
+            Some((key, _, _)) => Some(key),
+            None => is_bare_condition_key(clause).then_some(clause),
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 fn unescape_quoted_literal(text: &str) -> String {

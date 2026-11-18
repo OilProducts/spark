@@ -853,11 +853,8 @@ impl CodergenHandler {
                 "context.reads contract parse error: {}",
                 read_contract.parse_error
             );
-            let outcome = with_builtin_response_context(
-                Outcome::error(FailureKind::Contract, failure_reason.clone(), Some(false)),
-                &request.node_id,
-                &failure_reason,
-            );
+            let outcome =
+                Outcome::error(FailureKind::Contract, failure_reason.clone(), Some(false));
             write_stage_file(stage_dir.as_deref(), "response.md", &failure_reason)?;
             write_status_file(stage_dir.as_deref(), &outcome, 0, &[], None)?;
             return Ok(CodergenExecution::from_parts(
@@ -984,11 +981,8 @@ impl CodergenHandler {
                         "session '{}' was started with provider '{}', but node '{}' resolves provider '{provider}'",
                         session.name, handle.provider, request.node_id
                     );
-                    let outcome = with_builtin_response_context(
-                        Outcome::error(FailureKind::Runtime, failure_reason.clone(), Some(false)),
-                        &request.node_id,
-                        &failure_reason,
-                    );
+                    let outcome =
+                        Outcome::error(FailureKind::Runtime, failure_reason.clone(), Some(false));
                     write_stage_file(stage_dir.as_deref(), "response.md", &failure_reason)?;
                     write_status_file(stage_dir.as_deref(), &outcome, 0, &[], None)?;
                     let mut execution = CodergenExecution::from_parts(
@@ -1077,8 +1071,6 @@ impl CodergenHandler {
                         Some(false),
                     ),
                 };
-                let outcome =
-                    with_builtin_response_context(outcome, &request.node_id, &response_text);
                 events.push(event(
                     "simulated_llm_request_completed",
                     [
@@ -1180,7 +1172,6 @@ impl CodergenHandler {
                 &current_request.response_contract,
                 write_contract,
                 decisions,
-                node_id,
             ) {
                 CoercedBackendResponse::Accepted(outcome, response_text) => {
                     events.push(event(
@@ -1210,11 +1201,7 @@ impl CodergenHandler {
                     ));
                     violations.push(violation.clone());
                     if repair_attempts_used >= current_request.contract_repair_attempts {
-                        let outcome = with_builtin_response_context(
-                            contract_failure_outcome(&violation),
-                            node_id,
-                            &violation.raw_text,
-                        );
+                        let outcome = contract_failure_outcome(&violation);
                         return Ok((
                             outcome,
                             violation.raw_text.clone(),
@@ -1301,7 +1288,6 @@ fn coerce_backend_response(
     response_contract: &str,
     write_contract: &ContextWriteContract,
     decisions: &[String],
-    node_id: &str,
 ) -> CoercedBackendResponse {
     let contracted = !response_contract.trim().is_empty();
     let violation = |raw_text: &str, reason: String| {
@@ -1325,10 +1311,7 @@ fn coerce_backend_response(
                 ..violation
             });
         }
-        CoercedBackendResponse::Accepted(
-            with_builtin_response_context(outcome, node_id, &response_text),
-            response_text,
-        )
+        CoercedBackendResponse::Accepted(outcome, response_text)
     };
     match response {
         CodergenBackendResponse::Outcome(outcome) => {
@@ -1383,11 +1366,7 @@ fn coerce_backend_response(
         CodergenBackendResponse::Boolean(false) => {
             let response_text = "codergen backend failure".to_string();
             CoercedBackendResponse::Accepted(
-                with_builtin_response_context(
-                    Outcome::error(FailureKind::Runtime, response_text.clone(), None),
-                    node_id,
-                    &response_text,
-                ),
+                Outcome::error(FailureKind::Runtime, response_text.clone(), None),
                 response_text,
             )
         }
@@ -1542,23 +1521,6 @@ fn timeout_seconds(attrs: &BTreeMap<String, DotAttribute>) -> Option<f64> {
         DotValue::String(value) => value.trim().parse().ok(),
         DotValue::Boolean(_) | DotValue::Null => None,
     }
-}
-
-fn with_builtin_response_context(
-    mut outcome: Outcome,
-    node_id: &str,
-    response_text: &str,
-) -> Outcome {
-    let authored_updates = outcome.context_updates.clone();
-    let mut merged = ContextMap::new();
-    merged.insert("last_stage".to_string(), json!(node_id));
-    merged.insert(
-        "last_response".to_string(),
-        json!(response_text.chars().take(200).collect::<String>()),
-    );
-    merged.extend(authored_updates);
-    outcome.context_updates = merged;
-    outcome
 }
 
 fn response_text_for_outcome(outcome: &Outcome) -> String {
