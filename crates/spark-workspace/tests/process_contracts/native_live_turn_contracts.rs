@@ -1619,6 +1619,54 @@ fn model_listing_never_waits_on_a_harness_check() {
     assert!(!announced_since(), "only the check after the save");
     assert_eq!(slow(&list(false)), ready);
     assert_eq!(count(&launches), 18);
+
+    // Saved as another registration and back while its first check runs,
+    // listed each time: no second probe of it starts beside the first. Both
+    // superseded checks are discarded, and a check from after the change back
+    // follows, the only one announced.
+    std::fs::remove_file(&release).unwrap();
+    spark_workspace::models::invalidate_model_discovery("agents");
+    assert_eq!(slow(&list(false)), checking);
+    wait_for("the first check started", &|| count(&launches) == 19);
+    register(json!({"SPARK_FAKE_ACP": "{}"}));
+    spark_workspace::models::invalidate_model_discovery("agents");
+    assert_eq!(slow(&list(false)), checking);
+    wait_for("the other registration's check started", &|| {
+        count(&launches) == 20
+    });
+    register(json!({"SPARK_FAKE_ACP": "{}", "CHANGED": "1"}));
+    spark_workspace::models::invalidate_model_discovery("agents");
+    let started = Instant::now();
+    assert_eq!(slow(&list(false)), checking);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(count(&launches), 20, "no second probe beside the first");
+    std::fs::write(&release, "").unwrap();
+    wait_for("the check after the change back ended", &|| {
+        count(&ended) == 21
+    });
+    announced();
+    assert!(!announced_since(), "only the check after the change back");
+    assert_eq!(slow(&list(false)), ready);
+    assert_eq!(count(&launches), 21);
+
+    // A check asked for after one save is dropped by the next: with no
+    // listing since, nothing starts once the running check ends.
+    std::fs::remove_file(&release).unwrap();
+    spark_workspace::models::invalidate_model_discovery("agents");
+    assert_eq!(slow(&list(false)), checking);
+    wait_for("the check started", &|| count(&launches) == 22);
+    spark_workspace::models::invalidate_model_discovery("agents");
+    assert_eq!(slow(&list(false)), checking);
+    spark_workspace::models::invalidate_model_discovery("agents");
+    std::fs::write(&release, "").unwrap();
+    wait_for("the check ended", &|| count(&ended) == 22);
+    assert!(!announced_since());
+    assert_eq!(count(&launches), 22, "nothing starts without a listing");
+    assert_eq!(slow(&list(false)), checking);
+    announced();
+    assert_eq!(slow(&list(false)), ready);
+    assert_eq!(count(&launches), 23);
 }
 
 #[test]

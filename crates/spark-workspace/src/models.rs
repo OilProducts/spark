@@ -38,12 +38,25 @@ struct Check<H, R, V> {
     registration: R,
     result: Option<V>,
     /// The running check's number. A check whose number is gone when it
-    /// finishes, because its entry was removed or replaced, is discarded.
+    /// finishes, because its entry was removed, is discarded.
     running: Option<u64>,
-    /// A save cleared the entry while its check ran: that check's result is
+    /// The entry was superseded while its check ran: that check's result is
     /// discarded, and if a listing asked since, it checks again once it ends.
     cleared: bool,
     again: bool,
+}
+
+impl<H, R, V> Check<H, R, V> {
+    /// Drops the result, as a save or another registration does, and says
+    /// whether to keep the entry: a running check keeps it, so no second
+    /// probe of its registration starts beside it, but only a listing after
+    /// this has it check again.
+    fn supersede(&mut self) -> bool {
+        self.result = None;
+        self.cleared = self.running.is_some();
+        self.again = false;
+        self.cleared
+    }
 }
 
 impl<H, R, V> Checks<H, R, V>
@@ -77,9 +90,13 @@ where
         finished: impl FnOnce() + Send + 'static,
     ) -> Option<V> {
         let mut checks = self.lock();
-        // A changed registration drops the old one's result and check.
-        checks.retain(|check| check.harness != harness || check.registration == registration);
-        let index = match checks.iter().position(|check| check.harness == harness) {
+        checks.retain_mut(|check| {
+            check.harness != harness || check.registration == registration || check.supersede()
+        });
+        let index = match checks
+            .iter()
+            .position(|check| check.harness == harness && check.registration == registration)
+        {
             Some(index) => index,
             None => {
                 checks.push(Check {
@@ -94,8 +111,8 @@ where
             }
         };
         let check = &mut checks[index];
-        // A listing after a save asks for a check from after it: one the save
-        // cleared while it ran checks again once it ends.
+        // A listing asks for a check from now: one superseded while it ran
+        // checks again once it ends.
         check.again |= check.cleared;
         if check.running.is_none() && (check.result.is_none() || refresh) {
             static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -135,21 +152,15 @@ where
         check.result.clone()
     }
 
-    /// Settings were saved: every result goes. A running check keeps its
-    /// entry, so no second probe of the same registration starts beside it,
-    /// but its result is discarded.
+    /// Settings were saved: every result goes.
     fn clear(&self) {
-        self.lock().retain_mut(|check| {
-            check.result = None;
-            check.cleared = check.running.is_some();
-            check.cleared
-        });
+        self.lock().retain_mut(Check::supersede);
     }
 
-    /// Forgets the checks `keep` rejects, discarding those still running.
+    /// Supersedes the checks `keep` rejects.
     fn retain(&self, keep: impl Fn(&H, &R) -> bool) {
         self.lock()
-            .retain(|check| keep(&check.harness, &check.registration));
+            .retain_mut(|check| keep(&check.harness, &check.registration) || check.supersede());
     }
 }
 
