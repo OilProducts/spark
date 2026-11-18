@@ -97,10 +97,14 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const allEfforts = [...new Set([...supported, ...(supported.length && value.reasoning_effort ? [value.reasoning_effort] : [])])]
     // Session controls are a harness's own, so another provider starts without them. Another model
     // keeps only the native controls it offers: the rest would stay saved, hidden, and fail its turns.
+    // While its harness checks, what a model offers is unknown, so another of its models keeps them.
+    // ponytail: assumes a harness's models share its native controls, as Codex's all offer summaries;
+    // drop the unoffered ones when the check ends if a harness's models ever differ.
     const select = (selection: { provider: string | null; llm_profile: string | null; model: string | null }) => {
         const same = selection.provider === value.provider && selection.llm_profile === value.llm_profile && (selection.model || null) === value.model
+        const unknown = !!selection.provider && selection.provider === value.provider && checking(selection.provider)
         const meta = resolve({ ...empty, ...selection }).meta
-        const keep = (current: string | null | undefined, offered?: string[]) => same || current == null || offered?.includes(current) ? current : null
+        const keep = (current: string | null | undefined, offered?: string[]) => same || unknown || current == null || offered?.includes(current) ? current : null
         const thinking = keep(value.thinking, meta?.supported_thinking)
         return { ...value,
             provider: selection.provider, llm_profile: selection.llm_profile, model: selection.model || null,
