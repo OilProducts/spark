@@ -388,6 +388,82 @@ fn claude_code_tool_calls_emit_canonical_payloads_through_completion() {
 }
 
 #[test]
+fn claude_code_file_edits_carry_their_diffs_from_the_structured_result_or_the_input() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "file-edits");
+
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .expect("turn");
+    let ended = |id: &str| {
+        output
+            .events
+            .iter()
+            .filter(|event| event.kind != TurnStreamEventKind::ToolCallStarted)
+            .find_map(|event| {
+                let call = event.tool_call.as_ref()?;
+                (call["id"] == id).then(|| (event.kind.clone(), call.clone()))
+            })
+            .expect("tool result")
+    };
+    let changes = |id: &str| ended(id).1["file_changes"].clone();
+
+    for event in &output.events {
+        if event.kind == TurnStreamEventKind::ToolCallStarted {
+            assert_eq!(event.tool_call.as_ref().unwrap()["kind"], "file_change");
+        }
+    }
+    // The CLI's hunks, under the path it reports, as given; old text replaced is an update.
+    assert_eq!(
+        changes("toolu_patch"),
+        json!([{"path": "/p/real.rs", "kind": "update",
+            "diff": "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n@@ -9,1 +9,1 @@\n--- x\n+++ y\n"}])
+    );
+    // Without one, the input's strings line by line; a missing final newline changes nothing.
+    assert_eq!(
+        changes("toolu_edit"),
+        json!([{"path": "/p/a.rs", "kind": "update", "diff": "@@\n-b\n+B\n c\n"}])
+    );
+    // Without old text the edit may have created the file: no operation.
+    assert_eq!(
+        changes("toolu_edit_empty"),
+        json!([{"path": "/p/b.rs", "diff": "@@\n+x\n"}])
+    );
+    assert_eq!(
+        changes("toolu_create"),
+        json!([{"path": "/p/new.rs", "kind": "add", "diff": "+one\n+two\n"}])
+    );
+    assert_eq!(
+        changes("toolu_overwrite"),
+        json!([{"path": "/p/a.rs", "kind": "update", "diff": "@@ -1,1 +1,1 @@\n-old\n+new\n"}])
+    );
+    let (_, multi) = ended("toolu_multi");
+    assert_eq!(
+        multi["file_changes"],
+        json!([
+            {"path": "/p/a.rs", "kind": "update", "diff": "@@\n-a\n+A\n"},
+            {"path": "/p/a.rs", "kind": "update", "diff": "@@\n-c\n+C\n"},
+        ])
+    );
+    assert!(multi.get("file_paths").is_none(), "{multi}");
+    let (kind, failed) = ended("toolu_failed");
+    assert_eq!(kind, TurnStreamEventKind::ToolCallFailed);
+    assert!(failed.get("file_changes").is_none(), "{failed}");
+    assert_eq!(
+        changes("toolu_pair_1"),
+        json!([{"path": "/p/a.rs", "kind": "update", "diff": "@@\n-p\n+P\n"}])
+    );
+    assert_eq!(
+        changes("toolu_pair_2"),
+        json!([{"path": "/p/a.rs", "kind": "update", "diff": "@@\n-q\n+Q\n"}])
+    );
+}
+
+#[test]
 fn claude_code_multi_block_completions_consume_partial_ids_in_order() {
     let _lock = ENV_LOCK
         .lock()

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
 
 import { groupTranscript, type TranscriptItemClass } from '@/components/app/transcript/groupTranscript'
 import {
@@ -116,6 +117,53 @@ describe('transcript rows', () => {
         expect(header).toHaveTextContent('Spark')
         expect(header).toHaveTextContent('worked 16s')
         expect(within(header).getByRole('presentation', { hidden: true })).toHaveAttribute('src', '/assets/spark-app-icon.png')
+    })
+
+    it('shows each reported file change as its path, operation and literal coloured diff', async () => {
+        const edit: TranscriptToolCallEntry = {
+            id: 'edit',
+            timestamp: '',
+            toolCall: {
+                id: 'edit',
+                kind: 'file_change',
+                status: 'completed',
+                title: 'Apply file changes',
+                filePaths: ['src/a.rs', 'src/old.rs', 'notes.txt'],
+                fileChanges: [
+                    { path: 'src/a.rs', kind: 'update', diff: 'diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,2 @@\n ctx\n--- removed comment\n+<b>bold</b>\n' },
+                    { path: 'src/new.rs', move_from: 'src/old.rs', kind: 'move', diff: '+moved\n' },
+                    { path: 'src/a.rs', diff: '', truncated: true },
+                ],
+            },
+        }
+        const { rerender } = render(<ul><ToolCallRow entry={edit} isExpanded={false} onToggleToolCallExpanded={() => {}} /></ul>)
+        expect(screen.queryByText('Updated')).not.toBeInTheDocument()
+
+        rerender(<ul><ToolCallRow entry={edit} isExpanded onToggleToolCallExpanded={() => {}} /></ul>)
+        expect(screen.getByText('Updated')).toBeVisible()
+        expect(screen.getByText('Moved')).toBeVisible()
+        expect(screen.getByText('src/old.rs → src/new.rs')).toBeVisible()
+        expect(screen.getByText('Preview truncated')).toBeVisible()
+        // Only the path no diff names is listed on its own.
+        expect(screen.getByText('notes.txt', { selector: 'li' })).toBeVisible()
+        expect(screen.queryByText('src/old.rs', { selector: 'li' })).not.toBeInTheDocument()
+        // File headers are metadata; inside a hunk the first character decides, and text stays text.
+        expect(screen.getByText('--- a/src/a.rs')).toHaveClass('text-muted-foreground')
+        expect(screen.getByText('+++ b/src/a.rs')).not.toHaveClass('text-success')
+        expect(screen.getByText('--- removed comment')).toHaveClass('text-destructive')
+        expect(screen.getByText('+<b>bold</b>')).toHaveClass('text-success')
+        expect(screen.getByText('ctx')).not.toHaveAttribute('class')
+        expect(screen.getByText('+moved')).toHaveClass('text-success')
+        expect(document.querySelector('b')).toBeNull()
+
+        // Each diff is a named tab stop, so the keyboard can scroll whatever its box clips.
+        const user = userEvent.setup()
+        await user.tab()
+        expect(screen.getByTestId('project-tool-call-toggle-edit')).toHaveFocus()
+        await user.tab()
+        expect(screen.getByRole('group', { name: 'Diff of src/a.rs' })).toHaveFocus()
+        await user.tab()
+        expect(screen.getByRole('group', { name: 'Diff of src/new.rs' })).toHaveFocus()
     })
 
 })

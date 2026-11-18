@@ -25,6 +25,7 @@ use crate::agent::{
     AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
     AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
 };
+use crate::file_changes::{self, prefixed, FileChange};
 use crate::stdio_transport::{
     self, sleep_until, Blocking, Budget, Connection, End, Endpoints, Held, Outgoing, Refused,
     Status, Stop, LIMITS, PENDING_LIMIT,
@@ -2674,14 +2675,18 @@ pub fn process_codex_app_server_message(
                         .build(),
                     );
                 } else if is_tool_item(item) {
+                    let tool_call = tool_call_payload_from_codex_item(item, "completed");
+                    // A failed or declined item ends as a failed call, matching its status.
+                    let kind = if tool_call["status"] == "failed" {
+                        TurnStreamEventKind::ToolCallFailed
+                    } else {
+                        TurnStreamEventKind::ToolCallCompleted
+                    };
                     events.push(
-                        event(
-                            TurnStreamEventKind::ToolCallCompleted,
-                            "tool_item_completed",
-                        )
-                        .tool(tool_call_payload_from_codex_item(item, "completed"))
-                        .item_id(item_id)
-                        .build(),
+                        event(kind, "tool_item_completed")
+                            .tool(tool_call)
+                            .item_id(item_id)
+                            .build(),
                     );
                 }
             }
@@ -3610,7 +3615,42 @@ fn file_change_tool_call_payload(payload: &Map<String, Value>, default_status: &
                 .collect(),
         ),
     );
+    if let Some(changes) = file_changes::payload(codex_file_changes(payload)) {
+        tool_call.insert("file_changes".to_string(), changes);
+    }
     Value::Object(tool_call)
+}
+
+/// A native `fileChange` item's `changes`: update diffs as reported, added
+/// and deleted files' contents as `+`/`-` lines.
+fn codex_file_changes(payload: &Map<String, Value>) -> Vec<FileChange> {
+    let changes = payload.get("changes").and_then(Value::as_array);
+    changes
+        .into_iter()
+        .flatten()
+        .filter_map(|change| {
+            let path = change
+                .get("path")
+                .and_then(Value::as_str)
+                .and_then(non_empty)?;
+            let diff = change.get("diff").and_then(Value::as_str)?;
+            let kind = change.get("kind").unwrap_or(&Value::Null);
+            let move_to = kind["move_path"].as_str().and_then(non_empty);
+            Some(match (kind["type"].as_str(), move_to) {
+                (Some("add"), _) => FileChange::new(path, Some("add"), prefixed(diff, '+')),
+                (Some("delete"), _) => FileChange::new(path, Some("delete"), prefixed(diff, '-')),
+                (Some("update"), Some(to)) => {
+                    let trailer = format!("\n\nMoved to: {to}");
+                    let diff = diff.strip_suffix(&trailer).unwrap_or(diff);
+                    let mut change = FileChange::new(to, Some("move"), diff.to_string());
+                    change.move_from = Some(path.to_string());
+                    change
+                }
+                (Some("update"), None) => FileChange::new(path, Some("update"), diff.to_string()),
+                _ => FileChange::new(path, None, diff.to_string()),
+            })
+        })
+        .collect()
 }
 
 fn normalize_tool_status(payload: &Map<String, Value>, default_status: &str) -> String {
@@ -3619,7 +3659,9 @@ fn normalize_tool_status(payload: &Map<String, Value>, default_status: &str) -> 
         .to_ascii_lowercase();
     match raw_status.as_str() {
         "running" | "in_progress" | "inprogress" | "started" | "pending" => "running",
-        "failed" | "failure" | "error" | "errored" | "cancelled" | "canceled" => "failed",
+        "failed" | "failure" | "error" | "errored" | "cancelled" | "canceled" | "declined" => {
+            "failed"
+        }
         "completed" | "complete" | "succeeded" | "success" | "done" => "completed",
         _ => default_status,
     }

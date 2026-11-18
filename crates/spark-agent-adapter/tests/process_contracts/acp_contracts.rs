@@ -246,6 +246,45 @@ fn acp_turn_streams_updates_while_the_prompt_is_open_and_returns_them_once() {
 }
 
 #[test]
+fn acp_diff_content_becomes_file_changes_beside_output_and_locations() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = (1..=8).map(|n| format!("line {n}\n")).collect::<String>();
+    let script = json!({
+        "updates": [
+            {"sessionUpdate": "tool_call", "toolCallId": "e1", "title": "Edit files", "kind": "edit",
+             "status": "pending", "locations": [{"path": "/p/a.rs"}]},
+            {"sessionUpdate": "tool_call_update", "toolCallId": "e1", "status": "completed", "content": [
+                {"type": "content", "content": {"type": "text", "text": "Edited."}},
+                {"type": "diff", "path": "/p/new.rs", "newText": "fn main() {}\n"},
+                {"type": "diff", "path": "/p/a.rs", "oldText": old, "newText": "line 1\nline 2\nline 3\nline 4\nline 5\n"},
+                {"type": "diff", "path": "/p/a.rs", "oldText": "x\ny", "newText": "x\nY\n"},
+            ]},
+            chunk("agent_message_chunk", "Done."),
+        ],
+    });
+    let (result, seen) = run(&request(dir.path(), script, json!({})), |_| {});
+    result.expect("turn");
+
+    let completed = seen
+        .iter()
+        .find(|event| event.kind == TurnStreamEventKind::ToolCallCompleted)
+        .and_then(|event| event.tool_call.clone())
+        .expect("completed tool call");
+    assert_eq!(completed["output"], "Edited.");
+    assert_eq!(completed["file_paths"], json!(["/p/a.rs"]));
+    // A new file as added lines; edits as line diffs with three lines of
+    // context, in the order sent and one entry per diff.
+    assert_eq!(
+        completed["file_changes"],
+        json!([
+            {"path": "/p/new.rs", "diff": "+fn main() {}\n"},
+            {"path": "/p/a.rs", "diff": "@@\n line 3\n line 4\n line 5\n-line 6\n-line 7\n-line 8\n"},
+            {"path": "/p/a.rs", "diff": "@@\n x\n-y\n+Y\n"},
+        ])
+    );
+}
+
+#[test]
 fn acp_permission_policy_answers_from_the_offered_options() {
     let option = |id: &str, kind: &str| json!({"optionId": id, "name": id, "kind": kind});
     let cases = [

@@ -3,6 +3,7 @@ import { ChevronDown, MessageSquare, Network, Play, RefreshCw } from 'lucide-rea
 import { useStore } from '@/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { DiffBlock } from '@/components/app/diff-block'
 import { InlineError } from '@/components/app/inline-error'
 import { ListGroupLabel, SidePanelRow } from '@/components/app/side-panel-row'
 import { SectionHeading } from '@/components/app/section-heading'
@@ -13,7 +14,6 @@ import { defaultProjectChoice, projectLabel } from '@/features/projects/model/pr
 import { openChat } from '@/app/useAttention'
 import { useFlowSummaries } from '@/features/launch/hooks/useFlowSummaries'
 import { flowTitle } from '@/features/runs/model/runOverviewModel'
-import { cn } from '@/lib/utils'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import {
     budgetLine, definitionBadges, fetchDefinitions, fetchRoleFile, fetchRoleMemory, frontmatterFields, renderableMarkdown, roleAction, startRole,
@@ -23,18 +23,6 @@ import {
 /** Only what differs from bundled only: the project's own, or customized from bundled. */
 export function DefinitionBadges({ item }: { item: Pick<DefinitionItem, 'layer'> }) {
     return <>{definitionBadges(item).map((badge) => <Badge key={badge} data-testid="definition-badge" variant="default">{badge}</Badge>)}</>
-}
-
-/** A unified diff with added and removed lines marked. */
-export function DiffBlock({ diff }: { diff: string }) {
-    if (!diff.trim()) return <p className="text-xs text-muted-foreground">No differences.</p>
-    return <pre data-testid="roles-diff" className="max-h-96 overflow-auto rounded-md border bg-muted/40 p-2 text-xs leading-5">
-        {diff.split('\n').map((line, index) => <div key={index} className={cn(
-            line.startsWith('+') && !line.startsWith('+++') && 'text-success',
-            line.startsWith('-') && !line.startsWith('---') && 'text-destructive',
-            line.startsWith('@@') && 'text-muted-foreground',
-        )}>{line || ' '}</div>)}
-    </pre>
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -160,7 +148,7 @@ function RoleDetail({ project, item, pending, onStart, startError }: RoleControl
         </Section>
         {item.layer === 'project_copy' && <Section title="Diff from bundled">
             <p className="text-xs text-muted-foreground">Diff from today's bundled version to the copy:</p>
-            {detail ? <DiffBlock diff={detail.bundled_diff ?? ''} /> : !error && <p className="text-xs text-muted-foreground">Loading…</p>}
+            {detail ? <DiffBlock diff={detail.bundled_diff ?? ''} label="Bundled diff" testId="roles-diff" /> : !error && <p className="text-xs text-muted-foreground">Loading…</p>}
         </Section>}
     </section>
 }

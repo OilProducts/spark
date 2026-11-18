@@ -15,6 +15,7 @@ pub mod config;
 pub mod context;
 pub mod environment;
 pub mod events;
+mod file_changes;
 pub mod history;
 mod initial_context;
 mod interaction;

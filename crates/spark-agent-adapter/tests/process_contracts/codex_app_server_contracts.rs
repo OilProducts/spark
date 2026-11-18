@@ -2121,6 +2121,117 @@ fn app_server_tool_items_emit_frontend_renderable_tool_call_payloads() {
         file_change["file_paths"],
         json!(["src/lib.rs", "tests/lib_contracts.rs"])
     );
+    // Paths without diffs are no edit evidence.
+    assert!(file_change.get("file_changes").is_none());
+}
+
+/// The tool events one `fileChange` item notification produces.
+fn file_change_events(
+    method: &str,
+    status: &str,
+    changes: Value,
+) -> Vec<(TurnStreamEventKind, Value)> {
+    let message = json!({"method": method, "params": {"turnId": "turn-1", "item": {
+        "type": "fileChange", "id": "patch-1", "status": status, "changes": changes}}});
+    process_codex_app_server_message(&message, &mut CodexAppServerTurnState::default())
+        .into_iter()
+        .filter_map(|event| Some((event.kind, event.tool_call?)))
+        .collect()
+}
+
+#[test]
+fn app_server_file_changes_carry_each_native_change_on_start_and_completion() {
+    let changes = json!([
+        {"path": "src/lib.rs", "kind": {"type": "update", "move_path": null}, "diff": "@@ -1 +1 @@\n-old\n+new\n"},
+        {"path": "src/new.rs", "kind": {"type": "add"}, "diff": "fn a() {}\nfn b() {}\n"},
+        {"path": "src/gone.rs", "kind": {"type": "delete"}, "diff": "fn gone() {}"},
+        {"path": "src/old.rs", "kind": {"type": "update", "move_path": "src/moved.rs"},
+         "diff": "@@ -1 +1 @@\n-x\n+y\n\n\nMoved to: src/moved.rs"},
+        {"path": "src/lib.rs", "kind": {"type": "update", "move_path": null}, "diff": "@@ -9 +9 @@\n-a\n+b\n"},
+    ]);
+    let expected = json!([
+        {"path": "src/lib.rs", "kind": "update", "diff": "@@ -1 +1 @@\n-old\n+new\n"},
+        {"path": "src/new.rs", "kind": "add", "diff": "+fn a() {}\n+fn b() {}\n"},
+        {"path": "src/gone.rs", "kind": "delete", "diff": "-fn gone() {}\n"},
+        {"path": "src/moved.rs", "kind": "move", "move_from": "src/old.rs", "diff": "@@ -1 +1 @@\n-x\n+y\n"},
+        {"path": "src/lib.rs", "kind": "update", "diff": "@@ -9 +9 @@\n-a\n+b\n"},
+    ]);
+    for (method, status, kind) in [
+        (
+            "item/started",
+            "inProgress",
+            TurnStreamEventKind::ToolCallStarted,
+        ),
+        (
+            "item/completed",
+            "completed",
+            TurnStreamEventKind::ToolCallCompleted,
+        ),
+    ] {
+        let events = file_change_events(method, status, changes.clone());
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].0, kind);
+        assert_eq!(events[0].1["file_changes"], expected);
+        assert_eq!(
+            events[0].1["file_paths"],
+            json!(["src/gone.rs", "src/lib.rs", "src/new.rs", "src/old.rs"])
+        );
+    }
+}
+
+#[test]
+fn app_server_declined_or_failed_file_changes_complete_as_failed_tool_calls() {
+    let changes =
+        json!([{"path": "a.rs", "kind": {"type": "update"}, "diff": "@@ -1 +1 @@\n-a\n+b\n"}]);
+    for status in ["declined", "failed"] {
+        let events = file_change_events("item/completed", status, changes.clone());
+        assert_eq!(events[0].0, TurnStreamEventKind::ToolCallFailed, "{status}");
+        assert_eq!(events[0].1["status"], "failed");
+        assert_eq!(events[0].1["file_changes"][0]["path"], "a.rs");
+    }
+    // Any declined item, not only a file change, ends as a failed call.
+    let message = json!({"method": "item/completed", "params": {"turnId": "turn-1", "item": {
+        "type": "commandExecution", "id": "cmd-1", "command": "rm -rf build", "status": "declined"}}});
+    let events =
+        process_codex_app_server_message(&message, &mut CodexAppServerTurnState::default());
+    let call = events
+        .iter()
+        .find(|event| event.tool_call.is_some())
+        .expect("tool event");
+    assert_eq!(call.kind, TurnStreamEventKind::ToolCallFailed);
+    assert_eq!(call.tool_call.as_ref().unwrap()["status"], "failed");
+}
+
+#[test]
+fn app_server_file_changes_cap_diff_text_per_call_and_keep_every_path() {
+    let update =
+        |path: &str, diff: String| json!({"path": path, "kind": {"type": "update"}, "diff": diff});
+    let changes = json!([
+        update("first.rs", "a".repeat(40 * 1024)),
+        update("second.rs", "é".repeat(20 * 1024)),
+        update("third.rs", "tail".to_string()),
+    ]);
+    let events = file_change_events("item/completed", "completed", changes);
+    let entries = events[0].1["file_changes"].as_array().unwrap().clone();
+    let summary = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry["path"].as_str().unwrap(),
+                entry["diff"].as_str().unwrap().len(),
+                entry.get("truncated").cloned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    // 64 KiB in all, cut on a character boundary.
+    assert_eq!(
+        summary,
+        [
+            ("first.rs", 40 * 1024, None),
+            ("second.rs", 24 * 1024, Some(json!(true))),
+            ("third.rs", 0, Some(json!(true))),
+        ]
+    );
 }
 
 #[test]

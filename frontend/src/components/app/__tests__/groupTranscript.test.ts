@@ -70,6 +70,14 @@ describe('summarizeToolGroup', () => {
         expect(summarizeToolGroup(calls).label).toBe(label)
     })
 
+    it('counts the files edit calls changed, not the calls', () => {
+        const edit = (paths: string[]): TranscriptToolCall => ({
+            ...tool('file_change'), filePaths: [], fileChanges: paths.map((path) => ({ path, diff: '+x\n' })),
+        })
+        expect(summarizeToolGroup([edit(['a', 'b', 'c'])]).label).toBe('Edited 3 files')
+        expect(summarizeToolGroup([edit(['a']), edit(['a']), tool('command_execution')]).label).toBe('Ran 1 command, edited 1 file')
+    })
+
     it('counts failures and reports a running call', () => {
         expect(summarizeToolGroup([tool('command_execution', 'failed'), tool('command_execution', 'failed'), tool('command_execution', 'yielded')]))
             .toMatchObject({ failed: 2, running: false })
