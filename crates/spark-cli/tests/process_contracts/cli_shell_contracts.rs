@@ -1429,9 +1429,9 @@ fn mission_commands_use_project_scope_and_minimal_payloads() {
 }
 
 #[test]
-fn settings_get_encodes_project_and_conversation_scopes() {
-    let env = std::collections::BTreeMap::<String, String>::new();
-    let plan = spark_cli::request_plan_with_args_env_and_stdin(
+fn settings_commands_encode_scopes_and_read_json_stdin() {
+    let env = BTreeMap::new();
+    let plan = request_plan_with_args_env_and_stdin(
         [
             "spark",
             "settings",
@@ -1451,7 +1451,40 @@ fn settings_get_encodes_project_and_conversation_scopes() {
         plan.path,
         "/workspace/api/settings?project_path=%2Ftmp%2Fa%20%26%20b&conversation_id=chat%2F1"
     );
-    assert_eq!(plan.method, spark_cli::HttpMethod::Get);
+    assert_eq!(plan.method, HttpMethod::Get);
+
+    let payload = serde_json::json!({
+        "expected_revision": "rev-1",
+        "section": "runtime",
+        "value": {"runs_dir": "/chosen"}
+    });
+    let stdin = payload.to_string();
+    for (command, method, path) in [
+        ("set", HttpMethod::Patch, "/workspace/api/settings"),
+        (
+            "validate",
+            HttpMethod::Post,
+            "/workspace/api/settings/validate",
+        ),
+    ] {
+        let plan = request_plan_with_args_env_and_stdin(
+            [
+                "spark",
+                "settings",
+                command,
+                "--base-url",
+                "http://127.0.0.1:9876",
+                "--json",
+                "-",
+            ],
+            &env,
+            &stdin,
+        )
+        .unwrap();
+        assert_eq!(plan.method, method);
+        assert_eq!(plan.path, path);
+        assert_eq!(plan.body.as_ref(), Some(&payload));
+    }
 }
 
 #[test]

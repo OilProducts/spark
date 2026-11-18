@@ -11,6 +11,10 @@ use unified_llm_adapter::{
 fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
     let sonnet = get_model_info("sonnet").expect("sonnet alias");
     assert_eq!(sonnet.id, "claude-sonnet-4-5");
+    assert_eq!(
+        sonnet.aliases,
+        ["sonnet", "claude-sonnet", "claude-sonnet-4.5"]
+    );
     assert_eq!(sonnet.supported_thinking, ["budget", "off"]);
     let gpt = get_model_info("gpt5.2").expect("gpt alias");
     assert_eq!(gpt.id, "gpt-5.2");
