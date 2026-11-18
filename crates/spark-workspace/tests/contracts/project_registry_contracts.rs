@@ -237,10 +237,10 @@ default_model = "local-model"
     .expect("profiles");
 
     let service = WorkspaceProjectService::new(settings);
-    assert!(service.chat_models(Some("")).is_err());
-    let workspace = service.chat_models(None).expect("workspace models");
+    assert!(service.chat_models(Some(""), false).is_err());
+    let workspace = service.chat_models(None, false).expect("workspace models");
     let response = service
-        .chat_models(Some("/projects/my-app"))
+        .chat_models(Some("/projects/my-app"), false)
         .expect("models");
 
     assert_eq!(

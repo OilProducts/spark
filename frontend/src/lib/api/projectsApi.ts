@@ -51,6 +51,9 @@ export interface ProjectChatModelsResponse {
     }
 }
 
+export const harnessSetupStatuses = ['ready', 'unreachable', 'unauthenticated', 'not_installed', 'misconfigured'] as const
+export type HarnessSetupStatus = typeof harnessSetupStatuses[number]
+
 export interface ProjectChatModelCapability {
     state: 'supported' | 'unsupported' | 'unverified'
     reason: string
@@ -61,8 +64,8 @@ export interface ProjectChatModelProviderStatusResponse {
     error: string | null
     /** The provider's display name; for an ACP harness, its registration's. */
     label?: string
-    /** For an ACP harness: whether discovery could set it up. */
-    setup_status?: 'ready' | 'unreachable' | 'unauthenticated'
+    /** For a harness: whether it could be set up. */
+    setup_status?: HarnessSetupStatus
     capabilities?: Record<string, ProjectChatModelCapability>
     chat?: ProjectChatModelCapability
     flow?: ProjectChatModelCapability
@@ -82,9 +85,9 @@ function parseCapability(value: unknown, endpoint: string): ProjectChatModelCapa
 
 /** The status's additive fields, each only when present. */
 function parseProviderDetails(entry: Record<string, unknown>, endpoint: string): Partial<ProjectChatModelProviderStatusResponse> {
-    const setup = entry.setup_status
-    if (setup !== undefined && setup !== 'ready' && setup !== 'unreachable' && setup !== 'unauthenticated') {
-        throw new ApiSchemaError(endpoint, 'Expected setup_status to be ready, unreachable or unauthenticated.')
+    const setup = entry.setup_status as HarnessSetupStatus | undefined
+    if (setup !== undefined && !harnessSetupStatuses.includes(setup)) {
+        throw new ApiSchemaError(endpoint, `Expected setup_status to be one of ${harnessSetupStatuses.join(', ')}.`)
     }
     if (entry.config_options !== undefined && !Array.isArray(entry.config_options)) {
         throw new ApiSchemaError(endpoint, 'Expected config_options to be an array.')
@@ -366,9 +369,13 @@ export async function fetchProjectMetadataValidated(directory: string): Promise<
     )
 }
 
-export async function fetchProjectChatModelsValidated(projectPath: string | null): Promise<ProjectChatModelsResponse> {
+/** `refresh` checks every harness again instead of reusing earlier checks. */
+export async function fetchProjectChatModelsValidated(projectPath: string | null, refresh = false): Promise<ProjectChatModelsResponse> {
+    const query = new URLSearchParams()
+    if (projectPath) query.set('project_path', projectPath)
+    if (refresh) query.set('refresh', 'true')
     return fetchWorkspaceJsonValidated(
-        projectPath ? `/projects/chat-models?project_path=${encodeURIComponent(projectPath)}` : '/projects/chat-models',
+        `/projects/chat-models${query.toString() ? `?${query}` : ''}`,
         undefined,
         '/workspace/api/projects/chat-models',
         parseProjectChatModelsResponse,

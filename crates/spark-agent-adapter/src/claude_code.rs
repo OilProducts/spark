@@ -1569,8 +1569,8 @@ pub(crate) fn claude_config_dir(native: Option<&NativeAgentSettings>) -> PathBuf
 fn launch_error(executable: &Path, error: std::io::Error) -> ClaudeCodeError {
     if error.kind() == std::io::ErrorKind::NotFound {
         ClaudeCodeError::configuration(format!(
-            "claude code executable not found: {} (install Claude Code and log in, \
-             or set {CLAUDE_CODE_BIN_ENV})",
+            "claude code executable not found: {} (install Claude Code, or set its program \
+             in Settings > Models & accounts > Agent harnesses or {CLAUDE_CODE_BIN_ENV})",
             executable.display()
         ))
     } else {

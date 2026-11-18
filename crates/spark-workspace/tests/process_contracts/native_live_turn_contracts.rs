@@ -1126,7 +1126,8 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     assert!(models("acp:locked").is_empty());
 
     let missing = &providers["acp:missing"];
-    assert_eq!(missing["setup_status"], "unreachable", "{missing}");
+    assert_eq!(missing["setup_status"], "not_installed", "{missing}");
+    assert_eq!(providers["claude-code"]["setup_status"], "not_installed");
     assert!(missing["error"]
         .as_str()
         .unwrap()
@@ -1177,4 +1178,35 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     spark_workspace::models::invalidate_model_discovery("agents");
     discover();
     assert_eq!(launches().len(), 10, "an agents change probes again");
+
+    // One misconfigured registration stops no other, and a ready harness
+    // whose program is removed is checked again.
+    let copied = temp.path().join("copied-acp");
+    std::fs::copy(FAKE_ACP, &copied).unwrap();
+    let mut changed = agents.clone();
+    changed["agents"]["acp_harnesses"]["copied"] =
+        harness("Copied", copied.to_str().unwrap(), json!({}));
+    changed["agents"]["acp_harnesses"]["broken"] = json!({"name": "Broken", "executable": "agent",
+        "env": {"SPARK_HOME": "broken-secret-sentinel"}});
+    std::fs::write(
+        settings.config_dir.join("spark.toml"),
+        toml::to_string(&changed).unwrap(),
+    )
+    .unwrap();
+    let response = discover();
+    let providers = &response["providers"];
+    assert_eq!(providers["acp:copied"]["setup_status"], "ready");
+    assert_eq!(providers["acp:fake"]["setup_status"], "ready");
+    assert_eq!(providers["acp:broken"]["setup_status"], "misconfigured");
+    assert_eq!(providers["acp:broken"]["status"], "unavailable");
+    assert!(providers["acp:broken"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("SPARK_HOME"));
+    assert!(!response.to_string().contains("broken-secret-sentinel"));
+    std::fs::remove_file(&copied).unwrap();
+    assert_eq!(
+        discover()["providers"]["acp:copied"]["setup_status"],
+        "not_installed"
+    );
 }

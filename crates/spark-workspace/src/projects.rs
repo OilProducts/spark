@@ -324,12 +324,12 @@ impl WorkspaceProjectService {
 
     /// The chooser's models, with ACP harnesses probed in the project, or in
     /// the Home project without one.
-    pub fn chat_models(&self, project_path: Option<&str>) -> WorkspaceResult<Value> {
+    pub fn chat_models(&self, project_path: Option<&str>, refresh: bool) -> WorkspaceResult<Value> {
         let work_area = match project_path {
             Some(project_path) => PathBuf::from(normalize_project_path_or_400(project_path)?),
             None => service_home_dir().map_err(WorkspaceError::Validation)?,
         };
-        crate::models::chat_models(&self.settings, &work_area)
+        crate::models::chat_models(&self.settings, &work_area, refresh)
     }
 
     fn registry(&self) -> ProjectRegistry {

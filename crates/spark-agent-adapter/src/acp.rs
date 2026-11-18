@@ -300,12 +300,26 @@ fn live_harness(request: &AgentTurnRequest, harness_id: &str) -> Option<AcpHarne
             .as_str()?,
     )
     .join("spark.toml");
-    let agents: crate::config::SessionConfig =
-        spark_storage::settings::read_settings_document(&path)
-            .ok()?
-            .section(&path, "agents")
-            .ok()??;
+    let document = spark_storage::settings::read_settings_document(&path).ok()?;
+    let (agents, _) = spark_storage::settings::agents_section(&path, &document).ok()?;
     agents.acp_harnesses.get(harness_id).cloned()
+}
+
+/// Whether `program` names an executable file: a path that exists, or a bare
+/// name found on `path`, else on Spark's own `PATH`. A relative path is taken
+/// as found, since where it resolves depends on the launch.
+// ponytail: ignores PATHEXT, so a bare name on Windows must include its extension.
+pub fn program_found(program: &str, path: Option<&str>) -> bool {
+    let program = Path::new(program);
+    if program.is_absolute() {
+        return program.is_file();
+    }
+    if program.components().count() > 1 {
+        return true;
+    }
+    path.map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"))
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
 }
 
 /// The configuration generation a launch of `harness` records: its
@@ -775,7 +789,7 @@ fn turn(
         .get(harness_id)
         .cloned()
         .ok_or_else(|| {
-            format!("ACP harness {harness_id} is not registered in the agents settings.")
+            format!("ACP harness {harness_id} is not registered, or its registration is invalid; check Settings > Models & accounts > Agent harnesses.")
         })?
         .restore_env(
             live_harness(request, harness_id).as_ref(),

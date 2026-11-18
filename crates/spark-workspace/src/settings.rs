@@ -6,6 +6,7 @@ use spark_common::settings::{
 use spark_storage::settings::{read_settings_document, update_settings_section, SettingsDocument};
 
 use crate::{WorkspaceError, WorkspaceResult};
+use spark_common::agent_settings::{EnvTemplate, HIDDEN_ENV_VALUE};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,7 +21,16 @@ pub struct WorkspaceSettingsUpdate {
 pub enum WorkspaceSettingsSection {
     Connections(spark_common::settings::ConnectionSettings),
     Providers(spark_common::provider_settings::ProviderConnections),
+    /// Every agents setting but the ACP registrations, which are saved one
+    /// at a time as `acp_harness`.
     Agents(spark_common::agent_settings::SessionConfig),
+    /// Adds or replaces one ACP registration, or removes it when
+    /// `registration` is null. Environment values sent as
+    /// [`HIDDEN_ENV_VALUE`] keep their stored values.
+    AcpHarness {
+        id: String,
+        registration: Option<spark_common::agent_settings::AcpHarness>,
+    },
     LlmProfiles(Vec<unified_llm_adapter::LlmProfile>),
     ExecutionProfiles(crate::profile_settings::ExecutionProfilesUpdate),
     ClientPreferences {
@@ -86,9 +96,7 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
                         &path, section
                     )?
                     .unwrap_or_default()),
-                _ => json!(document
-                    .section::<spark_common::agent_settings::SessionConfig>(&path, section)?
-                    .unwrap_or_default()),
+                _ => json!(spark_storage::settings::agents_section(&path, &document)?.0),
             };
             let mut view = json!({"scope":"workspace", "revision":document.revision,
                 "stored":stored, "effective":null, "sources":{}, "restart_fields":[], "validation_errors":[]});
@@ -192,9 +200,8 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
                         }
                     }
                     _ => {
-                        let mut agents = document
-                            .section::<spark_common::agent_settings::SessionConfig>(&path, section)?
-                            .unwrap_or_default();
+                        let mut agents =
+                            spark_storage::settings::agents_section(&path, &document)?.0;
                         agents
                             .validate()
                             .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
@@ -260,6 +267,13 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
         project_roots: settings.project_roots.clone()
     });
     result["connections"]["running_server"] = json!(settings.connections);
+    // Registrations are shown apart, with their environment values hidden.
+    for view in ["stored", "effective"] {
+        if let Some(agents) = result["agents"][view].as_object_mut() {
+            agents.remove("acp_harnesses");
+        }
+    }
+    result["agents"]["acp_harnesses"] = acp_harnesses_view(&path, &document);
     result["agents"]["active_startup"] = json!({"codex_runtime_root":settings.agents.native.codex_runtime_root, "codex_seed_dir":settings.agents.native.codex_seed_dir, "claude_config_dir":settings.agents.native.claude_config_dir});
     let mut utility = json!({"scope":"workspace", "source":"workspace", "revision":document.revision,
         "stored":document.values.get("utility_models"), "effective":null, "sources":{}, "restart_fields":[], "validation_errors":[]});
@@ -277,6 +291,109 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
     result["llm_profiles"] = crate::profile_settings::llm_profiles_view(&document);
     result["execution_profiles"] = crate::profile_settings::execution_profiles_view(&document);
     Ok(result)
+}
+
+/// Each stored ACP registration as written, with its environment values and
+/// instruction-channel environment templates hidden, and why it cannot be
+/// used when it cannot.
+fn acp_harnesses_view(path: &std::path::Path, document: &SettingsDocument) -> Value {
+    let misconfigured = spark_storage::settings::agents_section(path, document)
+        .map(|(_, misconfigured)| misconfigured)
+        .unwrap_or_default();
+    let hide = |env: Option<&mut Value>, stand_in: Value| match env {
+        Some(Value::Object(values)) => values
+            .values_mut()
+            .for_each(|value| *value = stand_in.clone()),
+        Some(other) => *other = json!({}),
+        None => {}
+    };
+    let registrations = stored_registrations(document)
+        .into_iter()
+        .flatten()
+        .map(|(id, stored)| {
+            let mut registration = if stored.is_table() {
+                json!(stored)
+            } else {
+                json!({})
+            };
+            hide(registration.get_mut("env"), json!(HIDDEN_ENV_VALUE));
+            hide(
+                registration
+                    .get_mut("system_instructions")
+                    .and_then(|channel| channel.get_mut("env")),
+                json!({ "text": HIDDEN_ENV_VALUE }),
+            );
+            let view = json!({"registration": registration, "error": misconfigured.get(id)});
+            (id.clone(), view)
+        })
+        .collect::<serde_json::Map<_, _>>();
+    Value::Object(registrations)
+}
+
+fn stored_registrations(document: &SettingsDocument) -> Option<&toml::Table> {
+    document
+        .values
+        .get("agents")?
+        .get("acp_harnesses")?
+        .as_table()
+}
+
+/// The current document, if it is still the one the client edited.
+fn current_document(
+    path: &std::path::Path,
+    expected_revision: &str,
+) -> WorkspaceResult<SettingsDocument> {
+    let document = read_settings_document(path)?;
+    if document.revision != expected_revision {
+        return Err(spark_storage::StorageError::SettingsConflict { path: path.into() }.into());
+    }
+    Ok(document)
+}
+
+/// `registration` for `id`, with hidden environment values taken from the
+/// stored registration of the same ID, checked.
+fn acp_registration(
+    document: &SettingsDocument,
+    id: &str,
+    mut registration: spark_common::agent_settings::AcpHarness,
+) -> WorkspaceResult<spark_common::agent_settings::AcpHarness> {
+    let invalid =
+        |reason: String| WorkspaceError::Validation(format!("ACP harness {id:?}: {reason}"));
+    spark_common::agent_settings::validate_harness_id(id).map_err(invalid)?;
+    let stored = stored_registrations(document).and_then(|stored| stored.get(id));
+    let saved = |section: &[&str], key: &str| {
+        section
+            .iter()
+            .fold(stored, |value, part| {
+                value.and_then(|value| value.get(*part))
+            })
+            .and_then(|value| value.get(key))
+            .cloned()
+            .ok_or_else(|| {
+                invalid(format!(
+                    "enter a value for {key}; its saved value was not found."
+                ))
+            })
+    };
+    for (key, value) in &mut registration.env {
+        if value == HIDDEN_ENV_VALUE {
+            *value = saved(&["env"], key)?
+                .as_str()
+                .ok_or_else(|| invalid(format!("enter a value for {key}.")))?
+                .to_owned();
+        }
+    }
+    if let Some(channel) = registration.system_instructions.as_mut() {
+        for (key, template) in &mut channel.env {
+            if *template == EnvTemplate::Text(HIDDEN_ENV_VALUE.into()) {
+                *template = saved(&["system_instructions", "env"], key)?
+                    .try_into()
+                    .map_err(|_| invalid(format!("enter a value for {key}.")))?;
+            }
+        }
+    }
+    registration.validate().map_err(invalid)?;
+    Ok(registration)
 }
 
 fn startup_source(settings: &SparkSettings, key: &str) -> String {
@@ -318,9 +435,26 @@ pub fn validate_workspace_settings_update(
         WorkspaceSettingsSection::Providers(value) => value
             .validate()
             .map_err(|error| WorkspaceError::Validation(error.to_string())),
-        WorkspaceSettingsSection::Agents(value) => value
-            .validate()
-            .map_err(|error| WorkspaceError::Validation(error.to_string())),
+        WorkspaceSettingsSection::Agents(value) => {
+            if !value.acp_harnesses.is_empty() {
+                return Err(WorkspaceError::Validation(
+                    "Save ACP harnesses one at a time, with the acp_harness section.".into(),
+                ));
+            }
+            value
+                .validate()
+                .map_err(|error| WorkspaceError::Validation(error.to_string()))
+        }
+        WorkspaceSettingsSection::AcpHarness { id, registration } => {
+            let path = settings.config_dir.join("spark.toml");
+            let document = read_settings_document(&path)?;
+            match registration {
+                Some(registration) => {
+                    acp_registration(&document, id, registration.clone()).map(|_| ())
+                }
+                None => Ok(()),
+            }
+        }
         WorkspaceSettingsSection::Connections(value) => value
             .validate()
             .map_err(|error| WorkspaceError::Validation(error.to_string())),
@@ -395,7 +529,53 @@ pub fn update_workspace_settings(
     let path = settings.config_dir.join("spark.toml");
     let (section, value) = match request.section {
         WorkspaceSettingsSection::Providers(value) => ("providers", toml::Value::try_from(value)),
-        WorkspaceSettingsSection::Agents(value) => ("agents", toml::Value::try_from(value)),
+        WorkspaceSettingsSection::Agents(value) => {
+            // The registrations stay as stored, valid or not.
+            let registrations =
+                stored_registrations(&current_document(&path, &request.expected_revision)?)
+                    .cloned();
+            let mut agents = toml::Value::try_from(value);
+            if let (Ok(toml::Value::Table(agents)), Some(registrations)) =
+                (agents.as_mut(), registrations)
+            {
+                agents.insert("acp_harnesses".into(), toml::Value::Table(registrations));
+            }
+            ("agents", agents)
+        }
+        WorkspaceSettingsSection::AcpHarness { id, registration } => {
+            let document = current_document(&path, &request.expected_revision)?;
+            let mut agents = document
+                .values
+                .get("agents")
+                .and_then(toml::Value::as_table)
+                .cloned()
+                .unwrap_or_default();
+            let mut registrations = stored_registrations(&document).cloned().unwrap_or_default();
+            match registration {
+                Some(registration) => {
+                    let registration = acp_registration(&document, &id, registration)?;
+                    registrations.insert(
+                        id,
+                        toml::Value::try_from(registration).map_err(|_| {
+                            WorkspaceError::Validation("Invalid ACP harness.".into())
+                        })?,
+                    );
+                }
+                None => {
+                    if registrations.remove(&id).is_none() {
+                        return Err(WorkspaceError::NotFound(format!(
+                            "ACP harness {id} is not registered."
+                        )));
+                    }
+                }
+            }
+            if registrations.is_empty() {
+                agents.remove("acp_harnesses");
+            } else {
+                agents.insert("acp_harnesses".into(), toml::Value::Table(registrations));
+            }
+            ("agents", Ok(toml::Value::Table(agents)))
+        }
         WorkspaceSettingsSection::Connections(value) => {
             ("connections", toml::Value::try_from(value))
         }

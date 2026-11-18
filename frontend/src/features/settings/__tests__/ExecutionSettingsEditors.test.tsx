@@ -58,11 +58,11 @@ it('validates session limits and saves with the section revision', async () => {
 })
 
 it('collapses agent advanced groups, opens invalid paths and output limits, and keeps controls outside disclosures', async () => {
-    const stored = { max_turns: 0, max_tool_rounds_per_input: 0, default_command_timeout_ms: 10000, max_command_timeout_ms: 600000, tool_output_limits: { shell: -1 }, line_limits: {}, enable_loop_detection: true, loop_detection_window: 10, max_subagent_depth: 1, native: { codex_binary: ' ' } }
+    const stored = { max_turns: 0, max_tool_rounds_per_input: 0, default_command_timeout_ms: 10000, max_command_timeout_ms: 600000, tool_output_limits: { shell: -1 }, line_limits: {}, enable_loop_detection: true, loop_detection_window: 10, max_subagent_depth: 1, native: { codex_runtime_root: ' ' } }
     vi.mocked(fetchAgentSettings).mockResolvedValue({ revision: 'one', stored, effective: stored })
     const user = userEvent.setup()
     render(<DialogProvider><AgentSettingsEditor /></DialogProvider>)
-    const path = await screen.findByLabelText('Codex program')
+    const path = await screen.findByLabelText('Codex runtime root')
     expect(path).toBeVisible()
     expect(path).toHaveAccessibleDescription('Enter a nonempty path or leave blank for the default.')
     expect(screen.getByText('Codex and Claude paths').closest('details')).toHaveAttribute('open')

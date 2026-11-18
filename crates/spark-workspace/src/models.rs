@@ -84,14 +84,27 @@ pub struct ChatModelProviderStatus {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// For a harness without a discovery: `ready`, `not_installed`,
+    /// `unreachable` or `misconfigured`. A native harness is `ready` once its
+    /// program answers; its sign-in is reported by its own connection status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_status: Option<String>,
     /// What discovery found for an ACP harness.
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub harness: Option<AcpDiscovery>,
 }
 
 /// The chooser's models and provider statuses, with ACP harnesses probed in
-/// `work_area`, where their work would run.
-pub fn chat_models(settings: &SparkSettings, work_area: &Path) -> WorkspaceResult<Value> {
+/// `work_area`, where their work would run. `refresh` checks every harness
+/// again instead of reusing what an earlier check found.
+pub fn chat_models(
+    settings: &SparkSettings,
+    work_area: &Path,
+    refresh: bool,
+) -> WorkspaceResult<Value> {
+    if refresh {
+        invalidate_model_discovery("agents");
+    }
     let native = native_configuration(settings)?;
     let codex_result = codex_chat_models(&native);
     chat_models_with_codex_result(settings, work_area, codex_result)
@@ -107,6 +120,7 @@ pub fn chat_models_with_codex_result(
     let mut add = |provider: &str,
                    label: Option<&str>,
                    result: Result<Vec<ChatModelMetadata>, String>,
+                   setup_status: Option<&str>,
                    harness: Option<AcpDiscovery>| {
         let (status, error) = match result {
             Ok(discovered) => {
@@ -119,28 +133,65 @@ pub fn chat_models_with_codex_result(
             status: status.into(),
             error,
             label: label.map(str::to_string),
+            setup_status: setup_status.map(str::to_string),
             harness,
         };
         providers.insert(provider.into(), serde_json::json!(status));
     };
-    add("codex", Some("Codex"), codex_result, None);
+    let native = native_configuration(settings)?;
+    let native_setup = |result: &Result<_, _>, program: &Option<String>| match result {
+        Ok(_) => "ready",
+        Err(_) if !acp::program_found(program.as_deref().unwrap_or_default(), None) => {
+            "not_installed"
+        }
+        Err(_) => "unreachable",
+    };
+    let codex_setup = native_setup(&codex_result, &native.codex_binary);
+    add(
+        "codex",
+        Some("Codex"),
+        codex_result,
+        Some(codex_setup),
+        None,
+    );
+    let claude_result = claude_code_chat_models(&native);
+    let claude_setup = native_setup(&claude_result, &native.claude_binary);
     add(
         "claude-code",
         Some("Claude Code"),
-        claude_code_chat_models(&native_configuration(settings)?),
+        claude_result,
+        Some(claude_setup),
         None,
     );
     let configuration = spark_storage::settings::read_execution_configuration(
         &settings.config_dir,
         &spark_common::paths::ProcessEnvironment,
     )?;
-    for (id, harness, discovery) in acp_discoveries(&configuration.agents, work_area) {
+    for (id, harness, mut discovery) in acp_discoveries(&configuration.agents, work_area) {
         let provider = format!("acp:{id}");
+        if discovery.setup_status == "unreachable" && !acp_program_found(harness) {
+            discovery.setup_status = "not_installed".into();
+        }
         let result = match discovery.setup_status.as_str() {
             "ready" => Ok(acp_chat_models(&provider, &discovery.config_options)),
             _ => Err(discovery.error.clone().unwrap_or_default()),
         };
-        add(&provider, Some(&harness.name), result, Some(discovery));
+        add(
+            &provider,
+            Some(&harness.name),
+            result,
+            None,
+            Some(discovery),
+        );
+    }
+    for (id, error) in &configuration.misconfigured_acp_harnesses {
+        add(
+            &format!("acp:{id}"),
+            Some(id),
+            Err(error.clone()),
+            Some("misconfigured"),
+            None,
+        );
     }
     let environment = unified_llm_adapter::ProviderEnvironment::from_env_map(
         &configuration
@@ -160,6 +211,7 @@ pub fn chat_models_with_codex_result(
                     .get_or_insert_with(Default::default)
                     .models(config, &unified_llm_adapter::NativeHttpTransport::new())
                     .map(|models| models.into_iter().map(unified_chat_model).collect()),
+                None,
                 None,
             );
         }
@@ -185,6 +237,8 @@ fn acp_discoveries<'a>(
     let mut cache = ACP_DISCOVERY_CACHE
         .lock()
         .unwrap_or_else(|error| error.into_inner());
+    // A harness whose program is gone is checked again.
+    cache.retain(|((_, id, ..), _)| agents.acp_harnesses.get(id).is_none_or(acp_program_found));
     let keyed = agents
         .acp_harnesses
         .iter()
@@ -240,6 +294,13 @@ fn acp_discoveries<'a>(
             Some((id, harness, discovery))
         })
         .collect()
+}
+
+fn acp_program_found(harness: &spark_common::agent_settings::AcpHarness) -> bool {
+    acp::program_found(
+        &harness.executable,
+        harness.env.get("PATH").map(String::as_str),
+    )
 }
 
 /// An ACP harness's models are its model selector's values, in order. With

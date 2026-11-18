@@ -7,13 +7,15 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from '@/components/ui/input'
 import { claudeCodeConnectionRequest, submitClaudeCodeSignInCode, type ClaudeCodeConnection } from './services/claudeCodeConnection'
 
-/** `autoStart` begins sign-in as soon as the connection reads signed out; `onRetry` is offered once signed in. */
-export function ClaudeCodeConnectionControls({ autoStart = false, onRetry }: { autoStart?: boolean; onRetry?: () => void }) {
+/** `autoStart` begins sign-in as soon as the connection reads signed out; `onRetry` is offered once signed in; `onStatus` hears the sign-in state, or `error` when it cannot be read. */
+export function ClaudeCodeConnectionControls({ autoStart = false, onRetry, onStatus }: { autoStart?: boolean; onRetry?: () => void; onStatus?: (status: ClaudeCodeConnection['status'] | 'error') => void }) {
     const [connection, setConnection] = useState<ClaudeCodeConnection | null>(null)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [code, setCode] = useState('')
     const pending = connection?.status === 'pending'
+    const status = connection?.status ?? (error ? 'error' : null)
+    useEffect(() => { if (status) onStatus?.(status) }, [status, onStatus])
 
     const request = async (action: 'login' | 'cancel' | 'status' | 'code') => {
         setBusy(true)

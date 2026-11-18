@@ -6,11 +6,14 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { codexConnectionRequest, type CodexConnection } from './services/codexConnection'
 
-export function CodexConnectionControls() {
+/** `onStatus` hears the sign-in state, or `error` when it cannot be read. */
+export function CodexConnectionControls({ onStatus }: { onStatus?: (status: CodexConnection['status'] | 'error') => void } = {}) {
     const [connection, setConnection] = useState<CodexConnection | null>(null)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const pending = connection?.status === 'pending'
+    const status = connection?.status ?? (error ? 'error' : null)
+    useEffect(() => { if (status) onStatus?.(status) }, [status, onStatus])
 
     useEffect(() => {
         const controller = new AbortController()

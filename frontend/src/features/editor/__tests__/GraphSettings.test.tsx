@@ -14,6 +14,9 @@ import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// The harness card has its own tests and fetches; these cover model defaults.
+vi.mock('@/features/settings/HarnessSettings', () => ({ HarnessSettings: () => null }))
+
 const DEFAULT_WORKING_DIRECTORY = './test-app'
 const TEST_GRAPH_FLOW = 'test-graph'
 const buildFlow = (

@@ -1,4 +1,5 @@
 import { fetchWorkspaceJsonValidated } from '@/lib/api/apiClient'
+export { fetchProjectChatModelsValidated as fetchHarnessCatalog, type HarnessSetupStatus, type ProjectChatModelCapability, type ProjectChatModelProviderStatusResponse, type ProjectChatModelsResponse } from '@/lib/api/projectsApi'
 import { parseRepairableStored, parseSettingsFeedback, ApiSchemaError, expectObjectRecord, expectString } from '@/lib/api/shared'
 
 export const providers = ['openai', 'anthropic', 'gemini', 'openrouter', 'litellm', 'openai_compatible'] as const
@@ -101,7 +102,20 @@ export function agentLimitError(settings: AgentSettings, key: typeof agentLimitK
     if (!Number.isSafeInteger(value) || value < 0) return 'Enter a whole number, 0 or more.'
     return key === 'loop_detection_window' && settings.enable_loop_detection && value === 0 ? 'Enter at least 1 while loop warnings are on.' : ''
 }
-export interface AgentSettingsView { revision: string; stored: AgentSettings | null; repair_defaults?: AgentSettings; effective: AgentSettings | null; active_startup?: NativeAgentSettings; sources?: Record<string, string>; validation_errors?: string[] }
+/** Stands in for a saved environment value; saving it back keeps the value. */
+export const HIDDEN_ENV_VALUE = 'spark-hidden-value'
+export type EnvTemplate = { text: string } | { json: unknown }
+export interface AcpHarnessRegistration {
+    name: string
+    executable: string
+    args?: string[]
+    env?: Record<string, string>
+    permission_policy?: 'allow' | 'deny'
+    system_instructions?: { env?: Record<string, EnvTemplate>; args?: string[]; config?: Record<string, string> } | null
+}
+/** A stored registration as written, which may be incomplete when `error` says why it cannot be used. */
+export interface AcpHarnessEntry { registration: Partial<AcpHarnessRegistration>; error: string | null }
+export interface AgentSettingsView { revision: string; stored: AgentSettings | null; repair_defaults?: AgentSettings; effective: AgentSettings | null; active_startup?: NativeAgentSettings; sources?: Record<string, string>; validation_errors?: string[]; acp_harnesses?: Record<string, AcpHarnessEntry> }
 function parseAgents(payload: unknown, endpoint: string): AgentSettingsView {
     const view = expectObjectRecord(expectObjectRecord(payload, endpoint).agents, endpoint)
     const parse = (value: unknown): AgentSettings => {
@@ -128,7 +142,11 @@ function parseAgents(payload: unknown, endpoint: string): AgentSettingsView {
     const startup = view.active_startup == null ? undefined : expectObjectRecord(view.active_startup, endpoint)
     const active_startup = startup && Object.fromEntries(['codex_runtime_root', 'codex_seed_dir', 'claude_config_dir']
         .map((key) => [key, startup[key] == null ? null : expectString(startup[key], endpoint, key)]))
-    return { revision: expectString(view.revision, endpoint, 'revision'), ...parseRepairableStored(view, parse), active_startup, effective: view.effective == null ? null : parse(view.effective), ...parseSettingsFeedback(view, endpoint) }
+    const acp_harnesses = Object.fromEntries(Object.entries(expectObjectRecord(view.acp_harnesses ?? {}, endpoint)).map(([id, entry]) => {
+        const fields = expectObjectRecord(entry, endpoint)
+        return [id, { registration: expectObjectRecord(fields.registration ?? {}, endpoint) as Partial<AcpHarnessRegistration>, error: fields.error == null ? null : expectString(fields.error, endpoint, 'error') }]
+    }))
+    return { revision: expectString(view.revision, endpoint, 'revision'), ...parseRepairableStored(view, parse), active_startup, effective: view.effective == null ? null : parse(view.effective), ...parseSettingsFeedback(view, endpoint), acp_harnesses }
 }
 export function fetchAgentSettings(): Promise<AgentSettingsView> {
     return fetchWorkspaceJsonValidated('/settings', undefined, '/workspace/api/settings', parseAgents)
@@ -136,4 +154,10 @@ export function fetchAgentSettings(): Promise<AgentSettingsView> {
 export function saveAgentSettings(revision: string, value: AgentSettings): Promise<AgentSettingsView> {
     return fetchWorkspaceJsonValidated('/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expected_revision: revision, section: 'agents', value }) }, '/workspace/api/settings', parseAgents)
+}
+
+/** Adds or replaces the ACP harness `id`, or removes it when `registration` is null. */
+export function saveAcpHarness(revision: string, id: string, registration: AcpHarnessRegistration | null): Promise<AgentSettingsView> {
+    return fetchWorkspaceJsonValidated('/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expected_revision: revision, section: 'acp_harness', value: { id, registration } }) }, '/workspace/api/settings', parseAgents)
 }

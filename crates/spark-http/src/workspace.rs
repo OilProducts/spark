@@ -235,6 +235,9 @@ struct BrowseQuery {
 #[derive(Debug, Deserialize)]
 struct ChatModelsQuery {
     project_path: Option<String>,
+    /// Checks every harness again instead of reusing earlier checks.
+    #[serde(default)]
+    refresh: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1304,7 +1307,8 @@ async fn project_chat_models(
 ) -> ApiResult<Value> {
     let query = query_payload(payload)?;
     let models = tokio::task::spawn_blocking(move || {
-        WorkspaceProjectService::new((*settings).clone()).chat_models(query.project_path.as_deref())
+        WorkspaceProjectService::new((*settings).clone())
+            .chat_models(query.project_path.as_deref(), query.refresh)
     })
     .await
     .map_err(|error| {
@@ -1598,7 +1602,8 @@ async fn patch_settings(
         spark_workspace::settings::WorkspaceSettingsSection::Providers(_) => {
             ("workspace", "providers", None)
         }
-        spark_workspace::settings::WorkspaceSettingsSection::Agents(_) => {
+        spark_workspace::settings::WorkspaceSettingsSection::Agents(_)
+        | spark_workspace::settings::WorkspaceSettingsSection::AcpHarness { .. } => {
             ("workspace", "agents", None)
         }
         spark_workspace::settings::WorkspaceSettingsSection::Connections(_) => {

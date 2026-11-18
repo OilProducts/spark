@@ -798,10 +798,8 @@ pub fn resolve_server_settings_with_executable_path(
         spark_storage::settings::read_execution_configuration(&settings.config_dir, env)
             .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?;
     settings.providers = execution.providers;
-    let stored_agents: spark_common::agent_settings::SessionConfig = document
-        .section(&path, "agents")
-        .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?
-        .unwrap_or_default();
+    let (stored_agents, _) = spark_storage::settings::agents_section(&path, &document)
+        .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?;
     for (key, variable, stored) in [
         (
             "agents.native.codex_runtime_root",

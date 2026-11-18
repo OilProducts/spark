@@ -416,6 +416,7 @@ fn seed_retry(settings: &SparkSettings, run_id: &str) {
                         config_dir: "/captured/config".into(),
                         providers: Default::default(),
                         agents: Default::default(),
+                        misconfigured_acp_harnesses: Default::default(),
                     }),
                 )]
                 .into(),

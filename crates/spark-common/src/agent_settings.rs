@@ -436,6 +436,11 @@ impl AcpHarness {
     }
 }
 
+/// Stands in for an ACP environment value, or the text of an
+/// instruction-channel environment template, in the settings Spark shows: a
+/// registration saved with it keeps the stored value.
+pub const HIDDEN_ENV_VALUE: &str = "spark-hidden-value";
+
 /// Stands in for an ACP environment value or instruction-channel environment
 /// template in captured settings, followed by its registration's generation:
 /// execution history keeps no values.
