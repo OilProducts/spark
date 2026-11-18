@@ -1562,6 +1562,15 @@ pub(crate) fn claude_config_dir(native: Option<&NativeAgentSettings>) -> PathBuf
         env_map.extend(crate::codex_app_server::spark_agent_environment(None));
         let dir = crate::codex_app_server::spark_runtime_dir(&env_map, "claude");
         let _ = std::fs::create_dir_all(&dir);
+        // Seed settings once: no AI attribution trailers on commits or PRs.
+        // create_new leaves an existing file, and the user's edits, alone.
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dir.join("settings.json"))
+        {
+            let _ = file.write_all(br#"{"attribution":{"commit":"","pr":""}}"#);
+        }
         dir
     })
 }

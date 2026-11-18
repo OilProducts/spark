@@ -1815,6 +1815,14 @@ fn default_claude_config_dir_is_spark_owned_and_needs_its_own_sign_in() {
     let mut connection = ClaudeCodeConnection::default();
     assert_eq!(connection.status(&native).unwrap().status, "disconnected");
     assert!(config_dir.is_dir());
+    // Seeded without commit/PR attribution; an existing file is kept.
+    let settings = config_dir.join("settings.json");
+    let seeded: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(seeded["attribution"], json!({"commit": "", "pr": ""}));
+    std::fs::write(&settings, "{}").unwrap();
+    connection.status(&native).unwrap();
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "{}");
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "not-logged-in");
     let error = ClaudeCodeBackend::new()
         .run_agent_turn(agent_request(temp.path()))
