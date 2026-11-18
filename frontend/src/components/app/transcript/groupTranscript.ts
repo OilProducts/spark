@@ -55,8 +55,13 @@ export const plural = (count: number, noun: string) => `${count} ${noun}${count 
 
 export function summarizeToolGroup(toolCalls: readonly TranscriptToolCall[]): ToolGroupSummary {
     const commands = toolCalls.filter((call) => call.kind === 'command_execution').length
-    const files = toolCalls.filter((call) => call.kind === 'file_change').length
-    const tools = toolCalls.length - commands - files
+    const fileCalls = toolCalls.filter((call) => call.kind === 'file_change')
+    // Files, not calls: one call can change several files and several calls the same one.
+    const files = new Set(fileCalls.flatMap((call, index) => {
+        const paths = call.fileChanges?.length ? call.fileChanges.map((change) => change.path) : call.filePaths
+        return paths.length > 0 ? paths : [`call:${index}`]
+    })).size
+    const tools = toolCalls.length - commands - fileCalls.length
     const parts = [
         commands > 0 ? `ran ${plural(commands, 'command')}` : null,
         files > 0 ? `edited ${plural(files, 'file')}` : null,
