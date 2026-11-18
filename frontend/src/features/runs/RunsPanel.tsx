@@ -86,8 +86,8 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
         const { missingRunId } = state.runsListSession
         // It opens a run the list shows, so the list's filters stay.
         state.setRunsSelectedRunId(autoRunId, { keepFilters: true })
-        // A missing run's notice stays over the run opened in its place.
-        state.updateRunsListSession({ autoOpenedRunId: autoRunId, missingRunId })
+        // A missing run's notice stays over the run opened in its place, unless that run is the one it names.
+        state.updateRunsListSession({ autoOpenedRunId: autoRunId, missingRunId: missingRunId === autoRunId ? null : missingRunId })
     }, [autoRunId])
     return (
         <div className="flex h-full min-h-0 flex-col gap-2">

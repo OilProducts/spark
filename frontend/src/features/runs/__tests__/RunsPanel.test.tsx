@@ -3896,6 +3896,30 @@ describe('RunsPanel', () => {
       expect(window.history.length).toBe(start)
     })
 
+    it('opens a run whose ID once returned 404 when Spark tells of it as a new run, and drops its notice', async () => {
+      let created = false
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = resolveRequestUrl(input)
+        if (url.endsWith('/attractor/runs')) return jsonResponse({ runs: [] })
+        if (url.endsWith('/attractor/pipelines/reborn') && !created) return new Response(JSON.stringify({ detail: 'Unknown pipeline' }), { status: 404 })
+        return new Promise<Response>(() => {})
+      })
+      // Restored from last time, before Spark had a run with that ID.
+      useStore.getState().setRunsSelectedRunId('reborn')
+      renderRunsWorkspace()
+      await waitFor(() => expect(screen.getByTestId('run-missing')).toHaveTextContent('reborn'))
+      expect(selected()).toBeNull()
+
+      created = true
+      act(() => {
+        window.dispatchEvent(new CustomEvent('spark:run-upsert', {
+          detail: { run: makeRun({ run_id: 'reborn', flow_name: 'reborn.dot', status: 'running', outcome: null, ended_at: null }) },
+        }))
+      })
+      expect(selected()).toBe('reborn')
+      expect(screen.queryByTestId('run-missing')).toBeNull()
+    })
+
     it('widened, opens a matching child, not its parent queued behind a lock that the search leaves out', () => {
       const queuedParent = makeRun({
         run_id: 'queued-parent', flow_name: 'review.dot', status: 'queued', outcome: null, started_at: '2026-03-22T01:00:00Z', ended_at: null,

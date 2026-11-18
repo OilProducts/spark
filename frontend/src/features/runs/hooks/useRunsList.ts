@@ -68,9 +68,12 @@ export function useRunsList({
             }
             if (activeRequest) liveDuringRequest.set(nextRun.run_id, nextRun)
             useStore.getState().reconcileRunRecord(nextRun.run_id, 'live', nextRun)
+            const { runs, goneRunIds } = useStore.getState().runsListSession
             // One run's update says nothing about the rest of the list: its load state stays.
             updateRunsListSession({
-                runs: mergeRunUpsert(useStore.getState().runsListSession.runs, nextRun),
+                runs: mergeRunUpsert(runs, nextRun),
+                // Spark tells of this run, so it is there now, even if it once said it wasn't.
+                ...goneRunIds?.includes(nextRun.run_id) ? { goneRunIds: goneRunIds.filter((id) => id !== nextRun.run_id) } : {},
             }, 'live')
         }
 
