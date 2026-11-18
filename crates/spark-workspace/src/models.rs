@@ -113,6 +113,11 @@ where
     fn clear(&self) {
         self.lock().clear();
     }
+
+    /// Forgets the harnesses `keep` rejects, discarding their running checks.
+    fn retain(&self, keep: impl Fn(&H) -> bool) {
+        self.lock().retain(|check| keep(&check.harness));
+    }
 }
 
 pub fn invalidate_model_discovery(section: &str) {
@@ -368,6 +373,8 @@ fn acp_discoveries<'a>(
     // One check per directory however it is named, such as Home through a
     // symlinked HOME, as sessions' acknowledged options are kept.
     let work_area = std::fs::canonicalize(work_area).unwrap_or_else(|_| work_area.to_path_buf());
+    // A removed registration's checks go too, so restoring it checks it afresh.
+    ACP_DISCOVERY_CACHE.retain(|(_, id)| agents.acp_harnesses.contains_key(id));
     agents
         .acp_harnesses
         .iter()
@@ -503,10 +510,18 @@ fn claude_code_chat_models(
     refresh: bool,
     finished: &CheckFinished,
 ) -> Option<NativeCheck> {
+    // Only its own settings, so a change to Codex's leaves its check alone.
+    let native = NativeAgentSettings {
+        codex_binary: None,
+        codex_runtime_root: None,
+        codex_seed_dir: None,
+        codex_jsonrpc_trace: None,
+        ..native.clone()
+    };
     native_chat_models(
         &CLAUDE_CODE_MODELS_CACHE,
         "claude-code",
-        native,
+        &native,
         |native| &native.claude_binary,
         refresh,
         finished,
@@ -551,10 +566,17 @@ fn codex_chat_models(
     refresh: bool,
     finished: &CheckFinished,
 ) -> Option<NativeCheck> {
+    // Only its own settings, so a change to Claude Code's leaves its check alone.
+    let native = NativeAgentSettings {
+        claude_binary: None,
+        claude_config_dir: None,
+        claude_permission_mode: None,
+        ..native.clone()
+    };
     native_chat_models(
         &CODEX_MODELS_CACHE,
         "codex",
-        native,
+        &native,
         |native| &native.codex_binary,
         refresh,
         finished,

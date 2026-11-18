@@ -1355,10 +1355,17 @@ fn model_listing_never_waits_on_a_harness_check() {
         ended.display(),
         fixed.display(),
     );
+    // A null `env` removes the registration.
     let register = |env: Value| {
+        let harnesses = match env {
+            Value::Null => json!({}),
+            env => {
+                json!({"slow": {"name": "Slow", "executable": "sh", "args": ["-c", script], "env": env}})
+            }
+        };
         let agents = json!({"agents": {
             "native": {"codex_binary": "/nonexistent/codex-for-tests", "claude_binary": "/nonexistent/claude-for-tests"},
-            "acp_harnesses": {"slow": {"name": "Slow", "executable": "sh", "args": ["-c", script], "env": env}},
+            "acp_harnesses": harnesses,
         }});
         std::fs::write(
             settings.config_dir.join("spark.toml"),
@@ -1535,6 +1542,93 @@ fn model_listing_never_waits_on_a_harness_check() {
     assert_eq!(slow(&list(false)), checking, "its result was not kept");
     announced();
     assert_eq!(slow(&list(false)), ready);
+
+    // And one whose registration was removed while it ran: restored, it is checked afresh.
+    std::fs::remove_file(&release).unwrap();
+    spark_workspace::models::invalidate_model_discovery("agents");
+    assert_eq!(slow(&list(false)), checking);
+    wait_for("the check started", &|| count(&launches) == 10);
+    register(Value::Null);
+    assert_eq!(list(false)["providers"].get("acp:slow"), None);
+    std::fs::write(&release, "").unwrap();
+    wait_for("the check ended", &|| count(&ended) == 10);
+    assert!(!announced_since());
+    register(json!({"SPARK_FAKE_ACP": "{}", "CHANGED": "1"}));
+    assert_eq!(slow(&list(false)), checking, "its result was not kept");
+    announced();
+    assert_eq!(slow(&list(false)), ready);
+    assert_eq!(count(&launches), 11);
+}
+
+#[test]
+fn each_native_harness_keeps_its_check_when_the_other_changes() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+    let _env = super::utility_contracts::claude_env();
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    std::fs::create_dir_all(&settings.config_dir).unwrap();
+    let [claude, launches, release] =
+        ["claude", "launches", "release"].map(|name| temp.path().join(name));
+    // Answers nothing until released, then quits.
+    std::fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\necho >> '{}'\nuntil [ -e '{}' ]; do sleep 0.02; done\nexit 3\n",
+            launches.display(),
+            release.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // As installing Codex on PATH changes its program when none is set.
+    let codex = |program: &str| {
+        let agents =
+            json!({"agents": {"native": {"codex_binary": program, "claude_binary": claude}}});
+        std::fs::write(
+            settings.config_dir.join("spark.toml"),
+            toml::to_string(&agents).unwrap(),
+        )
+        .unwrap();
+    };
+    let project = temp.path().canonicalize().unwrap();
+    let (sender, events) = std::sync::mpsc::channel::<String>();
+    let finished: spark_workspace::models::CheckFinished = Arc::new(move |provider: &str| {
+        let _ = sender.send(provider.to_string());
+    });
+    let claude_code = || {
+        spark_workspace::models::chat_models(&settings, &project, false, &finished).unwrap()
+            ["providers"]["claude-code"]["status"]
+            .clone()
+    };
+    let launched = || {
+        std::fs::read_to_string(&launches)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+
+    codex("/nonexistent/codex-one");
+    assert_eq!(claude_code(), "checking");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while launched() == 0 {
+        assert!(std::time::Instant::now() < deadline, "the check started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Codex's program changing leaves Claude Code's running check alone,
+    codex("/nonexistent/codex-two");
+    assert_eq!(claude_code(), "checking");
+    std::fs::write(&release, "").unwrap();
+    while events
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the check ended")
+        != "claude-code"
+    {}
+    // and its kept result.
+    codex("/nonexistent/codex-three");
+    assert_eq!(claude_code(), "unavailable");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(launched(), 1);
 }
 
 #[test]
