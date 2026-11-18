@@ -906,6 +906,8 @@ fn acp_tool_results_given_only_as_content_reach_chat_history() {
 /// states, and reuses its result until the agents settings change.
 #[test]
 fn acp_choosers_offer_what_a_session_last_acknowledged() {
+    // Its listings check Claude Code with its own settings, replacing other tests' checks.
+    let _env = super::utility_contracts::claude_env();
     let temp = tempfile::tempdir().unwrap();
     let model = |current: &str| {
         json!({"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": current,
@@ -1374,6 +1376,11 @@ fn model_listing_never_waits_on_a_harness_check() {
     let list = |refresh: bool| {
         spark_workspace::models::chat_models(&settings, &project, refresh, &finished).unwrap()
     };
+    // The same work area by another name, as Home is when HOME is a symlink.
+    let link = temp.path().join("link");
+    std::os::unix::fs::symlink(&project, &link).unwrap();
+    let list_link =
+        || spark_workspace::models::chat_models(&settings, &link, false, &finished).unwrap();
     let slow = |response: &Value| {
         let slow = &response["providers"]["acp:slow"];
         (slow["status"].clone(), slow["setup_status"].clone())
@@ -1408,10 +1415,19 @@ fn model_listing_never_waits_on_a_harness_check() {
     let failed = (json!("unavailable"), json!("unreachable"));
     let ready = (json!("available"), json!("ready"));
 
-    // Concurrent listings answer while the agent says nothing, sharing one check.
+    // Concurrent listings answer while the agent says nothing, sharing one
+    // check whatever the work area is called.
     let listed = std::thread::scope(|scope| {
         let listings = (0..8)
-            .map(|_| scope.spawn(|| list(false)))
+            .map(|index| {
+                scope.spawn(move || {
+                    if index % 2 == 0 {
+                        list(false)
+                    } else {
+                        list_link()
+                    }
+                })
+            })
             .collect::<Vec<_>>();
         listings
             .into_iter()
@@ -1458,6 +1474,7 @@ fn model_listing_never_waits_on_a_harness_check() {
     std::fs::write(&release, "").unwrap();
     announced();
     assert_eq!(slow(&list(false)), ready);
+    assert_eq!(slow(&list_link()), ready);
     assert!(!announced_since());
     assert_eq!(
         count(&launches),

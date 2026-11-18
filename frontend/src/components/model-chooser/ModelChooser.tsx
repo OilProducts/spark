@@ -37,7 +37,8 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const [open, setOpen] = useState(false)
     const [search, setSearch] = useState('')
     const [budgetInput, setBudgetInput] = useState<string | null>(null)
-    const [active, setActive] = useState(-1)
+    // The highlighted choice by identity, so live results that add or reorder options keep it.
+    const [active, setActive] = useState<string | null>(null)
     const input = useRef<HTMLInputElement>(null)
     const statuses = discovery?.payload?.providers
     const providerLabel = (provider: string) => labelOf(provider, statuses)
@@ -80,7 +81,10 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const context = groups.find(group => value.llm_profile ? group.profile === value.llm_profile : group.provider === value.provider && !group.profile) || groups[0]
     const custom = !!context && (!!context.profile || !unavailable(context.provider)) && !!query && !rows.some(row => row.model.toLowerCase() === query || row.label.toLowerCase() === query)
     const choices = [...rows, ...(custom ? [{ groupIndex: -1, provider: context.profile ? null : context.provider, llm_profile: context.profile, model: search.trim(), label: `Use "${search.trim()}" as a custom model`, isDefault: false }] : [])]
-    const highlighted = choices[active]
+    const identity = (choice: { provider: string | null; llm_profile: string | null; model: string }) => JSON.stringify([choice.provider, choice.llm_profile, choice.model])
+    // -1 once the highlighted choice is gone: Enter then chooses nothing.
+    const at = choices.findIndex(choice => identity(choice) === active)
+    const highlighted = choices[at]
     // The API inherits a whole model group, so an inherited choice has no effort of its own:
     // setting one would silently pin today's inherited model. Choose a model first.
     const effortLocked = !value.provider && !value.llm_profile && !highlighted
@@ -131,15 +135,15 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const option = (choice: typeof choices[number], index: number) => <button key={`${choice.groupIndex}:${choice.model}`} type="button"
         id={`${id}-option-${index}`} role="option" tabIndex={-1} aria-label={choice.label} aria-description={choice.isDefault ? 'Provider default' : undefined}
         aria-selected={chosen(choice)}
-        className={`flex w-full items-center justify-between rounded px-2 py-2 text-left text-sm break-words ${active === index ? 'bg-accent text-accent-foreground' : 'hover:bg-accent'} aria-selected:font-semibold`}
-        onClick={() => { setActive(-1); commit(choice, false); input.current?.focus({ preventScroll: true }) }}>
+        className={`flex w-full items-center justify-between rounded px-2 py-2 text-left text-sm break-words ${at === index ? 'bg-accent text-accent-foreground' : 'hover:bg-accent'} aria-selected:font-semibold`}
+        onClick={() => { setActive(null); commit(choice, false); input.current?.focus({ preventScroll: true }) }}>
         <span>{choice.label}{choice.isDefault && <span className="ml-2 text-xs text-muted-foreground"> Default</span>}</span>
         {chosen(choice) && <span aria-hidden="true">✓</span>}
     </button>
 
     return <Field className={layout === 'compact' ? 'min-w-0 w-auto max-w-full' : 'w-full'}>
         {layout === 'fields' && <FieldLabel htmlFor={id}>Model</FieldLabel>}
-        <Popover.Root open={open && !disabled} onOpenChange={next => { setOpen(next); setSearch(''); setActive(-1); if (next) refreshModelOptions(projectPath) }}>
+        <Popover.Root open={open && !disabled} onOpenChange={next => { setOpen(next); setSearch(''); setActive(null); if (next) refreshModelOptions(projectPath) }}>
             <Popover.Trigger asChild>
                 <Button id={id} type="button" variant="outline" disabled={disabled} title={title} aria-label={`Model: ${value.model ? describe(resolved) : `${defaultPrefix}: ${describe(resolved)}`}`}
                     aria-invalid={invalidModel} aria-describedby={note}
@@ -151,13 +155,13 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                 className="z-50 flex max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-1rem)] flex-col rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md"
                 onOpenAutoFocus={event => { event.preventDefault(); input.current?.focus({ preventScroll: true }) }}>
                 <Input className="shrink-0" ref={input} aria-label="Search models" role="combobox" aria-expanded="true" aria-controls={`${id}-list`} aria-autocomplete="list"
-                    aria-activedescendant={highlighted ? `${id}-option-${active}` : undefined} placeholder="Search models…" value={search}
-                    onChange={event => { setSearch(event.target.value); setActive(-1) }}
+                    aria-activedescendant={highlighted ? `${id}-option-${at}` : undefined} placeholder="Search models…" value={search}
+                    onChange={event => { setSearch(event.target.value); setActive(null) }}
                     onKeyDown={event => {
                         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                             event.preventDefault()
-                            const next = choices.length ? (active + (event.key === 'ArrowDown' ? 1 : active < 0 ? 0 : -1) + choices.length) % choices.length : -1
-                            setActive(next)
+                            const next = choices.length ? (at + (event.key === 'ArrowDown' ? 1 : at < 0 ? 0 : -1) + choices.length) % choices.length : -1
+                            setActive(next < 0 ? null : identity(choices[next]))
                             document.getElementById(`${id}-option-${next}`)?.scrollIntoView?.({ block: 'nearest' })
                         } else if (event.key === 'Enter') {
                             event.preventDefault()

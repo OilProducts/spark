@@ -365,6 +365,9 @@ fn acp_discoveries<'a>(
     &'a spark_common::agent_settings::AcpHarness,
     Option<AcpDiscovery>,
 )> {
+    // One check per directory however it is named, such as Home through a
+    // symlinked HOME, as sessions' acknowledged options are kept.
+    let work_area = std::fs::canonicalize(work_area).unwrap_or_else(|_| work_area.to_path_buf());
     agents
         .acp_harnesses
         .iter()
@@ -396,7 +399,7 @@ fn acp_discoveries<'a>(
                 )
                 .map(|mut discovery| {
                     // A session's acknowledged state supersedes the probe's.
-                    if let Some(options) = acp::acknowledged_options(work_area, id, &generation)
+                    if let Some(options) = acp::acknowledged_options(&work_area, id, &generation)
                         .filter(|_| discovery.setup_status == "ready")
                     {
                         discovery.config_options = options;

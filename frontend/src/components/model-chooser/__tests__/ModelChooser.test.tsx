@@ -288,6 +288,32 @@ it('shows a harness as checking until its check ends, then its models without a 
     expect(fetchProjectChatModelsValidated).toHaveBeenCalledTimes(fetched + 1)
 })
 
+it('keeps the highlighted model while live results reorder the list, and chooses nothing once it is gone', async () => {
+    vi.mocked(useLlmProfiles).mockReturnValue([])
+    const user = userEvent.setup(), onChange = vi.fn()
+    render(<Editor onChange={onChange} />)
+    await user.click(await screen.findByRole('button', { name: /Model: Default: Discovered/ }))
+    await user.keyboard('{ArrowDown}{ArrowDown}')
+    const search = screen.getByRole('combobox')
+    expect(search).toHaveAttribute('aria-activedescendant', screen.getByRole('option', { name: 'Other' }).id)
+
+    const live = async (models: ProjectChatModelsResponse['models']) => {
+        vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({ ...catalog, models })
+        act(() => window.dispatchEvent(new Event('spark:harness-checked')))
+        await waitFor(() => expect(screen.getAllByRole('option').map(option => option.getAttribute('aria-label'))).toEqual(models.map(model => model.display)))
+    }
+    const [discovered, other, claude] = catalog.models
+    await live([{ ...discovered, id: 'new', display: 'New' }, other, discovered, claude])
+    expect(search).toHaveAttribute('aria-activedescendant', screen.getByRole('option', { name: 'Other' }).id)
+
+    await live([discovered, claude])
+    expect(search).not.toHaveAttribute('aria-activedescendant')
+    await user.keyboard('{Enter}')
+    expect(onChange).not.toHaveBeenCalled()
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ ...initial, model: 'discovered' })
+})
+
 it('gates native controls by capability, locks inheritance, and saves budgets and summaries', async () => {
     const user = userEvent.setup()
     vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({ ...catalog, models: [
