@@ -218,7 +218,7 @@ function ToolCallDetails({
                                 <span>{change.move_from ? `${change.move_from} → ${change.path}` : change.path}</span>
                             </p>
                             {change.truncated ? <p className="text-xs text-muted-foreground">Preview truncated</p> : null}
-                            {change.diff ? <DiffBlock diff={change.diff} className="max-h-60" /> : null}
+                            {change.diff ? <DiffBlock diff={change.diff} label={`Diff of ${change.path}`} className="max-h-60" /> : null}
                         </li>
                     ))}
                 </ul>

@@ -148,7 +148,7 @@ function RoleDetail({ project, item, pending, onStart, startError }: RoleControl
         </Section>
         {item.layer === 'project_copy' && <Section title="Diff from bundled">
             <p className="text-xs text-muted-foreground">Diff from today's bundled version to the copy:</p>
-            {detail ? <DiffBlock diff={detail.bundled_diff ?? ''} testId="roles-diff" /> : !error && <p className="text-xs text-muted-foreground">Loading…</p>}
+            {detail ? <DiffBlock diff={detail.bundled_diff ?? ''} label="Bundled diff" testId="roles-diff" /> : !error && <p className="text-xs text-muted-foreground">Loading…</p>}
         </Section>}
     </section>
 }

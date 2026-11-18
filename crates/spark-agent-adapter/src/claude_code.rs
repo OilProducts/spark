@@ -1315,14 +1315,19 @@ fn canonical_tool_call(block: &Value) -> Value {
                 .unwrap_or(name);
             payload.insert("title".to_string(), json!(title));
         }
-        "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
+        "Read" | "Write" | "Edit" | "NotebookEdit" => {
             let path = input_string("file_path").or_else(|| input_string("notebook_path"));
             if let Some(path) = path {
                 payload.insert("file_paths".to_string(), json!([path]));
             }
-            if matches!(name, "Write" | "Edit" | "MultiEdit") {
+            if matches!(name, "Write" | "Edit") {
                 payload.insert("kind".to_string(), json!("file_change"));
             }
+            payload.insert("title".to_string(), json!(name));
+        }
+        // Its path is reported only through its diff entries.
+        "MultiEdit" => {
+            payload.insert("kind".to_string(), json!("file_change"));
             payload.insert("title".to_string(), json!(name));
         }
         "Glob" | "Grep" => {
@@ -1365,7 +1370,26 @@ fn edit_file_changes(call: &Value, result: Option<&Value>) -> Vec<FileChange> {
         return Vec::new();
     };
     let result = result.unwrap_or(&Value::Null);
-    let kind = (name == "Write" && result["type"] == "create").then_some("add");
+    // An edit with old text replaced existing text; one without may have
+    // created the file, so its operation stays unknown.
+    let replaces = |edit: &Value| {
+        edit["old_string"]
+            .as_str()
+            .is_some_and(|old| !old.is_empty())
+    };
+    let edits = input["edits"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let kind = match name {
+        "Write" => match result["type"].as_str() {
+            Some("create") => Some("add"),
+            Some("update") => Some("update"),
+            _ => None,
+        },
+        "Edit" => replaces(input).then_some("update"),
+        _ => (!edits.is_empty() && edits.iter().all(replaces)).then_some("update"),
+    };
     if let Some(hunks) = result["structuredPatch"]
         .as_array()
         .filter(|hunks| !hunks.is_empty())
@@ -1390,7 +1414,10 @@ fn edit_file_changes(call: &Value, result: Option<&Value>) -> Vec<FileChange> {
         return vec![FileChange::new(path, kind, diff)];
     }
     let compare = |edit: &Value| {
-        FileChange::compare(path, &text(edit, "old_string"), &text(edit, "new_string"))
+        let mut change =
+            FileChange::compare(path, &text(edit, "old_string"), &text(edit, "new_string"));
+        change.kind = replaces(edit).then_some("update");
+        change
     };
     match name {
         "Write" => vec![FileChange::new(
@@ -1399,12 +1426,7 @@ fn edit_file_changes(call: &Value, result: Option<&Value>) -> Vec<FileChange> {
             prefixed(&text(input, "content"), '+'),
         )],
         "Edit" => vec![compare(input)],
-        _ => input["edits"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(compare)
-            .collect(),
+        _ => edits.iter().map(compare).collect(),
     }
 }
 

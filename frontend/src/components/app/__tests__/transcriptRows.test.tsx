@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
 
 import { groupTranscript, type TranscriptItemClass } from '@/components/app/transcript/groupTranscript'
 import {
@@ -118,7 +119,7 @@ describe('transcript rows', () => {
         expect(within(header).getByRole('presentation', { hidden: true })).toHaveAttribute('src', '/assets/spark-app-icon.png')
     })
 
-    it('shows each reported file change as its path, operation and literal coloured diff', () => {
+    it('shows each reported file change as its path, operation and literal coloured diff', async () => {
         const edit: TranscriptToolCallEntry = {
             id: 'edit',
             timestamp: '',
@@ -154,6 +155,15 @@ describe('transcript rows', () => {
         expect(screen.getByText('ctx')).not.toHaveAttribute('class')
         expect(screen.getByText('+moved')).toHaveClass('text-success')
         expect(document.querySelector('b')).toBeNull()
+
+        // Each diff is a named tab stop, so the keyboard can scroll whatever its box clips.
+        const user = userEvent.setup()
+        await user.tab()
+        expect(screen.getByTestId('project-tool-call-toggle-edit')).toHaveFocus()
+        await user.tab()
+        expect(screen.getByRole('group', { name: 'Diff of src/a.rs' })).toHaveFocus()
+        await user.tab()
+        expect(screen.getByRole('group', { name: 'Diff of src/new.rs' })).toHaveFocus()
     })
 
 })

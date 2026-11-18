@@ -931,6 +931,25 @@ fn main() {
             ),
             (
                 vec![call(
+                    "toolu_overwrite",
+                    "Write",
+                    json!({"file_path": "/p/a.rs", "content": "new\n"}),
+                )],
+                vec![result("toolu_overwrite", false)],
+                json!({"type": "update", "filePath": "/p/a.rs", "content": "new\n", "originalFile": "old\n",
+                    "structuredPatch": [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1, "lines": ["-old", "+new"]}]}),
+            ),
+            (
+                vec![call(
+                    "toolu_edit_empty",
+                    "Edit",
+                    json!({"file_path": "/p/b.rs", "old_string": "", "new_string": "x\n"}),
+                )],
+                vec![result("toolu_edit_empty", false)],
+                serde_json::Value::Null,
+            ),
+            (
+                vec![call(
                     "toolu_multi",
                     "MultiEdit",
                     json!({"file_path": "/p/a.rs", "edits": [
