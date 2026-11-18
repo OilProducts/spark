@@ -414,6 +414,10 @@ export function WorkspaceLiveEventsController() {
                     && typeof envelope.payload === 'object'
                     && !Array.isArray(envelope.payload)
                 ) ? envelope.payload as Record<string, unknown> : {}
+                if (envelope.type === 'harness.checked') {
+                    window.dispatchEvent(new Event('spark:harness-checked'))
+                    return
+                }
                 if (envelope.type === 'settings.changed' || (envelope.type === 'resync_required' && envelope.resource?.kind === 'settings')) {
                     window.dispatchEvent(new CustomEvent('spark:settings-live-event', { detail: envelope }))
                     return

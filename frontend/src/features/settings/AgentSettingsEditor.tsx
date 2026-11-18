@@ -12,7 +12,7 @@ import { SettingsSummary } from './SettingsSummary'
 import { agentLimitError, msToUnit, unitToMs, type agentLimitKeys, type DurationUnit } from './services/executionSettings'
 
 const defaultPath = (key: string) => key === 'claude_config_dir' ? '<SPARK_HOME>/runtime/claude' : 'Platform default'
-const labels = { codex_binary: 'Codex program', codex_runtime_root: 'Codex runtime root', codex_seed_dir: 'Codex seed directory', claude_binary: 'Claude program', claude_config_dir: 'Claude configuration directory', codex_jsonrpc_trace: 'Codex protocol log', agent_trace: 'Agent trace log' } as const
+const labels = { codex_runtime_root: 'Codex runtime root', codex_seed_dir: 'Codex seed directory', claude_config_dir: 'Claude configuration directory', codex_jsonrpc_trace: 'Codex protocol log', agent_trace: 'Agent trace log' } as const
 // [setting, label, what it affects, unit shown when the stored value is milliseconds]
 const limitFields: [typeof agentLimitKeys[number], string, string, DurationUnit?][] = [
     ['max_turns', 'Maximum turns', 'Stops an agent session after this many turns. 0 means no limit.'],
@@ -27,8 +27,13 @@ const permissionModes = { default: 'Default', acceptEdits: 'Accept edits', bypas
 export function AgentSettingsEditor() {
     const editor = useAgentSettingsEditor()
     const [newToolNames, setNewToolNames] = useState({ tool_output_limits: '', line_limits: '' })
-    return <Card><CardHeader><h2 className="text-base font-semibold">Agent session limits</h2></CardHeader><CardContent className="space-y-3">
+    return <Card id="agent-session-limits" className="scroll-mt-4"><CardHeader><h2 className="text-base font-semibold">Agent session limits</h2></CardHeader><CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
+        {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error} className="text-sm text-destructive">{error}</p>)}
+        {!editor.draft && editor.saved?.repair_defaults && <div className="space-y-1">
+            <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset what can’t be read</Button>
+            <p className="text-xs text-muted-foreground">Shows these settings with the ones that can’t be read set to their defaults, for you to check and save. ACP harnesses are kept as they are.</p>
+        </div>}
         {editor.draft && <fieldset disabled={editor.pending} className="space-y-3">
             {limitFields.map(([key, label, help, unit]) => {
                 const value = editor.draft![key]
@@ -47,12 +52,13 @@ export function AgentSettingsEditor() {
                 {error && <FieldError id={`agent-${key}-error`} role="alert">{error}</FieldError>}
             </Field></Fragment>})}
             <details ref={(node) => { if (node && (Object.values(editor.draft?.native ?? {}).some((value) => typeof value === 'string' && !value.trim()))) node.open = true }}><SettingsSummary>Codex and Claude paths</SettingsSummary>
-            {(['codex_binary', 'codex_runtime_root', 'codex_seed_dir', 'claude_binary', 'claude_config_dir'] as const).map((key) => <Field key={key}>
+            <p className="text-xs text-muted-foreground">The Codex and Claude Code programs are set under Models & accounts › Agent harnesses.</p>
+            {(['codex_runtime_root', 'codex_seed_dir', 'claude_config_dir'] as const).map((key) => <Field key={key}>
                 <FieldLabel htmlFor={`agent-native-${key}`}>{labels[key]}</FieldLabel>
                 <Input id={`agent-native-${key}`} aria-describedby={`agent-native-${key}-error`} aria-invalid={editor.draft?.native?.[key] != null && !editor.draft.native[key]?.trim()} value={editor.draft?.native?.[key] ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, native: { ...draft.native, [key]: event.target.value || null } }))} />
                 {editor.draft?.native?.[key] != null && !editor.draft.native[key]?.trim() && <p id={`agent-native-${key}-error`} role="alert">Enter a nonempty path or leave blank for the default.</p>}
                 {!editor.saved?.effective && editor.saved?.active_startup && ['codex_runtime_root', 'codex_seed_dir', 'claude_config_dir'].includes(key) && <p className="text-xs text-muted-foreground">Startup: {editor.saved.active_startup[key] ?? defaultPath(key)} · Retained until restart</p>}
-                <p className="text-xs text-muted-foreground">In use: {editor.saved?.effective ? editor.saved.effective.native?.[key] ?? defaultPath(key) : 'Unavailable'} · {editor.saved?.sources?.[`native.${key}`]}{key.endsWith('_binary') ? '' : ' · Requires restart'}</p>
+                <p className="text-xs text-muted-foreground">In use: {editor.saved?.effective ? editor.saved.effective.native?.[key] ?? defaultPath(key) : 'Unavailable'} · {editor.saved?.sources?.[`native.${key}`]} · Requires restart</p>
             </Field>)}
             </details>
             <details><SettingsSummary>Permissions and environment</SettingsSummary>

@@ -324,12 +324,24 @@ impl WorkspaceProjectService {
 
     /// The chooser's models, with ACP harnesses probed in the project, or in
     /// the Home project without one.
-    pub fn chat_models(&self, project_path: Option<&str>) -> WorkspaceResult<Value> {
-        let work_area = match project_path {
-            Some(project_path) => PathBuf::from(normalize_project_path_or_400(project_path)?),
-            None => service_home_dir().map_err(WorkspaceError::Validation)?,
-        };
-        crate::models::chat_models(&self.settings, &work_area)
+    pub fn chat_models(
+        &self,
+        project_path: Option<&str>,
+        refresh: bool,
+        finished: &crate::models::CheckFinished,
+    ) -> WorkspaceResult<Value> {
+        crate::models::chat_models(&self.settings, &work_area(project_path)?, refresh, finished)
+    }
+
+    /// Signs in to ACP harness `id` with one of the methods it offered, in
+    /// the project or the Home project, as [`Self::chat_models`] checks it.
+    pub fn acp_sign_in(
+        &self,
+        project_path: Option<&str>,
+        id: &str,
+        method_id: &str,
+    ) -> WorkspaceResult<Value> {
+        crate::models::acp_sign_in(&self.settings, &work_area(project_path)?, id, method_id)
     }
 
     fn registry(&self) -> ProjectRegistry {
@@ -460,4 +472,11 @@ fn service_home_dir() -> std::result::Result<PathBuf, String> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .ok_or_else(|| "HOME is not set.".to_string())
+}
+
+fn work_area(project_path: Option<&str>) -> WorkspaceResult<PathBuf> {
+    match project_path {
+        Some(project_path) => Ok(PathBuf::from(normalize_project_path_or_400(project_path)?)),
+        None => service_home_dir().map_err(WorkspaceError::Validation),
+    }
 }

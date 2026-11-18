@@ -381,6 +381,27 @@ fn uploads_delivered_into_a_running_turn_are_owned_by_the_message() {
 
 const FAKE_ACP: &str = env!("CARGO_BIN_EXE_spark-workspace-fake-acp");
 
+/// A model listing once no harness is still being checked.
+fn settled(list: impl Fn() -> Value) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let response = list();
+        let checking = response["providers"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|provider| provider["status"] == "checking");
+        if !checking {
+            return response;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "harness checks finish: {response}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// A service whose `acp:fake` harness is the fake ACP agent running
 /// `script`, logging to `acp.log`, and the project it works in.
 fn acp_chat(temp: &std::path::Path, mut script: Value) -> (WorkspaceConversationService, String) {
@@ -885,6 +906,8 @@ fn acp_tool_results_given_only_as_content_reach_chat_history() {
 /// states, and reuses its result until the agents settings change.
 #[test]
 fn acp_choosers_offer_what_a_session_last_acknowledged() {
+    // Its listings check Claude Code with its own settings, replacing other tests' checks.
+    let _env = super::utility_contracts::claude_env();
     let temp = tempfile::tempdir().unwrap();
     let model = |current: &str| {
         json!({"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": current,
@@ -917,12 +940,14 @@ fn acp_choosers_offer_what_a_session_last_acknowledged() {
     );
     let settings = settings(temp.path());
     let chooser = || {
-        let payload = spark_workspace::models::chat_models_with_codex_result(
-            &settings,
-            std::path::Path::new(&project),
-            Ok(vec![]),
-        )
-        .unwrap();
+        let payload = settled(|| {
+            spark_workspace::models::chat_models_with_codex_result(
+                &settings,
+                std::path::Path::new(&project),
+                Ok(vec![]),
+            )
+            .unwrap()
+        });
         let deep = payload["models"]
             .as_array()
             .unwrap()
@@ -999,14 +1024,27 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     ]);
     let modes =
         json!({"currentModeId": "code", "availableModes": [{"id": "code", "name": "Code"}]});
+    // Twelve lines, more than the stderr tail Spark keeps, some of them short.
+    let key = (1..=12)
+        .map(|line| match line % 3 {
+            0 => format!("Q{line:02}"),
+            _ => format!("key-line-{line}-sentinel"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let harness = |name: &str, executable: &str, script: Value| {
         let mut script = script;
         script["log"] = json!(log);
         json!({"name": name, "executable": executable, "env": {
             "SPARK_FAKE_ACP": script.to_string(), "AGENT_TOKEN": "discovery-secret-sentinel",
-            "AGENT_PIN": "cat",
+            "AGENT_PIN": "cat", "AGENT_KEY": key,
         }})
     };
+    let signed_in = temp.path().join("locked-signed-in");
+    let browser =
+        json!({"id": "browser", "name": "Browser sign-in", "description": "Opens your browser."});
+    let terminal = json!({"id": "tui", "name": "Terminal", "type": "terminal", "args": ["login"],
+        "env": {"LOGIN_MODE": "device"}, "description": "Signs in with discovery-secret-sentinel."});
     let settings = settings(temp.path());
     let project = temp.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
@@ -1016,8 +1054,10 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         "acp_harnesses": {
             "fake": harness("Fake ACP", FAKE_ACP, json!({"system_prompt": true, "resume": true, "config_options": options})),
             "plain": harness("Plain", FAKE_ACP, json!({"modes": modes})),
-            "locked": harness("Locked", FAKE_ACP, json!({"new_error": {"code": -32000, "message": "Authentication required"}})),
+            "locked": harness("Locked", FAKE_ACP, json!({"new_error": {"code": -32000, "message": "Authentication required: run locked login"},
+                "auth_methods": [browser, terminal], "signed_in": signed_in})),
             "leaky": harness("Leaky", FAKE_ACP, json!({"echo_env": ["AGENT_TOKEN", "AGENT_PIN"], "new_error": {"code": -32603, "message": "model catalog unavailable"}})),
+            "spills": harness("Spills", FAKE_ACP, json!({"echo_env": ["AGENT_KEY"], "new_error": {"code": -32603, "message": "bad key"}})),
             "missing": harness("Missing", "/nonexistent/acp-agent", json!({})),
         },
     }});
@@ -1028,8 +1068,10 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     .unwrap();
     let project = project.canonicalize().unwrap();
     let discover = || {
-        spark_workspace::models::chat_models_with_codex_result(&settings, &project, Ok(vec![]))
-            .unwrap()
+        settled(|| {
+            spark_workspace::models::chat_models_with_codex_result(&settings, &project, Ok(vec![]))
+                .unwrap()
+        })
     };
     let launches = || {
         std::fs::read_to_string(&log)
@@ -1098,7 +1140,10 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         plain["chat"]["state"], "unsupported",
         "no systemPrompt or channel"
     );
-    assert_eq!(plain["flow"]["state"], "supported");
+    assert_eq!(
+        plain["flow"]["state"], "limited",
+        "a step that sets a model is refused: {plain}"
+    );
     assert_eq!(
         plain["capabilities"]["model_selection"]["state"],
         "unsupported"
@@ -1115,9 +1160,23 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     let locked = &providers["acp:locked"];
     assert_eq!(locked["status"], "unavailable", "{locked}");
     assert_eq!(locked["setup_status"], "unauthenticated");
-    assert!(locked["error"]
-        .as_str()
-        .is_some_and(|error| !error.is_empty()));
+    assert!(
+        locked["error"]
+            .as_str()
+            .unwrap()
+            .contains("Authentication required: run locked login"),
+        "the harness's own sign-in message is kept: {locked}"
+    );
+    assert_eq!(
+        locked["auth_methods"],
+        json!([browser, {"id": "tui", "name": "Terminal", "description": "Signs in with [redacted].",
+            "terminal": ["LOGIN_MODE=device", FAKE_ACP, "login"]}]),
+        "a terminal method is the command to run, and what the harness echoes stays hidden"
+    );
+    assert!(
+        !locked["error"].as_str().unwrap().contains("Settings"),
+        "shown where the user signs in, so it points nowhere else: {locked}"
+    );
     assert_eq!(locked["chat"]["state"], "unverified");
     assert_eq!(
         locked["capabilities"]["model_selection"]["state"],
@@ -1126,7 +1185,8 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     assert!(models("acp:locked").is_empty());
 
     let missing = &providers["acp:missing"];
-    assert_eq!(missing["setup_status"], "unreachable", "{missing}");
+    assert_eq!(missing["setup_status"], "not_installed", "{missing}");
+    assert_eq!(providers["claude-code"]["setup_status"], "not_installed");
     assert!(missing["error"]
         .as_str()
         .unwrap()
@@ -1144,19 +1204,33 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     );
 
     assert!(!response.to_string().contains("discovery-secret-sentinel"));
+    assert_eq!(providers["acp:spills"]["setup_status"], "unreachable");
+    assert!(
+        providers["acp:spills"]["error"]
+            .as_str()
+            .unwrap()
+            .ends_with("stderr tail:\n[redacted]"),
+        "a secret's lines show as one: {}",
+        providers["acp:spills"]
+    );
+    assert!(
+        !response.to_string().contains("key-line-") && !response.to_string().contains("Q06"),
+        "no line of a value of several lines shows: {}",
+        providers["acp:spills"]
+    );
     assert!(!response.to_string().contains("=cat"));
     assert!(acp_received(temp.path(), "session/prompt").is_empty());
     let sessions = acp_received(temp.path(), "session/new");
     assert_eq!(
         sessions.len(),
-        4,
+        5,
         "one temporary session per reachable harness"
     );
     assert!(sessions
         .iter()
         .all(|session| session["cwd"] == json!(project)));
     let probes = launches();
-    assert_eq!(probes.len(), 4);
+    assert_eq!(probes.len(), 5);
     for probe in &probes {
         assert_eq!(probe["cwd"], json!(project));
         let alive = std::process::Command::new("kill")
@@ -1169,12 +1243,401 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     }
 
     assert_eq!(discover(), response, "cached");
-    assert_eq!(
-        launches().len(),
-        6,
-        "ready harnesses are cached; locked and leaky are probed again"
-    );
+    assert_eq!(launches().len(), 5, "failures are kept too");
     spark_workspace::models::invalidate_model_discovery("agents");
     discover();
     assert_eq!(launches().len(), 10, "an agents change probes again");
+
+    // One misconfigured registration stops no other, and a ready harness
+    // whose program is removed shows so once checked again.
+    let copied = temp.path().join("copied-acp");
+    std::fs::copy(FAKE_ACP, &copied).unwrap();
+    let mut changed = agents.clone();
+    changed["agents"]["acp_harnesses"]["copied"] =
+        harness("Copied", copied.to_str().unwrap(), json!({}));
+    changed["agents"]["acp_harnesses"]["broken"] = json!({"name": "Broken", "executable": "agent",
+        "env": {"SPARK_HOME": "broken-secret-sentinel"}});
+    changed["agents"]["acp_harnesses"]["waits"] = harness(
+        "Waits",
+        FAKE_ACP,
+        json!({"new_error": {"code": -32000, "message": "Authentication required"},
+        "auth_methods": [browser], "authenticate_waits": true}),
+    );
+    changed["agents"]["acp_harnesses"]["quits"] = json!({"name": "Quits", "executable": "sh",
+        "args": ["-c", "echo no agent config found >&2; exit 3"]});
+    std::fs::write(
+        settings.config_dir.join("spark.toml"),
+        toml::to_string(&changed).unwrap(),
+    )
+    .unwrap();
+    let response = discover();
+    let providers = &response["providers"];
+    assert_eq!(providers["acp:copied"]["setup_status"], "ready");
+    assert_eq!(providers["acp:fake"]["setup_status"], "ready");
+    assert_eq!(providers["acp:broken"]["setup_status"], "misconfigured");
+    assert_eq!(providers["acp:broken"]["status"], "unavailable");
+    assert!(providers["acp:broken"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("SPARK_HOME"));
+    assert!(!response.to_string().contains("broken-secret-sentinel"));
+    let quits = &providers["acp:quits"];
+    assert_eq!(quits["setup_status"], "unreachable");
+    let error = quits["error"].as_str().unwrap();
+    assert!(
+        error.contains("quit during setup with exit code 3")
+            && error.contains("no agent config found"),
+        "a harness that quits says so, with what it wrote: {error}"
+    );
+    std::fs::remove_file(&copied).unwrap();
+    assert_eq!(
+        discover()["providers"]["acp:copied"]["setup_status"],
+        "ready",
+        "kept until checked again"
+    );
+    spark_workspace::models::invalidate_model_discovery("agents");
+    assert_eq!(
+        discover()["providers"]["acp:copied"]["setup_status"],
+        "not_installed"
+    );
+
+    // Signing in with a method the harness offered keeps its sign-in.
+    let signed =
+        spark_workspace::models::acp_sign_in(&settings, &project, "locked", "browser").unwrap();
+    assert_eq!(signed, json!({"setup_status": "ready", "error": null}));
+    assert!(acp_received(temp.path(), "authenticate")
+        .iter()
+        .any(|request| request["methodId"] == "browser"));
+    spark_workspace::models::invalidate_model_discovery("agents");
+    assert_eq!(
+        discover()["providers"]["acp:locked"]["setup_status"],
+        "ready"
+    );
+
+    // A sign-in the user leaves unfinished can be cancelled.
+    let waiting = std::thread::spawn({
+        let (settings, project) = (settings.clone(), project.clone());
+        move || spark_workspace::models::acp_sign_in(&settings, &project, "waits", "browser")
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !spark_agent_adapter::acp::cancel_sign_in("waits") {
+        assert!(std::time::Instant::now() < deadline, "the sign-in started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let cancelled = waiting.join().unwrap().unwrap();
+    assert_eq!(cancelled["setup_status"], "unauthenticated", "{cancelled}");
+    assert!(cancelled["error"].as_str().unwrap().contains("cancelled"));
+    assert!(!spark_agent_adapter::acp::cancel_sign_in("waits"));
+}
+
+/// A model listing never waits on a harness: one that has not answered yet
+/// is `checking` while one background check runs, whose end is announced.
+/// Its result, a failure included, is kept until Check again or an agents
+/// change, and a check that ends after a save cleared it is discarded.
+#[test]
+fn model_listing_never_waits_on_a_harness_check() {
+    use std::time::{Duration, Instant};
+    // Discovery's caches are shared: no other discovery test checks again meanwhile.
+    let _env = super::utility_contracts::claude_env();
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&settings.config_dir).unwrap();
+    let [launches, ended, release, fixed] =
+        ["launches", "ended", "release", "fixed"].map(|name| temp.path().join(name));
+    // Answers nothing until released, then quits, or once fixed is the fake agent.
+    let script = format!(
+        "echo >> '{}'; until [ -e '{}' ]; do sleep 0.02; done; echo >> '{}'; [ -e '{}' ] && exec '{FAKE_ACP}'; exit 3",
+        launches.display(),
+        release.display(),
+        ended.display(),
+        fixed.display(),
+    );
+    let agents = json!({"agents": {
+        "native": {"codex_binary": "/nonexistent/codex-for-tests", "claude_binary": "/nonexistent/claude-for-tests"},
+        "acp_harnesses": {"slow": {"name": "Slow", "executable": "sh", "args": ["-c", script], "env": {"SPARK_FAKE_ACP": "{}"}}},
+    }});
+    std::fs::write(
+        settings.config_dir.join("spark.toml"),
+        toml::to_string(&agents).unwrap(),
+    )
+    .unwrap();
+    let project = project.canonicalize().unwrap();
+    let (sender, events) = std::sync::mpsc::channel::<String>();
+    let finished: spark_workspace::models::CheckFinished =
+        std::sync::Arc::new(move |provider: &str| {
+            let _ = sender.send(provider.to_string());
+        });
+    let list = |refresh: bool| {
+        spark_workspace::models::chat_models(&settings, &project, refresh, &finished).unwrap()
+    };
+    // The same work area by another name, as Home is when HOME is a symlink.
+    let link = temp.path().join("link");
+    std::os::unix::fs::symlink(&project, &link).unwrap();
+    let list_link =
+        || spark_workspace::models::chat_models(&settings, &link, false, &finished).unwrap();
+    let slow = |response: &Value| {
+        let slow = &response["providers"]["acp:slow"];
+        (slow["status"].clone(), slow["setup_status"].clone())
+    };
+    let count = |path: &std::path::Path| {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let wait_for = |what: &str, done: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let announced = || loop {
+        let provider = events
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the check's end is announced");
+        if provider == "acp:slow" {
+            break;
+        }
+    };
+    // Waits out a check that ends now, then reports whether it was announced.
+    let announced_since = || {
+        std::thread::sleep(Duration::from_millis(300));
+        events.try_iter().any(|provider| provider == "acp:slow")
+    };
+    let checking = (json!("checking"), Value::Null);
+    let failed = (json!("unavailable"), json!("unreachable"));
+    let ready = (json!("available"), json!("ready"));
+
+    // Concurrent listings answer while the agent says nothing, sharing one
+    // check whatever the work area is called.
+    let listed = std::thread::scope(|scope| {
+        let listings = (0..8)
+            .map(|index| {
+                scope.spawn(move || {
+                    if index % 2 == 0 {
+                        list(false)
+                    } else {
+                        list_link()
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        listings
+            .into_iter()
+            .map(|listing| listing.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    for response in &listed {
+        assert_eq!(slow(response), checking, "{response}");
+        let providers = response["providers"].as_object().unwrap();
+        assert!(providers.contains_key("codex") && providers.contains_key("claude-code"));
+    }
+    wait_for("the check started", &|| count(&launches) == 1);
+    let started = Instant::now();
+    assert_eq!(slow(&list(false)), checking);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        count(&launches),
+        1,
+        "one check per harness and registration"
+    );
+
+    // Its failure shows once it ends, and is kept without checking again.
+    std::fs::write(&release, "").unwrap();
+    announced();
+    let response = list(false);
+    assert_eq!(slow(&response), failed, "{response}");
+    assert!(response["providers"]["acp:slow"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("exit code 3"));
+    assert_eq!(slow(&list(false)), failed);
+    assert!(!announced_since());
+    assert_eq!(count(&launches), 1, "a kept failure starts no check");
+
+    // Once fixed, Check again shows the last result until the new one is in.
+    // Checking again while it runs shares it, and the refetch on its end
+    // starts nothing.
+    std::fs::remove_file(&release).unwrap();
+    std::fs::write(&fixed, "").unwrap();
+    assert_eq!(slow(&list(true)), failed);
+    wait_for("the new check started", &|| count(&launches) == 2);
+    assert_eq!(slow(&list(true)), failed);
+    std::fs::write(&release, "").unwrap();
+    announced();
+    assert_eq!(slow(&list(false)), ready);
+    assert_eq!(slow(&list_link()), ready);
+    assert!(!announced_since());
+    assert_eq!(
+        count(&launches),
+        2,
+        "one check for overlapping Check agains"
+    );
+
+    // Check again in one work area leaves another's kept checks alone.
+    let other = temp.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let other = other.canonicalize().unwrap();
+    let list_other =
+        || spark_workspace::models::chat_models(&settings, &other, false, &finished).unwrap();
+    assert_eq!(slow(&list_other()), checking);
+    announced();
+    assert_eq!(slow(&list_other()), ready);
+    assert_eq!(count(&launches), 3);
+    assert_eq!(slow(&list(true)), ready);
+    announced();
+    assert_eq!(slow(&list_other()), ready);
+    assert!(!announced_since());
+    assert_eq!(
+        count(&launches),
+        4,
+        "only the listed work area is checked again"
+    );
+
+    // Saving agents settings checks again from nothing.
+    spark_workspace::models::invalidate_model_discovery("agents");
+    assert_eq!(slow(&list(false)), checking);
+    announced();
+    assert_eq!(slow(&list(false)), ready);
+    assert_eq!(count(&launches), 5);
+
+    // A check that a save cleared while it ran is discarded; the next
+    // listing checks again.
+    std::fs::remove_file(&release).unwrap();
+    spark_workspace::models::invalidate_model_discovery("agents");
+    assert_eq!(slow(&list(false)), checking);
+    wait_for("the check started", &|| count(&launches) == 6);
+    spark_workspace::models::invalidate_model_discovery("agents");
+    std::fs::write(&release, "").unwrap();
+    wait_for("the check ended", &|| count(&ended) == 6);
+    assert!(!announced_since());
+    assert_eq!(slow(&list(false)), checking, "its result was not kept");
+    announced();
+    assert_eq!(slow(&list(false)), ready);
+    assert_eq!(count(&launches), 7);
+}
+
+#[test]
+fn each_native_harness_keeps_its_check_when_the_other_changes() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+    let _env = super::utility_contracts::claude_env();
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    std::fs::create_dir_all(&settings.config_dir).unwrap();
+    let [claude, launches, ended, release] =
+        ["claude", "launches", "ended", "release"].map(|name| temp.path().join(name));
+    // Answers nothing until released, then quits.
+    std::fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\necho >> '{}'\nuntil [ -e '{}' ]; do sleep 0.02; done\necho >> '{}'\nexit 3\n",
+            launches.display(),
+            release.display(),
+            ended.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // A changed Codex program is as installing Codex on PATH when none is set.
+    let configure = |codex: &str, claude: &std::path::Path| {
+        let agents =
+            json!({"agents": {"native": {"codex_binary": codex, "claude_binary": claude}}});
+        std::fs::write(
+            settings.config_dir.join("spark.toml"),
+            toml::to_string(&agents).unwrap(),
+        )
+        .unwrap();
+    };
+    let project = temp.path().canonicalize().unwrap();
+    let (sender, events) = std::sync::mpsc::channel::<String>();
+    let finished: spark_workspace::models::CheckFinished = Arc::new(move |provider: &str| {
+        let _ = sender.send(provider.to_string());
+    });
+    let claude_code = || {
+        spark_workspace::models::chat_models(&settings, &project, false, &finished).unwrap()
+            ["providers"]["claude-code"]["status"]
+            .clone()
+    };
+    let count = |path: &std::path::Path| {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let wait_for = |what: &str, done: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let announced = || {
+        while events
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the check ended")
+            != "claude-code"
+        {}
+    };
+
+    configure("/nonexistent/codex-one", &claude);
+    assert_eq!(claude_code(), "checking");
+    wait_for("the check started", &|| count(&launches) == 1);
+    // Codex's program changing leaves Claude Code's running check alone,
+    configure("/nonexistent/codex-two", &claude);
+    assert_eq!(claude_code(), "checking");
+    std::fs::write(&release, "").unwrap();
+    announced();
+    // and its kept result.
+    configure("/nonexistent/codex-three", &claude);
+    assert_eq!(claude_code(), "unavailable");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(count(&launches), 1);
+}
+
+#[test]
+fn a_kept_check_keeps_the_setup_it_found() {
+    use std::os::unix::fs::PermissionsExt;
+    let _env = super::utility_contracts::claude_env();
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    std::fs::create_dir_all(&settings.config_dir).unwrap();
+    let bin = temp.path().join("bin");
+    let programs = ["codex", "claude", "agent"].map(|name| bin.join(name));
+    let [codex, claude, agent] = &programs;
+    let agents = json!({"agents": {
+        "native": {"codex_binary": codex, "claude_binary": claude},
+        "acp_harnesses": {"later": {"name": "Later", "executable": agent}},
+    }});
+    std::fs::write(
+        settings.config_dir.join("spark.toml"),
+        toml::to_string(&agents).unwrap(),
+    )
+    .unwrap();
+    let project = temp.path().canonicalize().unwrap();
+    let finished: spark_workspace::models::CheckFinished = Arc::new(|_: &str| {});
+    let list =
+        || spark_workspace::models::chat_models(&settings, &project, false, &finished).unwrap();
+    let setups = |response: Value| {
+        ["codex", "claude-code", "acp:later"]
+            .map(|provider| response["providers"][provider]["setup_status"].clone())
+    };
+    let missing = [
+        json!("not_installed"),
+        json!("not_installed"),
+        json!("not_installed"),
+    ];
+    assert_eq!(setups(settled(list)), missing);
+
+    // Installing a program where it was missing changes nothing until checked again.
+    std::fs::create_dir_all(&bin).unwrap();
+    for program in &programs {
+        std::fs::write(program, "#!/bin/sh\nexit 3\n").unwrap();
+        std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    assert_eq!(setups(list()), missing);
 }

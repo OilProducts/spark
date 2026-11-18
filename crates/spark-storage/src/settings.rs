@@ -21,10 +21,13 @@ impl SettingsDocument {
             .get(section)
             .cloned()
             .map(|value| {
-                value.try_into().map_err(|_| {
+                value.try_into().map_err(|error: toml::de::Error| {
                     invalid(
                         path,
-                        format!("Invalid {section} section; check field names and types."),
+                        format!(
+                            "Invalid {section} section: {}",
+                            field_error(&error.to_string())
+                        ),
                     )
                 })
             })
@@ -283,9 +286,8 @@ pub fn validate_core_sections(path: &Path, values: &toml::Table) -> Result<()> {
         .unwrap_or_default()
         .validate()
         .map_err(|error| invalid(path, error.to_string()))?;
-    document
-        .section::<spark_common::agent_settings::SessionConfig>(path, "agents")?
-        .unwrap_or_default()
+    agents_section(path, &document)?
+        .0
         .validate()
         .map_err(|error| invalid(path, error.to_string()))?;
     let runtime: spark_common::settings::RuntimeSettings =
@@ -306,6 +308,90 @@ pub fn validate_core_sections(path: &Path, values: &toml::Table) -> Result<()> {
             .map_err(|error| invalid(path, error.to_string()))?;
     }
     validate_desktop_section(path, values)
+}
+
+/// ACP registrations that cannot be used, by ID.
+pub type MisconfiguredHarnesses =
+    std::collections::BTreeMap<String, spark_common::agent_settings::MisconfiguredHarness>;
+
+/// The agents section with each ACP registration read and checked on its
+/// own: one that cannot be read or is invalid is left out and reported, so it
+/// stops neither the native harnesses nor the other registrations.
+pub fn agents_section(
+    path: &Path,
+    document: &SettingsDocument,
+) -> Result<(
+    spark_common::agent_settings::SessionConfig,
+    MisconfiguredHarnesses,
+)> {
+    use spark_common::agent_settings::{validate_harness_id, AcpHarness, MisconfiguredHarness};
+    let mut values = document.clone();
+    let registrations = values
+        .values
+        .get_mut("agents")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|agents| agents.remove("acp_harnesses"));
+    let mut agents: spark_common::agent_settings::SessionConfig =
+        values.section(path, "agents")?.unwrap_or_default();
+    let mut misconfigured = MisconfiguredHarnesses::new();
+    let Some(registrations) = registrations else {
+        return Ok((agents, misconfigured));
+    };
+    let toml::Value::Table(registrations) = registrations else {
+        return Err(invalid(
+            path,
+            "agents.acp_harnesses must be a table of registrations by ID.",
+        ));
+    };
+    for (id, registration) in registrations {
+        let name = registration
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(&id)
+            .to_string();
+        let harness = validate_harness_id(&id).and_then(|()| {
+            let harness: AcpHarness = registration
+                .try_into()
+                .map_err(|error: toml::de::Error| field_error(&error.to_string()))?;
+            harness.validate().map(|()| harness)
+        });
+        match harness {
+            Ok(harness) => {
+                agents.acp_harnesses.insert(id, harness);
+            }
+            Err(error) => {
+                misconfigured.insert(id, MisconfiguredHarness { name, error });
+            }
+        }
+    }
+    Ok((agents, misconfigured))
+}
+
+/// Why settings could not be read, from the deserializer's `message`,
+/// naming the field but never its value, which may be a secret.
+fn field_error(message: &str) -> String {
+    let mut lines = message.lines();
+    let first = lines.next().unwrap_or_default();
+    let field = lines
+        .find_map(|line| line.strip_prefix("in `")?.strip_suffix('`'))
+        .map_or("A field".to_string(), |field| format!("`{field}`"));
+    if ["unknown field", "missing field", "unknown variant"]
+        .iter()
+        .any(|prefix| first.starts_with(prefix))
+    {
+        return format!("{first}.");
+    }
+    match first.strip_prefix("invalid type: ") {
+        Some(rest) => {
+            let found = rest.split(['"', '`']).next().unwrap_or_default().trim();
+            let expected = rest
+                .rsplit_once(", expected ")
+                .map_or("", |(_, expected)| expected);
+            format!("{field} has the wrong type: expected {expected}, found {found}.")
+        }
+        None => format!("{field} has an invalid value."),
+    }
 }
 
 pub fn validate_desktop_section(path: &Path, values: &toml::Table) -> Result<()> {
@@ -409,8 +495,7 @@ pub fn execution_configuration(
     validate_core_sections(&path, &document.values)?;
     let providers: spark_common::provider_settings::ProviderConnections =
         document.section(&path, "providers")?.unwrap_or_default();
-    let mut agents: spark_common::agent_settings::SessionConfig =
-        document.section(&path, "agents")?.unwrap_or_default();
+    let (mut agents, misconfigured_acp_harnesses) = agents_section(&path, document)?;
     agents.native = agents
         .native
         .resolve(env)
@@ -436,6 +521,7 @@ pub fn execution_configuration(
             .resolve(env)
             .map_err(|error| invalid(&path, error.to_string()))?,
         agents,
+        misconfigured_acp_harnesses,
     })
 }
 

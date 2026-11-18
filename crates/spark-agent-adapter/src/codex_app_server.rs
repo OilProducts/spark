@@ -578,7 +578,8 @@ impl CodexAppServerClient {
         let launch_failed = |error: std::io::Error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 CodexAppServerError::configuration(format!(
-                    "codex app-server executable not found: {}",
+                    "codex app-server executable not found: {} (install Codex, or set its program \
+                     in Settings > Models & accounts > Agent harnesses)",
                     executable.display()
                 ))
             } else {

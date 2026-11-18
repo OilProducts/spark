@@ -58,9 +58,12 @@ async fn connection_action(
         let hub = state.live_hub.clone();
         let result = match action {
             Action::Cancel => return Ok(connection.cancel_login()),
-            Action::Code(code) => connection
-                .submit_code(&code)
-                .map_err(|error| WorkspaceError::Validation(error.message))?,
+            Action::Code(code) => {
+                let native = spark_workspace::models::native_configuration(&state.settings)?;
+                connection
+                    .submit_code(&native, &code)
+                    .map_err(|error| WorkspaceError::Validation(error.message))?
+            }
             Action::Status => {
                 let native = spark_workspace::models::native_configuration(&state.settings)?;
                 connection

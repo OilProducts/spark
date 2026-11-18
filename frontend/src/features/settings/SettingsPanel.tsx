@@ -2,8 +2,7 @@ import { isModelSelectionValid } from '@/lib/llmSuggestions'
 import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ProviderSettingsEditor } from "./ProviderSettingsEditor"
-import { CodexConnectionSettings } from "./CodexConnectionSettings"
-import { ClaudeCodeConnectionSettings } from "./ClaudeCodeConnectionSettings"
+import { HarnessSettings } from "./HarnessSettings"
 import { AgentSettingsEditor } from "./AgentSettingsEditor"
 import { LlmProfilesEditor, ExecutionProfilesEditor } from "./ProfileSettingsEditors"
 import { ClientPreferencesEditor } from "./ClientPreferencesEditor"
@@ -52,7 +51,7 @@ function getTauriInvoke(): TauriInvoke | null {
 
 // Each category's heading and intro open the main pane.
 const categories = {
-    models: { title: 'Models & accounts', intro: 'Provider sign-ins and the models new work uses by default.' },
+    models: { title: 'Models & accounts', intro: 'The agents that run chats and flows, provider sign-ins, and the models new work uses by default.' },
     preferences: { title: 'Preferences', intro: 'Appearance and editor defaults for this browser or desktop app.' },
     execution: { title: 'Execution', intro: 'Where runs execute and the limits agent sessions work within.' },
     system: { title: 'System', intro: 'How the Spark server listens, connects and stores its files.' },
@@ -174,8 +173,7 @@ export function SettingsPanel() {
                 </header>
 
                 <TabsContent value="models" forceMount hidden={category !== 'models'} className="space-y-6">
-                <CodexConnectionSettings />
-                <ClaudeCodeConnectionSettings />
+                <HarnessSettings />
 
                 <Card className="gap-4 py-4">
                     <CardHeader className="gap-1 px-4">

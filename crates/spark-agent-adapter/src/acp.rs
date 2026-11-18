@@ -17,13 +17,13 @@ use std::time::Duration;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::v1::schema::{
-    CancelNotification, ClientCapabilities, ContentBlock, ContentChunk, ElicitationCapabilities,
-    ElicitationFormCapabilities, Implementation, InitializeRequest, LoadSessionRequest,
-    NewSessionRequest, PermissionOptionKind, PromptResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigOptionValue, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, StopReason, SystemPrompt,
+    AuthCapabilities, AuthMethod, AuthenticateRequest, CancelNotification, ClientCapabilities,
+    ContentBlock, ContentChunk, ElicitationCapabilities, ElicitationFormCapabilities,
+    Implementation, InitializeRequest, LoadSessionRequest, NewSessionRequest, PermissionOptionKind,
+    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOptions,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, SystemPrompt,
 };
 use agent_client_protocol::v1::{ActiveSession, ConnectionTo, SessionMessage, SessionSetup};
 use agent_client_protocol::{Agent, Client, Dispatch, ErrorCode, Lines, Raw, Responder};
@@ -301,12 +301,26 @@ fn live_harness(request: &AgentTurnRequest, harness_id: &str) -> Option<AcpHarne
             .as_str()?,
     )
     .join("spark.toml");
-    let agents: crate::config::SessionConfig =
-        spark_storage::settings::read_settings_document(&path)
-            .ok()?
-            .section(&path, "agents")
-            .ok()??;
+    let document = spark_storage::settings::read_settings_document(&path).ok()?;
+    let (agents, _) = spark_storage::settings::agents_section(&path, &document).ok()?;
     agents.acp_harnesses.get(harness_id).cloned()
+}
+
+/// Whether `program` names an executable file: a path that exists, or a bare
+/// name found on `path`, else on Spark's own `PATH`. A relative path is taken
+/// as found, since where it resolves depends on the launch.
+// ponytail: ignores PATHEXT, so a bare name on Windows must include its extension.
+pub fn program_found(program: &str, path: Option<&str>) -> bool {
+    let program = Path::new(program);
+    if program.is_absolute() {
+        return program.is_file();
+    }
+    if program.components().count() > 1 {
+        return true;
+    }
+    path.map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"))
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
 }
 
 /// The configuration generation a launch of `harness` records: its
@@ -329,12 +343,15 @@ pub fn launch_generation(
 /// How long discovery waits for a harness to initialize and open its
 /// temporary session before reporting it unreachable.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a sign-in waits for the user to finish what the harness asks,
+/// such as a browser sign-in.
+const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(180);
 /// What a declared instruction channel carries during discovery, which
 /// never submits a prompt.
 const PROBE_INSTRUCTIONS: &str = "Spark is checking this harness's capabilities. No task follows.";
 
 /// A capability's effective state for Spark's use of a harness: `supported`,
-/// `unsupported` or `unverified`, and why.
+/// `unsupported` or `unverified`, or for flows `limited`, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Capability {
     pub state: String,
@@ -365,6 +382,10 @@ pub struct AcpDiscovery {
     /// Why setup failed; callers report it as their own status error.
     #[serde(skip)]
     pub error: Option<String>,
+    /// The sign-in methods the harness offers through ACP `authenticate`,
+    /// once it answered initialize but setup failed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub auth_methods: Vec<AcpAuthMethod>,
     pub capabilities: BTreeMap<String, Capability>,
     pub chat: Capability,
     pub flow: Capability,
@@ -376,6 +397,21 @@ pub struct AcpDiscovery {
     pub modes: Option<Value>,
 }
 
+/// A sign-in method a harness offers: one Spark starts with [`sign_in`],
+/// or, with `terminal`, one the user runs in a terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AcpAuthMethod {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The command to run, as words: the variables the method sets as
+    /// `NAME=value`, then the harness's program, arguments and the method's
+    /// own arguments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<Vec<String>>,
+}
+
 /// What initialize and the temporary session reported.
 struct Probed {
     system_prompt: bool,
@@ -385,16 +421,21 @@ struct Probed {
     session: Value,
 }
 
+#[derive(Default)]
 struct ProbeFailure {
     unauthenticated: bool,
+    /// The connection failed rather than the harness answering, as when it
+    /// quits.
+    lost: bool,
     message: String,
+    auth_methods: Vec<AcpAuthMethod>,
 }
 
 impl From<String> for ProbeFailure {
     fn from(message: String) -> Self {
         Self {
-            unauthenticated: false,
             message,
+            ..Default::default()
         }
     }
 }
@@ -408,7 +449,23 @@ pub fn discover(
     inheritance: EnvironmentInheritancePolicy,
     cwd: &Path,
 ) -> AcpDiscovery {
-    discovery(harness, probe(harness_id, harness, inheritance, cwd))
+    discovery(harness, probe(harness_id, harness, inheritance, cwd, None))
+}
+
+/// Signs in to `harness` with the method `method_id` it offered, waiting for
+/// the user to finish what the harness asks, then probes it as [`discover`]
+/// does. The harness keeps its own sign-in, as it would from its own login.
+pub fn sign_in(
+    harness_id: &str,
+    harness: &AcpHarness,
+    inheritance: EnvironmentInheritancePolicy,
+    cwd: &Path,
+    method_id: &str,
+) -> AcpDiscovery {
+    discovery(
+        harness,
+        probe(harness_id, harness, inheritance, cwd, Some(method_id)),
+    )
 }
 
 fn probe(
@@ -416,6 +473,7 @@ fn probe(
     harness: &AcpHarness,
     inheritance: EnvironmentInheritancePolicy,
     cwd: &Path,
+    sign_in: Option<&str>,
 ) -> Result<Probed, ProbeFailure> {
     let cwd = std::fs::canonicalize(cwd)
         .map_err(|error| format!("work area {} is unavailable: {error}", cwd.display()))?;
@@ -435,8 +493,13 @@ fn probe(
     // A harness may echo what it was launched with, in an error or on stderr.
     let secrets = environment_values(&command);
     let (done, result) = std::sync::mpsc::channel();
+    let method = sign_in.map(str::to_string);
+    let program = std::iter::once(&harness.executable)
+        .chain(&harness.args)
+        .cloned()
+        .collect();
     let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
-        probe_protocol(endpoints, cwd, done)
+        probe_protocol(endpoints, cwd, program, method, done)
     })
     .map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => {
@@ -444,19 +507,34 @@ fn probe(
         }
         _ => format!("launch failed: {error}"),
     })?;
-    let outcome = result.recv_timeout(PROBE_TIMEOUT);
+    let (timeout, step) = match sign_in {
+        Some(_) => (SIGN_IN_TIMEOUT, "signing in"),
+        None => (PROBE_TIMEOUT, "setup"),
+    };
+    let outcome = match sign_in {
+        Some(_) => wait_for_sign_in(harness_id, &result),
+        None => result.recv_timeout(timeout),
+    };
+    // A harness that quit explains a lost connection better than the
+    // connection's own error.
+    let exited = matches!(outcome, Ok(Err(ref failure)) if failure.lost)
+        .then(|| connection.exit_code_within(Duration::from_millis(500)))
+        .flatten();
     let stderr = connection.stderr();
     // Stops the process and waits for its worker.
     drop(connection);
     drop(instruction_file);
-    let mut failure = match outcome {
-        Ok(Ok(probed)) => return Ok(probed),
-        Ok(Err(failure)) => failure,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => ProbeFailure::from(format!(
-            "the harness did not finish setup within {}s",
-            PROBE_TIMEOUT.as_secs()
+    let mut failure = match (outcome, exited) {
+        (Ok(Ok(probed)), _) => return Ok(probed),
+        (Ok(Err(_)), Some(exited)) => ProbeFailure::from(format!(
+            "the harness quit during setup with exit code {exited}"
         )),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+        (Ok(Err(failure)), None) => failure,
+        (Err(std::sync::mpsc::RecvTimeoutError::Timeout), _) => ProbeFailure::from(format!(
+            "the harness did not finish {step} within {}s",
+            timeout.as_secs()
+        )),
+        (Err(std::sync::mpsc::RecvTimeoutError::Disconnected), _) => {
             ProbeFailure::from("the ACP connection worker stopped".to_string())
         }
     };
@@ -465,10 +543,93 @@ fn probe(
     if !tail.is_empty() && !failure.unauthenticated {
         failure.message = format!("{}; stderr tail:\n{tail}", failure.message);
     }
-    failure.message = secrets
-        .iter()
-        .fold(failure.message, |message, value| redact(message, value));
+    failure.message = redact_all(failure.message, &secrets);
+    // A harness may echo what it was launched with in its sign-in methods too.
+    for method in &mut failure.auth_methods {
+        method.name = redact_all(std::mem::take(&mut method.name), &secrets);
+        method.description = method
+            .description
+            .take()
+            .map(|text| redact_all(text, &secrets));
+        for word in method.terminal.iter_mut().flatten() {
+            *word = redact_all(std::mem::take(word), &secrets);
+        }
+    }
     Err(failure)
+}
+
+/// Sign-ins in progress, each with its harness ID and the flag that
+/// cancels it.
+static SIGNING_IN: Mutex<Vec<(String, Arc<AtomicBool>)>> = Mutex::new(Vec::new());
+
+/// Cancels the sign-ins in progress for `harness_id`, stopping the harness;
+/// whether there was one.
+pub fn cancel_sign_in(harness_id: &str) -> bool {
+    let signing = SIGNING_IN.lock().unwrap_or_else(|error| error.into_inner());
+    let mut found = false;
+    for (_, cancelled) in signing.iter().filter(|(id, _)| id == harness_id) {
+        cancelled.store(true, Ordering::Relaxed);
+        found = true;
+    }
+    found
+}
+
+/// What a sign-in found, waiting until [`SIGN_IN_TIMEOUT`] unless it is
+/// cancelled with [`cancel_sign_in`].
+fn wait_for_sign_in(
+    harness_id: &str,
+    result: &std::sync::mpsc::Receiver<Result<Probed, ProbeFailure>>,
+) -> Result<Result<Probed, ProbeFailure>, std::sync::mpsc::RecvTimeoutError> {
+    use std::sync::mpsc::RecvTimeoutError::Timeout;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    SIGNING_IN
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push((harness_id.to_string(), Arc::clone(&cancelled)));
+    let started = std::time::Instant::now();
+    let outcome = loop {
+        match result.recv_timeout(Duration::from_millis(100)) {
+            Err(Timeout) if cancelled.load(Ordering::Relaxed) => {
+                break Ok(Err(ProbeFailure {
+                    unauthenticated: true,
+                    message: "sign-in was cancelled".into(),
+                    ..Default::default()
+                }))
+            }
+            Err(Timeout) if started.elapsed() < SIGN_IN_TIMEOUT => {}
+            outcome => break outcome,
+        }
+    };
+    SIGNING_IN
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .retain(|(_, flag)| !Arc::ptr_eq(flag, &cancelled));
+    outcome
+}
+
+/// `message` with every value in `secrets` redacted, and a run of lines
+/// that were all secret shown as one. A line that is one line of a value of
+/// several lines is redacted however short.
+// ponytail: a line under 4 bytes of such a value stays where it is part of a longer line.
+fn redact_all(message: String, secrets: &[String]) -> String {
+    let message = secrets
+        .iter()
+        .fold(message, |message, value| redact(message, value));
+    let parts = secrets
+        .iter()
+        .filter(|value| value.contains('\n'))
+        .flat_map(|value| value.lines().map(str::trim))
+        .filter(|line| !line.is_empty())
+        .collect::<std::collections::HashSet<_>>();
+    let mut lines = message
+        .split('\n')
+        .map(|line| match parts.contains(line.trim()) {
+            true => "[redacted]",
+            false => line,
+        })
+        .collect::<Vec<_>>();
+    lines.dedup_by(|line, earlier| line.trim() == "[redacted]" && earlier.trim() == "[redacted]");
+    lines.join("\n")
 }
 
 /// `message` with every occurrence of `value` replaced. A value under 4
@@ -498,11 +659,19 @@ fn redact(message: String, value: &str) -> String {
 }
 
 /// The environment values `command` sets, longest first, so one that
-/// contains another is hidden whole.
+/// contains another is hidden whole, except Spark's own core variables such
+/// as `HOME`, which would hide paths. A value of several lines adds each line
+/// of 4 or more characters, since output may hold only some of them.
 fn environment_values(command: &Command) -> Vec<String> {
     let mut values = command
         .get_envs()
-        .filter_map(|(_, value)| value?.to_str())
+        .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
+        .filter(|(key, value)| !crate::local_environment::is_inherited_core(key, value))
+        .map(|(_, value)| value)
+        .flat_map(|value| {
+            let lines = value.lines().map(str::trim).filter(|line| line.len() >= 4);
+            std::iter::once(value).chain(lines.filter(move |_| value.contains('\n')))
+        })
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .collect::<Vec<_>>();
@@ -514,6 +683,8 @@ fn environment_values(command: &Command) -> Vec<String> {
 async fn probe_protocol(
     endpoints: Endpoints,
     cwd: PathBuf,
+    program: Vec<String>,
+    sign_in: Option<String>,
     done: std::sync::mpsc::Sender<Result<Probed, ProbeFailure>>,
 ) {
     let Endpoints { stdout, stdin, .. } = endpoints;
@@ -525,9 +696,17 @@ async fn probe_protocol(
     let result = Client
         .v1()
         .name("spark")
-        .connect_with(transport, async |cx| Ok(probe_session(&cx, &cwd).await))
+        .connect_with(transport, async |cx| {
+            Ok(probe_session(&cx, &cwd, &program, sign_in.as_deref()).await)
+        })
         .await
-        .unwrap_or_else(|error| Err(describe(&error).into()))
+        .unwrap_or_else(|error| {
+            Err(ProbeFailure {
+                lost: true,
+                message: describe(&error),
+                ..Default::default()
+            })
+        })
         .map_err(|error| match failure.get() {
             Some(unusable) => unusable.clone().into(),
             None => error,
@@ -535,15 +714,33 @@ async fn probe_protocol(
     let _ = done.send(result);
 }
 
-async fn probe_session(cx: &ConnectionTo<Agent>, cwd: &Path) -> Result<Probed, ProbeFailure> {
+/// `program` is the harness's program and arguments, which a terminal
+/// sign-in method extends.
+async fn probe_session(
+    cx: &ConnectionTo<Agent>,
+    cwd: &Path,
+    program: &[String],
+    sign_in: Option<&str>,
+) -> Result<Probed, ProbeFailure> {
     let failed = |error: agent_client_protocol::Error, method: &str| ProbeFailure {
         unauthenticated: is_auth_error(&error),
-        message: setup_error(&error, method),
+        lost: agent_client_protocol::is_incoming_transport_closed(&error)
+            || agent_client_protocol::is_connection_terminated(&error),
+        // Shown where the user signs in, so without the turn's pointer there.
+        message: match is_auth_error(&error) {
+            true => auth_error(&error),
+            false => setup_error(&error, method),
+        },
+        auth_methods: Vec::new(),
     };
     let init = cx
         .send_request(
             InitializeRequest::new(ProtocolVersion::V1)
-                .client_info(Implementation::new("spark", env!("CARGO_PKG_VERSION"))),
+                .client_info(Implementation::new("spark", env!("CARGO_PKG_VERSION")))
+                // Spark shows a terminal method as the command for the user to run.
+                .client_capabilities(
+                    ClientCapabilities::new().auth(AuthCapabilities::new().terminal(true)),
+                ),
         )
         .block_task()
         .await
@@ -554,6 +751,48 @@ async fn probe_session(cx: &ConnectionTo<Agent>, cwd: &Path) -> Result<Probed, P
             init.protocol_version.as_u16()
         )
         .into());
+    }
+    let auth_methods = init
+        .auth_methods
+        .iter()
+        .filter_map(|method| match method {
+            AuthMethod::Agent(method) => Some(AcpAuthMethod {
+                id: method.id.to_string(),
+                name: method.name.clone(),
+                description: method.description.clone(),
+                terminal: None,
+            }),
+            // Spark has no terminal to run it in; the user runs it in theirs.
+            AuthMethod::Terminal(method) => Some(AcpAuthMethod {
+                id: method.id.to_string(),
+                name: method.name.clone(),
+                description: method.description.clone(),
+                terminal: Some(
+                    BTreeMap::from_iter(&method.env)
+                        .into_iter()
+                        .map(|(name, value)| format!("{name}={value}"))
+                        .chain(program.iter().chain(&method.args).cloned())
+                        .collect(),
+                ),
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if let Some(method) = auth_methods
+        .iter()
+        .find(|method| Some(method.id.as_str()) == sign_in && method.terminal.is_some())
+    {
+        return Err(format!("{} is run in a terminal, not by Spark", method.name).into());
+    }
+    let failed = |error, method: &str| ProbeFailure {
+        auth_methods: auth_methods.clone(),
+        ..failed(error, method)
+    };
+    if let Some(method) = sign_in {
+        cx.send_request(AuthenticateRequest::new(method.to_string()))
+            .block_task()
+            .await
+            .map_err(|error| failed(error, "authenticate"))?;
     }
     // Options and modes belong to a session; this one never gets a prompt.
     // Sent untyped, so options of types Spark does not know are kept.
@@ -623,11 +862,11 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
     let unsupported = |reason: &str| Capability::new("unsupported", reason);
     // Fixed by this implementation, whatever a harness reports.
     let mut capabilities = BTreeMap::from([
-        ("plan_mode".to_string(), unsupported("No read-only mode is verified for ACP harnesses; a harness mode named plan carries no such guarantee.")),
-        ("steering".to_string(), unsupported("ACP v1 has no portable way to accept a message during a prompt, so messages wait for the next turn.")),
-        ("child_intervention".to_string(), unsupported("Spark cannot intervene in an ACP harness's child work.")),
-        ("forms".to_string(), Capability::new("supported", "Spark advertises form elicitation and answers it in chats and flows; a schema it cannot show is refused.")),
-        ("per_prompt_usage".to_string(), Capability::new("unverified", "Counted only when the harness reports usage on a prompt's response; otherwise unknown.")),
+        ("plan_mode".to_string(), unsupported("Spark can't confirm that an ACP agent's plan mode only reads.")),
+        ("steering".to_string(), unsupported("A message sent during a turn waits for the next turn.")),
+        ("child_intervention".to_string(), unsupported("Spark can't step into an ACP agent's subagents.")),
+        ("forms".to_string(), Capability::new("supported", "Spark shows the agent's questions and forms in chats and flows, and declines one it can't show.")),
+        ("per_prompt_usage".to_string(), Capability::new("unverified", "Counted when the agent reports it; otherwise unknown.")),
     ]);
     let probed = match probed {
         Ok(probed) => probed,
@@ -640,12 +879,12 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
             ] {
                 capabilities.insert(
                     name.to_string(),
-                    Capability::new("unverified", "Discovery could not set up the harness."),
+                    Capability::new("unverified", "Known once the agent is ready."),
                 );
             }
             let unknown = Capability::new(
                 "unverified",
-                "Discovery could not set up the harness; see its setup error.",
+                "Known once the agent is ready; see its problem.",
             );
             return AcpDiscovery {
                 setup_status: if failure.unauthenticated {
@@ -655,6 +894,7 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
                 }
                 .to_string(),
                 error: Some(failure.message),
+                auth_methods: failure.auth_methods,
                 capabilities,
                 chat: unknown.clone(),
                 flow: unknown,
@@ -679,29 +919,32 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
     let pinned = match &harness.system_instructions {
         Some(channel) => match channel.config.iter().find(|(id, value)| !offered(id, value)) {
             Some((id, value)) => unsupported(&format!(
-                "Its system_instructions channel requires config option {id:?} set to {value:?}, which the harness does not offer."
+                "Its Pinned instructions setting needs session setting {id}={value}, which the agent doesn't offer."
             )),
-            None => Capability::new("supported", "Its registration declares a system_instructions channel."),
+            None => Capability::new("supported", "Passed as its Pinned instructions setting says."),
         },
         None if probed.system_prompt => {
-            Capability::new("supported", "The harness advertises systemPrompt.")
+            Capability::new("supported", "The agent takes ACP system prompts.")
         }
-        None => unsupported("The harness advertises no systemPrompt and its registration declares no system_instructions channel."),
+        None => unsupported("The agent doesn't take ACP system prompts, and its registration has no Pinned instructions setting."),
     };
     let chat = match pinned.supported() {
         true => Capability::new(
             "supported",
-            "Chat pins its instructions through a supported channel.",
+            "Spark can give it a chat's pinned instructions.",
         ),
-        false => unsupported(&format!("Chat pins instructions. {}", pinned.reason)),
+        false => unsupported(&format!(
+            "Chats need pinned instructions, which it can't take. {}",
+            pinned.reason
+        )),
     };
     capabilities.insert("pinned_instructions".to_string(), pinned);
     capabilities.insert(
         "session_resume".to_string(),
         if probed.resume {
-            Capability::new("supported", "The harness advertises session/resume.")
+            Capability::new("supported", "The agent can resume a session.")
         } else if probed.load {
-            Capability::new("supported", "The harness advertises session/load.")
+            Capability::new("supported", "The agent can reload a session.")
         } else {
             unsupported("Each turn starts a fresh session, with earlier messages as context.")
         },
@@ -709,29 +952,57 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
     capabilities.insert(
         "model_selection".to_string(),
         match select_option(&options, "model") {
-            Some(_) => Capability::new("supported", "The harness offers a model selector."),
-            None => unsupported("The harness offers no model selector; turns use its default."),
+            Some(_) => Capability::new("supported", "The agent offers a choice of model."),
+            None => unsupported("The agent offers no choice of model; turns use its default."),
         },
     );
     capabilities.insert(
         "reasoning_effort".to_string(),
         match select_option(&options, "thought_level") {
-            Some(_) => Capability::new("supported", "The harness offers a thought-level selector."),
-            None => unsupported("The harness offers no thought-level selector."),
+            Some(_) => Capability::new(
+                "supported",
+                "The agent offers a choice of reasoning effort.",
+            ),
+            None => unsupported("The agent offers no choice of reasoning effort."),
         },
     );
+    // A step's model and reasoning effort are applied or the step refused.
+    let refused = [
+        ("model_selection", "model"),
+        ("reasoning_effort", "reasoning effort"),
+    ]
+    .into_iter()
+    .filter(|(name, _)| !capabilities[*name].supported())
+    .map(|(_, what)| what)
+    .collect::<Vec<_>>();
+    let flow = match refused.join(" or ") {
+        none if none.is_empty() => Capability::new(
+            "supported",
+            "Steps run on it when the model and reasoning effort they set are among its choices, or they set none. A step that sets another, such as another harness's model, is refused, as is one that needs messages during a turn or subagent control.",
+        ),
+        refused => Capability::new(
+            "limited",
+            format!(
+                "A step that sets a {refused} is refused: the agent offers no choice of {refused}. Steps that leave it to the agent run, unless they need messages during a turn or subagent control."
+            ),
+        ),
+    };
     AcpDiscovery {
         setup_status: "ready".to_string(),
         error: None,
+        auth_methods: Vec::new(),
         capabilities,
         chat,
-        flow: Capability::new(
-            "supported",
-            "Flow steps pin no instructions; a step that requires steering or child intervention is refused.",
-        ),
+        flow,
         modes: options
             .is_empty()
-            .then(|| probed.session.get("modes").filter(|modes| !modes.is_null()).cloned())
+            .then(|| {
+                probed
+                    .session
+                    .get("modes")
+                    .filter(|modes| !modes.is_null())
+                    .cloned()
+            })
             .flatten(),
         config_options: options,
     }
@@ -776,7 +1047,7 @@ fn turn(
         .get(harness_id)
         .cloned()
         .ok_or_else(|| {
-            format!("ACP harness {harness_id} is not registered in the agents settings.")
+            format!("ACP harness {harness_id} is not registered, or its registration is invalid; check Settings > Models & accounts > Agent harnesses.")
         })?
         .restore_env(
             live_harness(request, harness_id).as_ref(),
@@ -939,6 +1210,8 @@ fn turn(
 
     let (messages, delivered) = std::sync::mpsc::channel();
     let out = Out { messages };
+    // A harness may echo what it was launched with, in an error or on stderr.
+    let secrets = environment_values(&command);
     let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
         drive(endpoints, plan, out, interrupted, (replies, answered))
     })
@@ -989,11 +1262,12 @@ fn turn(
                 Some(Err(message)) => message,
                 _ => "the ACP connection worker stopped".to_string(),
             };
-            return Err(if tail.is_empty() {
+            let message = if tail.is_empty() {
                 format!("ACP harness {harness_id}: {message}")
             } else {
                 format!("ACP harness {harness_id}: {message}; stderr tail:\n{tail}")
-            });
+            };
+            return Err(redact_all(message, &secrets));
         }
     };
     drop(connection);
@@ -1331,9 +1605,12 @@ impl<'a> Turn<'a> {
             Some(text) if !plan.channel_rendered => {
                 if capabilities.session_capabilities.system_prompt.is_none() {
                     return Err(format!(
-                        "this work carries pinned system instructions, but ACP harness {id} \
-                         advertises no systemPrompt and its registration declares no \
-                         system_instructions channel"
+                        "this chat or flow step has pinned instructions, which ACP harness \
+                         {id} can't take: the agent doesn't take ACP system prompts, and its \
+                         registration has no Pinned instructions setting. If the agent can \
+                         take instructions through an argument or environment variable, set \
+                         Pinned instructions when you edit it in Settings > Models & \
+                         accounts > Agent harnesses"
                     ));
                 }
                 Some(SystemPrompt::new(vec![ContentBlock::from(text.clone())]))
@@ -1486,19 +1763,21 @@ impl<'a> Turn<'a> {
                     "config option {config_id:?} is not a select option"
                 ));
             };
-            let offered = match &select.options {
+            let offered: Vec<&str> = match &select.options {
                 SessionConfigSelectOptions::Ungrouped(options) => options
                     .iter()
-                    .any(|option| option.value.0.as_ref() == value),
+                    .map(|option| option.value.0.as_ref())
+                    .collect(),
                 SessionConfigSelectOptions::Grouped(groups) => groups
                     .iter()
                     .flat_map(|group| &group.options)
-                    .any(|option| option.value.0.as_ref() == value),
-                _ => false,
+                    .map(|option| option.value.0.as_ref())
+                    .collect(),
+                _ => Vec::new(),
             };
-            if !offered {
+            if !offered.contains(&value.as_str()) {
                 return Err(format!(
-                    "config option {config_id:?} does not offer the value {value:?}"
+                    "config option {config_id:?} does not offer the value {value:?}; it offers {offered:?}. Choose one of those for this chat or flow step, or run it on another harness"
                 ));
             }
             if let Some(previous) = chosen
@@ -1873,10 +2152,24 @@ fn reset_reason(error: &agent_client_protocol::Error, method: &str) -> Result<St
     ))
 }
 
+/// What the harness said when it asked to be signed in, without the
+/// protocol's error code.
+fn auth_error(error: &agent_client_protocol::Error) -> String {
+    match &error.data {
+        Some(data) => format!(
+            "the agent needs you to sign in. It said: {}: {data}",
+            error.message
+        ),
+        None => format!("the agent needs you to sign in. It said: {}", error.message),
+    }
+}
+
 fn setup_error(error: &agent_client_protocol::Error, method: &str) -> String {
     if is_auth_error(error) {
-        "the harness requires authentication; sign in with the harness's own login, then retry"
-            .to_string()
+        format!(
+            "{}. Sign in from Settings > Models & accounts > Agent harnesses, then retry",
+            auth_error(error)
+        )
     } else {
         format!("{method} failed: {}", describe(error))
     }

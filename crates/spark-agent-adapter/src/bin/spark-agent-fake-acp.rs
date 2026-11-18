@@ -6,7 +6,11 @@
 //! variables are printed to stderr at startup and in every error, as a leaky
 //! harness would. `forms` are `elicitation/create` requests sent in turn
 //! during the prompt, each waiting for its reply unless it `exit`s or is
-//! `withdraw`n with `$/cancel_request`.
+//! `withdraw`n with `$/cancel_request`. `auth_methods` are offered at
+//! initialize, terminal ones only to a client with `auth.terminal`;
+//! `authenticate` creates the `signed_in` file, after which `new_error` no
+//! longer applies, as a harness keeps its own sign-in, or with
+//! `authenticate_waits` never answers, as a sign-in the user leaves.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -150,6 +154,15 @@ impl Agent {
         let script = self.script.clone();
         match message["method"].as_str().unwrap_or_default() {
             "initialize" => {
+                // As ACP requires, terminal methods only for a client that runs them.
+                let terminal = message["params"]["clientCapabilities"]["auth"]["terminal"] == true;
+                let methods = script["auth_methods"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|method| terminal || method["type"] != "terminal")
+                    .cloned()
+                    .collect::<Vec<_>>();
                 let mut session = json!({});
                 if script["system_prompt"].as_bool().unwrap_or(false) {
                     session["systemPrompt"] = json!({});
@@ -165,13 +178,19 @@ impl Agent {
                             "loadSession": script["load"].as_bool().unwrap_or(false),
                             "sessionCapabilities": session,
                         },
-                        "authMethods": [],
+                        "authMethods": methods,
                     }),
                 );
             }
             method @ ("session/new" | "session/load" | "session/resume") => {
                 let kind = method.trim_start_matches("session/");
-                if let Some(error) = script.get(&format!("{kind}_error")) {
+                let signed_in = script["signed_in"]
+                    .as_str()
+                    .is_some_and(|path| std::path::Path::new(path).exists());
+                if let Some(error) = script
+                    .get(&format!("{kind}_error"))
+                    .filter(|_| !(kind == "new" && signed_in))
+                {
                     return self.fail(&id, error);
                 }
                 if kind != "new" {
@@ -210,6 +229,18 @@ impl Agent {
                 }
                 self.script["config_options"] = options.clone();
                 self.reply(&id, json!({"configOptions": options}));
+            }
+            "authenticate" => {
+                if let Some(error) = script.get("authenticate_error") {
+                    return self.fail(&id, error);
+                }
+                if script["authenticate_waits"] == true {
+                    return;
+                }
+                if let Some(path) = script["signed_in"].as_str() {
+                    std::fs::write(path, "").expect("fake ACP sign-in");
+                }
+                self.reply(&id, json!({}));
             }
             "session/prompt" => self.prompt(&id),
             _ => {}

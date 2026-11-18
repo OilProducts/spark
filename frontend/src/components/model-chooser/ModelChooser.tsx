@@ -42,6 +42,7 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const statuses = discovery?.payload?.providers
     const providerLabel = (provider: string) => labelOf(provider, statuses)
     const unavailable = (provider: string) => !!discovery && (discovery.failed || discovery.payload?.providers[provider]?.status === 'unavailable')
+    const checking = (provider: string) => discovery?.payload?.providers[provider]?.status === 'checking'
     const metadata = (provider: string | null, model: string | null) => !unavailable(provider || '')
         ? discovery?.payload?.models.find(entry => entry.provider === provider && !entry.llm_profile && (model ? entry.id === model : entry.is_default)) : undefined
     const resolve = (settings: ModelSettings) => {
@@ -92,10 +93,14 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const allEfforts = [...new Set([...supported, ...(supported.length && value.reasoning_effort ? [value.reasoning_effort] : [])])]
     // Session controls are a harness's own, so another provider starts without them. Another model
     // keeps only the native controls it offers: the rest would stay saved, hidden, and fail its turns.
+    // While its harness checks, what a model offers is unknown, so another of its models keeps them.
+    // ponytail: assumes a harness's models share its native controls, as Codex's all offer summaries;
+    // drop the unoffered ones when the check ends if a harness's models ever differ.
     const select = (selection: { provider: string | null; llm_profile: string | null; model: string | null }) => {
         const same = selection.provider === value.provider && selection.llm_profile === value.llm_profile && (selection.model || null) === value.model
+        const unknown = !!selection.provider && selection.provider === value.provider && checking(selection.provider)
         const meta = resolve({ ...empty, ...selection }).meta
-        const keep = (current: string | null | undefined, offered?: string[]) => same || current == null || offered?.includes(current) ? current : null
+        const keep = (current: string | null | undefined, offered?: string[]) => same || unknown || current == null || offered?.includes(current) ? current : null
         const thinking = keep(value.thinking, meta?.supported_thinking)
         return { ...value,
             provider: selection.provider, llm_profile: selection.llm_profile, model: selection.model || null,
@@ -170,10 +175,11 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                 <div id={`${id}-list`} role="listbox" aria-label="Models" className="min-h-0 max-h-[min(45vh,20rem)] overflow-y-auto">
                     {groups.map((group, index) => {
                         const entries = rows.filter(row => row.groupIndex === index)
-                        if (!entries.length && (group.profile || !unavailable(group.provider))) return null
+                        if (!entries.length && (group.profile || !unavailable(group.provider) && !checking(group.provider))) return null
                         return <div key={`${group.provider}:${group.profile}`} role="group" aria-label={`${providerLabel(group.provider)}${group.profile ? ` / ${group.label}` : ''}`}>
                             <div className="px-2 pt-3 pb-1 text-xs font-medium text-muted-foreground">{providerLabel(group.provider)}{group.profile ? ` / ${group.label}` : ''}
-                                {!group.profile && unavailable(group.provider) && <span role="status" className="block">{statuses?.[group.provider]?.setup_status === 'unauthenticated' ? 'Authentication required. ' : ''}Model discovery unavailable. {statuses?.[group.provider]?.error}</span>}
+                                {!group.profile && checking(group.provider) && <span role="status" className="block">Checking…</span>}
+                                {!group.profile && unavailable(group.provider) && <span role="status" className="block">{statuses?.[group.provider]?.setup_status === 'unauthenticated' ? 'Authentication required. ' : ''}Model discovery unavailable. {statuses?.[group.provider]?.error}{statuses?.[group.provider]?.setup_status ? ' Check and fix it under Settings › Models & accounts › Agent harnesses.' : ''}</span>}
                                 {!group.profile && !unavailable(group.provider) && (['chat', 'flow'] as const).map(use => {
                                     const eligibility = statuses?.[group.provider]?.[use]
                                     return eligibility && eligibility.state !== 'supported' && <span key={use} className="block">{use === 'chat' ? 'Chat' : 'Flows'} unavailable: {eligibility.reason}</span>
@@ -218,7 +224,7 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                         <NativeSelect size="sm" aria-label={control.name} value={value.session_config?.[control.id] ?? ''} onChange={event => setControl(control.id, event.target.value)}>
                             <NativeSelectOption value="">Harness default</NativeSelectOption>
                             {valuesOf(control.values)}
-                            {(saved => saved && !control.values.some(entry => entry.value === saved) && <NativeSelectOption value={saved}>{saved} (not offered now)</NativeSelectOption>)(value.session_config?.[control.id])}
+                            {(saved => saved && !control.values.some(entry => entry.value === saved) && <NativeSelectOption value={saved}>{saved}{checking(value.provider ?? '') ? '' : ' (not offered now)'}</NativeSelectOption>)(value.session_config?.[control.id])}
                         </NativeSelect>
                     </label>)}
                     {modes.length > 0 && <p className="text-xs text-muted-foreground">Harness modes, set by the harness: {modes.map(mode => mode.name).join(', ')}</p>}

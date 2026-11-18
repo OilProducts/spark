@@ -1,3 +1,5 @@
+#[path = "contracts/acp_harness_settings_contracts.rs"]
+mod acp_harness_settings_contracts;
 #[path = "contracts/conversation_repository_contracts.rs"]
 mod conversation_repository_contracts;
 #[path = "../../test-fixtures/conversation_seed.rs"]

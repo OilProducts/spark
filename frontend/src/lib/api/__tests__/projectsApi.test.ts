@@ -72,6 +72,7 @@ describe('projectsApi parsing', () => {
           capabilities: { pinned_instructions: capability }, chat: capability, flow: { state: 'supported', reason: 'Ready.' },
           config_options: options, modes: { currentModeId: 'code', availableModes: [{ id: 'code', name: 'Code' }] } },
         'acp:locked': { status: 'unavailable', error: 'Authentication required', setup_status: 'unauthenticated' },
+        'acp:slow': { status: 'checking', error: null, label: 'Slow' },
       },
     })
 
@@ -80,6 +81,7 @@ describe('projectsApi parsing', () => {
       capabilities: { pinned_instructions: capability }, chat: capability, flow: { state: 'supported', reason: 'Ready.' },
       config_options: options, modes: { currentModeId: 'code', availableModes: [{ id: 'code', name: 'Code' }] } })
     expect(payload.providers['acp:locked'].setup_status).toBe('unauthenticated')
+    expect(payload.providers['acp:slow']).toEqual({ status: 'checking', error: null, label: 'Slow' })
     expect(() => parseProjectChatModelsResponse({ models: [], providers: {
       codex: { status: 'available', error: null }, 'acp:x': { status: 'available', error: null, chat: { state: 'maybe', reason: '' } },
     } })).toThrow()

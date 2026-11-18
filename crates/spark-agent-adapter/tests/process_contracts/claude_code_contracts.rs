@@ -1777,14 +1777,16 @@ fn claude_code_sign_in_relays_the_link_and_pasted_code_to_the_cli() {
         pending.login_url.as_deref(),
         Some("https://claude.com/cai/oauth/authorize?code=true&state=fake")
     );
-    assert!(connection.submit_code("good#state\nextra").is_err());
+    assert!(connection
+        .submit_code(&native, "good#state\nextra")
+        .is_err());
 
-    connection.submit_code("missing-state").unwrap();
+    connection.submit_code(&native, "missing-state").unwrap();
     let rejected = settled_status(&mut connection, &native, |status| status.message.is_some());
     assert_eq!(rejected.status, "pending");
     assert!(rejected.message.unwrap().starts_with("Invalid code"));
 
-    connection.submit_code("  good#state \n").unwrap();
+    connection.submit_code(&native, "  good#state \n").unwrap();
     assert_eq!(
         completed
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -1799,7 +1801,7 @@ fn claude_code_sign_in_relays_the_link_and_pasted_code_to_the_cli() {
     assert!(connected.login_url.is_none());
     // Afterwards the CLI itself is asked, and no login is waiting for a code.
     assert_eq!(connection.status(&native).unwrap().status, "connected");
-    assert!(connection.submit_code("good#state").is_err());
+    assert!(connection.submit_code(&native, "good#state").is_err());
 }
 
 #[test]
@@ -1809,7 +1811,7 @@ fn claude_code_sign_in_reports_cli_failures_and_cancels_without_signing_in() {
     let mut connection = ClaudeCodeConnection::default();
 
     connection.start_login(&native, |_| {}).unwrap();
-    connection.submit_code("wrong#state").unwrap();
+    connection.submit_code(&native, "wrong#state").unwrap();
     let failed = settled_status(&mut connection, &native, |status| {
         status.status != "pending"
     });
@@ -1822,7 +1824,17 @@ fn claude_code_sign_in_reports_cli_failures_and_cancels_without_signing_in() {
     connection.start_login(&native, |_| {}).unwrap();
     let cancelled = connection.cancel_login();
     assert_eq!(cancelled.status, "disconnected");
-    assert!(connection.submit_code("good#state").is_err());
+    assert!(connection.submit_code(&native, "good#state").is_err());
+    assert_eq!(connection.status(&native).unwrap().status, "disconnected");
+    assert!(!temp.path().join("fake-signed-in").exists());
+
+    // A sign-in started before the program changed takes no code for the new one.
+    connection.start_login(&native, |_| {}).unwrap();
+    let replaced = spark_common::agent_settings::NativeAgentSettings {
+        claude_binary: Some("/nonexistent/replacement-claude".into()),
+        ..native.clone()
+    };
+    assert!(connection.submit_code(&replaced, "good#state").is_err());
     assert_eq!(connection.status(&native).unwrap().status, "disconnected");
     assert!(!temp.path().join("fake-signed-in").exists());
 }
@@ -1843,7 +1855,7 @@ fn configured_claude_config_dir_reaches_auth_status_login_and_turns() {
     // The fake CLI keeps its sign-in under CLAUDE_CONFIG_DIR.
     let mut connection = ClaudeCodeConnection::default();
     connection.start_login(&native, |_| {}).unwrap();
-    connection.submit_code("good#state").unwrap();
+    connection.submit_code(&native, "good#state").unwrap();
     settled_status(&mut connection, &native, |status| {
         status.status == "connected"
     });
@@ -1912,7 +1924,7 @@ fn default_claude_config_dir_is_spark_owned_and_needs_its_own_sign_in() {
 
     // Sign-in runs `claude auth login` against that same dir.
     connection.start_login(&native, |_| {}).unwrap();
-    connection.submit_code("good#state").unwrap();
+    connection.submit_code(&native, "good#state").unwrap();
     settled_status(&mut connection, &native, |status| {
         status.status == "connected"
     });

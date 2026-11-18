@@ -215,6 +215,27 @@ fn pin_claude_code_bin_to_missing() {
     std::env::set_var("SPARK_CODEX_APP_SERVER_BIN", "/nonexistent/codex-for-tests");
 }
 
+/// A model listing once no harness is still being checked.
+fn settled(list: impl Fn() -> Value) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let response = list();
+        let checking = response["providers"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|provider| provider["status"] == "checking");
+        if !checking {
+            return response;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "harness checks finish: {response}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 #[test]
 fn project_service_chat_models_include_safe_configured_profile_models() {
     pin_claude_code_bin_to_missing();
@@ -237,11 +258,18 @@ default_model = "local-model"
     .expect("profiles");
 
     let service = WorkspaceProjectService::new(settings);
-    assert!(service.chat_models(Some("")).is_err());
-    let workspace = service.chat_models(None).expect("workspace models");
-    let response = service
-        .chat_models(Some("/projects/my-app"))
-        .expect("models");
+    let finished: spark_workspace::models::CheckFinished = std::sync::Arc::new(|_: &str| {});
+    assert!(service.chat_models(Some(""), false, &finished).is_err());
+    let workspace = settled(|| {
+        service
+            .chat_models(None, false, &finished)
+            .expect("workspace models")
+    });
+    let response = settled(|| {
+        service
+            .chat_models(Some("/projects/my-app"), false, &finished)
+            .expect("models")
+    });
 
     assert_eq!(
         workspace["provider_reasoning_efforts"],
@@ -689,12 +717,14 @@ fn chat_models_discovery_uses_resolved_configuration_and_invalidates_cache() {
                 .contains(&format!("x-api-key: {secret}\r\n")));
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
         });
-        let response = spark_workspace::models::chat_models_with_codex_result(
-            &settings,
-            temp.path(),
-            Ok(vec![]),
-        )
-        .unwrap();
+        let response = settled(|| {
+            spark_workspace::models::chat_models_with_codex_result(
+                &settings,
+                temp.path(),
+                Ok(vec![]),
+            )
+            .unwrap()
+        });
         server.join().unwrap();
         let models: Vec<_> = response["models"]
             .as_array()

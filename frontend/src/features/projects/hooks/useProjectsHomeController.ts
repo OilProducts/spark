@@ -156,7 +156,8 @@ export function useProjectsHomeController() {
         && conversationCache.summariesByProjectPath[activeProjectPath]?.some((entry) => entry.conversation_id === activeConversationId))
     const editableModelSettings = pendingChatSettings ?? activeConversationRecord?.model_settings_view?.stored ?? INHERITED_MODEL_SETTINGS
     const discovery = useModelOptions(activeProjectPath)
-    const activeProjectChatModelsResponse = discovery?.payload
+    // Codex's models are known once its check is in.
+    const activeProjectChatModelsResponse = discovery?.payload?.providers.codex.status === 'checking' ? undefined : discovery?.payload
     const activeProjectChatModels = activeProjectChatModelsResponse?.models || []
     const isCodexProvider = (activeProjectChatProvider || 'codex') === 'codex'
     const codexModels = activeProjectChatModels.filter((model) => model.provider === 'codex')

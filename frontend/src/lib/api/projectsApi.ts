@@ -51,18 +51,23 @@ export interface ProjectChatModelsResponse {
     }
 }
 
+export const harnessSetupStatuses = ['ready', 'unreachable', 'unauthenticated', 'not_installed', 'misconfigured'] as const
+export type HarnessSetupStatus = typeof harnessSetupStatuses[number]
+
 export interface ProjectChatModelCapability {
-    state: 'supported' | 'unsupported' | 'unverified'
+    /** `limited`: some of it is refused, as `reason` says. */
+    state: 'supported' | 'limited' | 'unsupported' | 'unverified'
     reason: string
 }
 
 export interface ProjectChatModelProviderStatusResponse {
-    status: 'available' | 'unavailable'
+    /** `checking`: a harness whose first check is still running; a live `harness.checked` event follows. */
+    status: 'available' | 'unavailable' | 'checking'
     error: string | null
     /** The provider's display name; for an ACP harness, its registration's. */
     label?: string
-    /** For an ACP harness: whether discovery could set it up. */
-    setup_status?: 'ready' | 'unreachable' | 'unauthenticated'
+    /** For a harness: whether it could be set up. */
+    setup_status?: HarnessSetupStatus
     capabilities?: Record<string, ProjectChatModelCapability>
     chat?: ProjectChatModelCapability
     flow?: ProjectChatModelCapability
@@ -70,21 +75,23 @@ export interface ProjectChatModelProviderStatusResponse {
     config_options?: Record<string, unknown>[]
     /** Legacy session modes, only when the harness reports no config options. */
     modes?: { currentModeId?: string; availableModes?: { id: string; name: string; description?: string | null }[] }
+    /** For an ACP harness that needs sign-in: the methods it offers, Spark starts each but one with `terminal`, the command the user runs. */
+    auth_methods?: { id: string; name: string; description?: string; terminal?: string[] }[]
 }
 
 function parseCapability(value: unknown, endpoint: string): ProjectChatModelCapability {
     const entry = expectObjectRecord(value, endpoint)
-    if (entry.state !== 'supported' && entry.state !== 'unsupported' && entry.state !== 'unverified') {
-        throw new ApiSchemaError(endpoint, 'Expected capability state to be supported, unsupported or unverified.')
+    if (entry.state !== 'supported' && entry.state !== 'limited' && entry.state !== 'unsupported' && entry.state !== 'unverified') {
+        throw new ApiSchemaError(endpoint, 'Expected capability state to be supported, limited, unsupported or unverified.')
     }
     return { state: entry.state, reason: expectString(entry.reason, endpoint, 'reason') }
 }
 
 /** The status's additive fields, each only when present. */
 function parseProviderDetails(entry: Record<string, unknown>, endpoint: string): Partial<ProjectChatModelProviderStatusResponse> {
-    const setup = entry.setup_status
-    if (setup !== undefined && setup !== 'ready' && setup !== 'unreachable' && setup !== 'unauthenticated') {
-        throw new ApiSchemaError(endpoint, 'Expected setup_status to be ready, unreachable or unauthenticated.')
+    const setup = entry.setup_status as HarnessSetupStatus | undefined
+    if (setup !== undefined && !harnessSetupStatuses.includes(setup)) {
+        throw new ApiSchemaError(endpoint, `Expected setup_status to be one of ${harnessSetupStatuses.join(', ')}.`)
     }
     if (entry.config_options !== undefined && !Array.isArray(entry.config_options)) {
         throw new ApiSchemaError(endpoint, 'Expected config_options to be an array.')
@@ -98,6 +105,12 @@ function parseProviderDetails(entry: Record<string, unknown>, endpoint: string):
         ...(entry.flow !== undefined ? { flow: parseCapability(entry.flow, endpoint) } : {}),
         ...(Array.isArray(entry.config_options) ? { config_options: entry.config_options.map((option) => expectObjectRecord(option, endpoint)) } : {}),
         ...(entry.modes != null ? { modes: expectObjectRecord(entry.modes, endpoint) as ProjectChatModelProviderStatusResponse['modes'] } : {}),
+        ...(Array.isArray(entry.auth_methods) ? { auth_methods: entry.auth_methods.map((value) => {
+            const method = expectObjectRecord(value, endpoint)
+            return { id: expectString(method.id, endpoint, 'id'), name: expectString(method.name, endpoint, 'name'),
+                ...(typeof method.description === 'string' ? { description: method.description } : {}),
+                ...(Array.isArray(method.terminal) ? { terminal: method.terminal.map((word) => expectString(word, endpoint, 'terminal')) } : {}) }
+        }) } : {}),
     }
 }
 
@@ -279,8 +292,8 @@ export function parseProjectChatModelsResponse(
     expectObjectRecord(providers.codex, endpoint)
     const statuses: ProjectChatModelsResponse['providers'] = Object.fromEntries(Object.entries(providers).map(([provider, value]) => {
         const entry = expectObjectRecord(value, endpoint)
-        if (entry.status !== 'available' && entry.status !== 'unavailable') {
-            throw new ApiSchemaError(endpoint, 'Expected provider status to be "available" or "unavailable".')
+        if (entry.status !== 'available' && entry.status !== 'unavailable' && entry.status !== 'checking') {
+            throw new ApiSchemaError(endpoint, 'Expected provider status to be "available", "unavailable" or "checking".')
         }
         if (entry.error !== null && typeof entry.error !== 'string') {
             throw new ApiSchemaError(endpoint, 'Expected provider error to be a string or null.')
@@ -366,9 +379,13 @@ export async function fetchProjectMetadataValidated(directory: string): Promise<
     )
 }
 
-export async function fetchProjectChatModelsValidated(projectPath: string | null): Promise<ProjectChatModelsResponse> {
+/** `refresh` checks every harness again; each shows its last result until its new check ends. */
+export async function fetchProjectChatModelsValidated(projectPath: string | null, refresh = false): Promise<ProjectChatModelsResponse> {
+    const query = new URLSearchParams()
+    if (projectPath) query.set('project_path', projectPath)
+    if (refresh) query.set('refresh', 'true')
     return fetchWorkspaceJsonValidated(
-        projectPath ? `/projects/chat-models?project_path=${encodeURIComponent(projectPath)}` : '/projects/chat-models',
+        `/projects/chat-models${query.toString() ? `?${query}` : ''}`,
         undefined,
         '/workspace/api/projects/chat-models',
         parseProjectChatModelsResponse,

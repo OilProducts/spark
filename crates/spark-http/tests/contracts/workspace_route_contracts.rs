@@ -2657,6 +2657,35 @@ where
     }
 }
 
+/// Lists models at `uri`, then, for each harness still being checked, waits
+/// for the live event announcing its check ended, and lists again.
+async fn settled_models<B, E>(app: &axum::Router, uri: &str, events: &mut B) -> Value
+where
+    B: futures_util::Stream<Item = Result<axum::body::Bytes, E>> + Unpin,
+    E: std::fmt::Debug,
+{
+    let (status, listed, _) = request_json(app.clone(), "GET", uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let checking = |listed: &Value| {
+        listed["providers"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(_, provider)| provider["status"] == "checking")
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>()
+    };
+    let mut pending = checking(&listed);
+    while !pending.is_empty() {
+        let event = next_live_event(events).await;
+        assert!(event.contains("\"type\":\"harness.checked\""), "{event}");
+        pending.retain(|id| !event.contains(&format!("\"provider\":\"{id}\"")));
+    }
+    let listed = request_json(app.clone(), "GET", uri, None).await.1;
+    assert!(checking(&listed).is_empty(), "{listed}");
+    listed
+}
+
 #[tokio::test]
 async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
     use futures_util::StreamExt;
@@ -2718,11 +2747,10 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
     let mut events = live.into_body().into_data_stream();
     assert_eq!(events.next().await.unwrap().unwrap(), ": keepalive\n\n");
     let uri = "/workspace/api/projects/chat-models";
-    let initial = request_json(app.clone(), "GET", uri, None).await;
-    assert_eq!(initial.0, StatusCode::OK, "{}", initial.1);
+    let initial = settled_models(&app, uri, &mut events).await;
     for provider in ["anthropic", "openai", "gemini", "openrouter", "litellm"] {
-        assert!(initial.1["providers"].get(provider).is_none());
-        assert!(!initial.1["models"]
+        assert!(initial["providers"].get(provider).is_none());
+        assert!(!initial["models"]
             .as_array()
             .unwrap()
             .iter()
@@ -2747,10 +2775,7 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
             request_json(app.clone(), "GET", "/workspace/api/codex/connection", None).await;
         assert_eq!(status.0, StatusCode::OK);
         assert_eq!(status.1["status"], "disconnected");
-        assert_eq!(
-            initial.1,
-            request_json(app.clone(), "GET", uri, None).await.1
-        );
+        assert_eq!(initial, request_json(app.clone(), "GET", uri, None).await.1);
         assert_eq!(count_native(), (1, 1));
         assert_no_live_event(&mut events).await;
     }
@@ -2892,7 +2917,7 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
         assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
         let event = next_live_event(&mut events).await;
         assert!(event.contains("settings.changed"), "{event}");
-        let refreshed = request_json(app.clone(), "GET", uri, None).await.1;
+        let refreshed = settled_models(&app, uri, &mut events).await;
         assert_eq!(refreshed["providers"]["openrouter"]["status"], "available");
         assert_eq!(
             refreshed,
@@ -2930,13 +2955,11 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    for _ in 0..2 {
-        request_json(app.clone(), "GET", uri, None).await;
-    }
-    assert_eq!(count_native(), (3, 2));
     let event = next_live_event(&mut events).await;
     assert!(event.contains("settings.changed"), "{event}");
     assert!(event.contains("\"section\":\"codex\""), "{event}");
+    settled_models(&app, uri, &mut events).await;
+    assert_eq!(count_native(), (3, 2));
     request_json(app.clone(), "GET", "/workspace/api/codex/connection", None).await;
     request_json(app.clone(), "GET", uri, None).await;
     assert_eq!(count_native(), (3, 2));
@@ -2944,13 +2967,11 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
     // An externally completed sign-out is observed by the existing connection check.
     fs::remove_file(runtime.join(".codex/fake-login-complete")).unwrap();
     request_json(app.clone(), "GET", "/workspace/api/codex/connection", None).await;
-    for _ in 0..2 {
-        request_json(app.clone(), "GET", uri, None).await;
-    }
-    assert_eq!(count_native(), (4, 2));
     let event = next_live_event(&mut events).await;
     assert!(event.contains("settings.changed"), "{event}");
     assert!(event.contains("\"section\":\"codex\""), "{event}");
+    settled_models(&app, uri, &mut events).await;
+    assert_eq!(count_native(), (4, 2));
     request_json(app.clone(), "GET", "/workspace/api/codex/connection", None).await;
     request_json(app.clone(), "GET", uri, None).await;
     assert_eq!(count_native(), (4, 2));

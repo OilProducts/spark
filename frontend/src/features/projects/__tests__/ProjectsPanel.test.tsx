@@ -5496,6 +5496,62 @@ describe('ProjectsPanel', () => {
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeEnabled()
   })
 
+  it('keeps a saved Codex summary through a model chosen while Codex checks, once its check is in', async () => {
+    const user = userEvent.setup()
+    const saved = { provider: 'codex', llm_profile: null, model: 'gpt-5.4' as string | null, reasoning_effort: null, thinking: null, thinking_budget_tokens: null, reasoning_mode: null, reasoning_summary: 'detailed' }
+    let effective = { ...saved }
+    let revision = 1
+    let checked = false
+    const requests: { model_settings: typeof saved }[] = []
+    const snapshot = () => conversationFixture({
+      conversation_id: 'summary-thread', project_path: '/tmp/model-project', chat_mode: 'chat',
+      provider: effective.provider, model: effective.model, reasoning_effort: effective.reasoning_effort,
+      title: 'Summary thread', created_at: '2026-04-16T18:00:00Z', updated_at: '2026-04-16T18:01:00Z', revision_override: revision,
+      turns: [], segments: [], flow_run_requests: [], flow_launches: [],
+      settings: { models: { scope: 'conversation', revision: String(revision), stored: effective, effective, source: 'conversation' } },
+    })
+    const codex = (id: string) => ({ provider: 'codex', id, display: id, is_default: id === 'gpt-5.4', supported_reasoning_efforts: ['low'], supported_reasoning_summaries: ['auto', 'concise', 'detailed'] })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      let response: unknown = {}
+      if (url.includes('/projects/chat-models')) {
+        response = checked
+          ? { providers: { codex: { status: 'available', error: null, label: 'Codex', setup_status: 'ready' } }, models: [codex('gpt-5.4'), codex('gpt-5.4-mini')] }
+          : { providers: { codex: { status: 'checking', error: null, label: 'Codex' } }, models: [] }
+      } else if (url.includes('/projects/metadata')) response = { branch: 'main', commit: 'abc123' }
+      else if (url.includes('/projects/conversations')) response = summarySnapshot([snapshot()], { project_path: projectPathParam(url) })
+      else if (url.includes('/conversations/summary-thread')) {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body))
+          requests.push(body)
+          effective = body.model_settings
+          revision += 1
+          response = conversationMutationAck(snapshot())
+        } else response = conversationPage(snapshot())
+      }
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+    act(() => {
+      useStore.getState().registerProject('/tmp/model-project')
+      useStore.getState().setActiveProjectPath('/tmp/model-project')
+      selectActiveConversation('summary-thread')
+    })
+    renderProjectsPanel()
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Model:/ })).toBeEnabled())
+    await openPicker(user)
+    expect(within(screen.getByRole('group', { name: 'Codex' })).getByRole('status')).toHaveTextContent('Checking…')
+    await customModel(user, 'gpt-5.4-mini')
+    expect(requests).toEqual([expect.objectContaining({ model_settings: { ...saved, model: 'gpt-5.4-mini' } })])
+
+    // Codex's check ends: the chosen model offers the summary, which is still saved.
+    checked = true
+    act(() => window.dispatchEvent(new Event('spark:harness-checked')))
+    await openPicker(user)
+    expect(await within(await screen.findByRole('group', { name: 'Summary' })).findByRole('button', { name: 'Detailed' })).toHaveAttribute('aria-pressed', 'true')
+    expect(requests).toHaveLength(1)
+    expect(effective).toEqual({ ...saved, model: 'gpt-5.4-mini' })
+  })
+
   it('preserves an inherited profile through effort and model edits, explicit selection and reset', async () => {
     const user = userEvent.setup()
     const group = { provider: null as string | null, llm_profile: 'team' as string | null, model: null as string | null, reasoning_effort: 'low' as string | null }

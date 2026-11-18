@@ -19,6 +19,8 @@ export function useModelOptions(projectPath: string | null) {
         if (!entry) {
             let revision = 0
             const created: Entry = { value: null, listeners: new Set(), refresh: (event) => {
+                // A harness check ended: its result replaces "checking" in place.
+                if (event?.type === 'spark:harness-checked') return created.load(true)
                 const detail = (event as CustomEvent | undefined)?.detail
                 if (detail?.payload?.section && !['providers', 'llm_profiles', 'agents', 'codex', 'claude_code'].includes(detail.payload.section)) return
                 created.load(false)
@@ -44,6 +46,7 @@ export function useModelOptions(projectPath: string | null) {
             entry = created
             projects.set(scope, entry)
             window.addEventListener('spark:settings-live-event', entry.refresh)
+            window.addEventListener('spark:harness-checked', entry.refresh)
             entry.refresh()
         }
         const notify = () => render((version) => version + 1)
@@ -55,6 +58,7 @@ export function useModelOptions(projectPath: string | null) {
             queueMicrotask(() => {
                 if (entry.listeners.size) return
                 window.removeEventListener('spark:settings-live-event', entry.refresh)
+                window.removeEventListener('spark:harness-checked', entry.refresh)
                 projects.delete(scope)
             })
         }

@@ -100,6 +100,10 @@ pub fn router() -> Router<HttpAppState> {
         .route("/projects/metadata", get(project_metadata))
         .route("/projects/browse", get(browse_project_directories))
         .route("/projects/chat-models", get(project_chat_models))
+        .route(
+            "/projects/acp-sign-in",
+            post(project_acp_sign_in).delete(cancel_project_acp_sign_in),
+        )
         .route("/triggers", get(list_triggers).post(create_trigger))
         .route("/trigger-issues", get(list_trigger_issues))
         .route("/webhooks", post(post_trigger_webhook))
@@ -235,6 +239,9 @@ struct BrowseQuery {
 #[derive(Debug, Deserialize)]
 struct ChatModelsQuery {
     project_path: Option<String>,
+    /// Checks every harness again instead of reusing earlier checks.
+    #[serde(default)]
+    refresh: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1300,11 +1307,30 @@ async fn browse_project_directories(
 
 async fn project_chat_models(
     State(settings): State<Arc<SparkSettings>>,
+    State(live_hub): State<Arc<WorkspaceLiveHub>>,
     payload: Result<Query<ChatModelsQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = query_payload(payload)?;
+    // Each background harness check that ends tells clients to list again.
+    let finished: spark_workspace::models::CheckFinished = Arc::new(move |provider: &str| {
+        live_hub.publish(LiveEnvelope {
+            event_type: "harness.checked".into(),
+            project_path: None,
+            resource: spark_workspace::LiveResource {
+                kind: "settings".into(),
+                id: Some("harnesses".into()),
+            },
+            cursor: None,
+            reason: None,
+            payload: serde_json::json!({"provider": provider}),
+        });
+    });
     let models = tokio::task::spawn_blocking(move || {
-        WorkspaceProjectService::new((*settings).clone()).chat_models(query.project_path.as_deref())
+        WorkspaceProjectService::new((*settings).clone()).chat_models(
+            query.project_path.as_deref(),
+            query.refresh,
+            &finished,
+        )
     })
     .await
     .map_err(|error| {
@@ -1313,6 +1339,51 @@ async fn project_chat_models(
         )))
     })??;
     Ok(Json(models))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcpSignInRequest {
+    project_path: Option<String>,
+    harness_id: String,
+    method_id: String,
+}
+
+/// Waits while the user finishes the harness's sign-in.
+async fn project_acp_sign_in(
+    State(settings): State<Arc<SparkSettings>>,
+    payload: Result<Json<AcpSignInRequest>, JsonRejection>,
+) -> ApiResult<Value> {
+    let request = json_payload(payload)?;
+    let result = tokio::task::spawn_blocking(move || {
+        WorkspaceProjectService::new((*settings).clone()).acp_sign_in(
+            request.project_path.as_deref(),
+            &request.harness_id,
+            &request.method_id,
+        )
+    })
+    .await
+    .map_err(|error| {
+        WorkspaceApiError(WorkspaceError::Internal(format!(
+            "ACP sign-in task failed: {error}"
+        )))
+    })??;
+    Ok(Json(result))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcpSignInCancelQuery {
+    harness_id: String,
+}
+
+/// Stops the harness's sign-in in progress, if any.
+async fn cancel_project_acp_sign_in(
+    payload: Result<Query<AcpSignInCancelQuery>, QueryRejection>,
+) -> ApiResult<Value> {
+    let request = query_payload(payload)?;
+    let cancelled = spark_agent_adapter::acp::cancel_sign_in(&request.harness_id);
+    Ok(Json(json!({ "cancelled": cancelled })))
 }
 
 #[derive(Deserialize)]
@@ -1598,7 +1669,8 @@ async fn patch_settings(
         spark_workspace::settings::WorkspaceSettingsSection::Providers(_) => {
             ("workspace", "providers", None)
         }
-        spark_workspace::settings::WorkspaceSettingsSection::Agents(_) => {
+        spark_workspace::settings::WorkspaceSettingsSection::Agents(_)
+        | spark_workspace::settings::WorkspaceSettingsSection::AcpHarness { .. } => {
             ("workspace", "agents", None)
         }
         spark_workspace::settings::WorkspaceSettingsSection::Connections(_) => {

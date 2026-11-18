@@ -419,7 +419,9 @@ fn acp_pinned_instructions_need_system_prompt_or_a_declared_channel() {
     );
     let error = run(&no_channel, |_| {}).0.err().expect("refused");
     assert!(
-        error.contains("systemPrompt") && error.contains("system_instructions"),
+        error.contains("doesn't take ACP system prompts")
+            && error.contains("Pinned instructions")
+            && error.contains("Agent harnesses"),
         "{error}"
     );
     assert!(received(dir.path(), "session/new").is_empty());
@@ -588,7 +590,7 @@ fn acp_session_controls_apply_exactly_for_their_harness_and_fail_when_stale() {
     for (controls, expected) in [
         (
             json!({"approval": "auto/edit"}),
-            "does not offer the value \"auto/edit\"",
+            "does not offer the value \"auto/edit\"; it offers [\"ask\", \"Auto/Edit\"]",
         ),
         (
             json!({"retired": "on"}),
@@ -837,7 +839,7 @@ fn acp_continuity_resumes_matching_sessions_and_resets_once_otherwise() {
         .0
         .err()
         .expect("auth");
-    assert!(error.contains("authentication"), "{error}");
+    assert!(error.contains("needs you to sign in"), "{error}");
     assert!(received(dir.path(), "session/new").is_empty());
 }
 

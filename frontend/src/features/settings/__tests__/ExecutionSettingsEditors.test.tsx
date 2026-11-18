@@ -57,12 +57,25 @@ it('validates session limits and saves with the section revision', async () => {
     expect(saveAgentSettings).toHaveBeenCalledWith('one', { ...stored, default_command_timeout_ms: 500 })
 })
 
+it('shows why unreadable session limits can’t be read and repairs them for saving', async () => {
+    const repair = { max_turns: 0, max_tool_rounds_per_input: 7, default_command_timeout_ms: 10000, max_command_timeout_ms: 600000, tool_output_limits: {}, line_limits: {}, enable_loop_detection: true, loop_detection_window: 10, max_subagent_depth: 1 }
+    vi.mocked(fetchAgentSettings).mockResolvedValue({ revision: 'one', stored: null, repair_defaults: repair, effective: null, validation_errors: ['Invalid agents section: `max_turns` has the wrong type.'] })
+    vi.mocked(saveAgentSettings).mockImplementation(async (_, value) => ({ revision: 'two', stored: value, effective: value }))
+    render(<DialogProvider><AgentSettingsEditor /></DialogProvider>)
+    const user = userEvent.setup()
+    expect(await screen.findByText(/`max_turns` has the wrong type/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Reset what can’t be read' }))
+    expect(screen.getByLabelText('Tool rounds per message')).toHaveValue(7)
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    expect(saveAgentSettings).toHaveBeenCalledWith('one', repair)
+})
+
 it('collapses agent advanced groups, opens invalid paths and output limits, and keeps controls outside disclosures', async () => {
-    const stored = { max_turns: 0, max_tool_rounds_per_input: 0, default_command_timeout_ms: 10000, max_command_timeout_ms: 600000, tool_output_limits: { shell: -1 }, line_limits: {}, enable_loop_detection: true, loop_detection_window: 10, max_subagent_depth: 1, native: { codex_binary: ' ' } }
+    const stored = { max_turns: 0, max_tool_rounds_per_input: 0, default_command_timeout_ms: 10000, max_command_timeout_ms: 600000, tool_output_limits: { shell: -1 }, line_limits: {}, enable_loop_detection: true, loop_detection_window: 10, max_subagent_depth: 1, native: { codex_runtime_root: ' ' } }
     vi.mocked(fetchAgentSettings).mockResolvedValue({ revision: 'one', stored, effective: stored })
     const user = userEvent.setup()
     render(<DialogProvider><AgentSettingsEditor /></DialogProvider>)
-    const path = await screen.findByLabelText('Codex program')
+    const path = await screen.findByLabelText('Codex runtime root')
     expect(path).toBeVisible()
     expect(path).toHaveAccessibleDescription('Enter a nonempty path or leave blank for the default.')
     expect(screen.getByText('Codex and Claude paths').closest('details')).toHaveAttribute('open')
