@@ -29,7 +29,7 @@ import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { formatDuration, runHasEnded, type RunRecord } from './model/shared'
 import { buildRunNodeStatuses, VISIT_NODE_STATUSES } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
-import { buildRunContextOverview, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
+import { buildRunContextOverview, listShowsRun, runKind, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
 import type { StatusTone } from '@/components/app/status'
 import { ListBackLink, SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
@@ -55,13 +55,42 @@ const STATUS_ROWS: Record<RunStatusKind, { label: string; tone?: StatusTone }> =
 
 const ACTIVE_RUN_STATUSES = new Set(['running', 'pause_requested', 'abort_requested', 'cancel_requested'])
 
+// The run a wide Runs view opens when none is: one waiting on you, else the newest active run,
+// else the latest to finish, by the list's own states.
+const RUN_RELEVANCE: Partial<Record<RunStatusKind, number>> = { waiting: 0, running: 1 }
+const relevance = (run: RunRecord) => RUN_RELEVANCE[runKind(run)] ?? 2
+const recency = (run: RunRecord) => (relevance(run) === 2 && run.ended_at) || run.started_at || ''
+const mostRelevantRun = (runs: RunRecord[]) => runs.reduce<RunRecord | null>((best, run) => (
+    !best || relevance(run) < relevance(best) || (relevance(run) === relevance(best) && recency(run) > recency(best)) ? run : best
+), null)
 
 function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const { error, scopedRuns, status } = useRunsList({ selectedRunId, manageSync: false })
+    const isNarrowViewport = useNarrowViewport()
+    const goneRunIds = useStore((state) => state.runsListSession.goneRunIds)
     const projectFilter = useStore((state) => state.runsListSession.projectFilter)
     const statusFilter = useStore((state) => state.runsListSession.statusFilter ?? null)
     const searchQuery = useStore((state) => state.runsListSession.searchQuery ?? '')
+    const fetched = useStore((state) => state.runsListSession.fetched ?? false)
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
+    // A desktop opens on the run you most likely came for of those the list shows, never one found
+    // missing; a phone opens on the list. It waits for the first full list: Spark's live snapshot
+    // arrives one run at a time, so ranking before then can open a lesser run. A run picked or
+    // restored (even while it loads) stays.
+    const query = searchQuery.trim().toLowerCase()
+    // ponytail: O(n^2) while filters are on and nothing is open; index children by parent if lists grow large.
+    const autoRunId = selectedRunId || isNarrowViewport || !fetched
+        ? null
+        : mostRelevantRun(runs.filter((run) => !goneRunIds?.includes(run.run_id) && listShowsRun(runs, run, statusFilter, query)))?.run_id ?? null
+    useEffect(() => {
+        if (!autoRunId) return
+        const state = useStore.getState()
+        const { missingRunId } = state.runsListSession
+        // It opens a run the list shows, so the list's filters stay.
+        state.setRunsSelectedRunId(autoRunId, { keepFilters: true })
+        // A missing run's notice stays over the run opened in its place, unless that run is the one it names.
+        state.updateRunsListSession({ autoOpenedRunId: autoRunId, missingRunId: missingRunId === autoRunId ? null : missingRunId })
+    }, [autoRunId])
     return (
         <div className="flex h-full min-h-0 flex-col gap-2">
         <RunsProjectFilter />
@@ -113,9 +142,13 @@ function RunsProjectFilter() {
 
 export function RunsPanel() {
     const isNarrowViewport = useNarrowViewport()
-    const { status, hasRuns } = useStore(useShallow((state) => ({
+    const { status, hasRuns, hasProjectRuns } = useStore(useShallow((state) => ({
         status: state.runsListSession.status,
         hasRuns: state.runsListSession.runs.length > 0,
+        // The project filter can leave the list empty while other projects have runs.
+        hasProjectRuns: state.runsListSession.runs.some((run) => (
+            !state.runsListSession.projectFilter || run.project_path === state.runsListSession.projectFilter
+        )),
     })))
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const projectRegistry = useStore((state) => state.projectRegistry)
@@ -547,7 +580,7 @@ export function RunsPanel() {
                         <Button data-testid="runs-transport-reconnect-button" type="button" variant="outline" size="xs" onClick={requestRunsTransportReconnect}>Try again</Button>
                     </div>
                 ) : null}
-                {!selectedRunId && missingRunId ? (
+                {missingRunId ? (
                     <InlineError data-testid="run-missing" title="This run isn’t here">
                         There’s no run with the ID “{missingRunId}”. It may have been deleted, or the link is out of date.
                     </InlineError>
@@ -556,11 +589,12 @@ export function RunsPanel() {
                     <SheetEmpty
                         data-testid="run-selection-empty-state"
                         icon={Play}
-                        title="No run selected"
+                        title={hasProjectRuns ? 'No run selected' : 'No matching runs'}
                         className="flex-1"
-                        action={runFlowAction}
                     >
-                        Pick a run from the list to see its progress and results, or start a new one.
+                        {hasProjectRuns
+                            ? 'Pick a run from the list to see its progress and results.'
+                            : 'No runs match the project filter. Choose All projects to see every run.'}
                     </SheetEmpty>
                 )}
                 {showRunDetailsRestoringState && (

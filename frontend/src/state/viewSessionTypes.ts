@@ -49,6 +49,10 @@ export interface RunsListSessionState {
     searchQuery?: string
     /** A run that was opened but isn't there (a stale link, a deleted run), until another opens. */
     missingRunId?: string | null
+    /** Every run the server has said isn't there, until a live update tells of it again; a desktop's Runs never opens one by itself, though the list may still have its row. */
+    goneRunIds?: string[]
+    /** The open run, when a desktop's Runs opened it by itself with none open or in a missing run's place; that adds no history entry. */
+    autoOpenedRunId?: string | null
     status: ResourceStatus
     error: string | null
     runs: RunRecord[]
@@ -167,7 +171,8 @@ export interface RunsSessionSlice {
     reconcileRunRecord: (runId: string, source: 'status' | 'list' | 'live' | 'journal', record: Partial<RunRecord>, completedNodes?: string[], requestUpdates?: RunDetailSessionState['recordUpdates']) => void
     optimisticallyPatchRun: (runId: string, patch: Partial<RunRecord>) => () => void
     updateRunsListSession: (patch: Partial<RunsListSessionState>, source?: 'list' | 'live') => void
-    setRunsSelectedRunId: (runId: string | null) => void
+    /** `keepFilters` is for a run the list already shows; otherwise filters that would hide the run are dropped. */
+    setRunsSelectedRunId: (runId: string | null, options?: { keepFilters?: boolean }) => void
     updateRunDetailSession: (runId: string, patch: Partial<RunDetailSessionState>) => void
     clearRunDetailSession: (runId: string) => void
 }
