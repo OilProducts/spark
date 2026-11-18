@@ -1667,6 +1667,55 @@ fn model_listing_never_waits_on_a_harness_check() {
     announced();
     assert_eq!(slow(&list(false)), ready);
     assert_eq!(count(&launches), 23);
+
+    // Listings that read the agents settings before a save, here from a copy
+    // of them, leave the saved registration's running check alone in every
+    // work area: it ends announced, and the next listing shows its result
+    // without checking again. The stale listings' own checks are discarded.
+    std::fs::remove_file(&release).unwrap();
+    let saved = settings.config_dir.join("spark.toml");
+    let old = std::fs::read_to_string(&saved).unwrap();
+    let mut before = settings.clone();
+    before.config_dir = temp.path().join("before-save");
+    std::fs::create_dir_all(&before.config_dir).unwrap();
+    std::fs::write(before.config_dir.join("spark.toml"), &old).unwrap();
+    let stale = |work_area: &std::path::Path| {
+        spark_workspace::models::chat_models(&before, work_area, false, &finished).unwrap()
+    };
+    register(json!({"SPARK_FAKE_ACP": "{}"}));
+    spark_workspace::models::invalidate_model_discovery("agents");
+    assert_eq!(slow(&list_other()), checking);
+    wait_for("the saved registration's check started", &|| {
+        count(&launches) == 24
+    });
+    assert_eq!(slow(&stale(&other)), checking);
+    assert_eq!(slow(&stale(&project)), checking);
+    wait_for("the stale listings' checks started", &|| {
+        count(&launches) == 26
+    });
+    // By the time those checks end, the settings they read are saved over.
+    std::fs::copy(&saved, before.config_dir.join("spark.toml")).unwrap();
+    std::fs::write(&release, "").unwrap();
+    wait_for("every check ended", &|| count(&ended) == 26);
+    announced();
+    assert!(!announced_since(), "only the saved registration's check");
+    assert_eq!(slow(&list_other()), ready);
+    assert_eq!(count(&launches), 26, "its result was kept");
+
+    // Nor does one leave its kept result behind.
+    std::fs::remove_file(&release).unwrap();
+    std::fs::write(before.config_dir.join("spark.toml"), &old).unwrap();
+    assert_eq!(slow(&stale(&other)), checking);
+    wait_for("the stale listing's check started", &|| {
+        count(&launches) == 27
+    });
+    std::fs::copy(&saved, before.config_dir.join("spark.toml")).unwrap();
+    assert_eq!(slow(&list_other()), ready);
+    std::fs::write(&release, "").unwrap();
+    wait_for("the stale check ended", &|| count(&ended) == 27);
+    assert!(!announced_since());
+    assert_eq!(slow(&list_other()), ready);
+    assert_eq!(count(&launches), 27, "its result is still kept");
 }
 
 #[test]

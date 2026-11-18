@@ -40,15 +40,14 @@ struct Check<H, R, V> {
     /// The running check's number. A check whose number is gone when it
     /// finishes, because its entry was removed, is discarded.
     running: Option<u64>,
-    /// The entry was superseded while its check ran: that check's result is
+    /// Settings were saved while its check ran: that check's result is
     /// discarded, and if a listing asked since, it checks again once it ends.
     cleared: bool,
     again: bool,
 }
 
 impl<H, R, V> Check<H, R, V> {
-    /// Drops the result, as a save or another registration does, and says
-    /// whether to keep the entry: a running check keeps it, so no second
+    /// Drops the result, as a save does, and says whether to keep the entry: a running check keeps it, so no second
     /// probe of its registration starts beside it, but only a listing after
     /// this has it check again.
     fn supersede(&mut self) -> bool {
@@ -90,9 +89,11 @@ where
         finished: impl FnOnce() + Send + 'static,
     ) -> Option<V> {
         let mut checks = self.lock();
-        checks.retain_mut(|check| {
-            check.harness != harness || check.registration == registration || check.supersede()
-        });
+        // Other registrations' checks are left alone: this listing may have
+        // read the settings before a save. Only a save, or a registration
+        // found changed when a check ends, discards a check.
+        // ponytail: finished results of registrations replaced without a save
+        // stay until the next save; prune them if hand edits ever pile up.
         let index = match checks
             .iter()
             .position(|check| check.harness == harness && check.registration == registration)
@@ -155,12 +156,6 @@ where
     /// Settings were saved: every result goes.
     fn clear(&self) {
         self.lock().retain_mut(Check::supersede);
-    }
-
-    /// Supersedes the checks `keep` rejects.
-    fn retain(&self, keep: impl Fn(&H, &R) -> bool) {
-        self.lock()
-            .retain_mut(|check| keep(&check.harness, &check.registration) || check.supersede());
     }
 }
 
@@ -420,23 +415,11 @@ fn acp_discoveries<'a>(
     // One check per directory however it is named, such as Home through a
     // symlinked HOME, as sessions' acknowledged options are kept.
     let work_area = std::fs::canonicalize(work_area).unwrap_or_else(|_| work_area.to_path_buf());
-    let generations = agents
-        .acp_harnesses
-        .iter()
-        .map(|(id, harness)| {
-            let generation = acp::launch_generation(harness, agents.environment_inheritance);
-            (id, generation)
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
-    // Checks of a removed or changed registration go in every work area, so
-    // none is kept or announced, and restoring it checks it afresh. Only the
-    // listed work area is checked again.
-    ACP_DISCOVERY_CACHE.retain(|(_, id), (generation, _)| generations.get(id) == Some(generation));
     agents
         .acp_harnesses
         .iter()
         .map(|(id, harness)| {
-            let generation = &generations[id];
+            let generation = acp::launch_generation(harness, agents.environment_inheritance);
             let run = {
                 let (id, harness, work_area) =
                     (id.clone(), harness.clone(), work_area.to_path_buf());
