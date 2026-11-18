@@ -124,20 +124,23 @@ export function runMatchesSearch(run: RunRecord, query: string): boolean {
 }
 
 /**
- * Whether the run list, narrowed to one state (none: every state) and a search (lower-cased, trimmed),
- * lists a run. It keeps a run that matches both, one with such a descendant (on the path to it), and
- * every child of a matching parent.
+ * Whether the run list (RunList), narrowed to one state (none: every state) and a search (lower-cased,
+ * trimmed), lists a run. It keeps a run that matches both, one with such a descendant (on the path to
+ * it), and every child of a matching parent. A run queued behind an execution lock is listed apart, in
+ * its lock's group, only when it matches itself; its children are listed as runs of their own.
  */
 export function listShowsRun(runs: RunRecord[], run: RunRecord, statusFilter: RunStatusKind | null | undefined, query: string): boolean {
     const matches = (candidate: RunRecord) => (!statusFilter || runKind(candidate) === statusFilter) && runMatchesSearch(candidate, query)
+    const lockQueued = (candidate: RunRecord) => candidate.status === 'queued' && Boolean(candidate.execution_lock?.identity)
+    if (lockQueued(run)) return matches(run)
     const parent = run.parent_run_id ? runs.find((candidate) => candidate.run_id === run.parent_run_id) : undefined
-    if (matches(run) || (parent && matches(parent))) return true
+    if (matches(run) || (parent && !lockQueued(parent) && matches(parent))) return true
     const seen = new Set([run.run_id])
     const below = [run.run_id]
     while (below.length > 0) {
         const id = below.pop()
         for (const child of runs) {
-            if (child.parent_run_id !== id || seen.has(child.run_id)) continue
+            if (child.parent_run_id !== id || seen.has(child.run_id) || lockQueued(child)) continue
             if (matches(child)) return true
             seen.add(child.run_id)
             below.push(child.run_id)

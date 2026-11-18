@@ -49,6 +49,8 @@ export interface RunsListSessionState {
     searchQuery?: string
     /** A run that was opened but isn't there (a stale link, a deleted run), until another opens. */
     missingRunId?: string | null
+    /** Every run the server has said isn't there; a desktop's Runs never opens one by itself, though the list may still have its row. */
+    goneRunIds?: string[]
     /** The open run, when a desktop's Runs opened it by itself with none open or in a missing run's place; that adds no history entry. */
     autoOpenedRunId?: string | null
     status: ResourceStatus

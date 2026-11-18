@@ -3840,6 +3840,73 @@ describe('RunsPanel', () => {
       expect(goneRequests()).toBe(asked)
     })
 
+    it.each([
+      ['opens the most relevant run still there', [finishedLate], 'finished-late'],
+      ['settles on the notice when none is left', [], null],
+    ] as const)('when listed runs turn out to be gone one after another, %s, opening each only once', async (_, alive, opened) => {
+      const goneWaiting = makeRun({ run_id: 'gone-waiting', flow_name: 'gone-waiting.dot', status: 'waiting', outcome: null, ended_at: null })
+      const goneActive = makeRun({ run_id: 'gone-active', flow_name: 'gone-active.dot', status: 'running', outcome: null, ended_at: null })
+      const asked = (runId: string) => vi.mocked(global.fetch).mock.calls.filter(([input]) => resolveRequestUrl(input).includes(`/attractor/pipelines/${runId}`)).length
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = resolveRequestUrl(input)
+        // The server still lists runs it no longer has, as after its history was reset.
+        if (url.endsWith('/attractor/runs')) return jsonResponse({ runs: [goneWaiting, goneActive, ...alive] })
+        if (/\/attractor\/pipelines\/gone-[a-z]+$/.test(url)) return new Response(JSON.stringify({ detail: 'Unknown pipeline' }), { status: 404 })
+        return new Promise<Response>(() => {})
+      })
+      window.history.pushState(null, '', '#/runs')
+      const start = window.history.length
+      render(<DialogProvider><HistoryRoutingController /><WorkspaceLiveEventsController /><RunsSessionController /><RunStream /><RunsPanel /></DialogProvider>)
+
+      // The waiting run goes first, then the active one; their rows stay as the list has them.
+      await waitFor(() => {
+        expect(screen.getByTestId('run-missing')).toHaveTextContent('gone-active')
+        expect(selected()).toBe(opened)
+      })
+      expect(runList().getAllByTestId('run-history-row').map((row) => row.dataset.runId).sort()).toEqual(['gone-active', 'gone-waiting', ...alive.map((run) => run.run_id)].sort())
+      const counts = [asked('gone-waiting'), asked('gone-active')]
+      expect(counts.every((count) => count > 0)).toBe(true)
+      // A refresh lists them again; neither opens again.
+      act(() => { window.dispatchEvent(new Event('spark:runs-overview-resync-required')) })
+      await waitFor(() => expect(useStore.getState().runsListSession.status).toBe('ready'))
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+      expect([asked('gone-waiting'), asked('gone-active')]).toEqual(counts)
+      expect(selected()).toBe(opened)
+      expect(window.location.hash).toBe(opened ? `#/runs/${opened}` : '#/runs')
+      expect(window.history.length).toBe(start)
+    })
+
+    it('widened, opens a matching child, not its parent queued behind a lock that the search leaves out', () => {
+      const queuedParent = makeRun({
+        run_id: 'queued-parent', flow_name: 'review.dot', status: 'queued', outcome: null, started_at: '2026-03-22T01:00:00Z', ended_at: null,
+        execution_lock: { scope: 'project', key: 'main', conflict_policy: 'queue', identity: 'project:main', state: 'queued', queue_position: 1 },
+      })
+      const child = makeRun({ run_id: 'deploy-child', flow_name: 'deploy-check.dot', parent_run_id: 'queued-parent', started_at: '2026-03-22T00:01:00Z', ended_at: '2026-03-22T00:02:00Z' })
+      window.innerWidth = 390
+      window.dispatchEvent(new Event('resize'))
+      try {
+        useStore.getState().updateRunsListSession({ status: 'ready', runs: [queuedParent, child], searchQuery: 'deploy' })
+        render(<DialogProvider><RunsPanel /></DialogProvider>)
+        // A run queued behind a lock is listed in its lock's group, only when it matches; its child is listed on its own.
+        expect(runList().getAllByTestId('run-history-row').map((row) => row.dataset.runId)).toEqual(['deploy-child'])
+
+        act(() => {
+          window.innerWidth = 1400
+          window.dispatchEvent(new Event('resize'))
+        })
+        expect(selected()).toBe('deploy-child')
+        expect(useStore.getState().runsListSession.searchQuery).toBe('deploy')
+
+        // Opening the parent, as a link does, clears the search that leaves it out.
+        act(() => useStore.getState().setRunsSelectedRunId('queued-parent'))
+        expect(useStore.getState().runsListSession.searchQuery).toBe('')
+        expect(runList().getAllByTestId('run-history-row').map((row) => row.dataset.runId)).toContain('queued-parent')
+      } finally {
+        window.innerWidth = 1024
+        window.dispatchEvent(new Event('resize'))
+      }
+    })
+
     it('on a phone, keeps a gone run\'s notice when you leave Runs and come back', async () => {
       vi.mocked(global.fetch).mockImplementation(async (input) => {
         const url = resolveRequestUrl(input)

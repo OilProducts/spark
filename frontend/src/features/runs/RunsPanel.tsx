@@ -67,19 +67,19 @@ const mostRelevantRun = (runs: RunRecord[]) => runs.reduce<RunRecord | null>((be
 function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const { error, scopedRuns, status } = useRunsList({ selectedRunId, manageSync: false })
     const isNarrowViewport = useNarrowViewport()
-    const missingRunId = useStore((state) => state.runsListSession.missingRunId ?? null)
+    const goneRunIds = useStore((state) => state.runsListSession.goneRunIds)
     const projectFilter = useStore((state) => state.runsListSession.projectFilter)
     const statusFilter = useStore((state) => state.runsListSession.statusFilter ?? null)
     const searchQuery = useStore((state) => state.runsListSession.searchQuery ?? '')
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
     // A desktop opens on the run you most likely came for of those the list shows, even while it
-    // loads, but never a missing one; a phone opens on the list. A run picked or restored (even while
-    // it loads) stays.
+    // loads, but never one found missing; a phone opens on the list. A run picked or restored (even
+    // while it loads) stays.
     const query = searchQuery.trim().toLowerCase()
     // ponytail: O(n^2) while filters are on and nothing is open; index children by parent if lists grow large.
     const autoRunId = selectedRunId || isNarrowViewport
         ? null
-        : mostRelevantRun(runs.filter((run) => run.run_id !== missingRunId && listShowsRun(runs, run, statusFilter, query)))?.run_id ?? null
+        : mostRelevantRun(runs.filter((run) => !goneRunIds?.includes(run.run_id) && listShowsRun(runs, run, statusFilter, query)))?.run_id ?? null
     useEffect(() => {
         if (!autoRunId) return
         const state = useStore.getState()

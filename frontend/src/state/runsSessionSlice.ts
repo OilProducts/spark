@@ -234,7 +234,11 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
             return {
                 runDetailSessionsByRunId: next,
                 // Only the server's "no such run" clears a run's session; an open one is then missing.
-                runsListSession: { ...state.runsListSession, ...(state.runsListSession.selectedRunId === runId ? { selectedRunId: null, missingRunId: runId } : {}) },
+                runsListSession: {
+                    ...state.runsListSession,
+                    goneRunIds: [...(state.runsListSession.goneRunIds ?? []).filter((id) => id !== runId), runId],
+                    ...(state.runsListSession.selectedRunId === runId ? { selectedRunId: null, missingRunId: runId } : {}),
+                },
             }
         }),
 })
