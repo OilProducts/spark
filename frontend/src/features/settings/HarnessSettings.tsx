@@ -46,6 +46,15 @@ const stateWords = { supported: 'Yes', limited: 'Partly', unsupported: 'No', unv
 const attention: Status[] = ['misconfigured', 'not_installed', 'unreachable', 'unauthenticated', 'signed_out']
 // A word a shell reads as it is, else quoted.
 const shellWord = (word: string) => /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`
+// The words as one shell command; leading `NAME=value` words stay assignments, with only the value quoted.
+const shellCommand = (words: string[]) => {
+    let assigning = true
+    return words.map((word) => {
+        const assignment = assigning ? /^([A-Za-z_]\w*)=(.*)$/s.exec(word) : null
+        assigning = !!assignment
+        return assignment ? `${assignment[1]}=${shellWord(assignment[2])}` : shellWord(word)
+    }).join(' ')
+}
 // Spark sets these for every agent process.
 const reservedEnv = ['SPARK_HOME', 'SPARK_API_BASE_URL', 'SPARK_PROJECT_WORK_DIR']
 
@@ -104,7 +113,8 @@ export function HarnessSettings() {
             if (current === request.current) { setCatalog(next); setCatalogError('') }
             return next
         }, (error: unknown) => {
-            if (current === request.current) setCatalogError(errorText(error, 'Unable to check harnesses.'))
+            // A failed check leaves every harness unchecked, not as the last check found it.
+            if (current === request.current) { setCatalog(null); setCatalogError(errorText(error, 'Unable to check harnesses.')) }
             return null
         }).finally(() => { if (current === request.current) setChecking(false) })
     }, [])
@@ -297,12 +307,12 @@ function AcpHarness({ id, entry, provider, status: checked, checking, onCheck, o
             {method.description && <p className="text-xs text-muted-foreground">{method.description}</p>}
         </div>)}
         {terminal.map((method) => {
-            const command = method.terminal!.map(shellWord).join(' ')
+            const command = shellCommand(method.terminal!)
             return <div key={method.id} className="space-y-0.5">
                 <p className="font-medium">{method.name}, in a terminal:</p>
                 <div className="flex items-center gap-1"><code className="min-w-0 break-all rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{command}</code><TranscriptCopyButton label={`Copy ${method.name} command`} text={command} /></div>
                 {method.description && <p className="text-xs text-muted-foreground">{method.description}</p>}
-                {env.length > 0 && <p className="text-xs text-muted-foreground">Spark also sets {env.join(', ')} for this agent; set them in the terminal too if its sign-in reads them.</p>}
+                {env.length > 0 && <p className="text-xs text-muted-foreground">Spark starts this agent with {env.join(', ')} set. Their values are hidden here, so if its sign-in needs them, set them in the terminal yourself first.</p>}
             </div>
         })}
         {signing && <div className="space-y-1">

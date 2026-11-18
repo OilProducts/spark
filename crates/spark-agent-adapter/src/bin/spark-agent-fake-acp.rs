@@ -7,9 +7,10 @@
 //! harness would. `forms` are `elicitation/create` requests sent in turn
 //! during the prompt, each waiting for its reply unless it `exit`s or is
 //! `withdraw`n with `$/cancel_request`. `auth_methods` are offered at
-//! initialize; `authenticate` creates the `signed_in` file, after which
-//! `new_error` no longer applies, as a harness keeps its own sign-in, or
-//! with `authenticate_waits` never answers, as a sign-in the user leaves.
+//! initialize, terminal ones only to a client with `auth.terminal`;
+//! `authenticate` creates the `signed_in` file, after which `new_error` no
+//! longer applies, as a harness keeps its own sign-in, or with
+//! `authenticate_waits` never answers, as a sign-in the user leaves.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -153,6 +154,15 @@ impl Agent {
         let script = self.script.clone();
         match message["method"].as_str().unwrap_or_default() {
             "initialize" => {
+                // As ACP requires, terminal methods only for a client that runs them.
+                let terminal = message["params"]["clientCapabilities"]["auth"]["terminal"] == true;
+                let methods = script["auth_methods"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|method| terminal || method["type"] != "terminal")
+                    .cloned()
+                    .collect::<Vec<_>>();
                 let mut session = json!({});
                 if script["system_prompt"].as_bool().unwrap_or(false) {
                     session["systemPrompt"] = json!({});
@@ -168,7 +178,7 @@ impl Agent {
                             "loadSession": script["load"].as_bool().unwrap_or(false),
                             "sessionCapabilities": session,
                         },
-                        "authMethods": script.get("auth_methods").cloned().unwrap_or_else(|| json!([])),
+                        "authMethods": methods,
                     }),
                 );
             }

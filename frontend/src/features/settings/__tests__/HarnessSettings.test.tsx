@@ -122,6 +122,11 @@ it('signs in to an ACP harness with a method it offers, then checks it again', a
     expect(signInAcpHarness).toHaveBeenCalledWith('helper', 'browser')
     expect(await within(helper).findByText('Ready')).toBeInTheDocument()
     expect(fetchHarnessCatalog).toHaveBeenCalledTimes(2)
+
+    // A check that fails doesn't leave it showing as the last check found it.
+    vi.mocked(fetchHarnessCatalog).mockRejectedValueOnce(new Error('agents.max_turns is invalid'))
+    await user.click(within(helper).getByRole('button', { name: 'Check Helper again' }))
+    expect(await within(helper).findByText('Not checked')).toBeInTheDocument()
 })
 
 it('keeps a misconfigured registration’s values in its form, and stops a save over a change made elsewhere', async () => {
@@ -198,7 +203,7 @@ it('shows a terminal sign-in as the command to run, and cancels a sign-in left u
     vi.mocked(fetchAgentSettings).mockResolvedValue(view)
     vi.mocked(fetchHarnessCatalog).mockResolvedValue({ models: [], providers: {
         'acp:helper': { status: 'unavailable', error: 'the harness requires authentication', setup_status: 'unauthenticated',
-            auth_methods: [{ id: 'browser', name: 'Browser' }, { id: 'tui', name: 'Terminal login', terminal: ['MODE=device', '/bin/helper', '--acp', 'log in'] }] },
+            auth_methods: [{ id: 'browser', name: 'Browser' }, { id: 'tui', name: 'Terminal login', terminal: ['MODE=device', "REGION=us east's", '/bin/helper', '--acp', 'X=log in'] }] },
     } })
     let finish = (_: { setup_status: string; error: string | null }) => {}
     vi.mocked(signInAcpHarness).mockReturnValue(new Promise((resolve) => { finish = resolve }))
@@ -207,9 +212,9 @@ it('shows a terminal sign-in as the command to run, and cancels a sign-in left u
     render(<DialogProvider><HarnessSettings /></DialogProvider>)
 
     const helper = await screen.findByRole('group', { name: 'Helper' })
-    expect(await within(helper).findByText("MODE=device /bin/helper --acp 'log in'")).toBeInTheDocument()
+    expect(await within(helper).findByText("MODE=device REGION='us east'\\''s' /bin/helper --acp 'X=log in'")).toBeInTheDocument()
     expect(within(helper).getByRole('button', { name: 'Copy Terminal login command' })).toBeInTheDocument()
-    expect(within(helper).getByText(/Spark also sets API_TOKEN/)).toBeInTheDocument()
+    expect(within(helper).getByText(/Spark starts this agent with API_TOKEN set/)).toBeInTheDocument()
     expect(within(screen.getByRole('navigation', { name: 'Harnesses to fix' })).getByRole('button', { name: 'Helper (signed out)' })).toBeInTheDocument()
 
     await user.click(within(helper).getByRole('button', { name: 'Sign in to Helper with Browser' }))

@@ -17,10 +17,10 @@ use std::time::Duration;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::v1::schema::{
-    AuthMethod, AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock,
-    ContentChunk, ElicitationCapabilities, ElicitationFormCapabilities, Implementation,
-    InitializeRequest, LoadSessionRequest, NewSessionRequest, PermissionOptionKind, PromptResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    AuthCapabilities, AuthMethod, AuthenticateRequest, CancelNotification, ClientCapabilities,
+    ContentBlock, ContentChunk, ElicitationCapabilities, ElicitationFormCapabilities,
+    Implementation, InitializeRequest, LoadSessionRequest, NewSessionRequest, PermissionOptionKind,
+    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
     SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOptions,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, SystemPrompt,
@@ -735,7 +735,11 @@ async fn probe_session(
     let init = cx
         .send_request(
             InitializeRequest::new(ProtocolVersion::V1)
-                .client_info(Implementation::new("spark", env!("CARGO_PKG_VERSION"))),
+                .client_info(Implementation::new("spark", env!("CARGO_PKG_VERSION")))
+                // Spark shows a terminal method as the command for the user to run.
+                .client_capabilities(
+                    ClientCapabilities::new().auth(AuthCapabilities::new().terminal(true)),
+                ),
         )
         .block_task()
         .await
@@ -973,7 +977,7 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
     let flow = match refused.join(" or ") {
         none if none.is_empty() => Capability::new(
             "supported",
-            "Steps run on it; one that needs messages during a turn or subagent control is refused.",
+            "Steps run on it when the model and reasoning effort they set are among its choices, or they set none. A step that sets another, such as another harness's model, is refused, as is one that needs messages during a turn or subagent control.",
         ),
         refused => Capability::new(
             "limited",
@@ -1758,19 +1762,21 @@ impl<'a> Turn<'a> {
                     "config option {config_id:?} is not a select option"
                 ));
             };
-            let offered = match &select.options {
+            let offered: Vec<&str> = match &select.options {
                 SessionConfigSelectOptions::Ungrouped(options) => options
                     .iter()
-                    .any(|option| option.value.0.as_ref() == value),
+                    .map(|option| option.value.0.as_ref())
+                    .collect(),
                 SessionConfigSelectOptions::Grouped(groups) => groups
                     .iter()
                     .flat_map(|group| &group.options)
-                    .any(|option| option.value.0.as_ref() == value),
-                _ => false,
+                    .map(|option| option.value.0.as_ref())
+                    .collect(),
+                _ => Vec::new(),
             };
-            if !offered {
+            if !offered.contains(&value.as_str()) {
                 return Err(format!(
-                    "config option {config_id:?} does not offer the value {value:?}"
+                    "config option {config_id:?} does not offer the value {value:?}; it offers {offered:?}. Choose one of those for this chat or flow step, or run it on another harness"
                 ));
             }
             if let Some(previous) = chosen
@@ -2145,8 +2151,16 @@ fn reset_reason(error: &agent_client_protocol::Error, method: &str) -> Result<St
     ))
 }
 
+/// What the harness said when it asked to be signed in, without the
+/// protocol's error code.
 fn auth_error(error: &agent_client_protocol::Error) -> String {
-    format!("the harness requires authentication: {}", describe(error))
+    match &error.data {
+        Some(data) => format!(
+            "the agent needs you to sign in. It said: {}: {data}",
+            error.message
+        ),
+        None => format!("the agent needs you to sign in. It said: {}", error.message),
+    }
 }
 
 fn setup_error(error: &agent_client_protocol::Error, method: &str) -> String {

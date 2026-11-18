@@ -551,7 +551,7 @@ fn acp_session_controls_apply_exactly_for_their_harness_and_fail_when_stale() {
     for (controls, expected) in [
         (
             json!({"approval": "auto/edit"}),
-            "does not offer the value \"auto/edit\"",
+            "does not offer the value \"auto/edit\"; it offers [\"ask\", \"Auto/Edit\"]",
         ),
         (
             json!({"retired": "on"}),
@@ -800,7 +800,7 @@ fn acp_continuity_resumes_matching_sessions_and_resets_once_otherwise() {
         .0
         .err()
         .expect("auth");
-    assert!(error.contains("authentication"), "{error}");
+    assert!(error.contains("needs you to sign in"), "{error}");
     assert!(received(dir.path(), "session/new").is_empty());
 }
 

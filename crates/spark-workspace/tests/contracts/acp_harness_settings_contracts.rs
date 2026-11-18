@@ -146,7 +146,18 @@ fn acp_harnesses_save_one_at_a_time_keep_hidden_values_and_a_misconfigured_one_s
         .as_str()
         .unwrap()
         .contains("`args`"));
+    // With every registration valid, the repair still holds none of them,
+    // so no environment value reaches the client and it saves as offered.
+    let mut document: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    document["agents"]["acp_harnesses"]
+        .as_table_mut()
+        .unwrap()
+        .remove("wrongtype");
+    fs::write(&path, toml::to_string(&document).unwrap()).unwrap();
+    let view = workspace_settings(&settings).unwrap();
+    assert!(!view.to_string().contains("token-sentinel"), "{view}");
     let repair = view["agents"]["repair_defaults"].clone();
+    assert!(repair.get("acp_harnesses").is_none(), "{repair}");
     assert_eq!(repair["max_turns"], 0);
     assert_eq!(repair["max_tool_rounds_per_input"], 7);
     save("agents", repair).unwrap();

@@ -306,7 +306,12 @@ fn agents_repair(document: &SettingsDocument) -> Value {
         .values
         .get("agents")
         .and_then(toml::Value::as_table);
-    for (key, value) in stored.into_iter().flatten() {
+    // Registrations hold environment values, which never go to the client.
+    for (key, value) in stored
+        .into_iter()
+        .flatten()
+        .filter(|(key, _)| *key != "acp_harnesses")
+    {
         let mut candidate = repaired.clone();
         candidate[key] = json!(value);
         if serde_json::from_value::<SessionConfig>(candidate.clone())
