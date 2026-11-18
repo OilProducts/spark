@@ -970,6 +970,22 @@ impl FlowDefinition {
                 node_id,
             ));
         }
+        let writes = node
+            .contracts
+            .as_ref()
+            .map(|contracts| contracts.writes_context.as_slice())
+            .unwrap_or_default();
+        if let Some(NodeConfig::Tool { output_map, .. }) = node.config.as_ref() {
+            for key in output_map.keys().filter(|key| !writes.contains(key)) {
+                diagnostics.push(node_diagnostic(
+                    "tool_output_map",
+                    format!(
+                        "{node_id}.md: config.output_map writes '{key}', which must be listed in the node's writes_context"
+                    ),
+                    node_id,
+                ));
+            }
+        }
         if let Some(NodeConfig::Subflow {
             flow_ref,
             output_map,
@@ -983,11 +999,15 @@ impl FlowDefinition {
                     node_id,
                 ));
             }
-            let writes = node
-                .contracts
-                .as_ref()
-                .map(|contracts| contracts.writes_context.as_slice())
-                .unwrap_or_default();
+            // The child's keys are read from the child's context.
+            for child_key in output_map.keys() {
+                diagnostics.extend(context_key_diagnostic(
+                    Some(node_id),
+                    "config.output_map",
+                    child_key,
+                    false,
+                ));
+            }
             for parent_key in output_map.values() {
                 if !writes.contains(parent_key) {
                     diagnostics.push(node_diagnostic(

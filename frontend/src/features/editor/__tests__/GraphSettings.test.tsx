@@ -387,6 +387,8 @@ describe('Graph and settings behavior', () => {
 
     expect(screen.getByTestId('graph-launch-inputs-editor')).toBeVisible()
     await user.click(screen.getByTestId('graph-launch-input-add'))
+    // A new input starts in the flow's own namespace, never a flow-specific one.
+    expect(screen.getByTestId('graph-launch-input-key-0')).toHaveValue('context.')
 
     await user.type(screen.getByTestId('graph-launch-input-label-0'), 'Acceptance Criteria')
     await user.selectOptions(screen.getByTestId('graph-launch-input-type-0'), 'string[]')

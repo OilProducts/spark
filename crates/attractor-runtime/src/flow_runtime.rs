@@ -50,8 +50,10 @@ const CORE_NODE_EXTENSION_KEYS: &[&str] = &[
     "tool.artifacts.stderr",
     "tool.artifacts.stdout",
     "tool.command",
+    "tool.env_map",
     "tool.hooks.post",
     "tool.hooks.pre",
+    "tool.output_map",
     "type",
 ];
 

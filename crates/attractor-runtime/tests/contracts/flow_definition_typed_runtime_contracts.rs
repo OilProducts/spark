@@ -654,6 +654,28 @@ fn node_extension_core_keys_do_not_override_typed_handler_attrs() {
     assert_eq!(attr_bool(&attrs, "stack.child_autostart", true), false);
     assert!(!attrs.contains_key("manager.actions"));
     assert!(attrs.contains_key("custom.metadata"));
+
+    // Tool bindings come only from the typed config, which load validates.
+    let tool = FlowNode {
+        kind: NodeKind::Tool,
+        config: Some(NodeConfig::Tool {
+            command: "true".to_string(),
+            env_map: BTreeMap::new(),
+            output_map: BTreeMap::new(),
+            exit_codes: BTreeMap::from([("0".to_string(), "done".to_string())]),
+            decision_field: None,
+        }),
+        extensions: [
+            ("tool.env_map".to_string(), json!({"PLAN": "review.plan"})),
+            ("tool.output_map".to_string(), json!({"tool.output": "x"})),
+        ]
+        .into_iter()
+        .collect(),
+        ..FlowNode::default()
+    };
+    let attrs = attractor_runtime::flow_runtime::node_attrs_for_handler("probe", &tool);
+    assert!(!attrs.contains_key("tool.env_map"), "{attrs:?}");
+    assert!(!attrs.contains_key("tool.output_map"), "{attrs:?}");
 }
 
 #[test]

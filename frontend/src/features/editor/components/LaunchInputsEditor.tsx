@@ -40,7 +40,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
         onChange([
             ...entries,
             {
-                key: 'context.request.',
+                key: 'context.',
                 label: '',
                 type: 'string',
                 description: '',
@@ -99,7 +99,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                             value={entry.key}
                             onChange={(event) => updateEntry(index, { key: event.target.value })}
                             className="h-8 px-2 font-mono text-sm"
-                            placeholder="context.request.summary"
+                            placeholder="context."
                         />
                     </Field>
                     <Field>

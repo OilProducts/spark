@@ -462,6 +462,7 @@ fn switch_flow(cases: Value, otherwise: &str, reads: Value, writer: bool) -> Val
         "exit_codes": {"0": "next"}}, "routes": {"next": route("check")}});
     if writer {
         prepare["config"]["output_map"] = json!({"context.count": "count"});
+        prepare["contracts"] = json!({"writes_context": ["context.count"]});
     }
     flow(json!({
         "start": start("prepare"),
@@ -644,6 +645,68 @@ fn context_keys_are_literal_and_flow_writes_stay_in_context() {
             "probe.md: config.output_map writes 'stack.child.status'"
         ),
         "{tool:?}"
+    );
+
+    // A tool's output_map destination is a write its contract must declare,
+    // as execution requires, so it cannot be the only source of a later read.
+    let mapped = |writes: Value| {
+        rules(flow(json!({
+            "start": start("probe"),
+            "probe": {"kind": "tool", "config": {"kind": "tool", "command": "true", "exit_codes": {"0": "next"},
+                "output_map": {"context.count": "count"}}, "contracts": {"writes_context": writes},
+                "routes": {"next": route("check")}},
+            "check": {"kind": "switch", "config": {"kind": "switch", "on": "context.count",
+                "cases": {"0": "clean"}, "otherwise": "dirty"},
+                "routes": {"clean": route("done"), "dirty": route("done")}},
+            "done": exit("completed", "success"),
+        })))
+    };
+    assert_eq!(mapped(json!(["context.count"])), Vec::new());
+    let found = mapped(json!([]));
+    assert!(
+        has(
+            &found,
+            "tool_output_map",
+            "probe.md: config.output_map writes 'context.count', which must be listed in the node's writes_context"
+        ),
+        "{found:?}"
+    );
+
+    // A subflow's output_map reads its keys from the child's context, under
+    // the same literal and private-key rules.
+    let child_output = |child_key: &str| {
+        rules(flow(json!({
+            "start": start("child"),
+            "child": {"kind": "subflow", "config": {"kind": "subflow", "flow_ref": "child",
+                "output_map": {child_key: "context.result"}, "results": {"completed": "done"}},
+                "contracts": {"writes_context": ["context.result"]}, "routes": {"done": route("done")}},
+            "done": exit("completed", "success"),
+        })))
+    };
+    assert_eq!(child_output("context.result"), Vec::new());
+    assert_eq!(child_output("tool.output"), Vec::new());
+    let found = child_output("context.result ");
+    assert!(
+        has(
+            &found,
+            "context_key",
+            "child.md: config.output_map key 'context.result ' is invalid: keys must not contain whitespace"
+        ),
+        "{found:?}"
+    );
+    let found = child_output("_attractor.runtime.sessions");
+    assert!(
+        has(
+            &found,
+            "private_context_read",
+            "child.md: config.output_map reads '_attractor.runtime.sessions', which is private to Spark"
+        ),
+        "{found:?}"
+    );
+    let found = child_output("result");
+    assert!(
+        has(&found, "context_key", "key 'result' is not a context.* key"),
+        "{found:?}"
     );
 
     // Spark keys outside the readable list are private.
