@@ -877,17 +877,13 @@ fn a_sink_that_steers_while_far_behind_still_steers_and_sees_every_event() {
     let steered = std::sync::Once::new();
     let request = turn_request(temp.path(), "codex-sink-burst");
     let (turn_sender, turn) = mpsc::channel();
-    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counted = Arc::clone(&seen);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let live_events = Arc::clone(&seen);
     thread::spawn(move || {
         let _ = turn_sender.send(CodexAppServerBackend::new().run_agent_turn_with_event_sink(
             request,
             Some(Arc::new(move |event| {
-                if event.kind == TurnStreamEventKind::ContentDelta
-                    && event.source.item_id.as_deref() == Some("msg-burst")
-                {
-                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                }
+                live_events.lock().unwrap().push(event);
                 steered.call_once(|| {
                     let _ = accepted.send(CodexAppServerBackend::new().send_message(
                         &path,
@@ -908,7 +904,31 @@ fn a_sink_that_steers_while_far_behind_still_steers_and_sees_every_event() {
         .expect("turn ended")
         .expect("a slow sink does not fail the turn");
     assert_eq!(delivered_ids(&output), ["note-1"]);
-    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 300);
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen.iter()
+            .filter(|event| {
+                event.kind == TurnStreamEventKind::ContentDelta
+                    && event.source.item_id.as_deref() == Some("msg-burst")
+            })
+            .count(),
+        300
+    );
+    let delivery_and_reply = seen
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TurnStreamEventKind::Other(kind) if kind == "user_message_delivered" => {
+                Some(event.source.item_id.as_deref())
+            }
+            TurnStreamEventKind::ContentDelta
+                if event.source.item_id.as_deref() == Some("msg-test") =>
+            {
+                Some(Some("msg-test"))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(delivery_and_reply, [Some("note-1"), Some("msg-test")]);
 }
 
 #[cfg(unix)]
@@ -1237,42 +1257,42 @@ fn app_server_runs_with_the_turns_project_work_dir() {
 }
 
 #[test]
-fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
-    let _lock = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+fn boundary_agent_turn_preserves_plan_mode_and_resolves_default_model() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("codex-rpc.jsonl");
-    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
-    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
-    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
-    let _runtime_guard = EnvVarGuard::set(
-        "ATTRACTOR_CODEX_RUNTIME_ROOT",
-        temp.path().join("codex-runtime"),
-    );
-
-    let mut client = CodexAppServerClient::connect(temp.path().to_path_buf()).expect("connect");
-    let thread_id = client
-        .start_thread(None, Some(temp.path().to_string_lossy().as_ref()), true)
-        .expect("thread/start");
-    let result = client
-        .run_turn(
-            &thread_id,
-            "Plan this",
-            None,
-            None,
-            Some("plan"),
-            Some(temp.path().to_string_lossy().as_ref()),
-            None,
+    let mut boundary = Command::new(env!("CARGO_BIN_EXE_spark-agent-boundary"))
+        .arg("agent-turn")
+        .env_clear()
+        .current_dir(temp.path())
+        .env("HOME", temp.path())
+        .env("SPARK_HOME", temp.path().join("spark-home"))
+        .env("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin())
+        .env("SPARK_FAKE_CODEX_APP_SERVER_LOG", &log_path)
+        .env(
+            "ATTRACTOR_CODEX_RUNTIME_ROOT",
+            temp.path().join("codex-runtime"),
         )
-        .expect("turn/start");
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("agent boundary");
+    let request = json!({
+        "conversation_id": "plan-mode",
+        "project_path": temp.path(),
+        "prompt": "Plan this",
+        "provider": "codex",
+        "chat_mode": "plan"
+    });
+    write!(boundary.stdin.take().expect("boundary stdin"), "{request}").expect("write request");
+    let output = boundary.wait_with_output().expect("boundary result");
+    assert!(output.status.success(), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).expect("boundary JSON");
+    assert_eq!(result["output"]["final_assistant_text"], "Ack", "{result}");
 
-    assert_eq!(result.state.resolved_agent_text(), "Ack");
-    let messages = fs::read_to_string(&log_path)
-        .expect("rpc log")
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("json"))
-        .collect::<Vec<_>>();
+    let messages = read_jsonrpc_log(&log_path);
     let methods = messages
         .iter()
         .filter_map(|message| message["method"].as_str())

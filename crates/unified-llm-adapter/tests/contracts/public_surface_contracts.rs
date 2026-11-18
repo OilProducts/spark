@@ -2191,6 +2191,13 @@ fn high_level_generate_returns_an_error_result_for_a_tool_called_without_definit
     .unwrap();
 
     assert_eq!(result.text, "continued after tool error");
+    assert_eq!(
+        result.steps[0].tool_results,
+        [unified_llm_adapter::ToolResult::error(
+            "call_missing",
+            json!("Unknown tool 'missing'")
+        )]
+    );
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert!(requests[0].tools.is_empty());

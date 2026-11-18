@@ -14,6 +14,12 @@ fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
     assert_eq!(sonnet.supported_thinking, ["budget", "off"]);
     let gpt = get_model_info("gpt5.2").expect("gpt alias");
     assert_eq!(gpt.id, "gpt-5.2");
+    assert_eq!(
+        get_model_info("gpt-5.2-2025-12-11")
+            .expect("dated GPT alias")
+            .id,
+        "gpt-5.2"
+    );
     assert_eq!(gpt.provider, "openai");
     assert_eq!(gpt.display_name, "GPT-5.2");
     assert_eq!(gpt.context_window, Some(1_047_576));
