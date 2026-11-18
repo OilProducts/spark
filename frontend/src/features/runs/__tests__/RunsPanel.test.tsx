@@ -3691,7 +3691,7 @@ describe('RunsPanel', () => {
 
     it('opens a run waiting on you, else the newest active run, else the latest to finish, of those the list shows', () => {
       const state = useStore.getState()
-      state.updateRunsListSession({ status: 'ready', projectFilter: '/tmp/project-one', runs: [finishedEarly, finishedLate, activeNew, activeOld, waiting] })
+      state.updateRunsListSession({ status: 'ready', fetched: true, projectFilter: '/tmp/project-one', runs: [finishedEarly, finishedLate, activeNew, activeOld, waiting] })
       render(<DialogProvider><RunsPanel /></DialogProvider>)
       // The run waiting in another project is filtered out.
       expect(selected()).toBe('active-new')
@@ -3722,7 +3722,7 @@ describe('RunsPanel', () => {
       state.setRunsSelectedRunId('restored')
       render(<DialogProvider><RunsPanel /></DialogProvider>)
       expect(screen.getByTestId('run-selection-restoring-state')).toBeVisible()
-      act(() => state.updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting] }))
+      act(() => state.updateRunsListSession({ status: 'ready', fetched: true, runs: [finishedLate, waiting] }))
       expect(selected()).toBe('restored')
 
       fireEvent.click(runList().getByText('Finished Late'))
@@ -3733,7 +3733,7 @@ describe('RunsPanel', () => {
 
     it('keeps the state filter when it opens a run listed under it by a record newer than its row', () => {
       const state = useStore.getState()
-      state.updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting] })
+      state.updateRunsListSession({ status: 'ready', fetched: true, runs: [finishedLate, waiting] })
       // The row still says waiting; the run's own record, updated since, says it runs again.
       state.setRunsSelectedRunId('waiting')
       state.reconcileRunRecord('waiting', 'live', { status: 'running' })
@@ -3751,7 +3751,7 @@ describe('RunsPanel', () => {
       window.innerWidth = 390
       window.dispatchEvent(new Event('resize'))
       try {
-        useStore.getState().updateRunsListSession({ status: 'ready', runs: [otherWaiting, child, parent], searchQuery: 'deploy' })
+        useStore.getState().updateRunsListSession({ status: 'ready', fetched: true, runs: [otherWaiting, child, parent], searchQuery: 'deploy' })
         render(<DialogProvider><RunsPanel /></DialogProvider>)
         expect(selected()).toBeNull()
         expect(screen.getByTestId('run-selection-empty-state')).toHaveTextContent('No run selectedPick a run from the list to see its progress and results.')
@@ -3785,7 +3785,7 @@ describe('RunsPanel', () => {
       window.innerWidth = 390
       window.dispatchEvent(new Event('resize'))
       try {
-        useStore.getState().updateRunsListSession({ status: 'ready', runs: [child, parent], statusFilter: 'completed' })
+        useStore.getState().updateRunsListSession({ status: 'ready', fetched: true, runs: [child, parent], statusFilter: 'completed' })
         render(<DialogProvider><RunsPanel /></DialogProvider>)
         const parentRow = runList().getAllByTestId('run-history-row').find((row) => row.dataset.runId === 'parent')
         expect(parentRow).toBeDefined()
@@ -3820,37 +3820,19 @@ describe('RunsPanel', () => {
       expect(runList().getByText('Finished Late')).toBeVisible()
     })
 
-    it('opens a run from live updates while the first list load is out', () => {
-      renderRunsWorkspace()
-      expect(useStore.getState().runsListSession.status).toBe('loading')
-      act(() => {
-        for (const run of [finishedLate, activeNew]) window.dispatchEvent(new CustomEvent('spark:run-upsert', { detail: { run } }))
-      })
-      expect(selected()).toBe('active-new')
-      expect(useStore.getState().runsListSession.status).toBe('loading')
-      expect(useStore.getState().runsListSession.fetched).toBeFalsy()
-    })
-
-    const search = (searchQuery: string) => act(() => useStore.getState().updateRunsListSession({ searchQuery }))
-    it.each([
-      ['you click its open row', () => fireEvent.click(runList().getByText('Finished Late')), () => {}],
-      ['the first list load lands under a search that matches nothing, which you then clear', () => search('no such run'), () => search('')],
-    ])('keeps the run it opened from live updates, once %s, though runs waiting on you arrive', async (_, before, after) => {
+    it('waits for the first list load before opening a run, so a run waiting on you that Spark tells of last still wins', async () => {
       let respond = (_response: Response) => {}
       vi.mocked(global.fetch).mockImplementation((input) => resolveRequestUrl(input).endsWith('/attractor/runs')
         ? new Promise<Response>((resolve) => { respond = resolve })
         : new Promise<Response>(() => {}))
       renderRunsWorkspace()
-      const tell = (run: ReturnType<typeof makeRun>) => act(() => { window.dispatchEvent(new CustomEvent('spark:run-upsert', { detail: { run } })) })
-      tell(finishedLate)
-      expect(selected()).toBe('finished-late')
-
-      before()
-      tell(waiting)
+      // Spark's live snapshot comes one run at a time, newest first.
+      for (const run of [finishedLate, activeNew, waiting]) {
+        act(() => { window.dispatchEvent(new CustomEvent('spark:run-upsert', { detail: { run } })) })
+        expect(selected()).toBeNull()
+      }
       await act(async () => respond(jsonResponse({ runs: [finishedLate, activeNew, waiting] })))
-      await waitFor(() => expect(useStore.getState().runsListSession.fetched).toBe(true))
-      after()
-      expect(selected()).toBe('finished-late')
+      await waitFor(() => expect(selected()).toBe('waiting'))
     })
 
     it('opens a listed run in place of a linked one that is gone, under its notice, and never asks for it again', async () => {
@@ -3951,7 +3933,7 @@ describe('RunsPanel', () => {
       window.innerWidth = 390
       window.dispatchEvent(new Event('resize'))
       try {
-        useStore.getState().updateRunsListSession({ status: 'ready', runs: [queuedParent, child], searchQuery: 'deploy' })
+        useStore.getState().updateRunsListSession({ status: 'ready', fetched: true, runs: [queuedParent, child], searchQuery: 'deploy' })
         render(<DialogProvider><RunsPanel /></DialogProvider>)
         // A run queued behind a lock is listed in its lock's group, only when it matches; its child is listed on its own.
         expect(runList().getAllByTestId('run-history-row').map((row) => row.dataset.runId)).toEqual(['deploy-child'])
@@ -3996,7 +3978,7 @@ describe('RunsPanel', () => {
     it('adds no history entry for the run it opens, so Back leaves Runs', async () => {
       window.history.pushState(null, '', '#/overview')
       useStore.setState({ viewMode: 'overview' })
-      useStore.getState().updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting] })
+      useStore.getState().updateRunsListSession({ status: 'ready', fetched: true, runs: [finishedLate, waiting] })
       render(<DialogProvider><HistoryRoutingController /><RunsPanel /></DialogProvider>)
       const start = window.history.length
 
@@ -4017,7 +3999,7 @@ describe('RunsPanel', () => {
       window.dispatchEvent(new Event('resize'))
       try {
         window.history.pushState(null, '', '#/runs')
-        useStore.getState().updateRunsListSession({ status: 'ready', runs: [finishedLate, waiting] })
+        useStore.getState().updateRunsListSession({ status: 'ready', fetched: true, runs: [finishedLate, waiting] })
         render(<DialogProvider><HistoryRoutingController /><RunsPanel /></DialogProvider>)
         const runsHash = opened ? `#/runs/${opened}` : '#/runs'
         await waitFor(() => expect(window.location.hash).toBe(runsHash))
@@ -4039,7 +4021,7 @@ describe('RunsPanel', () => {
 
     it('offers to start a run when there are none, and says when the project filter leaves none', () => {
       const state = useStore.getState()
-      state.updateRunsListSession({ status: 'ready', runs: [] })
+      state.updateRunsListSession({ status: 'ready', fetched: true, runs: [] })
       render(<DialogProvider><RunsPanel /></DialogProvider>)
       expect(screen.getByText('No runs yet')).toBeVisible()
       expect(screen.getByTestId('runs-empty-run-flow-button')).toBeVisible()

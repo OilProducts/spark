@@ -71,13 +71,15 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const projectFilter = useStore((state) => state.runsListSession.projectFilter)
     const statusFilter = useStore((state) => state.runsListSession.statusFilter ?? null)
     const searchQuery = useStore((state) => state.runsListSession.searchQuery ?? '')
+    const fetched = useStore((state) => state.runsListSession.fetched ?? false)
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
-    // A desktop opens on the run you most likely came for of those the list shows, even while it
-    // loads, but never one found missing; a phone opens on the list. A run picked or restored (even
-    // while it loads) stays.
+    // A desktop opens on the run you most likely came for of those the list shows, never one found
+    // missing; a phone opens on the list. It waits for the first full list: Spark's live snapshot
+    // arrives one run at a time, so ranking before then can open a lesser run. A run picked or
+    // restored (even while it loads) stays.
     const query = searchQuery.trim().toLowerCase()
     // ponytail: O(n^2) while filters are on and nothing is open; index children by parent if lists grow large.
-    const autoRunId = selectedRunId || isNarrowViewport
+    const autoRunId = selectedRunId || isNarrowViewport || !fetched
         ? null
         : mostRelevantRun(runs.filter((run) => !goneRunIds?.includes(run.run_id) && listShowsRun(runs, run, statusFilter, query)))?.run_id ?? null
     useEffect(() => {
