@@ -1558,6 +1558,27 @@ fn model_listing_never_waits_on_a_harness_check() {
     announced();
     assert_eq!(slow(&list(false)), ready);
     assert_eq!(count(&launches), 11);
+
+    // A registration changed while it ran, seen by a listing in another work
+    // area: it is discarded there too, and only the listed one checks again.
+    std::fs::remove_file(&release).unwrap();
+    spark_workspace::models::invalidate_model_discovery("agents");
+    assert_eq!(slow(&list(false)), checking);
+    wait_for("the check started", &|| count(&launches) == 12);
+    register(json!({"SPARK_FAKE_ACP": "{}"}));
+    assert_eq!(slow(&list_other()), checking);
+    wait_for("the other's check started", &|| count(&launches) == 13);
+    std::fs::write(&release, "").unwrap();
+    wait_for("both checks ended", &|| count(&ended) == 13);
+    announced();
+    assert!(!announced_since(), "only the current registration's check");
+    assert_eq!(slow(&list_other()), ready);
+    assert_eq!(count(&launches), 13, "no check where nothing was listed");
+    register(json!({"SPARK_FAKE_ACP": "{}", "CHANGED": "1"}));
+    assert_eq!(slow(&list(false)), checking, "its result was not kept");
+    announced();
+    assert_eq!(slow(&list(false)), ready);
+    assert_eq!(count(&launches), 14);
 }
 
 #[test]

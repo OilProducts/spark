@@ -114,9 +114,10 @@ where
         self.lock().clear();
     }
 
-    /// Forgets the harnesses `keep` rejects, discarding their running checks.
-    fn retain(&self, keep: impl Fn(&H) -> bool) {
-        self.lock().retain(|check| keep(&check.harness));
+    /// Forgets the checks `keep` rejects, discarding those still running.
+    fn retain(&self, keep: impl Fn(&H, &R) -> bool) {
+        self.lock()
+            .retain(|check| keep(&check.harness, &check.registration));
     }
 }
 
@@ -373,13 +374,23 @@ fn acp_discoveries<'a>(
     // One check per directory however it is named, such as Home through a
     // symlinked HOME, as sessions' acknowledged options are kept.
     let work_area = std::fs::canonicalize(work_area).unwrap_or_else(|_| work_area.to_path_buf());
-    // A removed registration's checks go too, so restoring it checks it afresh.
-    ACP_DISCOVERY_CACHE.retain(|(_, id)| agents.acp_harnesses.contains_key(id));
-    agents
+    let generations = agents
         .acp_harnesses
         .iter()
         .map(|(id, harness)| {
             let generation = acp::launch_generation(harness, agents.environment_inheritance);
+            (id, generation)
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    // Checks of a removed or changed registration go in every work area, so
+    // none is kept or announced, and restoring it checks it afresh. Only the
+    // listed work area is checked again.
+    ACP_DISCOVERY_CACHE.retain(|(_, id), (generation, _)| generations.get(id) == Some(generation));
+    agents
+        .acp_harnesses
+        .iter()
+        .map(|(id, harness)| {
+            let generation = &generations[id];
             let run = {
                 let (id, harness, work_area) =
                     (id.clone(), harness.clone(), work_area.to_path_buf());
