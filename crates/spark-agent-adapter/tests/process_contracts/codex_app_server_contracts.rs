@@ -916,19 +916,26 @@ fn a_sink_that_steers_while_far_behind_still_steers_and_sees_every_event() {
     );
     let delivery_and_reply = seen
         .iter()
-        .filter_map(|event| match &event.kind {
-            TurnStreamEventKind::Other(kind) if kind == "user_message_delivered" => {
-                Some(event.source.item_id.as_deref())
+        .filter(|event| match &event.kind {
+            TurnStreamEventKind::Other(kind) if kind == "user_message_delivered" => true,
+            TurnStreamEventKind::ContentDelta | TurnStreamEventKind::ContentCompleted => {
+                event.source.item_id.as_deref() == Some("msg-test")
             }
-            TurnStreamEventKind::ContentDelta
-                if event.source.item_id.as_deref() == Some("msg-test") =>
-            {
-                Some(Some("msg-test"))
-            }
-            _ => None,
+            _ => false,
         })
+        .map(|event| (&event.kind, event.source.item_id.as_deref()))
         .collect::<Vec<_>>();
-    assert_eq!(delivery_and_reply, [Some("note-1"), Some("msg-test")]);
+    assert_eq!(
+        delivery_and_reply,
+        [
+            (
+                &TurnStreamEventKind::Other("user_message_delivered".into()),
+                Some("note-1"),
+            ),
+            (&TurnStreamEventKind::ContentDelta, Some("msg-test")),
+            (&TurnStreamEventKind::ContentCompleted, Some("msg-test")),
+        ]
+    );
 }
 
 #[cfg(unix)]
@@ -1284,7 +1291,8 @@ fn boundary_agent_turn_preserves_plan_mode_and_resolves_default_model() {
         "project_path": temp.path(),
         "prompt": "Plan this",
         "provider": "codex",
-        "chat_mode": "plan"
+        "chat_mode": "plan",
+        "reasoning_effort": "high"
     });
     write!(boundary.stdin.take().expect("boundary stdin"), "{request}").expect("write request");
     let output = boundary.wait_with_output().expect("boundary result");
@@ -1318,7 +1326,7 @@ fn boundary_agent_turn_preserves_plan_mode_and_resolves_default_model() {
         turn_start["params"]["collaborationMode"],
         json!({
             "mode": "plan",
-            "settings": {"model": "gpt-codex-test"}
+            "settings": {"model": "gpt-codex-test", "reasoning_effort": "high"}
         })
     );
 }

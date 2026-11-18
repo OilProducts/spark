@@ -26,7 +26,10 @@ fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
     assert_eq!(gpt.max_output, Some(128_000));
     assert!(gpt.supports_tools);
     assert!(gpt.supports_vision);
-    assert!(!gpt.reasoning_efforts.is_empty());
+    assert_eq!(
+        gpt.reasoning_efforts,
+        ["none", "low", "medium", "high", "xhigh"]
+    );
     assert_eq!(gpt.default_reasoning_effort.as_deref(), Some("none"));
     assert_eq!(gpt.input_cost_per_million, Some(1.75));
     assert_eq!(gpt.output_cost_per_million, Some(14.0));
@@ -49,11 +52,18 @@ fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
             "gpt-5.5"
         ]
     );
+    for capability in ["tools", "supports_tools"] {
+        assert_eq!(
+            get_latest_model("openai", Some(capability)).map(|model| model.id),
+            Some("gpt-5.2".to_owned()),
+            "{capability}"
+        );
+    }
+    let default_openai = get_latest_model("openai", None).expect("default OpenAI model");
+    assert_eq!(default_openai.id, "gpt-5.2");
     assert_eq!(
-        get_latest_model("openai", Some("supports_tools"))
-            .map(|model| model.id)
-            .as_deref(),
-        Some("gpt-5.2")
+        serde_json::to_value(default_openai).unwrap()["supported_reasoning_summaries"],
+        json!(["auto", "detailed"])
     );
     assert_eq!(
         get_latest_model("anthropic", Some("reasoning"))
