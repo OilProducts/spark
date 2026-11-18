@@ -22,6 +22,7 @@ use crate::agent::{
     AgentRawLogLine, AgentThreadResumeFailure, AgentTurnEventSink, AgentTurnOutput,
     AgentTurnRequest,
 };
+use crate::file_changes::{self, prefixed, FileChange};
 
 pub mod auth;
 mod control;
@@ -1147,8 +1148,14 @@ impl ClaudeCodeTurnState {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let is_result =
+            |block: &Value| block.get("type").and_then(Value::as_str) == Some("tool_result");
+        // The message's structured result is attributable only to its sole tool result.
+        let structured = message
+            .get("tool_use_result")
+            .filter(|_| blocks.iter().filter(|block| is_result(block)).count() == 1);
         for block in blocks {
-            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            if !is_result(&block) {
                 continue;
             }
             let is_error = block
@@ -1161,9 +1168,15 @@ impl ClaudeCodeTurnState {
                 .and_then(Value::as_str)
                 .and_then(|id| self.tool_calls.get(id).cloned())
                 .unwrap_or_else(|| json!({"id": id}));
+            let changes = (!is_error)
+                .then(|| file_changes::payload(edit_file_changes(&tool_call, structured)))
+                .flatten();
             if let Some(payload) = tool_call.as_object_mut() {
                 payload.insert("output".to_string(), tool_result_preview(&block));
                 payload.insert("is_error".to_string(), Value::Bool(is_error));
+                if let Some(changes) = changes {
+                    payload.insert("file_changes".to_string(), changes);
+                }
                 if let Some(parent_call_id) = message
                     .get("parent_tool_use_id")
                     .filter(|id| id.is_string())
@@ -1302,10 +1315,13 @@ fn canonical_tool_call(block: &Value) -> Value {
                 .unwrap_or(name);
             payload.insert("title".to_string(), json!(title));
         }
-        "Read" | "Write" | "Edit" | "NotebookEdit" => {
+        "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
             let path = input_string("file_path").or_else(|| input_string("notebook_path"));
             if let Some(path) = path {
                 payload.insert("file_paths".to_string(), json!([path]));
+            }
+            if matches!(name, "Write" | "Edit" | "MultiEdit") {
+                payload.insert("kind".to_string(), json!("file_change"));
             }
             payload.insert("title".to_string(), json!(name));
         }
@@ -1333,6 +1349,63 @@ fn canonical_tool_call(block: &Value) -> Value {
         }
     }
     Value::Object(payload)
+}
+
+/// What an Edit, Write or MultiEdit call changed: the hunks of the CLI's
+/// structured result when it has any, else the call's own input.
+fn edit_file_changes(call: &Value, result: Option<&Value>) -> Vec<FileChange> {
+    let name = call["name"].as_str().unwrap_or("");
+    if !matches!(name, "Edit" | "Write" | "MultiEdit") {
+        return Vec::new();
+    }
+    let text = |value: &Value, key: &str| value[key].as_str().unwrap_or("").to_string();
+    let input = &call["input"];
+    let input_path = text(input, "file_path");
+    let Some(path) = non_empty(&input_path) else {
+        return Vec::new();
+    };
+    let result = result.unwrap_or(&Value::Null);
+    let kind = (name == "Write" && result["type"] == "create").then_some("add");
+    if let Some(hunks) = result["structuredPatch"]
+        .as_array()
+        .filter(|hunks| !hunks.is_empty())
+    {
+        let result_path = text(result, "filePath");
+        let diff = hunks
+            .iter()
+            .flat_map(|hunk| {
+                let header = format!(
+                    "@@ -{},{} +{},{} @@\n",
+                    hunk["oldStart"], hunk["oldLines"], hunk["newStart"], hunk["newLines"]
+                );
+                let lines = hunk["lines"].as_array().into_iter().flatten();
+                std::iter::once(header).chain(
+                    lines
+                        .filter_map(Value::as_str)
+                        .map(|line| format!("{line}\n")),
+                )
+            })
+            .collect();
+        let path = non_empty(&result_path).unwrap_or(path);
+        return vec![FileChange::new(path, kind, diff)];
+    }
+    let compare = |edit: &Value| {
+        FileChange::compare(path, &text(edit, "old_string"), &text(edit, "new_string"))
+    };
+    match name {
+        "Write" => vec![FileChange::new(
+            path,
+            kind,
+            prefixed(&text(input, "content"), '+'),
+        )],
+        "Edit" => vec![compare(input)],
+        _ => input["edits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(compare)
+            .collect(),
+    }
 }
 
 fn stream_event(

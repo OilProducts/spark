@@ -901,6 +901,79 @@ fn main() {
         return;
     }
 
+    if mode == "file-edits" {
+        // Edit results as the CLI reports them: a structured result rides on
+        // the user message, beside its tool_result blocks.
+        let call = |id: &str, name: &str, input: serde_json::Value| json!({"type": "tool_use", "id": id, "name": name, "input": input});
+        let result = |id: &str, is_error: bool| json!({"type": "tool_result", "tool_use_id": id, "content": "ok", "is_error": is_error});
+        let edit = |old: &str, new: &str| json!({"file_path": "/p/a.rs", "old_string": old, "new_string": new});
+        for (calls, results, structured) in [
+            (
+                vec![call("toolu_patch", "Edit", edit("b", "B"))],
+                vec![result("toolu_patch", false)],
+                json!({"filePath": "/p/real.rs", "structuredPatch": [
+                    {"oldStart": 1, "oldLines": 3, "newStart": 1, "newLines": 3, "lines": [" a", "-b", "+B", " c"]},
+                    {"oldStart": 9, "oldLines": 1, "newStart": 9, "newLines": 1, "lines": ["--- x", "+++ y"]}]}),
+            ),
+            (
+                vec![call("toolu_edit", "Edit", edit("b\nc\n", "B\nc"))],
+                vec![result("toolu_edit", false)],
+                serde_json::Value::Null,
+            ),
+            (
+                vec![call(
+                    "toolu_create",
+                    "Write",
+                    json!({"file_path": "/p/new.rs", "content": "one\ntwo\n"}),
+                )],
+                vec![result("toolu_create", false)],
+                json!({"type": "create", "filePath": "/p/new.rs", "content": "one\ntwo\n", "structuredPatch": []}),
+            ),
+            (
+                vec![call(
+                    "toolu_multi",
+                    "MultiEdit",
+                    json!({"file_path": "/p/a.rs", "edits": [
+                    {"old_string": "a", "new_string": "A"}, {"old_string": "c", "new_string": "C"}]}),
+                )],
+                vec![result("toolu_multi", false)],
+                serde_json::Value::Null,
+            ),
+            (
+                vec![call("toolu_failed", "Edit", edit("x", "y"))],
+                vec![result("toolu_failed", true)],
+                serde_json::Value::Null,
+            ),
+            // One structured result for two tool results belongs to neither.
+            (
+                vec![
+                    call("toolu_pair_1", "Edit", edit("p", "P")),
+                    call("toolu_pair_2", "Edit", edit("q", "Q")),
+                ],
+                vec![result("toolu_pair_1", false), result("toolu_pair_2", false)],
+                json!({"filePath": "/p/other.rs", "structuredPatch": [
+                    {"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1, "lines": ["-z", "+Z"]}]}),
+            ),
+        ] {
+            emit(
+                &mut out,
+                json!({"type": "assistant", "session_id": session_id,
+                    "message": {"role": "assistant", "content": calls}}),
+            );
+            emit(
+                &mut out,
+                json!({"type": "user", "session_id": session_id, "tool_use_result": structured,
+                    "message": {"role": "user", "content": results}}),
+            );
+        }
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false,
+                "result": "Edited.", "session_id": session_id}),
+        );
+        return;
+    }
+
     if mode == "empty-thinking" {
         // What the CLI streams when it withholds thinking text.
         for line in [

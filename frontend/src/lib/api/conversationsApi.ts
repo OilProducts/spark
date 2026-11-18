@@ -76,6 +76,8 @@ export interface ConversationSegmentResponse {
         output_size?: number | null
         output_truncated?: boolean
         file_paths: string[]
+        /** Per-file diffs the call reported, in the order reported. */
+        file_changes?: ToolCallFileChange[]
         /** The call that spawned this one, for a subagent's own calls. */
         parent_call_id?: string | null
         subagent_type?: string | null
@@ -111,6 +113,15 @@ export interface ConversationSegmentResponse {
         summary_index?: number | null
         call_id?: string | null
     } | null
+}
+
+/** One file a tool call changed; `diff` is unified-diff-style text. */
+export interface ToolCallFileChange {
+    path: string
+    kind?: 'add' | 'delete' | 'update' | 'move'
+    move_from?: string
+    diff: string
+    truncated?: boolean
 }
 
 export interface WorkflowEventResponse {
@@ -539,6 +550,7 @@ export function parseConversationSegmentResponse(value: unknown): ConversationSe
                 output_size: typeof toolCall.output_size === 'number' ? toolCall.output_size : null,
                 output_truncated: toolCall.output_truncated === true,
                 file_paths: Array.isArray(toolCall.file_paths) ? toolCall.file_paths.map((entry) => String(entry)) : [],
+                file_changes: parseToolCallFileChanges(toolCall.file_changes),
                 parent_call_id: asOptionalNullableString(toolCall.parent_call_id),
                 subagent_type: asOptionalNullableString(toolCall.subagent_type),
                 prompt: asOptionalNullableString(toolCall.prompt),
@@ -602,6 +614,29 @@ export function parseConversationSegmentResponse(value: unknown): ConversationSe
             }
             : null,
     }
+}
+
+/** The valid entries of a tool call's `file_changes`, in order. */
+function parseToolCallFileChanges(value: unknown): ToolCallFileChange[] | undefined {
+    if (!Array.isArray(value)) {
+        return undefined
+    }
+    return value.flatMap((entry) => {
+        const record = asUnknownRecord(entry)
+        if (!record || typeof record.path !== 'string' || typeof record.diff !== 'string') {
+            return []
+        }
+        const kind = record.kind === 'add' || record.kind === 'delete' || record.kind === 'update' || record.kind === 'move'
+            ? record.kind
+            : undefined
+        return [{
+            path: record.path,
+            kind,
+            move_from: asOptionalString(record.move_from),
+            diff: record.diff,
+            truncated: record.truncated === true,
+        }]
+    })
 }
 
 function parseWorkflowEventResponse(value: unknown): WorkflowEventResponse | null {

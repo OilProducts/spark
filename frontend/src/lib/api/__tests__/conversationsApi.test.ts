@@ -643,6 +643,38 @@ describe('conversationsApi parsing', () => {
         expect(row.payload?.tool_call?.completion_reason).toBe('turn_boundary_yield')
     })
 
+    it('keeps a tool call\'s valid file changes in order and ignores invalid ones', () => {
+        const toolCall = (file_changes: unknown) => {
+            const row = batchOf([segmentRow('conversation-edit', {
+                id: 'segment-tool-edit',
+                turn_id: 'turn-1',
+                order: 2,
+                kind: 'tool_call',
+                role: 'system',
+                status: 'complete',
+                timestamp: '2026-08-27T11:59:58Z',
+                updated_at: '2026-08-27T12:00:00Z',
+                content: '',
+                tool_call: { id: 'edit-1', kind: 'file_change', status: 'completed', title: 'Edit', file_paths: ['a.rs'], file_changes },
+            }, '7')]).rows[0]
+            return row.kind === 'segment' ? row.payload?.tool_call : undefined
+        }
+        expect(toolCall([
+            { path: 'b.rs', kind: 'move', move_from: 'a.rs', diff: '@@ -1 +1 @@\n-a\n+b\n', truncated: true },
+            { path: 'c.rs', diff: 7 },
+            'd.rs',
+            { diff: '+x\n' },
+            { path: 'e.rs', kind: 'rename', move_from: 3, diff: '+e\n' },
+            { path: 'b.rs', kind: 'update', diff: '' },
+        ])?.file_changes).toEqual([
+            { path: 'b.rs', kind: 'move', move_from: 'a.rs', diff: '@@ -1 +1 @@\n-a\n+b\n', truncated: true },
+            { path: 'e.rs', diff: '+e\n', truncated: false },
+            { path: 'b.rs', kind: 'update', diff: '', truncated: false },
+        ])
+        expect(toolCall(undefined)?.file_changes).toBeUndefined()
+        expect(toolCall({ path: 'a.rs', diff: '' })?.file_changes).toBeUndefined()
+    })
+
     it('parses tombstone rows without a payload', () => {
         const batch = batchOf([tombstoneRow('segment', 'conversation-yield', 'segment-agent-event-turn-1-turn_completed-6', '9', { turn_id: 'turn-1' })])
         expect(batch.rows).toEqual([{

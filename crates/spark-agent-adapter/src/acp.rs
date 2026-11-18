@@ -49,6 +49,7 @@ use crate::agent::{
     AGENT_INSTRUCTIONS_METADATA_KEY,
 };
 use crate::codergen::{ClarificationHandler, ClarificationReply};
+use crate::file_changes::{self, prefixed, FileChange};
 use crate::history::HistoryTurn;
 use crate::stdio_transport::{self, sleep_until, Endpoints, Incoming, Outgoing, Stop, LIMITS};
 
@@ -2188,6 +2189,22 @@ impl Translate {
             tool_call["output"] = raw["rawOutput"].clone();
         } else if !content.is_empty() {
             tool_call["output"] = json!(content.join("\n"));
+        }
+        // A diff without its old text is a new file.
+        let diffs = raw["content"].as_array().into_iter().flatten();
+        let changes = diffs
+            .filter(|item| item["type"] == "diff")
+            .filter_map(|item| {
+                let path = item["path"].as_str()?;
+                let new = item["newText"].as_str()?;
+                Some(match item["oldText"].as_str() {
+                    Some(old) => FileChange::compare(path, old, new),
+                    None => FileChange::new(path, None, prefixed(new, '+')),
+                })
+            })
+            .collect();
+        if let Some(changes) = file_changes::payload(changes) {
+            tool_call["file_changes"] = changes;
         }
         let kind = match status.as_str() {
             "completed" => TurnStreamEventKind::ToolCallCompleted,

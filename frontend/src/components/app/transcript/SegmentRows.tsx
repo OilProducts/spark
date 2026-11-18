@@ -7,6 +7,8 @@ import { ChevronRight, FileText, Play, Terminal } from 'lucide-react'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { formatAttachmentSize } from '@/features/projects/hooks/useComposerAttachments'
 import { Button } from '@/components/ui/button'
+import { DiffBlock } from '@/components/app/diff-block'
+import type { ToolCallFileChange } from '@/lib/api/conversationsApi'
 import { cn } from '@/lib/utils'
 import { StatusDot, statusTextClassName, type StatusTone } from '../status'
 import { stripShellWrapper } from './displayCommand'
@@ -41,6 +43,7 @@ export interface TranscriptToolCall {
     outputSize?: number | null
     outputTruncated?: boolean
     filePaths: string[]
+    fileChanges?: ToolCallFileChange[]
     /** The subagent call this call was made under; it renders nested there. */
     parentCallId?: string | null
     subagentType?: string | null
@@ -159,7 +162,14 @@ export const parseThinkingSummaryContent = (content: string): { heading: string 
     return { heading, details }
 }
 
-/** The expanded body of a tool call: the full command, touched files and output. */
+const FILE_CHANGE_LABELS: Record<NonNullable<ToolCallFileChange['kind']>, string> = {
+    add: 'Added',
+    delete: 'Deleted',
+    update: 'Updated',
+    move: 'Moved',
+}
+
+/** The expanded body of a tool call: the full command, touched files, their diffs and output. */
 function ToolCallDetails({
     entry,
     fullOutput,
@@ -175,6 +185,9 @@ function ToolCallDetails({
 }) {
     const displayedOutput = fullOutput ?? entry.toolCall.output
     const hasPreviewOnly = entry.toolCall.outputTruncated === true && fullOutput === null
+    const fileChanges = entry.toolCall.fileChanges ?? []
+    // A path a diff below already names is not listed again.
+    const filePaths = entry.toolCall.filePaths.filter((path) => !fileChanges.some((change) => change.path === path || change.move_from === path))
     return (
         <div className={cn('mt-1.5 mb-2 space-y-2', className)}>
             {entry.toolCall.prompt ? (
@@ -187,11 +200,25 @@ function ToolCallDetails({
                     {entry.toolCall.command}
                 </p>
             ) : null}
-            {entry.toolCall.filePaths.length > 0 ? (
+            {filePaths.length > 0 ? (
                 <ul className="space-y-1">
-                    {entry.toolCall.filePaths.map((path) => (
+                    {filePaths.map((path) => (
                         <li key={path} className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
                             {path}
+                        </li>
+                    ))}
+                </ul>
+            ) : null}
+            {fileChanges.length > 0 ? (
+                <ul className="space-y-2">
+                    {fileChanges.map((change, index) => (
+                        <li key={index} className="space-y-1">
+                            <p className="flex flex-wrap items-center gap-1.5 break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                                {change.kind ? <span className={cn(getSurfaceToneClassName('neutral'), 'font-sans')}>{FILE_CHANGE_LABELS[change.kind]}</span> : null}
+                                <span>{change.move_from ? `${change.move_from} → ${change.path}` : change.path}</span>
+                            </p>
+                            {change.truncated ? <p className="text-xs text-muted-foreground">Preview truncated</p> : null}
+                            {change.diff ? <DiffBlock diff={change.diff} className="max-h-60" /> : null}
                         </li>
                     ))}
                 </ul>

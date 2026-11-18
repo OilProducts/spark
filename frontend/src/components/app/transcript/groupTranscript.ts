@@ -43,6 +43,7 @@ export const toTranscriptToolCall = (toolCall: NonNullable<ConversationSegmentRe
     outputSize: toolCall.output_size ?? null,
     outputTruncated: toolCall.output_truncated === true,
     filePaths: toolCall.file_paths,
+    fileChanges: toolCall.file_changes,
     parentCallId: toolCall.parent_call_id ?? null,
     subagentType: toolCall.subagent_type ?? null,
     prompt: toolCall.prompt ?? null,
