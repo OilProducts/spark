@@ -59,16 +59,15 @@ describe('runsRouting helpers', () => {
         expect(parsePlaceHash('#/roles/reviewer?project=%2Ftmp%2Fb', '/tmp/a')).toEqual({ view: 'roles', roleId: roleKey({ projectPath: '/tmp/b', name: 'reviewer' }) })
     })
 
-    it('adds no entry for the run a desktop opens by itself, with none open, in a missing one\'s place or in place of one it opened', () => {
+    it('adds no entry for the run a desktop opens by itself, with none open or in a missing one\'s place', () => {
         const store = useStore.getState()
         const state = { ...store, runsListSession: { ...store.runsListSession, missingRunId: 'gone', autoOpenedRunId: 'next' } }
         const runs = (runId: string | null): Place => ({ view: 'runs', runId })
         expect(addsEntry(state, runs(null), runs('next'))).toBe(false)
         // The 404 and the run opened in its place can land in one step.
         expect(addsEntry(state, runs('gone'), runs('next'))).toBe(false)
-        expect(addsEntry(state, runs('early'), runs('next'))).toBe(false)
+        expect(addsEntry(state, runs('other'), runs('next'))).toBe(true)
         expect(addsEntry(state, runs(null), runs('picked'))).toBe(true)
-        expect(addsEntry(state, runs('next'), runs('picked'))).toBe(true)
     })
 
     it('names no place for unknown or malformed hashes', () => {
