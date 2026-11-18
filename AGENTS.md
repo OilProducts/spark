@@ -50,6 +50,12 @@ Example comments:
 // ponytail: global lock; use per-account locks if throughput matters.
 ```
 
+## Reporting Failure Is a Correct Outcome
+
+When an operation fails, report the failure clearly and stop the failed operation. Preserve enough context to diagnose or retry safely. Add automatic retries, fallbacks, or recovery only when a requirement calls for them or a concrete failure mode justifies the complexity. Handle failures as far as needed to protect data, security, and state consistency. If the operation can safely stop there, a clear error is enough. Reporting is not swallowing: never hide a failure, fake success, or return a default that masks an error.
+
+Treat a race like any other failure, by its consequence: a benign race (redundant idempotent work, or a stale read the next refresh corrects) needs nothing; a race that can lose an update or leave contradictory state needs handling.
+
 ## Checks
 
 Minimal code without verification is unfinished.
