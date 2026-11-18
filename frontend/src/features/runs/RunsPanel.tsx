@@ -84,7 +84,8 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
         if (!autoRunId) return
         const state = useStore.getState()
         const { missingRunId } = state.runsListSession
-        state.setRunsSelectedRunId(autoRunId)
+        // It opens a run the list shows, so the list's filters stay.
+        state.setRunsSelectedRunId(autoRunId, { keepFilters: true })
         // A missing run's notice stays over the run opened in its place.
         state.updateRunsListSession({ autoOpenedRunId: autoRunId, missingRunId })
     }, [autoRunId])

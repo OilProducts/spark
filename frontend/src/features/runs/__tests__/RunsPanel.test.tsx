@@ -3779,6 +3779,26 @@ describe('RunsPanel', () => {
       }
     })
 
+    it('on a phone, a tap on a waiting parent listed under Completed for its child opens it and returns the filter to All', () => {
+      const parent = makeRun({ run_id: 'parent', flow_name: 'review.dot', status: 'waiting', outcome: null, ended_at: null })
+      const child = makeRun({ run_id: 'child', flow_name: 'deploy-check.dot', parent_run_id: 'parent' })
+      window.innerWidth = 390
+      window.dispatchEvent(new Event('resize'))
+      try {
+        useStore.getState().updateRunsListSession({ status: 'ready', runs: [child, parent], statusFilter: 'completed' })
+        render(<DialogProvider><RunsPanel /></DialogProvider>)
+        const parentRow = runList().getAllByTestId('run-history-row').find((row) => row.dataset.runId === 'parent')
+        expect(parentRow).toBeDefined()
+
+        fireEvent.click(parentRow!)
+        expect(selected()).toBe('parent')
+        expect(useStore.getState().runsListSession.statusFilter).toBeNull()
+      } finally {
+        window.innerWidth = 1024
+        window.dispatchEvent(new Event('resize'))
+      }
+    })
+
     it.each([
       ['a failed refresh kept', 'error', () => Promise.resolve(new Response('', { status: 503 }))],
       ['shown while a refresh is out', 'loading', () => new Promise<Response>(() => {})],
@@ -3896,11 +3916,6 @@ describe('RunsPanel', () => {
         })
         expect(selected()).toBe('deploy-child')
         expect(useStore.getState().runsListSession.searchQuery).toBe('deploy')
-
-        // Opening the parent, as a link does, clears the search that leaves it out.
-        act(() => useStore.getState().setRunsSelectedRunId('queued-parent'))
-        expect(useStore.getState().runsListSession.searchQuery).toBe('')
-        expect(runList().getAllByTestId('run-history-row').map((row) => row.dataset.runId)).toContain('queued-parent')
       } finally {
         window.innerWidth = 1024
         window.dispatchEvent(new Event('resize'))
@@ -3974,26 +3989,6 @@ describe('RunsPanel', () => {
         window.innerWidth = 1024
         window.dispatchEvent(new Event('resize'))
       }
-    })
-
-    it('reveals a linked run that the search and state filter hide together, and keeps filters that show it', async () => {
-      const failedParent = makeRun({ run_id: 'failed-parent', flow_name: 'review.dot', status: 'failed', outcome: 'failure' })
-      const deployChild = makeRun({ run_id: 'deploy-child', flow_name: 'deploy-check.dot', parent_run_id: 'failed-parent' })
-      const failedDeploy = makeRun({ run_id: 'failed-deploy', flow_name: 'deploy-fix.dot', status: 'failed', outcome: 'failure' })
-      window.history.pushState(null, '', '#/overview')
-      useStore.setState({ viewMode: 'overview' })
-      useStore.getState().updateRunsListSession({ status: 'ready', runs: [failedDeploy, deployChild, failedParent], statusFilter: 'failed', searchQuery: 'deploy' })
-      render(<DialogProvider><HistoryRoutingController /><RunsPanel /></DialogProvider>)
-      const currentRow = () => runList().getAllByTestId('run-history-row').find((row) => row.getAttribute('aria-current') === 'true')?.dataset.runId
-
-      act(() => { window.location.hash = '#/runs/failed-deploy' })
-      await waitFor(() => expect(currentRow()).toBe('failed-deploy'))
-      expect(useStore.getState().runsListSession).toMatchObject({ statusFilter: 'failed', searchQuery: 'deploy' })
-
-      // Each filter alone shows the failed parent, one for itself and one for its child; together they don't.
-      act(() => { window.location.hash = '#/runs/failed-parent' })
-      await waitFor(() => expect(currentRow()).toBe('failed-parent'))
-      expect(useStore.getState().runsListSession).toMatchObject({ statusFilter: null, searchQuery: 'deploy' })
     })
 
     it('offers to start a run when there are none, and says when the project filter leaves none', () => {

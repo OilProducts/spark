@@ -171,7 +171,8 @@ export interface RunsSessionSlice {
     reconcileRunRecord: (runId: string, source: 'status' | 'list' | 'live' | 'journal', record: Partial<RunRecord>, completedNodes?: string[], requestUpdates?: RunDetailSessionState['recordUpdates']) => void
     optimisticallyPatchRun: (runId: string, patch: Partial<RunRecord>) => () => void
     updateRunsListSession: (patch: Partial<RunsListSessionState>, source?: 'list' | 'live') => void
-    setRunsSelectedRunId: (runId: string | null) => void
+    /** `keepFilters` is for a run the list already shows; otherwise filters that would hide the run are dropped. */
+    setRunsSelectedRunId: (runId: string | null, options?: { keepFilters?: boolean }) => void
     updateRunDetailSession: (runId: string, patch: Partial<RunDetailSessionState>) => void
     clearRunDetailSession: (runId: string) => void
 }
