@@ -3691,7 +3691,7 @@ describe('RunsPanel', () => {
 
     it('opens a run waiting on you, else the newest active run, else the latest to finish, of those the list shows', () => {
       const state = useStore.getState()
-      state.updateRunsListSession({ status: 'ready', projectFilter: '/tmp/project-one', runs: [finishedEarly, finishedLate, activeNew, activeOld, waiting] })
+      state.updateRunsListSession({ status: 'ready', fetched: true, projectFilter: '/tmp/project-one', runs: [finishedEarly, finishedLate, activeNew, activeOld, waiting] })
       render(<DialogProvider><RunsPanel /></DialogProvider>)
       // The run waiting in another project is filtered out.
       expect(selected()).toBe('active-new')
@@ -3829,6 +3829,40 @@ describe('RunsPanel', () => {
       expect(selected()).toBe('active-new')
       expect(useStore.getState().runsListSession.status).toBe('loading')
       expect(useStore.getState().runsListSession.fetched).toBeFalsy()
+    })
+
+    it('opens the most relevant run of those Spark tells of one by one before the first list load, ranks it once more against that load, then keeps it', async () => {
+      let respond = (_response: Response) => {}
+      vi.mocked(global.fetch).mockImplementation((input) => resolveRequestUrl(input).endsWith('/attractor/runs')
+        ? new Promise<Response>((resolve) => { respond = resolve })
+        : new Promise<Response>(() => {}))
+      window.history.pushState(null, '', '#/overview')
+      window.history.pushState(null, '', '#/runs')
+      const start = window.history.length
+      render(<DialogProvider><HistoryRoutingController /><WorkspaceLiveEventsController /><RunsSessionController /><RunStream /><RunsPanel /></DialogProvider>)
+      const tell = (run: ReturnType<typeof makeRun>) => act(() => { window.dispatchEvent(new CustomEvent('spark:run-upsert', { detail: { run } })) })
+
+      tell(finishedLate)
+      expect(selected()).toBe('finished-late')
+      tell(activeNew)
+      expect(selected()).toBe('active-new')
+      // Older than both, but waiting on you.
+      tell(waiting)
+      expect(selected()).toBe('waiting')
+      await act(async () => {})
+      expect(window.location.hash).toBe('#/runs/waiting')
+      expect(window.history.length).toBe(start)
+
+      // The first load knows a newer run waiting on you; from then on, what Spark tells of opens nothing.
+      const waitingNew = makeRun({ run_id: 'waiting-new', status: 'waiting', outcome: null, started_at: '2026-03-22T02:00:00Z', ended_at: null })
+      await act(async () => respond(jsonResponse({ runs: [finishedLate, activeNew, waiting, waitingNew] })))
+      await waitFor(() => expect(useStore.getState().runsListSession.fetched).toBe(true))
+      expect(selected()).toBe('waiting-new')
+      tell(makeRun({ run_id: 'waiting-newest', status: 'waiting', outcome: null, started_at: '2026-03-22T03:00:00Z', ended_at: null }))
+      expect(selected()).toBe('waiting-new')
+      await act(async () => {})
+      expect(window.location.hash).toBe('#/runs/waiting-new')
+      expect(window.history.length).toBe(start)
     })
 
     it('opens a listed run in place of a linked one that is gone, under its notice, and never asks for it again', async () => {

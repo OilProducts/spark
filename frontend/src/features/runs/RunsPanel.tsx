@@ -68,27 +68,30 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const { error, scopedRuns, status } = useRunsList({ selectedRunId, manageSync: false })
     const isNarrowViewport = useNarrowViewport()
     const goneRunIds = useStore((state) => state.runsListSession.goneRunIds)
+    const fetched = useStore((state) => Boolean(state.runsListSession.fetched))
+    const provisional = useStore(({ runsListSession: session }) => Boolean(session.autoOpenedEarly) && session.selectedRunId === session.autoOpenedRunId)
     const projectFilter = useStore((state) => state.runsListSession.projectFilter)
     const statusFilter = useStore((state) => state.runsListSession.statusFilter ?? null)
     const searchQuery = useStore((state) => state.runsListSession.searchQuery ?? '')
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
     // A desktop opens on the run you most likely came for of those the list shows, even while it
     // loads, but never one found missing; a phone opens on the list. A run picked or restored (even
-    // while it loads) stays.
+    // while it loads) stays. One it opens before the first history arrives gives way to a more
+    // relevant one until then, and is ranked once more against that history.
     const query = searchQuery.trim().toLowerCase()
     // ponytail: O(n^2) while filters are on and nothing is open; index children by parent if lists grow large.
-    const autoRunId = selectedRunId || isNarrowViewport
+    const autoRunId = (selectedRunId && !provisional) || isNarrowViewport
         ? null
         : mostRelevantRun(runs.filter((run) => !goneRunIds?.includes(run.run_id) && listShowsRun(runs, run, statusFilter, query)))?.run_id ?? null
     useEffect(() => {
         if (!autoRunId) return
         const state = useStore.getState()
-        const { missingRunId } = state.runsListSession
+        const { missingRunId, selectedRunId: openRunId, fetched } = state.runsListSession
         // It opens a run the list shows, so the list's filters stay.
-        state.setRunsSelectedRunId(autoRunId, { keepFilters: true })
+        if (autoRunId !== openRunId) state.setRunsSelectedRunId(autoRunId, { keepFilters: true })
         // A missing run's notice stays over the run opened in its place, unless that run is the one it names.
-        state.updateRunsListSession({ autoOpenedRunId: autoRunId, missingRunId: missingRunId === autoRunId ? null : missingRunId })
-    }, [autoRunId])
+        state.updateRunsListSession({ autoOpenedRunId: autoRunId, autoOpenedEarly: !fetched, missingRunId: missingRunId === autoRunId ? null : missingRunId })
+    }, [autoRunId, fetched, selectedRunId])
     return (
         <div className="flex h-full min-h-0 flex-col gap-2">
         <RunsProjectFilter />

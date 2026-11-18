@@ -51,8 +51,10 @@ export interface RunsListSessionState {
     missingRunId?: string | null
     /** Every run the server has said isn't there, until a live update tells of it again; a desktop's Runs never opens one by itself, though the list may still have its row. */
     goneRunIds?: string[]
-    /** The open run, when a desktop's Runs opened it by itself with none open or in a missing run's place; that adds no history entry. */
+    /** The open run, when a desktop's Runs opened it by itself; that adds no history entry. */
     autoOpenedRunId?: string | null
+    /** Whether Runs opened that run before the first full history arrived; until then a more relevant run replaces it. */
+    autoOpenedEarly?: boolean
     status: ResourceStatus
     error: string | null
     runs: RunRecord[]
