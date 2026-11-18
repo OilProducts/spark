@@ -2,12 +2,11 @@ import { useEffect, useState } from 'react'
 import { isTauri } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { codexConnectionRequest, type CodexConnection } from './services/codexConnection'
 
-/** `onStatus` hears the sign-in state, or `error` when it cannot be read. */
-export function CodexConnectionControls({ onStatus }: { onStatus?: (status: CodexConnection['status'] | 'error') => void } = {}) {
+/** `onStatus` hears the sign-in state, or `error` when it cannot be read; `showCheck` is off where the host checks again itself. */
+export function CodexConnectionControls({ onStatus, showCheck = true }: { onStatus?: (status: CodexConnection['status'] | 'error') => void; showCheck?: boolean } = {}) {
     const [connection, setConnection] = useState<CodexConnection | null>(null)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -78,18 +77,11 @@ export function CodexConnectionControls({ onStatus }: { onStatus?: (status: Code
                     </Button>
                     <Button size="sm" variant="outline" disabled={disabled} onClick={() => void request('device')}>Use a device code</Button>
                 </>}
-            <Button size="sm" variant="outline" disabled={disabled} onClick={() => void request('status')}>Check connection</Button>
+            {showCheck && <Button size="sm" variant="outline" disabled={disabled} onClick={() => void request('status')}>Check connection</Button>}
         </div>
         {!pending && <p className="text-muted-foreground">For Spark running in Docker or on another computer, use a device code.</p>}
         {error && <p role="alert" className="text-destructive">{error}</p>}
     </div>
-}
-
-export function CodexConnectionSettings() {
-    return <Card className="gap-4 py-4">
-        <CardHeader className="px-4"><h2 className="text-base font-semibold">Codex connection</h2></CardHeader>
-        <CardContent className="px-4"><CodexConnectionControls /></CardContent>
-    </Card>
 }
 
 export function CodexReconnect() {

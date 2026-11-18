@@ -1,13 +1,13 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useEffect } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { HarnessSettings } from '../HarnessSettings'
-import { fetchAgentSettings, fetchHarnessCatalog, HIDDEN_ENV_VALUE, saveAcpHarness, type AgentSettingsView } from '../services/executionSettings'
+import { fetchAgentSettings, fetchHarnessCatalog, HIDDEN_ENV_VALUE, saveAcpHarness, signInAcpHarness, type AgentSettingsView } from '../services/executionSettings'
 
 vi.mock('../services/executionSettings', async (original) => ({ ...await original<typeof import('../services/executionSettings')>(),
-    fetchAgentSettings: vi.fn(), fetchHarnessCatalog: vi.fn(), saveAcpHarness: vi.fn(), saveAgentSettings: vi.fn() }))
+    fetchAgentSettings: vi.fn(), fetchHarnessCatalog: vi.fn(), saveAcpHarness: vi.fn(), saveAgentSettings: vi.fn(), signInAcpHarness: vi.fn() }))
 const { SignIn } = vi.hoisted(() => ({ SignIn: ({ onStatus }: { onStatus?: (state: 'connected') => void }) => {
     useEffect(() => onStatus?.('connected'), [onStatus])
     return <p>sign-in controls</p>
@@ -40,6 +40,7 @@ it('shows each harness with its status and next step, and edits an ACP harness w
 
     const codex = await screen.findByRole('group', { name: 'Codex' })
     expect(await within(codex).findByText('Ready')).toBeInTheDocument()
+    expect(screen.getByLabelText('Harness overview')).toHaveTextContent('1 ready · 1 signed out · 1 not installed · 1 misconfigured')
     expect(within(codex).getAllByText('Yes')).toHaveLength(2)
     const claude = screen.getByRole('group', { name: 'Claude Code' })
     expect(within(claude).getByText('Not installed')).toBeInTheDocument()
@@ -102,4 +103,64 @@ it('adds an ACP harness only once its ID, name and program are valid, and remove
     await user.click(await screen.findByRole('button', { name: 'Remove Broken' }))
     await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Remove' }))
     expect(saveAcpHarness).toHaveBeenLastCalledWith('one', 'broken', null)
+})
+
+it('signs in to an ACP harness with a method it offers, then checks it again', async () => {
+    vi.mocked(fetchAgentSettings).mockResolvedValue(view)
+    vi.mocked(fetchHarnessCatalog).mockResolvedValueOnce({ models: [], providers: {
+        'acp:helper': { status: 'unavailable', error: 'the harness requires authentication: run helper login', setup_status: 'unauthenticated',
+            auth_methods: [{ id: 'browser', name: 'Browser', description: 'Opens your browser.' }] },
+    } }).mockResolvedValue({ models: [], providers: { 'acp:helper': { status: 'available', error: null, setup_status: 'ready', chat: { state: 'supported', reason: 'Yes.' }, flow: { state: 'supported', reason: 'Yes.' } } } })
+    vi.mocked(signInAcpHarness).mockResolvedValue({ setup_status: 'ready', error: null })
+    const user = userEvent.setup()
+    render(<DialogProvider><HarnessSettings /></DialogProvider>)
+
+    const helper = await screen.findByRole('group', { name: 'Helper' })
+    expect(await within(helper).findByText(/run helper login/)).toBeInTheDocument()
+    expect(within(helper).getByText('Opens your browser.')).toBeInTheDocument()
+    await user.click(within(helper).getByRole('button', { name: 'Sign in to Helper with Browser' }))
+    expect(signInAcpHarness).toHaveBeenCalledWith('helper', 'browser')
+    expect(await within(helper).findByText('Ready')).toBeInTheDocument()
+    expect(fetchHarnessCatalog).toHaveBeenCalledTimes(2)
+})
+
+it('keeps a misconfigured registration’s values in its form, and stops a save over a change made elsewhere', async () => {
+    const wrong: AgentSettingsView = { ...view, acp_harnesses: {
+        helper: view.acp_harnesses!.helper,
+        wrong: { registration: { name: 'Wrong', executable: '/bin/wrong', args: '--acp --verbose' as unknown as string[] }, error: '`args` has the wrong type: expected a sequence, found string.' },
+    } }
+    vi.mocked(fetchAgentSettings).mockResolvedValue(wrong)
+    vi.mocked(fetchHarnessCatalog).mockRejectedValue(new Error('agents.max_turns is invalid'))
+    vi.mocked(saveAcpHarness).mockResolvedValue(wrong)
+    const user = userEvent.setup()
+    render(<DialogProvider><HarnessSettings /></DialogProvider>)
+
+    // A failed check says so instead of checking forever.
+    const codex = await screen.findByRole('group', { name: 'Codex' })
+    expect(await within(codex).findByText('Not checked')).toBeInTheDocument()
+    const row = screen.getByRole('group', { name: 'Wrong' })
+    expect(within(row).getByText(/runs/)).toHaveTextContent('runs /bin/wrong --acp --verbose')
+    await user.click(within(row).getByRole('button', { name: 'Edit Wrong' }))
+    const form = screen.getByRole('group', { name: 'Edit Wrong' })
+    expect(within(form).getByText(/`args` has the wrong type/)).toBeInTheDocument()
+    expect(within(form).getByLabelText('Arguments')).toHaveValue('--acp\n--verbose')
+    await user.click(within(form).getByRole('button', { name: 'Save' }))
+    expect(saveAcpHarness).toHaveBeenLastCalledWith('one', 'wrong', expect.objectContaining({ args: ['--acp', '--verbose'] }))
+
+    // Two editors stay open; one whose harness changed elsewhere can't save over it.
+    await user.click(within(screen.getByRole('group', { name: 'Helper' })).getByRole('button', { name: 'Edit Helper' }))
+    await user.click(screen.getByRole('button', { name: 'Add ACP harness' }))
+    const edit = screen.getByRole('group', { name: 'Edit Helper' })
+    await user.type(within(edit).getByLabelText('Name', { exact: true }), ' Two')
+    const elsewhere: AgentSettingsView = { ...wrong, revision: 'two', acp_harnesses: { ...wrong.acp_harnesses,
+        helper: { registration: { ...view.acp_harnesses!.helper.registration, env: { API_TOKEN: HIDDEN_ENV_VALUE, OTHER: HIDDEN_ENV_VALUE } }, error: null } } }
+    vi.mocked(fetchAgentSettings).mockResolvedValue(elsewhere)
+    act(() => { window.dispatchEvent(new CustomEvent('spark:settings-live-event', { detail: { payload: { section: 'agents', revision: 'two' } } })) })
+    expect(await within(edit).findByText(/changed in another window/)).toBeInTheDocument()
+    expect(within(edit).getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(screen.getByRole('group', { name: 'Add ACP harness' })).toBeInTheDocument()
+    await user.click(within(edit).getByRole('button', { name: 'Start over from what’s saved' }))
+    await waitFor(() => expect(within(edit).queryByText(/changed in another window/)).not.toBeInTheDocument())
+    expect(within(edit).getByLabelText('Name', { exact: true })).toHaveValue('Helper')
+    expect(within(edit).getByLabelText('Name of environment variable 2')).toHaveValue('OTHER')
 })

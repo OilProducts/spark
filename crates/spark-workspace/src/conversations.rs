@@ -396,9 +396,10 @@ pub(crate) fn capture_execution_settings(
         .and_then(|provider| HarnessIdentity::parse(provider).ok())
         .flatten()
     {
-        if let Some(reason) = configuration.misconfigured_acp_harnesses.get(&id) {
+        if let Some(misconfigured) = configuration.misconfigured_acp_harnesses.get(&id) {
             return Err(WorkspaceError::Validation(format!(
-                "ACP harness {id} is misconfigured: {reason} Fix or remove it in Settings > Models & accounts > Agent harnesses."
+                "ACP harness {} (acp:{id}) is misconfigured: {} Fix or remove it in Settings > Models & accounts > Agent harnesses.",
+                misconfigured.name, misconfigured.error
             )));
         }
         if !configuration.agents.acp_harnesses.contains_key(&id) {

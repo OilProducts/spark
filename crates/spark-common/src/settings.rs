@@ -746,9 +746,10 @@ pub struct ExecutionConfiguration {
     pub providers: crate::provider_settings::ProviderConnections,
     pub agents: crate::agent_settings::SessionConfig,
     /// ACP registrations left out of `agents` because they cannot be used,
-    /// by ID, with why. Never captured.
+    /// by ID. Never captured.
     #[serde(skip)]
-    pub misconfigured_acp_harnesses: std::collections::BTreeMap<String, String>,
+    pub misconfigured_acp_harnesses:
+        std::collections::BTreeMap<String, crate::agent_settings::MisconfiguredHarness>,
 }
 
 impl ExecutionConfiguration {

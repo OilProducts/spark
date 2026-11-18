@@ -73,6 +73,8 @@ export interface ProjectChatModelProviderStatusResponse {
     config_options?: Record<string, unknown>[]
     /** Legacy session modes, only when the harness reports no config options. */
     modes?: { currentModeId?: string; availableModes?: { id: string; name: string; description?: string | null }[] }
+    /** For an ACP harness that needs sign-in: the methods it offers that Spark can start. */
+    auth_methods?: { id: string; name: string; description?: string }[]
 }
 
 function parseCapability(value: unknown, endpoint: string): ProjectChatModelCapability {
@@ -101,6 +103,11 @@ function parseProviderDetails(entry: Record<string, unknown>, endpoint: string):
         ...(entry.flow !== undefined ? { flow: parseCapability(entry.flow, endpoint) } : {}),
         ...(Array.isArray(entry.config_options) ? { config_options: entry.config_options.map((option) => expectObjectRecord(option, endpoint)) } : {}),
         ...(entry.modes != null ? { modes: expectObjectRecord(entry.modes, endpoint) as ProjectChatModelProviderStatusResponse['modes'] } : {}),
+        ...(Array.isArray(entry.auth_methods) ? { auth_methods: entry.auth_methods.map((value) => {
+            const method = expectObjectRecord(value, endpoint)
+            return { id: expectString(method.id, endpoint, 'id'), name: expectString(method.name, endpoint, 'name'),
+                ...(typeof method.description === 'string' ? { description: method.description } : {}) }
+        }) } : {}),
     }
 }
 

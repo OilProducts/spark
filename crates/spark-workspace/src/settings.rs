@@ -323,7 +323,10 @@ fn acp_harnesses_view(path: &std::path::Path, document: &SettingsDocument) -> Va
                     .and_then(|channel| channel.get_mut("env")),
                 json!({ "text": HIDDEN_ENV_VALUE }),
             );
-            let view = json!({"registration": registration, "error": misconfigured.get(id)});
+            let error = misconfigured
+                .get(id)
+                .map(|misconfigured| &misconfigured.error);
+            let view = json!({"registration": registration, "error": error});
             (id.clone(), view)
         })
         .collect::<serde_json::Map<_, _>>();

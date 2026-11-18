@@ -100,6 +100,7 @@ pub fn router() -> Router<HttpAppState> {
         .route("/projects/metadata", get(project_metadata))
         .route("/projects/browse", get(browse_project_directories))
         .route("/projects/chat-models", get(project_chat_models))
+        .route("/projects/acp-sign-in", post(project_acp_sign_in))
         .route("/triggers", get(list_triggers).post(create_trigger))
         .route("/trigger-issues", get(list_trigger_issues))
         .route("/webhooks", post(post_trigger_webhook))
@@ -1317,6 +1318,36 @@ async fn project_chat_models(
         )))
     })??;
     Ok(Json(models))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcpSignInRequest {
+    project_path: Option<String>,
+    harness_id: String,
+    method_id: String,
+}
+
+/// Waits while the user finishes the harness's sign-in.
+async fn project_acp_sign_in(
+    State(settings): State<Arc<SparkSettings>>,
+    payload: Result<Json<AcpSignInRequest>, JsonRejection>,
+) -> ApiResult<Value> {
+    let request = json_payload(payload)?;
+    let result = tokio::task::spawn_blocking(move || {
+        WorkspaceProjectService::new((*settings).clone()).acp_sign_in(
+            request.project_path.as_deref(),
+            &request.harness_id,
+            &request.method_id,
+        )
+    })
+    .await
+    .map_err(|error| {
+        WorkspaceApiError(WorkspaceError::Internal(format!(
+            "ACP sign-in task failed: {error}"
+        )))
+    })??;
+    Ok(Json(result))
 }
 
 #[derive(Deserialize)]

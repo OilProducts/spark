@@ -15,16 +15,17 @@ import { ClaudeCodeConnectionControls } from './ClaudeCodeConnectionSettings'
 import { SettingsSummary } from './SettingsSummary'
 import { SaveStatus } from './SaveStatus'
 import { useSettingsNavigationProtection } from './hooks/useSettingsNavigationProtection'
-import { fetchAgentSettings, fetchHarnessCatalog, HIDDEN_ENV_VALUE, saveAcpHarness, saveAgentSettings, type AcpHarnessEntry, type AcpHarnessRegistration, type AgentSettingsView,
+import { fetchAgentSettings, fetchHarnessCatalog, HIDDEN_ENV_VALUE, saveAcpHarness, saveAgentSettings, signInAcpHarness, type AcpHarnessEntry, type AcpHarnessRegistration, type AgentSettingsView,
     type HarnessSetupStatus, type ProjectChatModelCapability, type ProjectChatModelProviderStatusResponse, type ProjectChatModelsResponse } from './services/executionSettings'
 
 type Connection = 'connected' | 'disconnected' | 'pending' | 'error'
-type Status = HarnessSetupStatus | 'signed_out' | 'signing_in' | 'checking'
+type Status = HarnessSetupStatus | 'signed_out' | 'signing_in' | 'checking' | 'unchecked'
 type Provider = ProjectChatModelProviderStatusResponse | undefined
 
 const statuses: Record<Status, [string, StatusTone]> = {
     ready: ['Ready', 'success'],
     checking: ['Checking…', 'muted'],
+    unchecked: ['Not checked', 'muted'],
     signing_in: ['Signing in…', 'info'],
     signed_out: ['Signed out', 'warning'],
     unauthenticated: ['Signed out', 'warning'],
@@ -43,6 +44,29 @@ const stateWords = { supported: 'Yes', unsupported: 'No', unverified: 'Unverifie
 const reservedEnv = ['SPARK_HOME', 'SPARK_API_BASE_URL', 'SPARK_PROJECT_WORK_DIR']
 
 const errorText = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback
+const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+const displayName = (id: string, registration: Partial<AcpHarnessRegistration>) => typeof registration.name === 'string' && registration.name.trim() ? registration.name : id
+
+const natives = {
+    codex: { name: 'Codex', key: 'codex_binary', program: 'codex', install: 'Install Codex' },
+    'claude-code': { name: 'Claude Code', key: 'claude_binary', program: 'claude', install: 'Install Claude Code' },
+} as const
+
+function nativeStatus(provider: Provider, connection: Connection | undefined, checking: boolean, failed: boolean): Status {
+    if (checking) return 'checking'
+    if (!provider) return failed ? 'unchecked' : 'checking'
+    if (provider.setup_status === 'not_installed') return 'not_installed'
+    if (connection === 'pending') return 'signing_in'
+    if (connection === 'disconnected') return 'signed_out'
+    if (provider.status === 'unavailable' || connection === 'error') return 'unreachable'
+    return connection === 'connected' ? 'ready' : 'checking'
+}
+
+function acpStatus(entry: AcpHarnessEntry, provider: Provider, checking: boolean, failed: boolean): Status {
+    if (entry.error) return 'misconfigured'
+    if (checking) return 'checking'
+    return provider?.setup_status ?? (failed ? 'unchecked' : 'checking')
+}
 
 /** Every harness that can run chats and flows, whether it is ready, and how to fix it when it isn't. */
 export function HarnessSettings() {
@@ -54,7 +78,8 @@ export function HarnessSettings() {
     // Remounts the sign-in controls, which read their state when mounted.
     const [checks, setChecks] = useState(0)
     const [connections, setConnections] = useState<Record<string, Connection>>({})
-    const [editing, setEditing] = useState<string | null>(null)
+    // The ACP harnesses being edited, by ID; '' is a new one.
+    const [editing, setEditing] = useState<string[]>([])
     const [message, setMessage] = useState('')
     const [error, setError] = useState('')
     const { confirm } = useDialogController()
@@ -66,20 +91,26 @@ export function HarnessSettings() {
     const check = useCallback((refresh: boolean) => {
         const current = ++request.current
         setChecking(true)
+        // Sign-in is read again with the programs the check finds.
+        setChecks((value) => value + 1)
+        setConnections({})
         return fetchHarnessCatalog(null, refresh).then((next) => {
             if (current === request.current) { setCatalog(next); setCatalogError('') }
         }, (error: unknown) => {
             if (current === request.current) setCatalogError(errorText(error, 'Unable to check harnesses.'))
         }).finally(() => { if (current === request.current) setChecking(false) })
     }, [])
-    const recheck = useCallback(() => { setChecks((value) => value + 1); void check(true) }, [check])
+    const recheck = useCallback(() => void check(true), [check])
+    const refresh = useCallback(() => void check(false), [check])
     const saved = useCallback((next: AgentSettingsView, text: string) => { show(next); setMessage(text); setError(''); void check(false) }, [show, check])
     const onConnection = useCallback((id: string, state: Connection) => setConnections((current) => current[id] === state ? current : { ...current, [id]: state }), [])
+    const edit = (id: string) => { setEditing((current) => current.includes(id) ? current : [...current, id]); setMessage('') }
+    const close = (id: string) => setEditing((current) => current.filter((other) => other !== id))
 
     useEffect(() => {
         void load()
         void check(false)
-        const refresh = (event: Event) => {
+        const changed = (event: Event) => {
             const payload = (event as CustomEvent<{ payload?: { section?: string; revision?: unknown } }>).detail?.payload
             if (!payload?.section || !['agents', 'codex', 'claude_code'].includes(payload.section)) return
             // This card's own saves already show their result.
@@ -87,8 +118,8 @@ export function HarnessSettings() {
             void load()
             void check(false)
         }
-        window.addEventListener('spark:settings-live-event', refresh)
-        return () => window.removeEventListener('spark:settings-live-event', refresh)
+        window.addEventListener('spark:settings-live-event', changed)
+        return () => window.removeEventListener('spark:settings-live-event', changed)
     }, [load, check])
 
     const remove = async (id: string, name: string) => {
@@ -98,47 +129,41 @@ export function HarnessSettings() {
     }
 
     const providers: Partial<ProjectChatModelsResponse['providers']> = catalog?.providers ?? {}
-    const acp = Object.entries(view?.acp_harnesses ?? {})
+    const failed = !!catalogError
+    const nativeRows = (['codex', 'claude-code'] as const).map((id) => [id, nativeStatus(providers[id], connections[id], checking, failed)] as const)
+    const acpRows = Object.entries(view?.acp_harnesses ?? {}).map(([id, entry]) => [id, entry, acpStatus(entry, providers[`acp:${id}`], checking, failed)] as const)
+    // In the order statuses are listed, ready first.
+    const counts = new Map(Object.values(statuses).map(([label]) => [label.toLowerCase(), 0]))
+    for (const status of [...nativeRows.map(([, status]) => status), ...acpRows.map(([, , status]) => status)]) {
+        const label = statuses[status][0].toLowerCase()
+        counts.set(label, (counts.get(label) ?? 0) + 1)
+    }
     return <Card className="gap-4 py-4">
         <CardHeader className="gap-1 px-4"><h2 className="text-base font-semibold">Agent harnesses</h2></CardHeader>
-        <CardContent className="space-y-4 px-4 pt-0">
+        <CardContent className="space-y-3 px-4 pt-0">
             <p className="text-sm text-muted-foreground">The agents that run your chats and flows. Codex and Claude Code are built in; add any agent that speaks the Agent Client Protocol (ACP).</p>
+            <p className="text-sm font-medium" aria-label="Harness overview">{[...counts].filter(([, count]) => count).map(([label, count]) => `${count} ${label}`).join(' · ')}</p>
             {viewError && <p role="alert" className="text-sm text-destructive">{viewError}</p>}
             {view && !view.stored && <p role="alert" className="text-sm text-destructive">Agent settings can’t be read: {view.validation_errors?.join(' ')} Fix them under Execution › Agent session limits to change programs here.</p>}
             {catalogError && <p role="alert" className="text-sm text-destructive">Unable to check harnesses: {catalogError}</p>}
-            {(['codex', 'claude-code'] as const).map((id) => <NativeHarness key={id} id={id} view={view} provider={providers[id]}
-                connection={connections[id]} onConnection={onConnection} checking={checking} checks={checks} onCheck={recheck} onSaved={saved} />)}
-            {acp.map(([id, entry]) => editing === id
-                ? <AcpHarnessForm key={id} id={id} entry={entry} view={view} onCancel={() => setEditing(null)} onSaved={(next, name) => { setEditing(null); saved(next, `Saved ${name}. Checking it now…`) }} />
-                : <AcpHarness key={id} id={id} entry={entry} provider={providers[`acp:${id}`]} checking={checking} onCheck={recheck}
-                    onEdit={() => { setEditing(id); setMessage('') }} onRemove={(name) => void remove(id, name)} />)}
-            {editing === '' ? <AcpHarnessForm id={null} entry={null} view={view} onCancel={() => setEditing(null)} onSaved={(next, name) => { setEditing(null); saved(next, `Added ${name}. Checking it now…`) }} />
-                : <Button variant="outline" disabled={!view} onClick={() => { setEditing(''); setMessage('') }}>Add ACP harness</Button>}
+            {nativeRows.map(([id, status]) => <NativeHarness key={id} id={id} view={view} provider={providers[id]} status={status}
+                onConnection={onConnection} checking={checking} checks={checks} onCheck={recheck} onSignedIn={refresh} onSaved={saved} />)}
+            {acpRows.map(([id, entry, status]) => editing.includes(id)
+                ? <AcpHarnessForm key={id} id={id} entry={entry} view={view} onCancel={() => close(id)} onSaved={(next, name) => { close(id); saved(next, `Saved ${name}. Checking it now…`) }} />
+                : <AcpHarness key={id} id={id} entry={entry} provider={providers[`acp:${id}`]} status={status} checking={checking} onCheck={recheck} onSignedIn={refresh}
+                    onEdit={() => edit(id)} onRemove={(name) => void remove(id, name)} />)}
+            {editing.includes('') ? <AcpHarnessForm id={null} entry={null} view={view} onCancel={() => close('')} onSaved={(next, name) => { close(''); saved(next, `Added ${name}. Checking it now…`) }} />
+                : <Button variant="outline" disabled={!view} onClick={() => edit('')}>Add ACP harness</Button>}
             <SaveStatus message={message} error={error} />
         </CardContent>
     </Card>
 }
 
-const natives = {
-    codex: { name: 'Codex', key: 'codex_binary', program: 'codex', install: 'Install Codex' },
-    'claude-code': { name: 'Claude Code', key: 'claude_binary', program: 'claude', install: 'Install Claude Code' },
-} as const
-
-function nativeStatus(provider: Provider, connection: Connection | undefined, checking: boolean): Status {
-    if (checking || !provider) return 'checking'
-    if (provider.setup_status === 'not_installed') return 'not_installed'
-    if (connection === 'pending') return 'signing_in'
-    if (connection === 'disconnected') return 'signed_out'
-    if (provider.status === 'unavailable' || connection === 'error') return 'unreachable'
-    return connection === 'connected' ? 'ready' : 'checking'
-}
-
-function NativeHarness({ id, view, provider, connection, onConnection, checking, checks, onCheck, onSaved }: {
-    id: keyof typeof natives; view: AgentSettingsView | null; provider: Provider; connection?: Connection; onConnection: (id: string, state: Connection) => void
-    checking: boolean; checks: number; onCheck: () => void; onSaved: (view: AgentSettingsView, message: string) => void
+function NativeHarness({ id, view, provider, status, onConnection, checking, checks, onCheck, onSignedIn, onSaved }: {
+    id: keyof typeof natives; view: AgentSettingsView | null; provider: Provider; status: Status; onConnection: (id: string, state: Connection) => void
+    checking: boolean; checks: number; onCheck: () => void; onSignedIn: () => void; onSaved: (view: AgentSettingsView, message: string) => void
 }) {
     const { name, key, program, install } = natives[id]
-    const status = nativeStatus(provider, connection, checking)
     const stored = view?.stored?.native?.[key] ?? ''
     const [draft, setDraft] = useState<string | null>(null)
     const value = draft ?? stored
@@ -146,7 +171,13 @@ function NativeHarness({ id, view, provider, connection, onConnection, checking,
     const [pending, setPending] = useState(false)
     const [error, setError] = useState('')
     useSettingsNavigationProtection(dirty, pending, `${name} program`)
-    const onStatus = useCallback((state: Connection) => onConnection(id, state), [id, onConnection])
+    const last = useRef<Connection | null>(null)
+    const onStatus = useCallback((state: Connection) => {
+        // A finished sign-in checks the harness again.
+        if (state === 'connected' && last.current === 'pending') onSignedIn()
+        last.current = state
+        onConnection(id, state)
+    }, [id, onConnection, onSignedIn])
     const save = async () => {
         if (!view?.stored) return
         setPending(true); setError('')
@@ -157,13 +188,14 @@ function NativeHarness({ id, view, provider, connection, onConnection, checking,
         } catch (error) { setError(errorText(error, `Unable to save the ${name} program.`)) } finally { setPending(false) }
     }
     const next = status === 'not_installed' ? `${install}, or set Program below to the full path of its ${program} executable, then check again.`
-        : status === 'signed_out' ? `Sign in below, then check again.`
+        : status === 'signed_out' ? `Sign in below. Spark checks it again when you finish.`
             : status === 'unreachable' ? `Check that Program below is ${name}'s ${program} executable and that it starts from a terminal, then check again.` : ''
     const ready = status === 'ready'
     const builtIn = { state: 'supported', reason: 'Built in.' } as const
-    return <HarnessRow name={name} detail={<>Built in · runs <code>{view?.effective?.native?.[key] ?? program}</code></>} status={status}
+    return <HarnessRow name={name} kind="Built in" command={view?.effective?.native?.[key] ?? program} status={status}
         problem={status === 'signed_out' ? `${name} is not signed in.` : status === 'not_installed' || status === 'unreachable' ? provider?.error ?? null : null} next={next}
-        chat={ready ? builtIn : undefined} flow={ready ? builtIn : undefined}>
+        chat={ready ? builtIn : undefined} flow={ready ? builtIn : undefined} more="Program and sign-in"
+        actions={<Button size="sm" variant="outline" aria-label={`Check ${name} again`} disabled={checking} onClick={onCheck}>Check again</Button>}>
         <Field>
             <FieldLabel htmlFor={`harness-${id}-program`}>Program</FieldLabel>
             <div className="flex flex-wrap gap-2">
@@ -176,89 +208,120 @@ function NativeHarness({ id, view, provider, connection, onConnection, checking,
             </p>
             {error && <FieldError role="alert">{error}</FieldError>}
         </Field>
-        {status !== 'not_installed' && (id === 'codex'
-            ? <CodexConnectionControls key={checks} onStatus={onStatus} />
-            : <ClaudeCodeConnectionControls key={checks} onStatus={onStatus} />)}
-        <Button size="sm" variant="outline" aria-label={`Check ${name} again`} disabled={checking} onClick={onCheck}>Check again</Button>
+        {/* A missing program has nothing to sign in to; read sign-in once the program is checked. */}
+        {provider && provider.setup_status !== 'not_installed' && (id === 'codex'
+            ? <CodexConnectionControls key={checks} onStatus={onStatus} showCheck={false} />
+            : <ClaudeCodeConnectionControls key={checks} onStatus={onStatus} showCheck={false} />)}
     </HarnessRow>
 }
 
-function acpNextStep(status: Status): string {
+function acpNextStep(status: Status, canSignIn: boolean): string {
     switch (status) {
         case 'misconfigured': return 'Edit the registration to fix it, or remove it.'
         case 'not_installed': return 'Install the agent, or edit Program to the full path of its executable, then check again.'
-        case 'unauthenticated': return 'Sign in with the agent’s own sign-in, or edit its environment to give it the credentials it reads (such as an API key), then check again.'
+        case 'unauthenticated': return canSignIn ? 'Sign in below with a method the agent offers. Spark checks it again when you finish.'
+            : 'The agent offers no sign-in Spark can start. Sign in with the agent’s own login command, or edit its environment to give it the credentials it reads (such as an API key), then check again.'
         case 'unreachable': return 'Check its program, arguments and environment against the agent’s instructions for ACP, then check again.'
         default: return ''
     }
 }
 
-function AcpHarness({ id, entry, provider, checking, onCheck, onEdit, onRemove }: {
-    id: string; entry: AcpHarnessEntry; provider: Provider; checking: boolean; onCheck: () => void; onEdit: () => void; onRemove: (name: string) => void
+function AcpHarness({ id, entry, provider, status: checked, checking, onCheck, onSignedIn, onEdit, onRemove }: {
+    id: string; entry: AcpHarnessEntry; provider: Provider; status: Status; checking: boolean
+    onCheck: () => void; onSignedIn: () => void; onEdit: () => void; onRemove: (name: string) => void
 }) {
     const registration = entry.registration
-    const name = typeof registration.name === 'string' && registration.name.trim() ? registration.name : id
-    const status: Status = entry.error ? 'misconfigured' : checking || !provider?.setup_status ? 'checking' : provider.setup_status
-    const command = [registration.executable, ...(Array.isArray(registration.args) ? registration.args : [])].filter((part) => typeof part === 'string').join(' ')
-    const env = Object.keys(registration.env && typeof registration.env === 'object' ? registration.env : {})
+    const name = displayName(id, registration)
+    const [signing, setSigning] = useState(false)
+    const [signInError, setSignInError] = useState('')
+    const status: Status = signing ? 'signing_in' : checked
+    const args = typeof registration.args === 'string' ? [registration.args] : Array.isArray(registration.args) ? registration.args : []
+    const command = [registration.executable, ...args].filter((part) => typeof part === 'string').join(' ')
+    const env = Object.keys(record(registration.env))
     const capabilities = Object.entries(provider?.capabilities ?? {})
-    return <HarnessRow name={name} detail={<>ACP · <code>acp:{id}</code>{command && <> · runs <code>{command}</code></>}</>} status={status}
-        problem={entry.error ?? (status === 'checking' || status === 'ready' ? null : provider?.error || null)} next={acpNextStep(status)}
-        chat={status === 'ready' ? provider?.chat : undefined} flow={status === 'ready' ? provider?.flow : undefined}>
-        {status === 'ready' && provider?.chat?.state === 'unsupported' && provider.capabilities?.pinned_instructions?.state === 'unsupported'
-            && <p className="text-sm">To use it in chat: if the agent can take instructions through an argument or environment variable, edit it and set Pinned instructions.</p>}
-        {env.length > 0 && <p className="text-xs text-muted-foreground">Environment: {env.join(', ')} (values hidden)</p>}
-        {status === 'ready' && capabilities.length > 0 && <details>
-            <SettingsSummary>What Spark can use</SettingsSummary>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 pt-1 text-sm">
-                {capabilities.map(([key, capability]) => <CapabilityRow key={key} name={capabilityNames[key] ?? key} capability={capability} />)}
-            </dl>
-        </details>}
-        <div className="flex flex-wrap gap-2">
+    const methods = status === 'unauthenticated' || signing ? provider?.auth_methods ?? [] : []
+    const signIn = async (method: string) => {
+        setSigning(true); setSignInError('')
+        try {
+            const result = await signInAcpHarness(id, method)
+            if (result.setup_status !== 'ready') setSignInError(`Sign-in didn’t finish: ${result.error ?? 'the agent is still signed out.'}`)
+        } catch (error) { setSignInError(errorText(error, `Unable to sign in to ${name}.`)) } finally { setSigning(false); onSignedIn() }
+    }
+    const fix = (methods.length > 0 || signInError) && <div className="space-y-2 pt-1">
+        {methods.map((method) => <div key={method.id} className="space-y-0.5">
+            <Button size="sm" disabled={signing || checking} aria-label={`Sign in to ${name} with ${method.name}`} onClick={() => void signIn(method.id)}>Sign in with {method.name}</Button>
+            {method.description && <p className="text-xs text-muted-foreground">{method.description}</p>}
+        </div>)}
+        {signing && <p role="status" className="text-xs">Finish signing in where {name} asks, such as a browser window it opens. Spark waits up to 3 minutes.</p>}
+        {signInError && !signing && <p role="alert" className="text-destructive">{signInError}</p>}
+    </div>
+    const more = env.length > 0 || (status === 'ready' && capabilities.length > 0)
+    return <HarnessRow name={name} kind={`ACP · acp:${id}`} command={command} status={status}
+        problem={entry.error ?? (['checking', 'ready', 'signing_in'].includes(status) ? null : provider?.error || null)} next={acpNextStep(status, methods.length > 0)} fix={fix || null}
+        chat={status === 'ready' ? provider?.chat : undefined} flow={status === 'ready' ? provider?.flow : undefined} more={more ? 'Details' : undefined}
+        hint={status === 'ready' && provider?.chat?.state === 'unsupported' && provider.capabilities?.pinned_instructions?.state === 'unsupported'
+            ? 'To use it in chat: if the agent can take instructions through an argument or environment variable, edit it and set Pinned instructions.' : undefined}
+        actions={<>
             <Button size="sm" variant="outline" aria-label={`Edit ${name}`} onClick={onEdit}>Edit</Button>
-            <Button size="sm" variant="outline" aria-label={`Check ${name} again`} disabled={checking} onClick={onCheck}>Check again</Button>
+            <Button size="sm" variant="outline" aria-label={`Check ${name} again`} disabled={checking || signing} onClick={onCheck}>Check again</Button>
             <Button size="sm" variant="ghost" aria-label={`Remove ${name}`} onClick={() => onRemove(name)}>Remove</Button>
-        </div>
+        </>}>
+        {env.length > 0 && <p className="text-xs text-muted-foreground">Environment: {env.join(', ')} (values hidden)</p>}
+        {status === 'ready' && capabilities.length > 0 && <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+            {capabilities.map(([key, capability]) => <CapabilityRow key={key} name={capabilityNames[key] ?? key} capability={capability} />)}
+        </dl>}
     </HarnessRow>
 }
 
-function CapabilityRow({ name, capability }: { name: string; capability?: ProjectChatModelCapability }) {
+function CapabilityRow({ name, capability }: { name: string; capability: ProjectChatModelCapability }) {
     return <>
         <dt className="text-muted-foreground">{name}</dt>
-        <dd>{capability ? <>{stateWords[capability.state]}{capability.state === 'supported' && capability.reason === 'Built in.' ? '' : <span className="text-muted-foreground"> — {capability.reason}</span>}</> : <span className="text-muted-foreground">Not until it is ready</span>}</dd>
+        <dd>{stateWords[capability.state]}{capability.state === 'supported' ? '' : <span className="text-muted-foreground"> — {capability.reason}</span>}</dd>
     </>
 }
 
-function HarnessRow({ name, detail, status, problem, next, chat, flow, children }: {
-    name: string; detail: ReactNode; status: Status; problem: string | null; next: string; chat?: ProjectChatModelCapability; flow?: ProjectChatModelCapability; children: ReactNode
+function HarnessRow({ name, kind, command, status, problem, next, fix, chat, flow, hint, actions, more, children }: {
+    name: string; kind: string; command: string; status: Status; problem: string | null; next: string; fix?: ReactNode
+    chat?: ProjectChatModelCapability; flow?: ProjectChatModelCapability; hint?: string; actions: ReactNode; more?: string; children?: ReactNode
 }) {
     const heading = useId()
     const [label, tone] = statuses[status]
-    return <Well role="group" aria-labelledby={heading} className="space-y-3 px-3 py-3">
-        <div className="flex flex-wrap items-start justify-between gap-2">
+    // Details start open while the harness needs fixing; a check leaves them as they are.
+    const [open, setOpen] = useState(false)
+    useEffect(() => { if (status !== 'checking' && status !== 'unchecked') setOpen(status !== 'ready') }, [status])
+    const settled = status !== 'checking' && status !== 'unchecked'
+    return <Well role="group" aria-labelledby={heading} className="space-y-2 px-3 py-2.5">
+        <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 space-y-0.5">
                 <h3 id={heading} className="text-sm font-semibold">{name}</h3>
-                <p className="text-xs text-muted-foreground [&_code]:font-mono">{detail}</p>
+                <p className="truncate text-xs text-muted-foreground" title={command}>{kind}{command && <> · runs <code className="font-mono">{command}</code></>}</p>
             </div>
             <StatusPill tone={tone}>{label}</StatusPill>
         </div>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+        {chat && flow ? <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-sm">
             <CapabilityRow name="Chat" capability={chat} />
             <CapabilityRow name="Flows" capability={flow} />
-        </dl>
-        {problem && <div className="space-y-1 border-l-2 border-destructive/60 pl-3 text-sm">
-            <p><span className="font-medium">Problem: </span><span className="whitespace-pre-wrap">{problem}</span></p>
-            {next && <p><span className="font-medium">What to do: </span>{next}</p>}
+        </dl> : settled && <p className="text-sm text-muted-foreground">Chat and flows can use it once it is ready.</p>}
+        {hint && <p className="text-sm">{hint}</p>}
+        {(problem || fix) && <div className="space-y-1 border-l-2 border-destructive/60 pl-3 text-sm">
+            {problem && <p><span className="font-medium">Problem: </span><span className="whitespace-pre-wrap break-words">{problem}</span></p>}
+            {problem && next && <p><span className="font-medium">What to do: </span>{next}</p>}
+            {fix}
         </div>}
-        {children}
+        <div className="flex flex-wrap gap-2">{actions}</div>
+        {more && <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+            <SettingsSummary>{more}</SettingsSummary>
+            <div className="space-y-3 pt-2">{children}</div>
+        </details>}
     </Well>
 }
 
 type EnvRow = { key: string; value: string; hidden: boolean; saved: boolean }
 type Draft = { id: string; name: string; executable: string; args: string; permission_policy: 'allow' | 'deny'; env: EnvRow[]; channel: boolean; channelArgs: string; channelEnv: EnvRow[]; channelConfig: string }
 
-const strings = (value: unknown) => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []
-const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+// A hand-written string of arguments is split where a shell would, so the form shows each one.
+const strings = (value: unknown) => typeof value === 'string' ? value.split(/\s+/).filter(Boolean)
+    : Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []
 const lines = (text: string) => text.split('\n').map((line) => line.replace(/\r$/, '')).filter((line) => line.trim())
 const savedRows = (value: unknown): EnvRow[] => Object.keys(record(value)).map((key) => ({ key, value: '', hidden: true, saved: true }))
 
@@ -307,14 +370,19 @@ function draftErrors(draft: Draft, isNew: boolean, taken: string[]): Partial<Rec
 function AcpHarnessForm({ id, entry, view, onCancel, onSaved }: {
     id: string | null; entry: AcpHarnessEntry | null; view: AgentSettingsView | null; onCancel: () => void; onSaved: (view: AgentSettingsView, name: string) => void
 }) {
-    const [initial] = useState(() => draftFor(id, entry))
+    // What was saved when editing began, to notice a save made elsewhere since.
+    const [base, setBase] = useState(() => ({ saved: JSON.stringify(entry), draft: draftFor(id, entry) }))
+    const initial = base.draft
     const [draft, setDraft] = useState(initial)
     const [pending, setPending] = useState(false)
     const [error, setError] = useState('')
     // A new harness shows what is missing once Add is tried; an existing one at once.
     const [tried, setTried] = useState(id !== null)
     const prefix = useId()
-    const dirty = JSON.stringify(draft) !== JSON.stringify(initial)
+    const stale = id !== null && JSON.stringify(entry) !== base.saved
+    const restart = () => { const next = draftFor(id, entry); setBase({ saved: JSON.stringify(entry), draft: next }); setDraft(next); setError('') }
+    // Saving a misconfigured registration as the form reads it is a fix.
+    const dirty = JSON.stringify(draft) !== JSON.stringify(initial) || !!entry?.error
     useSettingsNavigationProtection(dirty, pending, 'harness changes')
     const found = draftErrors(draft, id === null, Object.keys(view?.acp_harnesses ?? {}))
     const invalid = Object.keys(found).length > 0
@@ -322,7 +390,7 @@ function AcpHarnessForm({ id, entry, view, onCancel, onSaved }: {
     const set = (patch: Partial<Draft>) => setDraft((current) => ({ ...current, ...patch }))
     const save = async () => {
         setTried(true)
-        if (!view || invalid) return
+        if (!view || invalid || stale) return
         setPending(true); setError('')
         try {
             onSaved(await saveAcpHarness(view.revision, draft.id, registrationFor(draft)), draft.name.trim())
@@ -332,6 +400,11 @@ function AcpHarnessForm({ id, entry, view, onCancel, onSaved }: {
     const fieldError = (key: keyof typeof errors) => errors[key] && <FieldError id={`${prefix}-${key}-error`}>{errors[key]}</FieldError>
     return <Well role="group" aria-label={id ? `Edit ${initial.name || id}` : 'Add ACP harness'} className="space-y-3 px-3 py-3">
         <h3 className="text-sm font-semibold">{id ? `Edit ${initial.name || id}` : 'Add an ACP harness'}</h3>
+        {entry?.error && !stale && <p className="text-sm"><span className="font-medium">Problem: </span>{entry.error}</p>}
+        {stale && <div role="alert" className="space-y-2 text-sm">
+            <p className="text-destructive">This harness was changed in another window since you began editing, so saving would undo that change.</p>
+            <Button size="sm" variant="outline" onClick={restart}>Start over from what’s saved</Button>
+        </div>}
         <fieldset disabled={pending} className="space-y-3">
             {id === null && <Field>
                 <FieldLabel htmlFor={`${prefix}-id`}>ID</FieldLabel>
@@ -388,7 +461,7 @@ function AcpHarnessForm({ id, entry, view, onCancel, onSaved }: {
             </details>
         </fieldset>
         <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={pending || (tried && invalid) || (!dirty && id !== null)} onClick={() => void save()}>{id ? 'Save' : 'Add harness'}</Button>
+            <Button size="sm" disabled={pending || stale || (tried && invalid) || (!dirty && id !== null)} onClick={() => void save()}>{id ? 'Save' : 'Add harness'}</Button>
             <Button size="sm" variant="ghost" disabled={pending} onClick={onCancel}>Cancel</Button>
         </div>
         {pending && <p role="status" className="text-xs text-muted-foreground">Saving…</p>}

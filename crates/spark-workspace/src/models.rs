@@ -184,11 +184,11 @@ pub fn chat_models_with_codex_result(
             Some(discovery),
         );
     }
-    for (id, error) in &configuration.misconfigured_acp_harnesses {
+    for (id, misconfigured) in &configuration.misconfigured_acp_harnesses {
         add(
             &format!("acp:{id}"),
-            Some(id),
-            Err(error.clone()),
+            Some(&misconfigured.name),
+            Err(misconfigured.error.clone()),
             Some("misconfigured"),
             None,
         );
@@ -222,6 +222,33 @@ pub fn chat_models_with_codex_result(
         "provider_reasoning_efforts": unified_llm_adapter::ModelCatalog::development().provider_reasoning_efforts,
         "providers": providers,
     }))
+}
+
+/// Signs in to ACP harness `id` in `work_area` with `method_id`, one of the
+/// methods its check offered, and reports what it then found: its
+/// `setup_status` and `error`.
+pub fn acp_sign_in(
+    settings: &SparkSettings,
+    work_area: &Path,
+    id: &str,
+    method_id: &str,
+) -> WorkspaceResult<Value> {
+    let configuration = spark_storage::settings::read_execution_configuration(
+        &settings.config_dir,
+        &spark_common::paths::ProcessEnvironment,
+    )?;
+    let harness =
+        configuration.agents.acp_harnesses.get(id).ok_or_else(|| {
+            WorkspaceError::NotFound(format!("ACP harness {id} is not registered."))
+        })?;
+    let discovery = acp::sign_in(
+        id,
+        harness,
+        configuration.agents.environment_inheritance,
+        work_area,
+        method_id,
+    );
+    Ok(serde_json::json!({"setup_status": discovery.setup_status, "error": discovery.error}))
 }
 
 /// Each registered harness with its discovery in `work_area`, probing those

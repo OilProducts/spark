@@ -999,14 +999,22 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     ]);
     let modes =
         json!({"currentModeId": "code", "availableModes": [{"id": "code", "name": "Code"}]});
+    // Twelve lines, more than the stderr tail Spark keeps.
+    let key = (1..=12)
+        .map(|line| format!("key-line-{line}-sentinel"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let harness = |name: &str, executable: &str, script: Value| {
         let mut script = script;
         script["log"] = json!(log);
         json!({"name": name, "executable": executable, "env": {
             "SPARK_FAKE_ACP": script.to_string(), "AGENT_TOKEN": "discovery-secret-sentinel",
-            "AGENT_PIN": "cat",
+            "AGENT_PIN": "cat", "AGENT_KEY": key,
         }})
     };
+    let signed_in = temp.path().join("locked-signed-in");
+    let browser =
+        json!({"id": "browser", "name": "Browser sign-in", "description": "Opens your browser."});
     let settings = settings(temp.path());
     let project = temp.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
@@ -1016,8 +1024,10 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         "acp_harnesses": {
             "fake": harness("Fake ACP", FAKE_ACP, json!({"system_prompt": true, "resume": true, "config_options": options})),
             "plain": harness("Plain", FAKE_ACP, json!({"modes": modes})),
-            "locked": harness("Locked", FAKE_ACP, json!({"new_error": {"code": -32000, "message": "Authentication required"}})),
+            "locked": harness("Locked", FAKE_ACP, json!({"new_error": {"code": -32000, "message": "Authentication required: run locked login"},
+                "auth_methods": [browser, {"id": "tui", "name": "Terminal", "type": "terminal", "args": ["login"]}], "signed_in": signed_in})),
             "leaky": harness("Leaky", FAKE_ACP, json!({"echo_env": ["AGENT_TOKEN", "AGENT_PIN"], "new_error": {"code": -32603, "message": "model catalog unavailable"}})),
+            "spills": harness("Spills", FAKE_ACP, json!({"echo_env": ["AGENT_KEY"], "new_error": {"code": -32603, "message": "bad key"}})),
             "missing": harness("Missing", "/nonexistent/acp-agent", json!({})),
         },
     }});
@@ -1115,9 +1125,18 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     let locked = &providers["acp:locked"];
     assert_eq!(locked["status"], "unavailable", "{locked}");
     assert_eq!(locked["setup_status"], "unauthenticated");
-    assert!(locked["error"]
-        .as_str()
-        .is_some_and(|error| !error.is_empty()));
+    assert!(
+        locked["error"]
+            .as_str()
+            .unwrap()
+            .contains("Authentication required: run locked login"),
+        "the harness's own sign-in message is kept: {locked}"
+    );
+    assert_eq!(
+        locked["auth_methods"],
+        json!([browser]),
+        "only methods Spark can start"
+    );
     assert_eq!(locked["chat"]["state"], "unverified");
     assert_eq!(
         locked["capabilities"]["model_selection"]["state"],
@@ -1145,19 +1164,33 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     );
 
     assert!(!response.to_string().contains("discovery-secret-sentinel"));
+    assert_eq!(providers["acp:spills"]["setup_status"], "unreachable");
+    assert!(
+        providers["acp:spills"]["error"]
+            .as_str()
+            .unwrap()
+            .ends_with("stderr tail:\n[redacted]"),
+        "a secret's lines show as one: {}",
+        providers["acp:spills"]
+    );
+    assert!(
+        !response.to_string().contains("key-line-"),
+        "no line of a value of several lines shows: {}",
+        providers["acp:spills"]
+    );
     assert!(!response.to_string().contains("=cat"));
     assert!(acp_received(temp.path(), "session/prompt").is_empty());
     let sessions = acp_received(temp.path(), "session/new");
     assert_eq!(
         sessions.len(),
-        4,
+        5,
         "one temporary session per reachable harness"
     );
     assert!(sessions
         .iter()
         .all(|session| session["cwd"] == json!(project)));
     let probes = launches();
-    assert_eq!(probes.len(), 4);
+    assert_eq!(probes.len(), 5);
     for probe in &probes {
         assert_eq!(probe["cwd"], json!(project));
         let alive = std::process::Command::new("kill")
@@ -1172,12 +1205,12 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     assert_eq!(discover(), response, "cached");
     assert_eq!(
         launches().len(),
-        6,
-        "ready harnesses are cached; locked and leaky are probed again"
+        8,
+        "ready harnesses are cached; locked, leaky and spills are probed again"
     );
     spark_workspace::models::invalidate_model_discovery("agents");
     discover();
-    assert_eq!(launches().len(), 10, "an agents change probes again");
+    assert_eq!(launches().len(), 13, "an agents change probes again");
 
     // One misconfigured registration stops no other, and a ready harness
     // whose program is removed is checked again.
@@ -1218,5 +1251,17 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     assert_eq!(
         discover()["providers"]["acp:copied"]["setup_status"],
         "not_installed"
+    );
+
+    // Signing in with a method the harness offered keeps its sign-in.
+    let signed =
+        spark_workspace::models::acp_sign_in(&settings, &project, "locked", "browser").unwrap();
+    assert_eq!(signed, json!({"setup_status": "ready", "error": null}));
+    assert!(acp_received(temp.path(), "authenticate")
+        .iter()
+        .any(|request| request["methodId"] == "browser"));
+    assert_eq!(
+        discover()["providers"]["acp:locked"]["setup_status"],
+        "ready"
     );
 }

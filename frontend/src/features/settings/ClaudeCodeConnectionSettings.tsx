@@ -2,13 +2,12 @@ import { useEffect, useState } from 'react'
 import { isTauri } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { claudeCodeConnectionRequest, submitClaudeCodeSignInCode, type ClaudeCodeConnection } from './services/claudeCodeConnection'
 
-/** `autoStart` begins sign-in as soon as the connection reads signed out; `onRetry` is offered once signed in; `onStatus` hears the sign-in state, or `error` when it cannot be read. */
-export function ClaudeCodeConnectionControls({ autoStart = false, onRetry, onStatus }: { autoStart?: boolean; onRetry?: () => void; onStatus?: (status: ClaudeCodeConnection['status'] | 'error') => void }) {
+/** `autoStart` begins sign-in as soon as the connection reads signed out; `onRetry` is offered once signed in; `onStatus` hears the sign-in state, or `error` when it cannot be read; `showCheck` is off where the host checks again itself. */
+export function ClaudeCodeConnectionControls({ autoStart = false, onRetry, onStatus, showCheck = true }: { autoStart?: boolean; onRetry?: () => void; onStatus?: (status: ClaudeCodeConnection['status'] | 'error') => void; showCheck?: boolean }) {
     const [connection, setConnection] = useState<ClaudeCodeConnection | null>(null)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -83,17 +82,10 @@ export function ClaudeCodeConnectionControls({ autoStart = false, onRetry, onSta
                 : <Button size="sm" variant="outline" disabled={disabled} onClick={() => void request('login')}>
                     {connection?.status === 'connected' ? 'Sign in again' : 'Sign in to Claude'}
                 </Button>}
-            <Button size="sm" variant="outline" disabled={disabled} onClick={() => void request('status')}>Check connection</Button>
+            {showCheck && <Button size="sm" variant="outline" disabled={disabled} onClick={() => void request('status')}>Check connection</Button>}
         </div>
         {error && <p role="alert" className="text-destructive">{error}</p>}
     </div>
-}
-
-export function ClaudeCodeConnectionSettings() {
-    return <Card className="gap-4 py-4">
-        <CardHeader className="px-4"><h2 className="text-base font-semibold">Claude Code connection</h2></CardHeader>
-        <CardContent className="px-4"><ClaudeCodeConnectionControls /></CardContent>
-    </Card>
 }
 
 /** `onRetry` resends the failed turn the dialog was opened from. */

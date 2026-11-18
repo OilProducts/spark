@@ -161,3 +161,12 @@ export function saveAcpHarness(revision: string, id: string, registration: AcpHa
     return fetchWorkspaceJsonValidated('/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expected_revision: revision, section: 'acp_harness', value: { id, registration } }) }, '/workspace/api/settings', parseAgents)
 }
+
+/** Signs in to ACP harness `id` with a method it offered, waiting while the user finishes; what its check then found. */
+export function signInAcpHarness(id: string, methodId: string): Promise<{ setup_status: string; error: string | null }> {
+    return fetchWorkspaceJsonValidated('/projects/acp-sign-in', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ harness_id: id, method_id: methodId }) }, '/workspace/api/projects/acp-sign-in', (payload, endpoint) => {
+        const result = expectObjectRecord(payload, endpoint)
+        return { setup_status: expectString(result.setup_status, endpoint, 'setup_status'), error: result.error == null ? null : expectString(result.error, endpoint, 'error') }
+    })
+}

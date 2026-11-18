@@ -21,10 +21,13 @@ impl SettingsDocument {
             .get(section)
             .cloned()
             .map(|value| {
-                value.try_into().map_err(|_| {
+                value.try_into().map_err(|error: toml::de::Error| {
                     invalid(
                         path,
-                        format!("Invalid {section} section; check field names and types."),
+                        format!(
+                            "Invalid {section} section: {}",
+                            field_error(&error.to_string())
+                        ),
                     )
                 })
             })
@@ -307,8 +310,9 @@ pub fn validate_core_sections(path: &Path, values: &toml::Table) -> Result<()> {
     validate_desktop_section(path, values)
 }
 
-/// ACP registrations that cannot be used, by ID, with why.
-pub type MisconfiguredHarnesses = std::collections::BTreeMap<String, String>;
+/// ACP registrations that cannot be used, by ID.
+pub type MisconfiguredHarnesses =
+    std::collections::BTreeMap<String, spark_common::agent_settings::MisconfiguredHarness>;
 
 /// The agents section with each ACP registration read and checked on its
 /// own: one that cannot be read or is invalid is left out and reported, so it
@@ -320,7 +324,7 @@ pub fn agents_section(
     spark_common::agent_settings::SessionConfig,
     MisconfiguredHarnesses,
 )> {
-    use spark_common::agent_settings::{validate_harness_id, AcpHarness};
+    use spark_common::agent_settings::{validate_harness_id, AcpHarness, MisconfiguredHarness};
     let mut values = document.clone();
     let registrations = values
         .values
@@ -340,21 +344,16 @@ pub fn agents_section(
         ));
     };
     for (id, registration) in registrations {
+        let name = registration
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(&id)
+            .to_string();
         let harness = validate_harness_id(&id).and_then(|()| {
-            let harness: AcpHarness = registration.try_into().map_err(|error| {
-                // Field and variant names only: values may be secrets.
-                let message = error.to_string();
-                match message.lines().next() {
-                    Some(line)
-                        if ["unknown field", "missing field", "unknown variant"]
-                            .iter()
-                            .any(|prefix| line.starts_with(prefix)) =>
-                    {
-                        format!("{line}.")
-                    }
-                    _ => "A field has the wrong type; check its field names and types.".into(),
-                }
-            })?;
+            let harness: AcpHarness = registration
+                .try_into()
+                .map_err(|error: toml::de::Error| field_error(&error.to_string()))?;
             harness.validate().map(|()| harness)
         });
         match harness {
@@ -362,11 +361,37 @@ pub fn agents_section(
                 agents.acp_harnesses.insert(id, harness);
             }
             Err(error) => {
-                misconfigured.insert(id, error);
+                misconfigured.insert(id, MisconfiguredHarness { name, error });
             }
         }
     }
     Ok((agents, misconfigured))
+}
+
+/// Why settings could not be read, from the deserializer's `message`,
+/// naming the field but never its value, which may be a secret.
+fn field_error(message: &str) -> String {
+    let mut lines = message.lines();
+    let first = lines.next().unwrap_or_default();
+    let field = lines
+        .find_map(|line| line.strip_prefix("in `")?.strip_suffix('`'))
+        .map_or("A field".to_string(), |field| format!("`{field}`"));
+    if ["unknown field", "missing field", "unknown variant"]
+        .iter()
+        .any(|prefix| first.starts_with(prefix))
+    {
+        return format!("{first}.");
+    }
+    match first.strip_prefix("invalid type: ") {
+        Some(rest) => {
+            let found = rest.split(['"', '`']).next().unwrap_or_default().trim();
+            let expected = rest
+                .rsplit_once(", expected ")
+                .map_or("", |(_, expected)| expected);
+            format!("{field} has the wrong type: expected {expected}, found {found}.")
+        }
+        None => format!("{field} has an invalid value."),
+    }
 }
 
 pub fn validate_desktop_section(path: &Path, values: &toml::Table) -> Result<()> {
