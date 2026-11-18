@@ -38,8 +38,12 @@ struct Check<H, R, V> {
     registration: R,
     result: Option<V>,
     /// The running check's number. A check whose number is gone when it
-    /// finishes, because its entry was cleared or replaced, is discarded.
+    /// finishes, because its entry was removed or replaced, is discarded.
     running: Option<u64>,
+    /// A save cleared the entry while its check ran: that check's result is
+    /// discarded, and if a listing asked since, it checks again once it ends.
+    cleared: bool,
+    again: bool,
 }
 
 impl<H, R, V> Checks<H, R, V>
@@ -68,8 +72,8 @@ where
         harness: H,
         registration: R,
         refresh: bool,
-        run: impl FnOnce() -> V + Send + 'static,
-        registered: impl FnOnce() -> Option<R> + Send + 'static,
+        run: impl Fn() -> V + Send + 'static,
+        registered: impl Fn() -> Option<R> + Send + 'static,
         finished: impl FnOnce() + Send + 'static,
     ) -> Option<V> {
         let mut checks = self.lock();
@@ -83,18 +87,23 @@ where
                     registration,
                     result: None,
                     running: None,
+                    cleared: false,
+                    again: false,
                 });
                 checks.len() - 1
             }
         };
         let check = &mut checks[index];
+        // A listing after a save asks for a check from after it: one the save
+        // cleared while it ran checks again once it ends.
+        check.again |= check.cleared;
         if check.running.is_none() && (check.result.is_none() || refresh) {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             let number = NEXT.fetch_add(1, Ordering::Relaxed);
             check.running = Some(number);
-            std::thread::spawn(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
-                let current = std::panic::catch_unwind(std::panic::AssertUnwindSafe(registered))
+            std::thread::spawn(move || loop {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&run));
+                let current = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&registered))
                     .ok()
                     .flatten();
                 let mut checks = self.lock();
@@ -109,20 +118,32 @@ where
                     return;
                 }
                 let check = &mut checks[index];
+                let cleared = std::mem::take(&mut check.cleared);
+                if cleared && std::mem::take(&mut check.again) {
+                    continue;
+                }
                 check.running = None;
                 // A check that panicked leaves the next listing to start another.
-                if let Ok(result) = result {
+                if let (Ok(result), false) = (result, cleared) {
                     check.result = Some(result);
                     drop(checks);
                     finished();
                 }
+                return;
             });
         }
         check.result.clone()
     }
 
+    /// Settings were saved: every result goes. A running check keeps its
+    /// entry, so no second probe of the same registration starts beside it,
+    /// but its result is discarded.
     fn clear(&self) {
-        self.lock().clear();
+        self.lock().retain_mut(|check| {
+            check.result = None;
+            check.cleared = check.running.is_some();
+            check.cleared
+        });
     }
 
     /// Forgets the checks `keep` rejects, discarding those still running.

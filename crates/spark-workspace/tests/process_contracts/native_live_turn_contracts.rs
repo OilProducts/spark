@@ -1595,6 +1595,30 @@ fn model_listing_never_waits_on_a_harness_check() {
     announced();
     assert_eq!(slow(&list(false)), ready);
     assert_eq!(count(&launches), 16);
+
+    // A save while a check runs, then a listing: the listing answers at once
+    // and starts no second probe beside the running one, whose result is
+    // discarded. Once it ends, a check from after the save runs and is the
+    // only one announced.
+    std::fs::remove_file(&release).unwrap();
+    spark_workspace::models::invalidate_model_discovery("agents");
+    assert_eq!(slow(&list(false)), checking);
+    wait_for("the check started", &|| count(&launches) == 17);
+    spark_workspace::models::invalidate_model_discovery("agents");
+    let started = Instant::now();
+    assert_eq!(slow(&list(false)), checking);
+    assert_eq!(slow(&list(true)), checking);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(count(&launches), 17, "no second probe beside the first");
+    std::fs::write(&release, "").unwrap();
+    wait_for("the check after the save started", &|| {
+        count(&launches) == 18
+    });
+    announced();
+    assert!(!announced_since(), "only the check after the save");
+    assert_eq!(slow(&list(false)), ready);
+    assert_eq!(count(&launches), 18);
 }
 
 #[test]
