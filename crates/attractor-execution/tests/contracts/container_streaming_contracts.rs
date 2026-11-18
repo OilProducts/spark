@@ -323,6 +323,10 @@ fn containers_mount_the_project_work_dir_at_its_own_path_or_refuse_to_start() {
     assert_eq!(started(), None);
 
     std::fs::create_dir_all(&work).unwrap();
+    let invalid = execute(vec!["not-a-mount".into()]).unwrap_err();
+    assert!(invalid.message.contains("must be host:container"));
+    assert_eq!(started(), None);
+
     let shadowing = format!(
         "{}:{}",
         temp.path().display(),
@@ -338,7 +342,8 @@ fn containers_mount_the_project_work_dir_at_its_own_path_or_refuse_to_start() {
     );
     assert_eq!(started(), None);
 
-    let outcome = execute(vec![]).unwrap();
+    let extra_mount = format!("{}:/other:ro", temp.path().display());
+    let outcome = execute(vec![extra_mount.clone()]).unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Completed);
     let run = started().expect("container started");
     let mount = format!(
@@ -349,6 +354,11 @@ fn containers_mount_the_project_work_dir_at_its_own_path_or_refuse_to_start() {
     assert!(
         run.windows(2)
             .any(|pair| pair[0] == "-v" && pair[1] == mount),
+        "{run:?}"
+    );
+    assert!(
+        run.windows(2)
+            .any(|pair| pair[0] == "-v" && pair[1] == extra_mount),
         "{run:?}"
     );
 }

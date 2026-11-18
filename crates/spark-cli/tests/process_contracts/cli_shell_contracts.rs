@@ -55,42 +55,6 @@ fn start_unknown_image_argument_is_a_json_usage_error() {
 }
 
 #[test]
-fn flow_list_text_executes_http_request_and_renders_rows() {
-    let env = BTreeMap::new();
-    let (base_url, requests) = serve_once(HttpResponse::json(
-        200,
-        r#"[
-          {"name":"examples/simple","title":"Simple Flow","description":"Small starter."},
-          {"name":"ops/review","title":"ops/review","description":""}
-        ]"#,
-    ));
-    let output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "list",
-            "--text",
-            "--base-url",
-            base_url.as_str(),
-        ],
-        &env,
-    );
-
-    assert_eq!(output.exit_code, 0);
-    assert_eq!(
-        output.stdout,
-        "examples/simple: Simple Flow\n  Small starter.\nops/review\n"
-    );
-    assert_eq!(output.stderr, "");
-    let request = requests
-        .recv_timeout(Duration::from_secs(2))
-        .expect("request");
-    assert_eq!(request.method, "GET");
-    assert_eq!(request.path, "/workspace/api/flows");
-    assert_eq!(request.body, "");
-}
-
-#[test]
 fn run_start_with_conversation_posts_by_handle_and_prints_response_json() {
     let env = BTreeMap::new();
     let (base_url, requests) = serve_once(HttpResponse::json(
@@ -419,45 +383,6 @@ fn run_start_retry_and_continue_send_expected_json_bodies() {
             "flow_source_mode": "flow_name",
             "start_node": "next"
         })
-    );
-}
-
-#[test]
-fn flow_validate_by_name_renders_text_and_exits_one_on_errors() {
-    let env = BTreeMap::new();
-    let (validate_base_url, validate_requests) = serve_once(HttpResponse::json(
-        200,
-        r#"{
-          "name":"software-development/implement-change-request",
-          "path":"/flows/software-development/implement-change-request",
-          "status":"invalid",
-          "diagnostics":[{"severity":"error","rule_id":"missing-edge","message":"Missing edge.","line":7}],
-          "errors":["Missing edge."]
-        }"#,
-    ));
-    let validate_output = run_with_args_and_env(
-        [
-            "spark",
-            "flow",
-            "validate",
-            "software-development/implement-change-request",
-            "--text",
-            "--base-url",
-            validate_base_url.as_str(),
-        ],
-        &env,
-    );
-    assert_eq!(validate_output.exit_code, 1);
-    assert!(validate_output.stdout.contains("Status: invalid"));
-    assert!(validate_output
-        .stdout
-        .contains("- ERROR missing-edge line 7: Missing edge."));
-    assert_eq!(
-        validate_requests
-            .recv_timeout(Duration::from_secs(2))
-            .expect("validate request")
-            .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request/validate"
     );
 }
 
@@ -940,63 +865,6 @@ fn request_plans_resolve_target_order_and_escape_path_segments() {
 }
 
 #[test]
-fn trigger_json_payload_can_come_from_injected_stdin() {
-    let env = BTreeMap::new();
-
-    let plan = request_plan_with_args_env_and_stdin(
-        [
-            "spark",
-            "trigger",
-            "create",
-            "--project",
-            "/repo",
-            "--json",
-            "-",
-            "--base-url",
-            "http://127.0.0.1:8010",
-        ],
-        &env,
-        r#"{"id":"nightly","enabled":true}"#,
-    )
-    .expect("trigger create plan");
-
-    assert_eq!(plan.method, HttpMethod::Post);
-    assert_eq!(plan.path, "/workspace/api/triggers");
-    assert_eq!(
-        plan.body.expect("body"),
-        serde_json::json!({"enabled": true, "id": "nightly", "project_path": "/repo"})
-    );
-}
-
-#[test]
-fn trigger_json_payload_rejects_non_object_stdin_before_dispatch() {
-    let env = BTreeMap::new();
-
-    let output = run_with_args_env_and_stdin(
-        [
-            "spark",
-            "trigger",
-            "create",
-            "--project",
-            "/repo",
-            "--json",
-            "-",
-            "--base-url",
-            "http://127.0.0.1:8010",
-        ],
-        &env,
-        "[]",
-    );
-
-    assert_eq!(output.exit_code, 1);
-    assert_eq!(output.stdout, "");
-    assert_eq!(
-        output.stderr,
-        "{\"ok\": false, \"error\": \"--json must be a JSON object.\", \"exit_code\": 1}\n"
-    );
-}
-
-#[test]
 fn trigger_commands_execute_http_requests_and_render_text() {
     let env = BTreeMap::new();
     let (list_base_url, list_requests) = serve_once(HttpResponse::json(
@@ -1029,7 +897,7 @@ fn trigger_commands_execute_http_requests_and_render_text() {
     );
     assert_eq!(list_request.body, "");
 
-    let (list_text_base_url, _list_text_requests) = serve_once(HttpResponse::json(
+    let (list_text_base_url, list_text_requests) = serve_once(HttpResponse::json(
         200,
         r#"[{"id":"trigger-123","project_path":"/repo","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{}}]"#,
     ));
@@ -1045,10 +913,16 @@ fn trigger_commands_execute_http_requests_and_render_text() {
         &env,
     );
     assert_eq!(list_text_output.exit_code, 0);
+    assert!(list_text_output.stderr.is_empty());
     assert_eq!(
         list_text_output.stdout,
         "trigger-123: Nightly [webhook] -> ops/run\n  project=/repo enabled=true protected=false\n"
     );
+    let list_text_request = list_text_requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("list request");
+    assert_eq!(list_text_request.method, "GET");
+    assert_eq!(list_text_request.path, "/workspace/api/triggers");
 
     let (describe_base_url, describe_requests) = serve_once(HttpResponse::json(
         200,
@@ -1213,39 +1087,6 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
     );
 
     let _ = fs::remove_dir_all(temp_dir);
-}
-
-#[test]
-fn trigger_http_errors_preserve_cli_stderr_envelope() {
-    let env = BTreeMap::new();
-    let (base_url, _requests) = serve_once(HttpResponse::json(
-        400,
-        r#"{"detail":"Protected triggers cannot be deleted."}"#,
-    ));
-    let output = run_with_args_and_env(
-        [
-            "spark",
-            "trigger",
-            "delete",
-            "protected",
-            "--project",
-            "/repo",
-            "--expected-revision",
-            "revision-1",
-            "--base-url",
-            base_url.as_str(),
-        ],
-        &env,
-    );
-
-    assert_eq!(output.exit_code, 1);
-    assert_eq!(output.stdout, "");
-    assert_eq!(
-        output.stderr,
-        format!(
-            "{{\"ok\": false, \"error\": \"Protected triggers cannot be deleted.\", \"exit_code\": 1, \"status_code\": 400, \"target\": \"{base_url}\", \"target_source\": \"flag\"}}\n"
-        )
-    );
 }
 
 #[test]
@@ -1588,66 +1429,9 @@ fn mission_commands_use_project_scope_and_minimal_payloads() {
 }
 
 #[test]
-fn settings_commands_use_scoped_http_and_preserve_explicit_target_safeguards() {
-    let env = std::collections::BTreeMap::<String, String>::new();
-    let get = spark_cli::request_plan_with_args_env_and_stdin(
-        [
-            "spark",
-            "settings",
-            "get",
-            "--base-url",
-            "http://127.0.0.1:9876",
-        ],
-        &env,
-        "",
-    )
-    .unwrap();
-    assert_eq!(get.method, spark_cli::HttpMethod::Get);
-    assert_eq!(get.path, "/workspace/api/settings");
-    for (command, method, path) in [
-        (
-            "set",
-            spark_cli::HttpMethod::Patch,
-            "/workspace/api/settings",
-        ),
-        (
-            "validate",
-            spark_cli::HttpMethod::Post,
-            "/workspace/api/settings/validate",
-        ),
-    ] {
-        let payload =
-            r#"{"expected_revision":"rev-1","section":"runtime","value":{"runs_dir":"/chosen"}}"#;
-        let plan = spark_cli::request_plan_with_args_env_and_stdin(
-            [
-                "spark",
-                "settings",
-                command,
-                "--base-url",
-                "http://127.0.0.1:9876",
-                "--json",
-                "-",
-            ],
-            &env,
-            payload,
-        )
-        .unwrap();
-        assert_eq!(plan.method, method);
-        assert_eq!(plan.path, path);
-        assert_eq!(plan.body.unwrap()["expected_revision"], "rev-1");
-    }
-    assert!(spark_cli::request_plan_with_args_env_and_stdin(
-        ["spark", "settings", "get"],
-        &env,
-        ""
-    )
-    .is_err());
-}
-
-#[test]
-fn settings_get_encodes_project_and_conversation_scopes() {
-    let env = std::collections::BTreeMap::<String, String>::new();
-    let plan = spark_cli::request_plan_with_args_env_and_stdin(
+fn settings_commands_encode_scopes_and_read_json_stdin() {
+    let env = BTreeMap::new();
+    let plan = request_plan_with_args_env_and_stdin(
         [
             "spark",
             "settings",
@@ -1667,7 +1451,40 @@ fn settings_get_encodes_project_and_conversation_scopes() {
         plan.path,
         "/workspace/api/settings?project_path=%2Ftmp%2Fa%20%26%20b&conversation_id=chat%2F1"
     );
-    assert_eq!(plan.method, spark_cli::HttpMethod::Get);
+    assert_eq!(plan.method, HttpMethod::Get);
+
+    let payload = serde_json::json!({
+        "expected_revision": "rev-1",
+        "section": "runtime",
+        "value": {"runs_dir": "/chosen"}
+    });
+    let stdin = payload.to_string();
+    for (command, method, path) in [
+        ("set", HttpMethod::Patch, "/workspace/api/settings"),
+        (
+            "validate",
+            HttpMethod::Post,
+            "/workspace/api/settings/validate",
+        ),
+    ] {
+        let plan = request_plan_with_args_env_and_stdin(
+            [
+                "spark",
+                "settings",
+                command,
+                "--base-url",
+                "http://127.0.0.1:9876",
+                "--json",
+                "-",
+            ],
+            &env,
+            &stdin,
+        )
+        .unwrap();
+        assert_eq!(plan.method, method);
+        assert_eq!(plan.path, path);
+        assert_eq!(plan.body.as_ref(), Some(&payload));
+    }
 }
 
 #[test]

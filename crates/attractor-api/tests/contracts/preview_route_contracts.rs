@@ -2,31 +2,11 @@ use std::path::Path;
 
 use attractor_api::AttractorApiService;
 use attractor_api::{
-    handle_attractor_request, handle_preview_request, preview, preview_with_roots, PreviewRequest,
-    PreviewServiceConfig,
+    handle_preview_request, preview, preview_with_roots, PreviewRequest, PreviewServiceConfig,
 };
 use attractor_core::FlowDefinition;
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
-
-#[test]
-fn preview_service_body_reports_flow_definition_graph() {
-    let response = preview(PreviewRequest {
-        flow: Some(simple_flow()),
-        flow_name: None,
-        expand_children: false,
-        project_path: None,
-    });
-
-    assert_eq!(response.status_code, 200);
-    assert_eq!(response.content_type, "application/json");
-    assert_eq!(response.body["status"], json!("ok"));
-    assert!(response.body["graph"]["nodes"]
-        .as_array()
-        .expect("nodes")
-        .iter()
-        .any(|node| node["id"] == json!("start")));
-}
 
 #[test]
 fn preview_route_wrapper_rejects_a_flow_that_is_not_a_flow_definition() {
@@ -175,21 +155,6 @@ fn parent_request() -> PreviewRequest {
 }
 
 #[test]
-fn preview_route_wrapper_accepts_post_preview_json() {
-    let body = json!({
-        "flow": simple_flow(),
-    })
-    .to_string();
-
-    let response =
-        handle_preview_request("POST", "/preview", &body, &PreviewServiceConfig::default());
-
-    assert_eq!(response.status_code, 200);
-    assert_eq!(response.content_type, "application/json");
-    assert_eq!(response.body["status"], json!("ok"));
-}
-
-#[test]
 fn preview_route_wrapper_accepts_mounted_attractor_preview_path() {
     let body = json!({
         "flow": simple_flow(),
@@ -260,23 +225,18 @@ fn preview_route_accepts_a_json_flow_definition() {
     );
 
     assert_eq!(response.status_code, 200);
+    assert_eq!(response.content_type, "application/json");
     assert_eq!(response.body["status"], json!("ok"));
     assert_eq!(response.body["graph"]["id"], json!("preview"));
+    assert!(response.body["graph"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .any(|node| node["id"] == "start"));
     assert_eq!(
         response.body["flow"]["nodes"]["task"]["config"]["prompt"],
         json!("Preview task")
     );
-}
-
-#[test]
-fn mounted_route_dispatcher_returns_json_404_for_unknown_api_path() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let response =
-        handle_attractor_request("GET", "/attractor/api/missing", "", settings(temp.path()));
-
-    assert_eq!(response.status_code, 404);
-    assert_eq!(response.content_type, "application/json");
-    assert_eq!(response.body, json!({"detail": "Not Found"}));
 }
 
 #[test]

@@ -131,7 +131,7 @@ fn process_flow_validate_dir_warning_only_flow_exits_zero() {
 
 #[test]
 fn process_flow_validate_through_the_api_exit_code_follows_the_report() {
-    let error = r#"{"severity":"error","rule_id":"start_node","message":"No start.","line":0}"#;
+    let error = r#"{"severity":"error","rule_id":"start_node","message":"No start.","line":7}"#;
     let warning = r#"{"severity":"warning","rule_id":"style","message":"Odd style.","line":0}"#;
     let cases = [
         (
@@ -139,7 +139,7 @@ fn process_flow_validate_through_the_api_exit_code_follows_the_report() {
                 r#"{{"status":"validation_error","diagnostics":[{error}],"errors":[{error}]}}"#
             ),
             1,
-            "- ERROR start_node: No start.",
+            "- ERROR start_node line 7: No start.",
         ),
         (
             r#"{"status":"validation_error","diagnostics":[],"errors":[]}"#.to_string(),
@@ -149,7 +149,7 @@ fn process_flow_validate_through_the_api_exit_code_follows_the_report() {
         (
             format!(r#"{{"status":"ok","diagnostics":[{warning},{error}],"errors":[]}}"#),
             1,
-            "- ERROR start_node: No start.",
+            "- ERROR start_node line 7: No start.",
         ),
         (
             format!(r#"{{"status":"ok","diagnostics":[{warning}],"errors":[]}}"#),
@@ -163,14 +163,22 @@ fn process_flow_validate_through_the_api_exit_code_follows_the_report() {
         ),
     ];
     let validate = |body: &str, text: bool| {
-        let (base_url, _requests) = serve_once(HttpResponse::json(200, body));
+        let (base_url, requests) = serve_once(HttpResponse::json(200, body));
         let mut command = Command::new(spark_bin());
         command.args(["flow", "validate", "team/work", "--base-url"]);
         command.arg(base_url).env_clear();
         if text {
             command.arg("--text");
         }
-        command.output().expect("run spark")
+        let output = command.output().expect("run spark");
+        assert_eq!(
+            requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("request")
+                .path,
+            "/workspace/api/flows/team%2Fwork/validate"
+        );
+        output
     };
     for (body, exit_code, line) in &cases {
         let output = validate(body, false);
@@ -285,7 +293,10 @@ fn process_source_checkout_default_target_guard_remains_exit_one() {
 fn process_flow_list_text_executes_http_and_renders_rows() {
     let (base_url, requests) = serve_once(HttpResponse::json(
         200,
-        r#"[{"name":"examples/simple","title":"Simple Flow","description":"Small starter."}]"#,
+        r#"[
+          {"name":"examples/simple","title":"Simple Flow","description":"Small starter."},
+          {"name":"ops/review","title":"ops/review","description":""}
+        ]"#,
     ));
 
     let output = Command::new(spark_bin())
@@ -297,140 +308,15 @@ fn process_flow_list_text_executes_http_and_renders_rows() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
-        "examples/simple: Simple Flow\n  Small starter.\n"
+        "examples/simple: Simple Flow\n  Small starter.\nops/review\n"
     );
     assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
-    assert_eq!(
-        requests
-            .recv_timeout(Duration::from_secs(2))
-            .expect("request")
-            .path,
-        "/workspace/api/flows"
-    );
-}
-
-#[test]
-fn process_flow_get_json_prints_files_response() {
-    let files = r#"{"name":"software-development/implement-change-request","layer":"bundled","path":"/spark/bundled/flows/software-development/implement-change-request","files":[{"name":"flow.md","content":"---\nid: implement_change_request\n---\n"}]}"#;
-    let (base_url, requests) = serve_once(HttpResponse::json(200, files));
-
-    let output = Command::new(spark_bin())
-        .args([
-            "flow",
-            "get",
-            "software-development/implement-change-request",
-            "--base-url",
-            base_url.as_str(),
-        ])
-        .env_clear()
-        .output()
-        .expect("run spark");
-
-    assert_eq!(output.status.code(), Some(0));
-    assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
-    let payload: Value = serde_json::from_slice(&output.stdout).expect("stdout json");
-    assert_eq!(payload, serde_json::from_str::<Value>(files).unwrap());
-    assert_eq!(
-        requests
-            .recv_timeout(Duration::from_secs(2))
-            .expect("request")
-            .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request/files"
-    );
-}
-
-#[test]
-fn process_http_404_maps_to_stderr_json_and_exit_three() {
-    let (base_url, _requests) = serve_once(HttpResponse::json(
-        404,
-        r#"{"detail":"Unknown pipeline: missing"}"#,
-    ));
-
-    let output = Command::new(spark_bin())
-        .args(["run", "get", "missing", "--base-url", base_url.as_str()])
-        .env_clear()
-        .output()
-        .expect("run spark");
-
-    assert_eq!(output.status.code(), Some(3));
-    assert_eq!(String::from_utf8(output.stdout).expect("stdout utf8"), "");
-    assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr utf8"),
-        format!(
-            "{{\"ok\": false, \"error\": \"Unknown pipeline: missing\", \"exit_code\": 3, \"status_code\": 404, \"target\": \"{base_url}\", \"target_source\": \"flag\"}}\n"
-        )
-    );
-}
-
-#[test]
-fn process_http_nested_detail_error_maps_to_stderr_json() {
-    let (base_url, _requests) = serve_once(HttpResponse::json(
-        400,
-        r#"{"detail":{"error":"Nested detail process error"}}"#,
-    ));
-
-    let output = Command::new(spark_bin())
-        .args(["run", "get", "invalid", "--base-url", base_url.as_str()])
-        .env_clear()
-        .output()
-        .expect("run spark");
-
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(String::from_utf8(output.stdout).expect("stdout utf8"), "");
-    assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr utf8"),
-        format!(
-            "{{\"ok\": false, \"error\": \"Nested detail process error\", \"exit_code\": 1, \"status_code\": 400, \"target\": \"{base_url}\", \"target_source\": \"flag\"}}\n"
-        )
-    );
-}
-
-#[test]
-fn process_run_start_with_conversation_posts_json_payload() {
-    let (base_url, requests) = serve_once(HttpResponse::json(
-        200,
-        r#"{"ok":true,"flow_run_request_id":"flow-run-request-process"}"#,
-    ));
-
-    let output = Command::new(spark_bin())
-        .args([
-            "run",
-            "start",
-            "--conversation",
-            "amber-otter",
-            "--flow",
-            "software-development/implement-change-request",
-            "--summary",
-            "Process request",
-            "--goal",
-            "Ship it.",
-            "--base-url",
-            base_url.as_str(),
-        ])
-        .env_clear()
-        .output()
-        .expect("run spark");
-
-    assert_eq!(output.status.code(), Some(0));
-    assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
-    let payload: Value = serde_json::from_slice(&output.stdout).expect("stdout json");
-    assert_eq!(payload["flow_run_request_id"], "flow-run-request-process");
     let request = requests
         .recv_timeout(Duration::from_secs(2))
         .expect("request");
-    assert_eq!(request.method, "POST");
-    assert_eq!(
-        request.path,
-        "/workspace/api/conversations/by-handle/amber-otter/flow-run-requests"
-    );
-    assert_eq!(
-        serde_json::from_str::<Value>(&request.body).expect("request json"),
-        serde_json::json!({
-            "flow_name": "software-development/implement-change-request",
-            "goal": "Ship it.",
-            "summary": "Process request"
-        })
-    );
+    assert_eq!(request.method, "GET");
+    assert_eq!(request.path, "/workspace/api/flows");
+    assert!(request.body.is_empty());
 }
 
 #[test]
@@ -465,65 +351,6 @@ fn process_trigger_stdin_payload_errors_before_server_dispatch() {
     assert_eq!(
         String::from_utf8(output.stderr).expect("stderr utf8"),
         "{\"ok\": false, \"error\": \"--json must be a JSON object.\", \"exit_code\": 1}\n"
-    );
-}
-
-#[test]
-fn process_trigger_list_text_executes_http_and_renders_rows() {
-    let (base_url, requests) = serve_once(HttpResponse::json(
-        200,
-        r#"[{"id":"trigger-123","project_path":"/repo","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{}}]"#,
-    ));
-
-    let output = Command::new(spark_bin())
-        .args(["trigger", "list", "--text", "--base-url", base_url.as_str()])
-        .env_clear()
-        .output()
-        .expect("run spark");
-
-    assert_eq!(output.status.code(), Some(0));
-    assert_eq!(
-        String::from_utf8(output.stdout).expect("stdout utf8"),
-        "trigger-123: Nightly [webhook] -> ops/run\n  project=/repo enabled=true protected=false\n"
-    );
-    assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
-    let request = requests
-        .recv_timeout(Duration::from_secs(2))
-        .expect("request");
-    assert_eq!(request.method, "GET");
-    assert_eq!(request.path, "/workspace/api/triggers");
-}
-
-#[test]
-fn process_trigger_http_error_maps_to_stderr_json() {
-    let (base_url, _requests) = serve_once(HttpResponse::json(
-        400,
-        r#"{"detail":"Protected triggers cannot be deleted."}"#,
-    ));
-
-    let output = Command::new(spark_bin())
-        .args([
-            "trigger",
-            "delete",
-            "protected",
-            "--project",
-            "/repo",
-            "--expected-revision",
-            "revision-1",
-            "--base-url",
-            base_url.as_str(),
-        ])
-        .env_clear()
-        .output()
-        .expect("run spark");
-
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(String::from_utf8(output.stdout).expect("stdout utf8"), "");
-    assert_eq!(
-        String::from_utf8(output.stderr).expect("stderr utf8"),
-        format!(
-            "{{\"ok\": false, \"error\": \"Protected triggers cannot be deleted.\", \"exit_code\": 1, \"status_code\": 400, \"target\": \"{base_url}\", \"target_source\": \"flag\"}}\n"
-        )
     );
 }
 

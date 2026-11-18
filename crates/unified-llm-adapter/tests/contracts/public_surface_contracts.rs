@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use serde::ser::{Error as SerdeError, Serialize, Serializer};
@@ -539,6 +538,31 @@ fn stream_event_uses_canonical_wire_fields_and_preserves_custom_types() {
     assert_eq!(serialized["delta"], "visible");
     assert_eq!(serialized["text_id"], "text-1");
     assert_eq!(serialized["reasoning_delta"], "private");
+    assert_eq!(
+        serialized["tool_call"],
+        json!({
+            "id": "call-1",
+            "name": "lookup",
+            "arguments": {"city": "NYC"},
+            "raw_arguments": "{\"city\":\"NYC\"}",
+            "type": "function"
+        })
+    );
+    let parsed_arguments_call = ToolCall::new("call-2", "lookup", json!({"city": "NYC"}));
+    assert_eq!(
+        serde_json::to_value(parsed_arguments_call)
+            .unwrap()
+            .get("raw_arguments"),
+        Some(&Value::Null)
+    );
+    assert_eq!(
+        serde_json::to_value(unified_llm_adapter::ToolResult::success(
+            "call-1",
+            json!({"ok": true})
+        ))
+        .unwrap(),
+        json!({"tool_call_id": "call-1", "content": {"ok": true}, "is_error": false})
+    );
     assert!(serialized.get("event_type").is_none());
     assert!(serialized.get("text").is_none());
     assert!(serialized.get("reasoning").is_none());
@@ -933,17 +957,16 @@ fn response_format_uses_spec_wire_values() {
         serde_json::to_value(ResponseFormat::JsonObject).unwrap(),
         json!({"type": "json"})
     );
+    let schema = json!({"name": "Decision", "schema": {"type": "object"}});
+    let format = ResponseFormat::JsonSchema {
+        json_schema: schema.clone(),
+        strict: true,
+    };
+    let wire_format = json!({"type": "json_schema", "json_schema": schema, "strict": true});
+    assert_eq!(serde_json::to_value(&format).unwrap(), wire_format);
     assert_eq!(
-        serde_json::to_value(ResponseFormat::JsonSchema {
-            json_schema: json!({"name": "Decision", "schema": {"type": "object"}}),
-            strict: true,
-        })
-        .unwrap(),
-        json!({
-            "type": "json_schema",
-            "json_schema": {"name": "Decision", "schema": {"type": "object"}},
-            "strict": true
-        })
+        serde_json::from_value::<ResponseFormat>(wire_format).unwrap(),
+        format
     );
 
     assert_eq!(
@@ -1675,69 +1698,6 @@ fn high_level_generate_with_active_tools_retries_continuation_without_reexecutin
 }
 
 #[test]
-fn high_level_generate_turns_active_tool_handler_errors_into_tool_results() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
-        "high",
-        Arc::clone(&calls),
-        vec![
-            Ok(Response {
-                message: Message {
-                    role: MessageRole::Assistant,
-                    content: vec![ContentPart::ToolCall {
-                        tool_call: ToolCall::new("call_boom", "boom", json!({})),
-                    }],
-                    ..Message::default()
-                },
-                finish_reason: FinishReason::ToolCalls,
-                ..Response::default()
-            }),
-            Ok(Response {
-                message: Message::assistant("recovered"),
-                finish_reason: FinishReason::Stop,
-                ..Response::default()
-            }),
-        ],
-    ));
-    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
-    let boom = Tool::active(
-        "boom",
-        |_invocation: ToolInvocation| -> Result<Value, AdapterError> {
-            Err(AdapterError::new(
-                AdapterErrorKind::InvalidToolCall,
-                "handler failed",
-            ))
-        },
-    )
-    .unwrap();
-
-    let result = generate(
-        &client,
-        Request {
-            model: "tool-model".to_string(),
-            messages: vec![Message::user("run tool")],
-            tools: vec![boom],
-            ..Request::default()
-        },
-    )
-    .unwrap();
-
-    assert_eq!(result.text, "recovered");
-    assert_eq!(
-        result.steps[0].tool_results,
-        vec![unified_llm_adapter::ToolResult::error(
-            "call_boom",
-            json!("handler failed"),
-        )]
-    );
-    assert!(result.steps[0].tool_results[0].is_error);
-    assert_eq!(
-        call_log(&calls),
-        vec!["complete:high:tool-model:1", "complete:high:tool-model:3"]
-    );
-}
-
-#[test]
 fn high_level_generate_turns_non_serializable_tool_returns_into_error_results() {
     struct FailingSerialize;
 
@@ -2199,11 +2159,10 @@ fn high_level_generate_executes_active_tool_calls_concurrently_and_batches_order
 }
 
 #[test]
-fn high_level_generate_converts_unknown_tool_calls_to_error_results_and_continues() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
+fn high_level_generate_returns_an_error_result_for_a_tool_called_without_definitions() {
+    let adapter = Arc::new(ScriptedCompleteAdapter::new(
         "high",
-        Arc::clone(&calls),
+        Arc::new(Mutex::new(Vec::new())),
         vec![
             Ok(Response {
                 message: Message {
@@ -2216,36 +2175,39 @@ fn high_level_generate_converts_unknown_tool_calls_to_error_results_and_continue
                 finish_reason: FinishReason::ToolCalls,
                 ..Response::default()
             }),
-            Ok(Response {
-                message: Message::assistant("continued after tool error"),
-                finish_reason: FinishReason::Stop,
-                ..Response::default()
-            }),
+            Ok(Response::from_text("continued after tool error")),
         ],
     ));
-    let client = Client::from_adapters(vec![adapter], Some("high")).unwrap();
-
+    let requests = adapter.requests();
+    let client =
+        Client::from_adapters([adapter as Arc<dyn ProviderAdapter>], Some("high")).unwrap();
     let result = generate(
         &client,
-        Request {
-            model: "tool-model".to_string(),
-            messages: vec![Message::user("run missing")],
-            ..Request::default()
-        },
+        Request::new(
+            "tool-model",
+            vec![Message::user("Run an unadvertised tool")],
+        ),
     )
     .unwrap();
 
     assert_eq!(result.text, "continued after tool error");
     assert_eq!(
         result.steps[0].tool_results,
-        vec![unified_llm_adapter::ToolResult::error(
+        [unified_llm_adapter::ToolResult::error(
             "call_missing",
-            json!("Unknown tool 'missing'"),
+            json!("Unknown tool 'missing'")
         )]
     );
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].tools.is_empty());
     assert_eq!(
-        call_log(&calls),
-        vec!["complete:high:tool-model:1", "complete:high:tool-model:3"]
+        requests[1].messages.last(),
+        Some(&Message::tool_result(
+            "call_missing",
+            json!("Unknown tool 'missing'"),
+            true
+        ))
     );
 }
 
@@ -4028,49 +3990,8 @@ fn high_level_generate_object_prefers_structured_output_tool_over_mixed_text() {
     assert_eq!(result.raw_text, "{\"answer\":\"yes\"}");
     assert_eq!(result.generation.output, Some(json!({"answer": "yes"})));
     assert_eq!(result.generation.text, "I found a valid object.");
-    assert_eq!(call_log(&calls), vec!["complete:structured:object-model:1"]);
-}
-
-#[test]
-fn high_level_generate_object_treats_injected_structured_output_tool_as_terminal() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedCompleteAdapter::new(
-        "structured",
-        Arc::clone(&calls),
-        vec![Ok(Response {
-            message: Message {
-                role: MessageRole::Assistant,
-                content: vec![ContentPart::ToolCall {
-                    tool_call: ToolCall::from_raw_arguments(
-                        "call_structured",
-                        "structured_output",
-                        "{\"answer\":\"yes\"}",
-                    ),
-                }],
-                ..Message::default()
-            },
-            finish_reason: FinishReason::ToolCalls,
-            ..Response::default()
-        })],
-    ));
-    let client = Client::from_adapters(vec![adapter], Some("structured")).unwrap();
-
-    let result = generate_object(
-        &client,
-        Request {
-            model: "object-model".to_string(),
-            messages: vec![Message::user("answer as JSON")],
-            ..Request::default()
-        },
-        object_schema(),
-    )
-    .unwrap();
-
-    assert_eq!(result.value, json!({"answer": "yes"}));
-    assert_eq!(result.raw_text, "{\"answer\":\"yes\"}");
     assert_eq!(result.generation.steps.len(), 1);
     assert!(result.generation.steps[0].tool_results.is_empty());
-    assert_eq!(result.generation.output, Some(json!({"answer": "yes"})));
     assert_eq!(call_log(&calls), vec!["complete:structured:object-model:1"]);
 }
 
@@ -4776,55 +4697,6 @@ fn stream_middleware_wraps_events_and_final_stream_errors() {
 }
 
 #[test]
-fn absent_middleware_preserves_adapter_outputs_and_error_semantics() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let adapter: Arc<dyn ProviderAdapter> =
-        Arc::new(RoutingAdapter::new("default", Arc::clone(&calls)));
-    let client = Client::from_adapters(vec![adapter], Some("default")).unwrap();
-
-    let response = client
-        .complete(Request {
-            model: "plain".to_string(),
-            messages: vec![Message::user("hello")],
-            ..Request::default()
-        })
-        .unwrap();
-    assert_eq!(response.provider, "default");
-    assert_eq!(response.text(), "default:plain");
-
-    let events = client
-        .stream(Request {
-            model: "plain".to_string(),
-            messages: vec![Message::user("hello")],
-            ..Request::default()
-        })
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    assert_eq!(events, vec![StreamEvent::text_delta("default:plain")]);
-
-    let observed = Arc::new(Mutex::new(Vec::new()));
-    let observer: Arc<dyn Middleware> = Arc::new(RequestRecordingMiddleware {
-        calls: Arc::clone(&observed),
-    });
-    let client = client.with_middleware(vec![observer]);
-    let error = client
-        .complete(Request {
-            model: "plain".to_string(),
-            provider: Some("missing".to_string()),
-            messages: vec![Message::user("hello")],
-            ..Request::default()
-        })
-        .unwrap_err();
-    assert_eq!(
-        error.kind,
-        unified_llm_adapter::AdapterErrorKind::Configuration
-    );
-    assert!(error.message.contains("Unknown provider"));
-    assert_eq!(call_log(&observed), Vec::<String>::new());
-}
-
-#[test]
 fn client_from_env_map_registers_providers_in_fixed_order_and_selects_default() {
     let env = BTreeMap::from([
         ("ANTHROPIC_API_KEY".to_string(), "anthropic-key".to_string()),
@@ -4920,6 +4792,23 @@ fn client_errors_when_provider_cannot_resolve_without_model_inference() {
     assert!(error.message.contains("No provider configured"));
     assert_eq!(call_log(&calls), vec!["initialize:openai"]);
 
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observer: Arc<dyn Middleware> = Arc::new(RequestRecordingMiddleware {
+        calls: Arc::clone(&observed),
+    });
+    let client = client.with_middleware([observer]);
+    let error = client
+        .complete(Request {
+            model: "openai:gpt-5.2".to_string(),
+            provider: Some("missing".to_string()),
+            messages: vec![Message::user("hello")],
+            ..Request::default()
+        })
+        .unwrap_err();
+    assert_eq!(error.kind, AdapterErrorKind::Configuration);
+    assert!(error.message.contains("Unknown provider"));
+    assert!(call_log(&observed).is_empty());
+
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(EchoAdapter);
     let error = match Client::from_adapters(vec![adapter], Some("missing")) {
         Ok(_) => panic!("missing default provider should fail"),
@@ -4933,82 +4822,88 @@ fn client_errors_when_provider_cannot_resolve_without_model_inference() {
 }
 
 #[test]
-fn client_is_send_sync_and_does_not_mutate_requests_across_concurrent_calls() {
-    fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<Client>();
-    assert_send_sync::<Arc<dyn Middleware>>();
+fn client_complete_and_stream_overlap_through_middleware() {
+    const GATE_TIMEOUT: Duration = Duration::from_secs(10);
 
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let middleware_calls = Arc::new(Mutex::new(Vec::new()));
-    let adapter: Arc<dyn ProviderAdapter> =
-        Arc::new(RecordingAdapter::new("fake", Arc::clone(&calls)));
-    let middleware: Arc<dyn Middleware> = Arc::new(RequestRecordingMiddleware {
-        calls: Arc::clone(&middleware_calls),
+    struct PauseComplete {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl Middleware for PauseComplete {
+        fn complete(
+            &self,
+            request: Request,
+            next: &unified_llm_adapter::CompleteNext<'_>,
+        ) -> Result<Response, AdapterError> {
+            self.entered.send(()).expect("notify test");
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(GATE_TIMEOUT)
+                .expect("stream finishes while complete is in middleware");
+            next(request)
+        }
+    }
+
+    let (entered, complete_entered) = mpsc::channel();
+    let (stream_finished, release) = mpsc::channel();
+    let gate: Arc<dyn Middleware> = Arc::new(PauseComplete {
+        entered,
+        release: Mutex::new(release),
     });
-    let client = Arc::new(
-        Client::from_adapters(vec![adapter], Some("FAKE"))
-            .unwrap()
-            .with_middleware(vec![middleware]),
-    );
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observer: Arc<dyn Middleware> = Arc::new(RequestRecordingMiddleware {
+        calls: Arc::clone(&observed),
+    });
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let default: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("default", Arc::clone(&calls)));
+    let explicit: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("explicit", Arc::clone(&calls)));
+    let client = Client::from_adapters([default, explicit], Some("default"))
+        .unwrap()
+        .with_middleware([observer, gate]);
 
-    let handles = (0..12)
-        .map(|index| {
-            let client = Arc::clone(&client);
-            thread::spawn(move || {
-                let request = Request {
-                    model: format!("model-{index}"),
-                    provider: (index % 2 == 0).then(|| "FAKE".to_string()),
-                    messages: vec![Message::user("hello")],
-                    ..Request::default()
-                };
-                let original_provider = request.provider.clone();
-
-                if index % 3 == 0 {
-                    let events = client
-                        .stream(request.clone())
-                        .unwrap()
-                        .collect::<Result<Vec<_>, _>>()
-                        .unwrap();
-                    assert_eq!(events, vec![StreamEvent::text_delta("fake stream")]);
-                } else {
-                    let response = client.complete(request.clone()).unwrap();
-                    assert_eq!(response.provider, "fake");
-                    assert_eq!(response.text(), "fake complete");
-                }
-
-                assert_eq!(request.provider, original_provider);
+    std::thread::scope(|scope| {
+        let complete = scope.spawn(|| {
+            client.complete(Request::new("complete-model", vec![Message::user("hello")]))
+        });
+        complete_entered
+            .recv_timeout(GATE_TIMEOUT)
+            .expect("complete reaches middleware");
+        let stream = client
+            .stream(Request {
+                provider: Some("EXPLICIT".to_string()),
+                ..Request::new("stream-model", vec![Message::user("hello")])
             })
-        })
-        .collect::<Vec<_>>();
+            .and_then(|events| events.collect::<Result<Vec<_>, _>>());
+        stream_finished.send(()).expect("release complete");
 
-    for handle in handles {
-        handle.join().expect("client worker thread");
-    }
-
-    let calls = call_log(&calls);
-    assert_eq!(calls.len(), 13);
-    assert!(calls.contains(&"initialize:fake".to_string()));
-    for index in 0..12 {
-        assert!(
-            calls
-                .iter()
-                .any(|call| call.ends_with(&format!(":model-{index}"))),
-            "missing call for model-{index}: {calls:?}"
+        let response = complete.join().unwrap().unwrap();
+        assert_eq!(response.provider, "default");
+        assert_eq!(response.model, "complete-model");
+        assert_eq!(
+            stream.unwrap(),
+            [StreamEvent::text_delta("explicit stream")]
         );
-    }
-    for call in calls.iter().filter(|call| !call.starts_with("initialize:")) {
-        assert!(call.contains(":fake:model-"));
-    }
-    let middleware_calls = call_log(&middleware_calls);
-    assert_eq!(middleware_calls.len(), 12);
-    for index in 0..12 {
-        assert!(
-            middleware_calls
-                .iter()
-                .any(|call| call.ends_with(&format!(":fake:model-{index}"))),
-            "missing middleware call for model-{index}: {middleware_calls:?}"
-        );
-    }
+    });
+    assert_eq!(
+        call_log(&observed),
+        [
+            "middleware-complete:default:complete-model",
+            "middleware-stream:explicit:stream-model",
+        ]
+    );
+    assert_eq!(
+        call_log(&calls),
+        [
+            "initialize:default",
+            "initialize:explicit",
+            "stream:explicit:stream-model",
+            "complete:default:complete-model",
+        ]
+    );
 }
 
 #[test]

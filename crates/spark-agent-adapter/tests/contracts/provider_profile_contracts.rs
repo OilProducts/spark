@@ -2,9 +2,10 @@ use serde_json::{json, Value};
 use spark_agent_adapter::{
     create_anthropic_profile, create_gemini_profile, create_gemini_profile_with_options,
     create_openai_compatible_profile, create_openai_profile, create_provider_profile,
-    normalize_provider_selector, GeminiProfileOptions, ProviderFamily, SessionConfig, ToolRegistry,
+    normalize_provider_selector, GeminiProfileOptions, ProviderFamily, SessionConfig,
+    ToolDispatchContext,
 };
-use unified_llm_adapter::Tool;
+use unified_llm_adapter::{Tool, ToolCall, ToolResult};
 
 fn names(profile: &spark_agent_adapter::ProviderProfile) -> Vec<String> {
     profile.tool_registry.names()
@@ -302,16 +303,18 @@ fn spark_provider_selectors_normalize_without_erasing_native_contracts() {
 #[test]
 fn custom_tool_registration_is_latest_wins_by_name_after_profile_creation() {
     let mut profile = create_openai_profile("gpt-5.2");
-    let first = Tool::passive_with_schema(
+    let first = Tool::active_with_schema(
         "read_file",
         Some("first custom read".to_string()),
         Some(json!({"type": "object"})),
+        |_| Ok("first"),
     )
     .unwrap();
-    let second = Tool::passive_with_schema(
+    let second = Tool::active_with_schema(
         "read_file",
         Some("second custom read".to_string()),
         Some(json!({"type": "object"})),
+        |_| Ok("second"),
     )
     .unwrap();
 
@@ -338,19 +341,25 @@ fn custom_tool_registration_is_latest_wins_by_name_after_profile_creation() {
             .map(|tool| tool.definition.description.as_str()),
         Some("second custom read")
     );
-
-    let mut registry = ToolRegistry::new();
-    registry.register(Tool::passive("lookup").unwrap());
-    registry.register(
-        Tool::passive_with_schema("lookup", Some("replacement".to_string()), None).unwrap(),
-    );
-    assert_eq!(registry.names(), ["lookup"]);
     assert_eq!(
-        registry
-            .get("lookup")
-            .map(|tool| tool.definition.description.as_str()),
-        Some("replacement")
+        profile.tool_registry.dispatch(
+            ToolCall::new("call-1", "read_file", json!({})),
+            ToolDispatchContext::default(),
+        ),
+        ToolResult::success("call-1", json!("second"))
     );
+
+    assert_eq!(
+        profile
+            .tool_registry
+            .unregister("read_file")
+            .unwrap()
+            .definition
+            .description,
+        "second custom read"
+    );
+    assert!(profile.tool_registry.get("read_file").is_none());
+    assert!(!profile.tools().iter().any(|tool| tool.name == "read_file"));
 }
 
 #[test]

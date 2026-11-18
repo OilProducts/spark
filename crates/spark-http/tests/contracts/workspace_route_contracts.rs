@@ -499,6 +499,7 @@ async fn workspace_project_routes_persist_records_and_return_json_errors() {
         Some(project_dir.to_string_lossy().as_ref())
     );
     assert_eq!(register.1["display_name"], "project");
+    assert!(!project_dir.join(".spark").exists());
 
     let list = request_json(app.clone(), "GET", "/workspace/api/projects", None).await;
     assert_eq!(list.0, StatusCode::OK);
@@ -588,53 +589,6 @@ async fn workspace_browse_and_metadata_routes_match_validation_contracts() {
     assert_eq!(metadata.1["name"], "Browse Root");
     assert_eq!(metadata.1["branch"], Value::Null);
     assert_eq!(metadata.1["commit"], Value::Null);
-}
-
-#[tokio::test]
-async fn workspace_settings_wrap_execution_placement_payload() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let response = request_json(
-        build_app(settings(temp.path())).expect("app"),
-        "GET",
-        "/workspace/api/settings",
-        None,
-    )
-    .await;
-
-    assert_eq!(response.0, StatusCode::OK);
-    assert_eq!(
-        response.1["execution_placement"]["execution_modes"],
-        json!(["native", "local_container"])
-    );
-    assert_eq!(
-        response.1["execution_placement"]["profiles"][0]["id"],
-        "native"
-    );
-}
-
-#[tokio::test]
-async fn attractor_routes_remain_mounted_when_workspace_routes_are_composed() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let app = build_app(settings(temp.path())).expect("app");
-
-    let status = request_json(app.clone(), "GET", "/attractor/status", None).await;
-    assert_eq!(status.0, StatusCode::OK);
-    assert!(status.2.starts_with("application/json"));
-    assert_eq!(status.1["status"], "idle");
-
-    let placement = request_json(
-        app,
-        "GET",
-        "/attractor/api/execution-placement-settings",
-        None,
-    )
-    .await;
-    assert_eq!(placement.0, StatusCode::OK);
-    assert!(placement.2.starts_with("application/json"));
-    assert_eq!(
-        placement.1["execution_modes"],
-        json!(["native", "local_container"])
-    );
 }
 
 #[tokio::test]
@@ -731,26 +685,6 @@ async fn project_conversations_route_returns_summary_shape_for_existing_state() 
     assert_eq!(thread["preview"], "Design thread preview");
     assert!(thread.get("turns").is_none());
     assert!(listed.1["watermark"].as_str().is_some());
-}
-
-#[tokio::test]
-async fn registering_a_project_writes_no_definitions() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
-    let app = build_app(settings.clone()).expect("app");
-    let project = temp.path().join("project");
-    fs::create_dir_all(&project).unwrap();
-    let project_path = project.to_string_lossy().into_owned();
-
-    let registered = request_json(
-        app.clone(),
-        "POST",
-        "/workspace/api/projects/register",
-        Some(json!({"project_path": project_path})),
-    )
-    .await;
-    assert_eq!(registered.0, StatusCode::OK, "{}", registered.1);
-    assert!(!project.join(".spark").exists());
 }
 
 #[tokio::test]
@@ -2496,6 +2430,19 @@ async fn profile_resource_adapters_share_settings_revisions_and_validation() {
     )
     .await;
     assert_eq!(stale.0, StatusCode::CONFLICT);
+    let placement = request_json(
+        app.clone(),
+        "GET",
+        "/attractor/api/execution-placement-settings",
+        None,
+    )
+    .await;
+    assert_eq!(placement.0, StatusCode::OK);
+    assert!(placement.2.starts_with("application/json"));
+    assert_eq!(
+        placement.1["execution_modes"],
+        json!(["native", "local_container"])
+    );
     let invalid = request_json(app.clone(), "PATCH", "/attractor/api/execution-placement-settings", Some(json!({"expected_revision":"absent", "value":{"profiles":[{"id":"bad", "label":"Bad", "mode":"local_container", "image":"worker:test", "metadata":{"container.mounts":["bad"]}}], "default_execution_profile_id":null}}))).await;
     assert_eq!(invalid.0, StatusCode::BAD_REQUEST, "{}", invalid.1);
     let removed = request_json(
@@ -2514,7 +2461,16 @@ async fn profile_resource_adapters_share_settings_revisions_and_validation() {
         None,
     )
     .await;
+    assert_eq!(restarted.0, StatusCode::OK);
     assert_eq!(restarted.1["llm_profiles"]["stored"], json!([]));
+    assert_eq!(
+        restarted.1["execution_placement"]["execution_modes"],
+        placement.1["execution_modes"]
+    );
+    assert_eq!(
+        restarted.1["execution_placement"]["profiles"][0]["id"],
+        "native"
+    );
 }
 
 #[tokio::test]

@@ -68,6 +68,14 @@ fn serve_binary_process_exposes_product_shell_and_mount_boundaries() {
     assert!(workspace_base.header("content-type").is_none());
     assert!(workspace_base.body.is_empty());
 
+    let hostname_redirect =
+        try_http_get_with_host(server.port, "/workspace", "testserver").expect("HTTP response");
+    assert_eq!(hostname_redirect.status, 307);
+    assert_eq!(
+        hostname_redirect.header("location"),
+        Some("http://testserver/workspace/")
+    );
+
     let workspace_slash = http_get(server.port, "/workspace/");
     assert_eq!(workspace_slash.status, 404);
     assert_eq!(
@@ -549,7 +557,7 @@ impl HttpResponse {
 }
 
 fn http_get(port: u16, path: &str) -> HttpResponse {
-    try_http_get(port, path).expect("http response")
+    try_http_get_with_host(port, path, &format!("127.0.0.1:{port}")).expect("http response")
 }
 
 fn http_json(port: u16, method: &str, path: &str, body: &Value) -> HttpResponse {
@@ -570,12 +578,12 @@ fn http_json(port: u16, method: &str, path: &str, body: &Value) -> HttpResponse 
     parse_http_response(&bytes).expect("http response")
 }
 
-fn try_http_get(port: u16, path: &str) -> std::io::Result<HttpResponse> {
+fn try_http_get_with_host(port: u16, path: &str, host: &str) -> std::io::Result<HttpResponse> {
     let mut stream = TcpStream::connect(("127.0.0.1", port))?;
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
     )?;
 
     let mut bytes = Vec::new();

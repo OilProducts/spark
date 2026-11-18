@@ -194,7 +194,10 @@ fn request_user_input_answer_request_round_trips_resume_lifecycle_fields() {
     assert_eq!(encoded["project_path"], "/repo");
     assert_eq!(encoded["request_id"], "request-1");
     assert_eq!(encoded["assistant_turn_id"], "assistant-turn-1");
-    assert_eq!(encoded["answers"]["path_choice"], "Inline card");
+    assert_eq!(
+        encoded["answers"],
+        json!({"constraints": "Keep scope narrow", "path_choice": "Inline card"})
+    );
     assert_eq!(encoded["request_user_input"]["status"], "pending");
     assert_eq!(encoded["history"][0]["role"], "user");
     assert_eq!(encoded["provider"], "codex");

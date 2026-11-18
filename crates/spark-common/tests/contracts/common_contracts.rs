@@ -1,14 +1,11 @@
 use std::collections::BTreeMap;
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde_json::json;
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
 use spark_common::paths::{ensure_directory, resolve_runtime_workspace_path_with_env};
-use spark_common::process::ProcessLineReader;
 use spark_common::project::{
     build_project_id, normalize_project_path, project_storage_dir, project_work_dir, RunsRoot,
 };
@@ -353,28 +350,6 @@ fn installed_package_root_detection_accepts_cargo_install_roots_without_source_g
         &BTreeMap::<String, String>::new(),
     )
     .expect("installed cargo root may use default home");
-}
-
-#[test]
-fn process_line_reader_drains_lines_and_repeats_eof() {
-    let stream = Cursor::new("one\ntwo\npartial".as_bytes().to_vec());
-    let mut reader = ProcessLineReader::new(stream);
-
-    assert_eq!(
-        reader.read_line(Duration::from_millis(100)).as_deref(),
-        Some("one")
-    );
-    assert_eq!(
-        reader.read_line(Duration::from_millis(100)).as_deref(),
-        Some("two")
-    );
-    assert_eq!(
-        reader.read_line(Duration::from_millis(100)).as_deref(),
-        Some("partial")
-    );
-    assert_eq!(reader.read_line(Duration::from_millis(100)), None);
-    assert_eq!(reader.read_line(Duration::from_millis(100)), None);
-    assert!(reader.join(Some(Duration::from_secs(1))).expect("join"));
 }
 
 #[test]

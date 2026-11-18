@@ -9,15 +9,31 @@ use unified_llm_adapter::{
 
 #[test]
 fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
+    let sonnet = get_model_info("sonnet").expect("sonnet alias");
+    assert_eq!(sonnet.id, "claude-sonnet-4-5");
+    assert_eq!(
+        sonnet.aliases,
+        ["sonnet", "claude-sonnet", "claude-sonnet-4.5"]
+    );
+    assert_eq!(sonnet.supported_thinking, ["budget", "off"]);
     let gpt = get_model_info("gpt5.2").expect("gpt alias");
     assert_eq!(gpt.id, "gpt-5.2");
+    assert_eq!(
+        get_model_info("gpt-5.2-2025-12-11")
+            .expect("dated GPT alias")
+            .id,
+        "gpt-5.2"
+    );
     assert_eq!(gpt.provider, "openai");
     assert_eq!(gpt.display_name, "GPT-5.2");
     assert_eq!(gpt.context_window, Some(1_047_576));
     assert_eq!(gpt.max_output, Some(128_000));
     assert!(gpt.supports_tools);
     assert!(gpt.supports_vision);
-    assert!(!gpt.reasoning_efforts.is_empty());
+    assert_eq!(
+        gpt.reasoning_efforts,
+        ["none", "low", "medium", "high", "xhigh"]
+    );
     assert_eq!(gpt.default_reasoning_effort.as_deref(), Some("none"));
     assert_eq!(gpt.input_cost_per_million, Some(1.75));
     assert_eq!(gpt.output_cost_per_million, Some(14.0));
@@ -40,11 +56,18 @@ fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
             "gpt-5.5"
         ]
     );
+    for capability in ["tools", "supports_tools"] {
+        assert_eq!(
+            get_latest_model("openai", Some(capability)).map(|model| model.id),
+            Some("gpt-5.2".to_owned()),
+            "{capability}"
+        );
+    }
+    let default_openai = get_latest_model("openai", None).expect("default OpenAI model");
+    assert_eq!(default_openai.id, "gpt-5.2");
     assert_eq!(
-        get_latest_model("openai", Some("supports_tools"))
-            .map(|model| model.id)
-            .as_deref(),
-        Some("gpt-5.2")
+        serde_json::to_value(default_openai).unwrap()["supported_reasoning_summaries"],
+        json!(["auto", "detailed"])
     );
     assert_eq!(
         get_latest_model("anthropic", Some("reasoning"))
@@ -57,6 +80,20 @@ fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
             .map(|model| model.id)
             .as_deref(),
         Some("gemini-3.1-pro-preview")
+    );
+    assert_eq!(
+        list_models(Some("gemini"))
+            .into_iter()
+            .map(|model| model.id)
+            .collect::<Vec<_>>(),
+        [
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+        ]
     );
     assert_eq!(
         get_latest_model("openai", Some("structured_output"))

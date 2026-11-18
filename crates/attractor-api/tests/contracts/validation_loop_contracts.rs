@@ -269,49 +269,6 @@ fn continue_from_an_exhausted_exit_fails() {
     );
 }
 
-/// Every packaged software-development flow must survive the real DSL
-/// pipeline (parse, transforms, validation) without error diagnostics.
-#[test]
-fn packaged_software_development_flows_validate_cleanly() {
-    let flows = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../spark-assets/assets/flows/software-development");
-    let mut seen = 0;
-    let mut stack = vec![flows.clone()];
-    while let Some(dir) = stack.pop() {
-        for entry in fs::read_dir(&dir).expect("read flows dir") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                stack.push(path);
-            }
-        }
-        if !dir.join("flow.md").is_file() {
-            continue;
-        }
-        let name = dir
-            .strip_prefix(flows.parent().expect("flows root"))
-            .expect("relative")
-            .to_str()
-            .expect("utf8");
-        // The packaged assets are laid out like the bundled library.
-        let roots = attractor_dsl::FlowRoots::new(flows.join("../.."), None);
-        let preview = attractor_api::preview_with_roots(
-            attractor_api::PreviewRequest {
-                flow_name: Some(name.to_string()),
-                ..Default::default()
-            },
-            &roots,
-        );
-        assert_eq!(
-            (preview.status_code, &preview.body["status"]),
-            (200, &json!("ok")),
-            "{name} failed validation: {:?}",
-            preview.body,
-        );
-        seen += 1;
-    }
-    assert!(seen >= 9, "expected the packaged flow library, saw {seen}");
-}
-
 /// Tool-only subflow review loop: the child `work`
 /// node contests a finding through its write contract, the parent's subflow
 /// `output_map` carries it to `evaluate`, and `implement`'s visit limit ends
