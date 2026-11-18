@@ -2676,13 +2676,12 @@ pub fn process_codex_app_server_message(
                     );
                 } else if is_tool_item(item) {
                     let tool_call = tool_call_payload_from_codex_item(item, "completed");
-                    // A file change that failed or was declined applied nothing.
-                    let kind =
-                        if tool_call["kind"] == "file_change" && tool_call["status"] == "failed" {
-                            TurnStreamEventKind::ToolCallFailed
-                        } else {
-                            TurnStreamEventKind::ToolCallCompleted
-                        };
+                    // A failed or declined item ends as a failed call, matching its status.
+                    let kind = if tool_call["status"] == "failed" {
+                        TurnStreamEventKind::ToolCallFailed
+                    } else {
+                        TurnStreamEventKind::ToolCallCompleted
+                    };
                     events.push(
                         event(kind, "tool_item_completed")
                             .tool(tool_call)

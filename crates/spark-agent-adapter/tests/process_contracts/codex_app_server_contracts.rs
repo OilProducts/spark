@@ -2189,6 +2189,17 @@ fn app_server_declined_or_failed_file_changes_complete_as_failed_tool_calls() {
         assert_eq!(events[0].1["status"], "failed");
         assert_eq!(events[0].1["file_changes"][0]["path"], "a.rs");
     }
+    // Any declined item, not only a file change, ends as a failed call.
+    let message = json!({"method": "item/completed", "params": {"turnId": "turn-1", "item": {
+        "type": "commandExecution", "id": "cmd-1", "command": "rm -rf build", "status": "declined"}}});
+    let events =
+        process_codex_app_server_message(&message, &mut CodexAppServerTurnState::default());
+    let call = events
+        .iter()
+        .find(|event| event.tool_call.is_some())
+        .expect("tool event");
+    assert_eq!(call.kind, TurnStreamEventKind::ToolCallFailed);
+    assert_eq!(call.tool_call.as_ref().unwrap()["status"], "failed");
 }
 
 #[test]
