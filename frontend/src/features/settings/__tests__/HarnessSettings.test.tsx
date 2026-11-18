@@ -180,22 +180,6 @@ it('shows a harness as checking until its check ends, then what it found without
     act(() => window.dispatchEvent(new Event('spark:harness-checked')))
     expect(await within(helper).findByText('Ready')).toBeInTheDocument()
 
-    // A check that ended while the live connection was down shows once it is back, without checking again.
-    vi.mocked(fetchHarnessCatalog).mockResolvedValue({ models: [], providers: {
-        codex: { status: 'available', error: null, setup_status: 'ready' },
-        'claude-code': { status: 'unavailable', error: 'claude code executable not found: /missing/claude', setup_status: 'not_installed' },
-        'acp:helper': { status: 'unavailable', error: 'Helper did not answer in time.', setup_status: 'unreachable' },
-    } })
-    const fetched = vi.mocked(fetchHarnessCatalog).mock.calls.length
-    act(() => window.dispatchEvent(new Event('spark:settings-live-event')))
-    expect(await within(helper).findByText('Not responding')).toBeInTheDocument()
-    vi.mocked(fetchHarnessCatalog).mockResolvedValue({ models: [], providers: {
-        codex: { status: 'available', error: null, setup_status: 'ready' },
-        'acp:helper': { status: 'available', error: null, setup_status: 'ready' },
-    } })
-    act(() => window.dispatchEvent(new CustomEvent('spark:settings-live-event', { detail: { type: 'resync_required', resource: { kind: 'settings', id: 'workspace' }, payload: { reason: 'live event stream lagged behind the publisher and dropped frames' } } })))
-    expect(await within(helper).findByText('Ready')).toBeInTheDocument()
-    expect(vi.mocked(fetchHarnessCatalog).mock.calls.slice(fetched)).toEqual([[null, false], [null, false]])
 })
 
 it('keeps a misconfigured registration’s values in its form, and stops a save over a change made elsewhere', async () => {

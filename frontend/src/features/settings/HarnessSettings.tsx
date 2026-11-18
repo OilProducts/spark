@@ -141,9 +141,7 @@ export function HarnessSettings() {
         void check(false)
         const changed = (event: Event) => {
             const payload = (event as CustomEvent<{ payload?: { section?: string; revision?: unknown } }>).detail?.payload
-            // The live connection opened or missed events, such as a check's end: show what the server has now.
-            if (!payload?.section) { void load(); void check(false, true); return }
-            if (!['agents', 'codex', 'claude_code'].includes(payload.section)) return
+            if (!payload?.section || !['agents', 'codex', 'claude_code'].includes(payload.section)) return
             // This card's own saves already show their result.
             if (payload.section === 'agents' && payload.revision === revision.current) return
             void load()

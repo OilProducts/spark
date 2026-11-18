@@ -27,35 +27,23 @@ static ACP_DISCOVERY_CACHE: Checks<(PathBuf, String), (String, &'static str), Ac
 /// check of it finished and its result is kept.
 pub type CheckFinished = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// Harness checks, one per harness: the last finished result for its
-/// registration, failures included, and the check running for it, if any.
-/// Checks run in the background, so a listing never waits on a harness
-/// process, and no lock is held while one runs.
+/// Harness checks, one per harness and registration: the last finished
+/// result, failures included, and the check running for it, if any. Checks
+/// run in the background, so a listing never waits on a harness process, and
+/// no lock is held while one runs.
+// ponytail: races are reported, not prevented. A save drops every entry, so a
+// check still running then is discarded and the next listing may start a
+// second probe beside it; entries of registrations replaced by hand stay until
+// the next save.
 struct Checks<H, R, V>(Mutex<Vec<Check<H, R, V>>>);
 
 struct Check<H, R, V> {
     harness: H,
     registration: R,
     result: Option<V>,
-    /// The running check's number. A check whose number is gone when it
-    /// finishes, because its entry was removed, is discarded.
+    /// The running check's number. A check whose entry is gone when it
+    /// finishes is discarded.
     running: Option<u64>,
-    /// Settings were saved while its check ran: that check's result is
-    /// discarded, and if a listing asked since, it checks again once it ends.
-    cleared: bool,
-    again: bool,
-}
-
-impl<H, R, V> Check<H, R, V> {
-    /// Drops the result, as a save does, and says whether to keep the entry: a running check keeps it, so no second
-    /// probe of its registration starts beside it, but only a listing after
-    /// this has it check again.
-    fn supersede(&mut self) -> bool {
-        self.result = None;
-        self.cleared = self.running.is_some();
-        self.again = false;
-        self.cleared
-    }
 }
 
 impl<H, R, V> Checks<H, R, V>
@@ -76,24 +64,16 @@ where
     /// none. When no check is running and there is no result, or `refresh`
     /// (Check again) asks for a new one, starts `run` in the background and
     /// calls `finished` once its result replaces the last. A running check is
-    /// shared, by Check again too. `registered` reads the registration saved
-    /// when the check ends: if it is no longer `registration`, the check is
-    /// discarded with its entry.
+    /// shared, by Check again too.
     fn result(
         &'static self,
         harness: H,
         registration: R,
         refresh: bool,
-        run: impl Fn() -> V + Send + 'static,
-        registered: impl Fn() -> Option<R> + Send + 'static,
+        run: impl FnOnce() -> V + Send + 'static,
         finished: impl FnOnce() + Send + 'static,
     ) -> Option<V> {
         let mut checks = self.lock();
-        // Other registrations' checks are left alone: this listing may have
-        // read the settings before a save. Only a save, or a registration
-        // found changed when a check ends, discards a check.
-        // ponytail: finished results of registrations replaced without a save
-        // stay until the next save; prune them if hand edits ever pile up.
         let index = match checks
             .iter()
             .position(|check| check.harness == harness && check.registration == registration)
@@ -105,57 +85,39 @@ where
                     registration,
                     result: None,
                     running: None,
-                    cleared: false,
-                    again: false,
                 });
                 checks.len() - 1
             }
         };
         let check = &mut checks[index];
-        // A listing asks for a check from now: one superseded while it ran
-        // checks again once it ends.
-        check.again |= check.cleared;
         if check.running.is_none() && (check.result.is_none() || refresh) {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             let number = NEXT.fetch_add(1, Ordering::Relaxed);
             check.running = Some(number);
-            std::thread::spawn(move || loop {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&run));
-                let current = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&registered))
-                    .ok()
-                    .flatten();
+            std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
                 let mut checks = self.lock();
-                let Some(index) = checks
-                    .iter()
-                    .position(|check| check.running == Some(number))
+                let Some(check) = checks
+                    .iter_mut()
+                    .find(|check| check.running == Some(number))
                 else {
                     return;
                 };
-                if current.as_ref() != Some(&checks[index].registration) {
-                    checks.remove(index);
-                    return;
-                }
-                let check = &mut checks[index];
-                let cleared = std::mem::take(&mut check.cleared);
-                if cleared && std::mem::take(&mut check.again) {
-                    continue;
-                }
                 check.running = None;
                 // A check that panicked leaves the next listing to start another.
-                if let (Ok(result), false) = (result, cleared) {
+                if let Ok(result) = result {
                     check.result = Some(result);
                     drop(checks);
                     finished();
                 }
-                return;
             });
         }
         check.result.clone()
     }
 
-    /// Settings were saved: every result goes.
+    /// Settings were saved: every result goes, and running checks are discarded.
     fn clear(&self) {
-        self.lock().retain_mut(Check::supersede);
+        self.lock().clear();
     }
 }
 
@@ -306,13 +268,9 @@ fn listing(
         &settings.config_dir,
         &spark_common::paths::ProcessEnvironment,
     )?;
-    for (id, harness, discovery) in acp_discoveries(
-        &configuration.agents,
-        &settings.config_dir,
-        work_area,
-        refresh,
-        finished,
-    ) {
+    for (id, harness, discovery) in
+        acp_discoveries(&configuration.agents, work_area, refresh, finished)
+    {
         let provider = format!("acp:{id}");
         let Some(discovery) = discovery else {
             add(&provider, Some(&harness.name), None, None, None);
@@ -403,7 +361,6 @@ pub fn acp_sign_in(
 /// `None` while its first is running.
 fn acp_discoveries<'a>(
     agents: &'a SessionConfig,
-    config_dir: &Path,
     work_area: &Path,
     refresh: bool,
     finished: &CheckFinished,
@@ -432,21 +389,6 @@ fn acp_discoveries<'a>(
                     discovery
                 }
             };
-            let registered = {
-                let (config_dir, id) = (config_dir.to_path_buf(), id.clone());
-                move || {
-                    let agents = spark_storage::settings::read_execution_configuration(
-                        &config_dir,
-                        &spark_common::paths::ProcessEnvironment,
-                    )
-                    .ok()?
-                    .agents;
-                    let harness = agents.acp_harnesses.get(&id)?;
-                    let generation =
-                        acp::launch_generation(harness, agents.environment_inheritance);
-                    Some((generation, env!("CARGO_PKG_VERSION")))
-                }
-            };
             let finished = {
                 let (finished, provider) = (finished.clone(), format!("acp:{id}"));
                 move || finished(&provider)
@@ -457,7 +399,6 @@ fn acp_discoveries<'a>(
                     (generation.clone(), env!("CARGO_PKG_VERSION")),
                     refresh,
                     run,
-                    registered,
                     finished,
                 )
                 .map(|mut discovery| {
@@ -549,17 +490,12 @@ fn native_chat_models(
     run: fn(&NativeAgentSettings) -> NativeCheck,
 ) -> WorkspaceResult<Option<NativeCheck>> {
     let native = own(&native_configuration(settings)?);
-    let (captured, settings, finished) = (native.clone(), settings.clone(), finished.clone());
+    let (captured, finished) = (native.clone(), finished.clone());
     Ok(cache.result(
         (),
         native,
         refresh,
         move || run(&captured),
-        move || {
-            native_configuration(&settings)
-                .ok()
-                .map(|native| own(&native))
-        },
         move || finished(provider),
     ))
 }

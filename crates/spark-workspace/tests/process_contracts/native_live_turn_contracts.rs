@@ -1333,8 +1333,7 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
 /// A model listing never waits on a harness: one that has not answered yet
 /// is `checking` while one background check runs, whose end is announced.
 /// Its result, a failure included, is kept until Check again or an agents
-/// change, and a check that ends after its entry was replaced or cleared is
-/// discarded.
+/// change, and a check that ends after a save cleared it is discarded.
 #[test]
 fn model_listing_never_waits_on_a_harness_check() {
     use std::time::{Duration, Instant};
@@ -1355,25 +1354,15 @@ fn model_listing_never_waits_on_a_harness_check() {
         ended.display(),
         fixed.display(),
     );
-    // A null `env` removes the registration.
-    let register = |env: Value| {
-        let harnesses = match env {
-            Value::Null => json!({}),
-            env => {
-                json!({"slow": {"name": "Slow", "executable": "sh", "args": ["-c", script], "env": env}})
-            }
-        };
-        let agents = json!({"agents": {
-            "native": {"codex_binary": "/nonexistent/codex-for-tests", "claude_binary": "/nonexistent/claude-for-tests"},
-            "acp_harnesses": harnesses,
-        }});
-        std::fs::write(
-            settings.config_dir.join("spark.toml"),
-            toml::to_string(&agents).unwrap(),
-        )
-        .unwrap();
-    };
-    register(json!({"SPARK_FAKE_ACP": "{}"}));
+    let agents = json!({"agents": {
+        "native": {"codex_binary": "/nonexistent/codex-for-tests", "claude_binary": "/nonexistent/claude-for-tests"},
+        "acp_harnesses": {"slow": {"name": "Slow", "executable": "sh", "args": ["-c", script], "env": {"SPARK_FAKE_ACP": "{}"}}},
+    }});
+    std::fs::write(
+        settings.config_dir.join("spark.toml"),
+        toml::to_string(&agents).unwrap(),
+    )
+    .unwrap();
     let project = project.canonicalize().unwrap();
     let (sender, events) = std::sync::mpsc::channel::<String>();
     let finished: spark_workspace::models::CheckFinished =
@@ -1516,206 +1505,20 @@ fn model_listing_never_waits_on_a_harness_check() {
     assert_eq!(slow(&list(false)), ready);
     assert_eq!(count(&launches), 5);
 
-    // A check for a registration since changed is discarded.
+    // A check that a save cleared while it ran is discarded; the next
+    // listing checks again.
     std::fs::remove_file(&release).unwrap();
     spark_workspace::models::invalidate_model_discovery("agents");
     assert_eq!(slow(&list(false)), checking);
-    wait_for("the first check started", &|| count(&launches) == 6);
-    register(json!({"SPARK_FAKE_ACP": "{}", "CHANGED": "1"}));
-    assert_eq!(slow(&list(false)), checking);
-    wait_for("the changed one's check started", &|| count(&launches) == 7);
-    std::fs::write(&release, "").unwrap();
-    wait_for("both checks ended", &|| count(&ended) == 7);
-    announced();
-    assert!(!announced_since(), "only the current registration's check");
-    assert_eq!(slow(&list(false)), ready);
-
-    // So is one whose entry was cleared while it ran.
-    std::fs::remove_file(&release).unwrap();
-    spark_workspace::models::invalidate_model_discovery("agents");
-    assert_eq!(slow(&list(false)), checking);
-    wait_for("the check started", &|| count(&launches) == 8);
+    wait_for("the check started", &|| count(&launches) == 6);
     spark_workspace::models::invalidate_model_discovery("agents");
     std::fs::write(&release, "").unwrap();
-    wait_for("the check ended", &|| count(&ended) == 8);
+    wait_for("the check ended", &|| count(&ended) == 6);
     assert!(!announced_since());
     assert_eq!(slow(&list(false)), checking, "its result was not kept");
     announced();
     assert_eq!(slow(&list(false)), ready);
-
-    // And one whose registration was removed while it ran: restored, it is checked afresh.
-    std::fs::remove_file(&release).unwrap();
-    spark_workspace::models::invalidate_model_discovery("agents");
-    assert_eq!(slow(&list(false)), checking);
-    wait_for("the check started", &|| count(&launches) == 10);
-    register(Value::Null);
-    assert_eq!(list(false)["providers"].get("acp:slow"), None);
-    std::fs::write(&release, "").unwrap();
-    wait_for("the check ended", &|| count(&ended) == 10);
-    assert!(!announced_since());
-    register(json!({"SPARK_FAKE_ACP": "{}", "CHANGED": "1"}));
-    assert_eq!(slow(&list(false)), checking, "its result was not kept");
-    announced();
-    assert_eq!(slow(&list(false)), ready);
-    assert_eq!(count(&launches), 11);
-
-    // A registration changed while it ran, seen by a listing in another work
-    // area: it is discarded there too, and only the listed one checks again.
-    std::fs::remove_file(&release).unwrap();
-    spark_workspace::models::invalidate_model_discovery("agents");
-    assert_eq!(slow(&list(false)), checking);
-    wait_for("the check started", &|| count(&launches) == 12);
-    register(json!({"SPARK_FAKE_ACP": "{}"}));
-    assert_eq!(slow(&list_other()), checking);
-    wait_for("the other's check started", &|| count(&launches) == 13);
-    std::fs::write(&release, "").unwrap();
-    wait_for("both checks ended", &|| count(&ended) == 13);
-    announced();
-    assert!(!announced_since(), "only the current registration's check");
-    assert_eq!(slow(&list_other()), ready);
-    assert_eq!(count(&launches), 13, "no check where nothing was listed");
-    register(json!({"SPARK_FAKE_ACP": "{}", "CHANGED": "1"}));
-    assert_eq!(slow(&list(false)), checking, "its result was not kept");
-    announced();
-    assert_eq!(slow(&list(false)), ready);
-    assert_eq!(count(&launches), 14);
-
-    // And one whose registration changed before it ended, with no listing
-    // meanwhile: restored, it is checked afresh.
-    std::fs::remove_file(&release).unwrap();
-    spark_workspace::models::invalidate_model_discovery("agents");
-    assert_eq!(slow(&list(false)), checking);
-    wait_for("the check started", &|| count(&launches) == 15);
-    register(json!({"SPARK_FAKE_ACP": "{}"}));
-    std::fs::write(&release, "").unwrap();
-    wait_for("the check ended", &|| count(&ended) == 15);
-    assert!(!announced_since());
-    register(json!({"SPARK_FAKE_ACP": "{}", "CHANGED": "1"}));
-    assert_eq!(slow(&list(false)), checking, "its result was not kept");
-    announced();
-    assert_eq!(slow(&list(false)), ready);
-    assert_eq!(count(&launches), 16);
-
-    // A save while a check runs, then a listing: the listing answers at once
-    // and starts no second probe beside the running one, whose result is
-    // discarded. Once it ends, a check from after the save runs and is the
-    // only one announced.
-    std::fs::remove_file(&release).unwrap();
-    spark_workspace::models::invalidate_model_discovery("agents");
-    assert_eq!(slow(&list(false)), checking);
-    wait_for("the check started", &|| count(&launches) == 17);
-    spark_workspace::models::invalidate_model_discovery("agents");
-    let started = Instant::now();
-    assert_eq!(slow(&list(false)), checking);
-    assert_eq!(slow(&list(true)), checking);
-    assert!(started.elapsed() < Duration::from_secs(1));
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(count(&launches), 17, "no second probe beside the first");
-    std::fs::write(&release, "").unwrap();
-    wait_for("the check after the save started", &|| {
-        count(&launches) == 18
-    });
-    announced();
-    assert!(!announced_since(), "only the check after the save");
-    assert_eq!(slow(&list(false)), ready);
-    assert_eq!(count(&launches), 18);
-
-    // Saved as another registration and back while its first check runs,
-    // listed each time: no second probe of it starts beside the first. Both
-    // superseded checks are discarded, and a check from after the change back
-    // follows, the only one announced.
-    std::fs::remove_file(&release).unwrap();
-    spark_workspace::models::invalidate_model_discovery("agents");
-    assert_eq!(slow(&list(false)), checking);
-    wait_for("the first check started", &|| count(&launches) == 19);
-    register(json!({"SPARK_FAKE_ACP": "{}"}));
-    spark_workspace::models::invalidate_model_discovery("agents");
-    assert_eq!(slow(&list(false)), checking);
-    wait_for("the other registration's check started", &|| {
-        count(&launches) == 20
-    });
-    register(json!({"SPARK_FAKE_ACP": "{}", "CHANGED": "1"}));
-    spark_workspace::models::invalidate_model_discovery("agents");
-    let started = Instant::now();
-    assert_eq!(slow(&list(false)), checking);
-    assert!(started.elapsed() < Duration::from_secs(1));
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(count(&launches), 20, "no second probe beside the first");
-    std::fs::write(&release, "").unwrap();
-    wait_for("the check after the change back ended", &|| {
-        count(&ended) == 21
-    });
-    announced();
-    assert!(!announced_since(), "only the check after the change back");
-    assert_eq!(slow(&list(false)), ready);
-    assert_eq!(count(&launches), 21);
-
-    // A check asked for after one save is dropped by the next: with no
-    // listing since, nothing starts once the running check ends.
-    std::fs::remove_file(&release).unwrap();
-    spark_workspace::models::invalidate_model_discovery("agents");
-    assert_eq!(slow(&list(false)), checking);
-    wait_for("the check started", &|| count(&launches) == 22);
-    spark_workspace::models::invalidate_model_discovery("agents");
-    assert_eq!(slow(&list(false)), checking);
-    spark_workspace::models::invalidate_model_discovery("agents");
-    std::fs::write(&release, "").unwrap();
-    wait_for("the check ended", &|| count(&ended) == 22);
-    assert!(!announced_since());
-    assert_eq!(count(&launches), 22, "nothing starts without a listing");
-    assert_eq!(slow(&list(false)), checking);
-    announced();
-    assert_eq!(slow(&list(false)), ready);
-    assert_eq!(count(&launches), 23);
-
-    // Listings that read the agents settings before a save, here from a copy
-    // of them, leave the saved registration's running check alone in every
-    // work area: it ends announced, and the next listing shows its result
-    // without checking again. The stale listings' own checks are discarded.
-    std::fs::remove_file(&release).unwrap();
-    let saved = settings.config_dir.join("spark.toml");
-    let old = std::fs::read_to_string(&saved).unwrap();
-    let mut before = settings.clone();
-    before.config_dir = temp.path().join("before-save");
-    std::fs::create_dir_all(&before.config_dir).unwrap();
-    std::fs::write(before.config_dir.join("spark.toml"), &old).unwrap();
-    let stale = |work_area: &std::path::Path| {
-        spark_workspace::models::chat_models(&before, work_area, false, &finished).unwrap()
-    };
-    register(json!({"SPARK_FAKE_ACP": "{}"}));
-    spark_workspace::models::invalidate_model_discovery("agents");
-    assert_eq!(slow(&list_other()), checking);
-    wait_for("the saved registration's check started", &|| {
-        count(&launches) == 24
-    });
-    assert_eq!(slow(&stale(&other)), checking);
-    assert_eq!(slow(&stale(&project)), checking);
-    wait_for("the stale listings' checks started", &|| {
-        count(&launches) == 26
-    });
-    // By the time those checks end, the settings they read are saved over.
-    std::fs::copy(&saved, before.config_dir.join("spark.toml")).unwrap();
-    std::fs::write(&release, "").unwrap();
-    wait_for("every check ended", &|| count(&ended) == 26);
-    announced();
-    assert!(!announced_since(), "only the saved registration's check");
-    assert_eq!(slow(&list_other()), ready);
-    assert_eq!(count(&launches), 26, "its result was kept");
-
-    // Nor does one leave its kept result behind.
-    std::fs::remove_file(&release).unwrap();
-    std::fs::write(before.config_dir.join("spark.toml"), &old).unwrap();
-    assert_eq!(slow(&stale(&other)), checking);
-    wait_for("the stale listing's check started", &|| {
-        count(&launches) == 27
-    });
-    std::fs::copy(&saved, before.config_dir.join("spark.toml")).unwrap();
-    assert_eq!(slow(&list_other()), ready);
-    std::fs::write(&release, "").unwrap();
-    wait_for("the stale check ended", &|| count(&ended) == 27);
-    assert!(!announced_since());
-    assert_eq!(slow(&list_other()), ready);
-    assert_eq!(count(&launches), 27, "its result is still kept");
+    assert_eq!(count(&launches), 7);
 }
 
 #[test]
@@ -1794,25 +1597,6 @@ fn each_native_harness_keeps_its_check_when_the_other_changes() {
     assert_eq!(claude_code(), "unavailable");
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(count(&launches), 1);
-
-    // A check whose own settings change before it ends is discarded, listed meanwhile or not.
-    std::fs::remove_file(&release).unwrap();
-    spark_workspace::models::invalidate_model_discovery("claude_code");
-    assert_eq!(claude_code(), "checking");
-    wait_for("the check started", &|| count(&launches) == 2);
-    configure(
-        "/nonexistent/codex-three",
-        std::path::Path::new("/nonexistent/claude-moved"),
-    );
-    std::fs::write(&release, "").unwrap();
-    wait_for("the check ended", &|| count(&ended) == 2);
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(!events.try_iter().any(|provider| provider == "claude-code"));
-    configure("/nonexistent/codex-three", &claude);
-    assert_eq!(claude_code(), "checking", "its result was not kept");
-    announced();
-    assert_eq!(claude_code(), "unavailable");
-    assert_eq!(count(&launches), 3);
 }
 
 #[test]
