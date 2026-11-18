@@ -1448,29 +1448,60 @@ fn model_listing_never_waits_on_a_harness_check() {
     assert_eq!(count(&launches), 1, "a kept failure starts no check");
 
     // Once fixed, Check again shows the last result until the new one is in.
+    // Checking again while it runs shares it, and the refetch on its end
+    // starts nothing.
+    std::fs::remove_file(&release).unwrap();
     std::fs::write(&fixed, "").unwrap();
     assert_eq!(slow(&list(true)), failed);
+    wait_for("the new check started", &|| count(&launches) == 2);
+    assert_eq!(slow(&list(true)), failed);
+    std::fs::write(&release, "").unwrap();
     announced();
     assert_eq!(slow(&list(false)), ready);
-    assert_eq!(count(&launches), 2);
+    assert!(!announced_since());
+    assert_eq!(
+        count(&launches),
+        2,
+        "one check for overlapping Check agains"
+    );
+
+    // Check again in one work area leaves another's kept checks alone.
+    let other = temp.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let other = other.canonicalize().unwrap();
+    let list_other =
+        || spark_workspace::models::chat_models(&settings, &other, false, &finished).unwrap();
+    assert_eq!(slow(&list_other()), checking);
+    announced();
+    assert_eq!(slow(&list_other()), ready);
+    assert_eq!(count(&launches), 3);
+    assert_eq!(slow(&list(true)), ready);
+    announced();
+    assert_eq!(slow(&list_other()), ready);
+    assert!(!announced_since());
+    assert_eq!(
+        count(&launches),
+        4,
+        "only the listed work area is checked again"
+    );
 
     // Saving agents settings checks again from nothing.
     spark_workspace::models::invalidate_model_discovery("agents");
     assert_eq!(slow(&list(false)), checking);
     announced();
     assert_eq!(slow(&list(false)), ready);
-    assert_eq!(count(&launches), 3);
+    assert_eq!(count(&launches), 5);
 
     // A check for a registration since changed is discarded.
     std::fs::remove_file(&release).unwrap();
     spark_workspace::models::invalidate_model_discovery("agents");
     assert_eq!(slow(&list(false)), checking);
-    wait_for("the first check started", &|| count(&launches) == 4);
+    wait_for("the first check started", &|| count(&launches) == 6);
     register(json!({"SPARK_FAKE_ACP": "{}", "CHANGED": "1"}));
     assert_eq!(slow(&list(false)), checking);
-    wait_for("the changed one's check started", &|| count(&launches) == 5);
+    wait_for("the changed one's check started", &|| count(&launches) == 7);
     std::fs::write(&release, "").unwrap();
-    wait_for("both checks ended", &|| count(&ended) == 5);
+    wait_for("both checks ended", &|| count(&ended) == 7);
     announced();
     assert!(!announced_since(), "only the current registration's check");
     assert_eq!(slow(&list(false)), ready);
@@ -1479,12 +1510,55 @@ fn model_listing_never_waits_on_a_harness_check() {
     std::fs::remove_file(&release).unwrap();
     spark_workspace::models::invalidate_model_discovery("agents");
     assert_eq!(slow(&list(false)), checking);
-    wait_for("the check started", &|| count(&launches) == 6);
+    wait_for("the check started", &|| count(&launches) == 8);
     spark_workspace::models::invalidate_model_discovery("agents");
     std::fs::write(&release, "").unwrap();
-    wait_for("the check ended", &|| count(&ended) == 6);
+    wait_for("the check ended", &|| count(&ended) == 8);
     assert!(!announced_since());
     assert_eq!(slow(&list(false)), checking, "its result was not kept");
     announced();
     assert_eq!(slow(&list(false)), ready);
+}
+
+#[test]
+fn a_kept_check_keeps_the_setup_it_found() {
+    use std::os::unix::fs::PermissionsExt;
+    let _env = super::utility_contracts::claude_env();
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    std::fs::create_dir_all(&settings.config_dir).unwrap();
+    let bin = temp.path().join("bin");
+    let programs = ["codex", "claude", "agent"].map(|name| bin.join(name));
+    let [codex, claude, agent] = &programs;
+    let agents = json!({"agents": {
+        "native": {"codex_binary": codex, "claude_binary": claude},
+        "acp_harnesses": {"later": {"name": "Later", "executable": agent}},
+    }});
+    std::fs::write(
+        settings.config_dir.join("spark.toml"),
+        toml::to_string(&agents).unwrap(),
+    )
+    .unwrap();
+    let project = temp.path().canonicalize().unwrap();
+    let finished: spark_workspace::models::CheckFinished = Arc::new(|_: &str| {});
+    let list =
+        || spark_workspace::models::chat_models(&settings, &project, false, &finished).unwrap();
+    let setups = |response: Value| {
+        ["codex", "claude-code", "acp:later"]
+            .map(|provider| response["providers"][provider]["setup_status"].clone())
+    };
+    let missing = [
+        json!("not_installed"),
+        json!("not_installed"),
+        json!("not_installed"),
+    ];
+    assert_eq!(setups(settled(list)), missing);
+
+    // Installing a program where it was missing changes nothing until checked again.
+    std::fs::create_dir_all(&bin).unwrap();
+    for program in &programs {
+        std::fs::write(program, "#!/bin/sh\nexit 3\n").unwrap();
+        std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    assert_eq!(setups(list()), missing);
 }

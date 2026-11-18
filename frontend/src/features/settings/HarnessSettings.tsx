@@ -67,8 +67,7 @@ const natives = {
     'claude-code': { name: 'Claude Code', key: 'claude_binary', program: 'claude', install: 'Install Claude Code' },
 } as const
 
-function nativeStatus(provider: Provider, connection: Connection | undefined, checking: boolean, failed: boolean): Status {
-    if (checking) return 'checking'
+function nativeStatus(provider: Provider, connection: Connection | undefined, failed: boolean): Status {
     if (!provider) return failed ? 'unchecked' : 'checking'
     if (provider.status === 'checking') return 'checking'
     if (provider.setup_status === 'not_installed') return 'not_installed'
@@ -78,9 +77,8 @@ function nativeStatus(provider: Provider, connection: Connection | undefined, ch
     return connection === 'connected' ? 'ready' : 'checking'
 }
 
-function acpStatus(entry: AcpHarnessEntry, provider: Provider, checking: boolean, failed: boolean): Status {
+function acpStatus(entry: AcpHarnessEntry, provider: Provider, failed: boolean): Status {
     if (entry.error) return 'misconfigured'
-    if (checking) return 'checking'
     return provider?.setup_status ?? (failed ? 'unchecked' : 'checking')
 }
 
@@ -104,6 +102,7 @@ export function HarnessSettings() {
 
     const show = useCallback((next: AgentSettingsView) => { revision.current = next.revision; setView(next); setViewError('') }, [])
     const load = useCallback(() => fetchAgentSettings().then(show, (error: unknown) => setViewError(errorText(error, 'Unable to load harness settings.'))), [show])
+    // Each harness shows its last check until the server has a newer one.
     // `quiet` shows what the server found since, without checking anything.
     const check = useCallback((refresh: boolean, quiet = false) => {
         const current = ++request.current
@@ -111,7 +110,6 @@ export function HarnessSettings() {
             setChecking(true)
             // Sign-in is read again with the programs the check finds.
             setChecks((value) => value + 1)
-            setConnections({})
         }
         return fetchHarnessCatalog(null, refresh).then((next) => {
             if (current === request.current) { setCatalog(next); setCatalogError('') }
@@ -167,8 +165,8 @@ export function HarnessSettings() {
 
     const providers: Partial<ProjectChatModelsResponse['providers']> = catalog?.providers ?? {}
     const failed = !!catalogError
-    const nativeRows = (['codex', 'claude-code'] as const).map((id) => [id, nativeStatus(providers[id], connections[id], checking, failed)] as const)
-    const acpRows = Object.entries(view?.acp_harnesses ?? {}).map(([id, entry]) => [id, entry, acpStatus(entry, providers[`acp:${id}`], checking, failed)] as const)
+    const nativeRows = (['codex', 'claude-code'] as const).map((id) => [id, nativeStatus(providers[id], connections[id], failed)] as const)
+    const acpRows = Object.entries(view?.acp_harnesses ?? {}).map(([id, entry]) => [id, entry, acpStatus(entry, providers[`acp:${id}`], failed)] as const)
     // In the order statuses are listed, ready first.
     const counts = new Map(Object.values(statuses).map(([label]) => [label.toLowerCase(), 0]))
     for (const status of [...nativeRows.map(([, status]) => status), ...acpRows.map(([, , status]) => status)]) {
@@ -203,7 +201,7 @@ export function HarnessSettings() {
                 onConnection={onConnection} checking={checking} checks={checks} onCheck={recheck} onSignedIn={refresh} onSaved={saved} />)}
             {acpRows.map(([id, entry, status]) => editing.includes(id)
                 ? <AcpHarnessForm key={id} id={id} entry={entry} view={view} onCancel={() => close(id)} onSaved={(next, name) => { close(id); saved(next, `Saved ${name}.`, `acp:${id}`) }} />
-                : <AcpHarness key={id} id={id} entry={entry} provider={providers[`acp:${id}`]} status={status} checking={checking} onCheck={recheck} onSignedIn={recheck}
+                : <AcpHarness key={id} id={id} entry={entry} provider={providers[`acp:${id}`]} status={status} checking={checking} onCheck={recheck} onSignedIn={refresh}
                     onEdit={() => edit(id)} onRemove={(name) => void remove(id, name)} />)}
             {editing.includes('') ? <AcpHarnessForm id={null} entry={null} view={view} onCancel={() => close('')} onSaved={(next, name, added) => { close(''); saved(next, `Added ${name}.`, `acp:${added}`) }} />
                 : <Button variant="outline" disabled={!view} onClick={() => edit('')}>Add ACP harness</Button>}

@@ -121,9 +121,7 @@ it('signs in to an ACP harness with a method it offers, then checks it again', a
     await user.click(within(helper).getByRole('button', { name: 'Sign in to Helper with Browser' }))
     expect(signInAcpHarness).toHaveBeenCalledWith('helper', 'browser')
     expect(await within(helper).findByText('Ready')).toBeInTheDocument()
-    // The sign-in replaces the kept check, as Check again does.
     expect(fetchHarnessCatalog).toHaveBeenCalledTimes(2)
-    expect(fetchHarnessCatalog).toHaveBeenLastCalledWith(null, true)
 
     // A check that fails doesn't leave it showing as the last check found it.
     vi.mocked(fetchHarnessCatalog).mockRejectedValueOnce(new Error('agents.max_turns is invalid'))
@@ -160,6 +158,27 @@ it('shows a harness as checking until its check ends, then what it found without
     expect(within(codex).getByText('Ready')).toBeInTheDocument()
     expect(fetchHarnessCatalog).toHaveBeenCalledTimes(2)
     expect(fetchHarnessCatalog).toHaveBeenLastCalledWith(null, false)
+
+    // Check again shows the last check until a newer one is in.
+    const found = vi.mocked(fetchHarnessCatalog).mock.results[1].value
+    let answer!: (value: Awaited<typeof found>) => void
+    vi.mocked(fetchHarnessCatalog).mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+    await userEvent.setup().click(within(helper).getByRole('button', { name: 'Check Helper again' }))
+    expect(fetchHarnessCatalog).toHaveBeenLastCalledWith(null, true)
+    expect(within(helper).getByText('Not responding')).toBeInTheDocument()
+    expect(within(claude).getByText('Not installed')).toBeInTheDocument()
+    expect(within(codex).getByText('Ready')).toBeInTheDocument()
+    // The server answers with the last check while the new one runs.
+    await act(async () => answer(await found))
+    expect(within(helper).getByText('Not responding')).toBeInTheDocument()
+    expect(within(codex).getByText('Ready')).toBeInTheDocument()
+    vi.mocked(fetchHarnessCatalog).mockResolvedValue({ models: [], providers: {
+        codex: { status: 'available', error: null, setup_status: 'ready' },
+        'claude-code': { status: 'unavailable', error: 'claude code executable not found: /missing/claude', setup_status: 'not_installed' },
+        'acp:helper': { status: 'available', error: null, setup_status: 'ready' },
+    } })
+    act(() => window.dispatchEvent(new Event('spark:harness-checked')))
+    expect(await within(helper).findByText('Ready')).toBeInTheDocument()
 })
 
 it('keeps a misconfigured registration’s values in its form, and stops a save over a change made elsewhere', async () => {
