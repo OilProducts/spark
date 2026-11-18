@@ -268,6 +268,26 @@ it('fetches once per project for each affected settings event and ignores unrela
     expect(fetchProjectChatModelsValidated).toHaveBeenCalledTimes(5)
 })
 
+it('shows a harness as checking until its check ends, then its models without a reload', async () => {
+    vi.mocked(useLlmProfiles).mockReturnValue([])
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({ ...catalog, providers: { ...catalog.providers, 'acp:slow': { status: 'checking', error: null, label: 'Slow' } } })
+    const user = userEvent.setup()
+    render(<Editor />)
+    await user.click(await screen.findByRole('button', { name: /Model: Default: Discovered/ }))
+    expect(within(screen.getByRole('group', { name: 'Slow' })).getByRole('status')).toHaveTextContent('Checking…')
+
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({
+        providers: { ...catalog.providers, 'acp:slow': { status: 'available', error: null, label: 'Slow', setup_status: 'ready' } },
+        models: [...catalog.models, { provider: 'acp:slow', id: 'quick', display: 'Quick', is_default: true, supported_reasoning_efforts: [] }],
+    })
+    const fetched = vi.mocked(fetchProjectChatModelsValidated).mock.calls.length
+    act(() => window.dispatchEvent(new Event('spark:harness-checked')))
+    expect(screen.queryByText('Loading models…')).not.toBeInTheDocument()
+    expect(await within(screen.getByRole('group', { name: 'Slow' })).findByRole('option', { name: 'Quick' })).toBeInTheDocument()
+    expect(screen.queryByText('Checking…')).not.toBeInTheDocument()
+    expect(fetchProjectChatModelsValidated).toHaveBeenCalledTimes(fetched + 1)
+})
+
 it('gates native controls by capability, locks inheritance, and saves budgets and summaries', async () => {
     const user = userEvent.setup()
     vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({ ...catalog, models: [

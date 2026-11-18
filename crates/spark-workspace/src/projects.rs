@@ -324,8 +324,13 @@ impl WorkspaceProjectService {
 
     /// The chooser's models, with ACP harnesses probed in the project, or in
     /// the Home project without one.
-    pub fn chat_models(&self, project_path: Option<&str>, refresh: bool) -> WorkspaceResult<Value> {
-        crate::models::chat_models(&self.settings, &work_area(project_path)?, refresh)
+    pub fn chat_models(
+        &self,
+        project_path: Option<&str>,
+        refresh: bool,
+        finished: &crate::models::CheckFinished,
+    ) -> WorkspaceResult<Value> {
+        crate::models::chat_models(&self.settings, &work_area(project_path)?, refresh, finished)
     }
 
     /// Signs in to ACP harness `id` with one of the methods it offered, in

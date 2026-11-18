@@ -121,12 +121,45 @@ it('signs in to an ACP harness with a method it offers, then checks it again', a
     await user.click(within(helper).getByRole('button', { name: 'Sign in to Helper with Browser' }))
     expect(signInAcpHarness).toHaveBeenCalledWith('helper', 'browser')
     expect(await within(helper).findByText('Ready')).toBeInTheDocument()
+    // The sign-in replaces the kept check, as Check again does.
     expect(fetchHarnessCatalog).toHaveBeenCalledTimes(2)
+    expect(fetchHarnessCatalog).toHaveBeenLastCalledWith(null, true)
 
     // A check that fails doesn't leave it showing as the last check found it.
     vi.mocked(fetchHarnessCatalog).mockRejectedValueOnce(new Error('agents.max_turns is invalid'))
     await user.click(within(helper).getByRole('button', { name: 'Check Helper again' }))
     expect(await within(helper).findByText('Not checked')).toBeInTheDocument()
+})
+
+it('shows a harness as checking until its check ends, then what it found without checking again', async () => {
+    vi.mocked(fetchAgentSettings).mockResolvedValue(view)
+    vi.mocked(fetchHarnessCatalog).mockResolvedValueOnce({ models: [], providers: {
+        codex: { status: 'available', error: null, setup_status: 'ready' },
+        'claude-code': { status: 'checking', error: null },
+        'acp:helper': { status: 'checking', error: null },
+    } }).mockResolvedValue({ models: [], providers: {
+        codex: { status: 'available', error: null, setup_status: 'ready' },
+        'claude-code': { status: 'unavailable', error: 'claude code executable not found: /missing/claude', setup_status: 'not_installed' },
+        'acp:helper': { status: 'unavailable', error: 'Helper did not answer in time.', setup_status: 'unreachable' },
+    } })
+    render(<DialogProvider><HarnessSettings /></DialogProvider>)
+
+    const codex = await screen.findByRole('group', { name: 'Codex' })
+    expect(await within(codex).findByText('Ready')).toBeInTheDocument()
+    const claude = screen.getByRole('group', { name: 'Claude Code' })
+    expect(within(claude).getByText('Checking…')).toBeInTheDocument()
+    // Sign-in is read once the program is checked.
+    expect(within(claude).queryByText('sign-in controls')).not.toBeInTheDocument()
+    const helper = screen.getByRole('group', { name: 'Helper' })
+    expect(within(helper).getByText('Checking…')).toBeInTheDocument()
+
+    act(() => window.dispatchEvent(new Event('spark:harness-checked')))
+    expect(await within(helper).findByText('Not responding')).toBeInTheDocument()
+    expect(within(helper).getByText('Helper did not answer in time.')).toBeInTheDocument()
+    expect(within(claude).getByText('Not installed')).toBeInTheDocument()
+    expect(within(codex).getByText('Ready')).toBeInTheDocument()
+    expect(fetchHarnessCatalog).toHaveBeenCalledTimes(2)
+    expect(fetchHarnessCatalog).toHaveBeenLastCalledWith(null, false)
 })
 
 it('keeps a misconfigured registration’s values in its form, and stops a save over a change made elsewhere', async () => {

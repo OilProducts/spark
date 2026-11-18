@@ -1307,12 +1307,30 @@ async fn browse_project_directories(
 
 async fn project_chat_models(
     State(settings): State<Arc<SparkSettings>>,
+    State(live_hub): State<Arc<WorkspaceLiveHub>>,
     payload: Result<Query<ChatModelsQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = query_payload(payload)?;
+    // Each background harness check that ends tells clients to list again.
+    let finished: spark_workspace::models::CheckFinished = Arc::new(move |provider: &str| {
+        live_hub.publish(LiveEnvelope {
+            event_type: "harness.checked".into(),
+            project_path: None,
+            resource: spark_workspace::LiveResource {
+                kind: "settings".into(),
+                id: Some("harnesses".into()),
+            },
+            cursor: None,
+            reason: None,
+            payload: serde_json::json!({"provider": provider}),
+        });
+    });
     let models = tokio::task::spawn_blocking(move || {
-        WorkspaceProjectService::new((*settings).clone())
-            .chat_models(query.project_path.as_deref(), query.refresh)
+        WorkspaceProjectService::new((*settings).clone()).chat_models(
+            query.project_path.as_deref(),
+            query.refresh,
+            &finished,
+        )
     })
     .await
     .map_err(|error| {

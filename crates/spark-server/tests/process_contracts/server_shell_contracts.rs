@@ -1124,9 +1124,21 @@ fn serve_on_all_interfaces_gives_agents_a_loopback_base_url() {
         "{startup:?}"
     );
 
-    // Model discovery launches both agents over the loopback address.
-    let models = get(port, "/workspace/api/projects/chat-models", "");
-    assert!(models.starts_with("HTTP/1.1 200"), "{models}");
+    // Model discovery launches both agents over the loopback address, in the
+    // background: listed until neither is still being checked.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let models = get(port, "/workspace/api/projects/chat-models", "");
+        assert!(models.starts_with("HTTP/1.1 200"), "{models}");
+        if !models.contains(r#""status":"checking""#) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agents' checks ended"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     for dump in [&codex_env, &claude_env] {
         let env = fs::read_to_string(dump)
             .unwrap_or_else(|error| panic!("{} was not launched: {error}", dump.display()));

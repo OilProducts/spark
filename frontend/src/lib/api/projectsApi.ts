@@ -61,7 +61,8 @@ export interface ProjectChatModelCapability {
 }
 
 export interface ProjectChatModelProviderStatusResponse {
-    status: 'available' | 'unavailable'
+    /** `checking`: a harness whose first check is still running; a live `harness.checked` event follows. */
+    status: 'available' | 'unavailable' | 'checking'
     error: string | null
     /** The provider's display name; for an ACP harness, its registration's. */
     label?: string
@@ -291,8 +292,8 @@ export function parseProjectChatModelsResponse(
     expectObjectRecord(providers.codex, endpoint)
     const statuses: ProjectChatModelsResponse['providers'] = Object.fromEntries(Object.entries(providers).map(([provider, value]) => {
         const entry = expectObjectRecord(value, endpoint)
-        if (entry.status !== 'available' && entry.status !== 'unavailable') {
-            throw new ApiSchemaError(endpoint, 'Expected provider status to be "available" or "unavailable".')
+        if (entry.status !== 'available' && entry.status !== 'unavailable' && entry.status !== 'checking') {
+            throw new ApiSchemaError(endpoint, 'Expected provider status to be "available", "unavailable" or "checking".')
         }
         if (entry.error !== null && typeof entry.error !== 'string') {
             throw new ApiSchemaError(endpoint, 'Expected provider error to be a string or null.')
@@ -378,7 +379,7 @@ export async function fetchProjectMetadataValidated(directory: string): Promise<
     )
 }
 
-/** `refresh` checks every harness again instead of reusing earlier checks. */
+/** `refresh` checks every harness again; each shows its last result until its new check ends. */
 export async function fetchProjectChatModelsValidated(projectPath: string | null, refresh = false): Promise<ProjectChatModelsResponse> {
     const query = new URLSearchParams()
     if (projectPath) query.set('project_path', projectPath)

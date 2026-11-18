@@ -1,7 +1,8 @@
 use spark_agent_adapter::acp::{self, AcpDiscovery};
 use spark_common::agent_settings::{NativeAgentSettings, SessionConfig};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -12,13 +13,115 @@ use crate::errors::{WorkspaceError, WorkspaceResult};
 static PROVIDER_MODELS_CACHE: Mutex<
     Option<unified_llm_adapter::model_discovery::ProviderModelCache>,
 > = Mutex::new(None);
-type NativeModelCache = Vec<(NativeAgentSettings, Result<Vec<ChatModelMetadata>, String>)>;
-static CODEX_MODELS_CACHE: Mutex<NativeModelCache> = Mutex::new(Vec::new());
-static CLAUDE_CODE_MODELS_CACHE: Mutex<NativeModelCache> = Mutex::new(Vec::new());
-/// ACP discoveries by work area, harness ID, launch generation and
-/// implementation version.
-type AcpDiscoveryKey = (PathBuf, String, String, &'static str);
-static ACP_DISCOVERY_CACHE: Mutex<Vec<(AcpDiscoveryKey, AcpDiscovery)>> = Mutex::new(Vec::new());
+type NativeModels = Result<Vec<ChatModelMetadata>, String>;
+static CODEX_MODELS_CACHE: Checks<(), NativeAgentSettings, NativeModels> = Checks::new();
+static CLAUDE_CODE_MODELS_CACHE: Checks<(), NativeAgentSettings, NativeModels> = Checks::new();
+/// ACP discoveries by work area and harness ID, for its launch generation
+/// and implementation version.
+static ACP_DISCOVERY_CACHE: Checks<(PathBuf, String), (String, &'static str), AcpDiscovery> =
+    Checks::new();
+
+/// Called with a provider, such as `codex` or `acp:<id>`, once a background
+/// check of it finished and its result is kept.
+pub type CheckFinished = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Harness checks, one per harness: the last finished result for its
+/// registration, failures included, and the check running for it, if any.
+/// Checks run in the background, so a listing never waits on a harness
+/// process, and no lock is held while one runs.
+struct Checks<H, R, V>(Mutex<Vec<Check<H, R, V>>>);
+
+struct Check<H, R, V> {
+    harness: H,
+    registration: R,
+    result: Option<V>,
+    /// The running check's number. A check whose number is gone when it
+    /// finishes, because its entry was cleared or replaced, is discarded.
+    running: Option<u64>,
+    /// Check again asked for a result newer than `result`.
+    stale: bool,
+}
+
+impl<H, R, V> Checks<H, R, V>
+where
+    H: PartialEq + Send + 'static,
+    R: PartialEq + Send + 'static,
+    V: Clone + Send + 'static,
+{
+    const fn new() -> Self {
+        Self(Mutex::new(Vec::new()))
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Vec<Check<H, R, V>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `harness`'s last result for `registration`, or `None` while it has
+    /// none. Starts `run` in the background when no check is running and
+    /// there is no result, or Check again asked for a newer one, and calls
+    /// `finished` once its result is kept.
+    fn result(
+        &'static self,
+        harness: H,
+        registration: R,
+        run: impl FnOnce() -> V + Send + 'static,
+        finished: impl FnOnce() + Send + 'static,
+    ) -> Option<V> {
+        let mut checks = self.lock();
+        // A changed registration drops the old one's result and check.
+        checks.retain(|check| check.harness != harness || check.registration == registration);
+        let index = match checks.iter().position(|check| check.harness == harness) {
+            Some(index) => index,
+            None => {
+                checks.push(Check {
+                    harness,
+                    registration,
+                    result: None,
+                    running: None,
+                    stale: false,
+                });
+                checks.len() - 1
+            }
+        };
+        let check = &mut checks[index];
+        if check.running.is_none() && (check.result.is_none() || check.stale) {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let number = NEXT.fetch_add(1, Ordering::Relaxed);
+            check.running = Some(number);
+            check.stale = false;
+            std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+                let mut checks = self.lock();
+                let Some(check) = checks
+                    .iter_mut()
+                    .find(|check| check.running == Some(number))
+                else {
+                    return;
+                };
+                check.running = None;
+                // A check that panicked leaves the next listing to start another.
+                if let Ok(result) = result {
+                    check.result = Some(result);
+                    drop(checks);
+                    finished();
+                }
+            });
+        }
+        check.result.clone()
+    }
+
+    /// Check again: each harness is checked once more the next time it is
+    /// listed, showing its last result until then.
+    fn refresh(&self) {
+        for check in self.lock().iter_mut() {
+            check.stale = true;
+        }
+    }
+
+    fn clear(&self) {
+        self.lock().clear();
+    }
+}
 
 pub fn invalidate_model_discovery(section: &str) {
     match section {
@@ -32,27 +135,12 @@ pub fn invalidate_model_discovery(section: &str) {
             }
         }
         "agents" => {
-            CODEX_MODELS_CACHE
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .clear();
-            CLAUDE_CODE_MODELS_CACHE
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .clear();
-            ACP_DISCOVERY_CACHE
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .clear();
+            CODEX_MODELS_CACHE.clear();
+            CLAUDE_CODE_MODELS_CACHE.clear();
+            ACP_DISCOVERY_CACHE.clear();
         }
-        "codex" => CODEX_MODELS_CACHE
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear(),
-        "claude_code" => CLAUDE_CODE_MODELS_CACHE
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear(),
+        "codex" => CODEX_MODELS_CACHE.clear(),
+        "claude_code" => CLAUDE_CODE_MODELS_CACHE.clear(),
         _ => {}
     }
 }
@@ -80,6 +168,8 @@ pub struct ChatModelMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChatModelProviderStatus {
+    /// `available`, `unavailable`, or for a harness `checking` while its
+    /// first check for its registration runs.
     pub status: String,
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -95,39 +185,61 @@ pub struct ChatModelProviderStatus {
 }
 
 /// The chooser's models and provider statuses, with ACP harnesses probed in
-/// `work_area`, where their work would run. `refresh` checks every harness
-/// again instead of reusing what an earlier check found.
+/// `work_area`, where their work would run. Each harness shows its last
+/// check, or `checking` while its first runs in the background; `finished`
+/// hears when one ends. `refresh` checks every harness again, showing its
+/// last result until the new one is in.
 pub fn chat_models(
     settings: &SparkSettings,
     work_area: &Path,
     refresh: bool,
+    finished: &CheckFinished,
 ) -> WorkspaceResult<Value> {
     if refresh {
-        invalidate_model_discovery("agents");
+        CODEX_MODELS_CACHE.refresh();
+        CLAUDE_CODE_MODELS_CACHE.refresh();
+        ACP_DISCOVERY_CACHE.refresh();
     }
     let native = native_configuration(settings)?;
-    let codex_result = codex_chat_models(&native);
-    chat_models_with_codex_result(settings, work_area, codex_result)
+    let codex_result = codex_chat_models(&native, finished);
+    listing(settings, work_area, codex_result, finished)
 }
 
+/// [`chat_models`] with Codex's check given.
 pub fn chat_models_with_codex_result(
     settings: &SparkSettings,
     work_area: &Path,
-    codex_result: Result<Vec<ChatModelMetadata>, String>,
+    codex_result: NativeModels,
+) -> WorkspaceResult<Value> {
+    listing(
+        settings,
+        work_area,
+        Some(codex_result),
+        &(Arc::new(|_: &str| {}) as CheckFinished),
+    )
+}
+
+/// `None` results are checks still running.
+fn listing(
+    settings: &SparkSettings,
+    work_area: &Path,
+    codex_result: Option<NativeModels>,
+    finished: &CheckFinished,
 ) -> WorkspaceResult<Value> {
     let mut models = Vec::new();
     let mut providers = serde_json::Map::new();
     let mut add = |provider: &str,
                    label: Option<&str>,
-                   result: Result<Vec<ChatModelMetadata>, String>,
+                   result: Option<NativeModels>,
                    setup_status: Option<&str>,
                    harness: Option<AcpDiscovery>| {
         let (status, error) = match result {
-            Ok(discovered) => {
+            None => ("checking", None),
+            Some(Ok(discovered)) => {
                 models.extend(discovered);
                 ("available", None)
             }
-            Err(error) => ("unavailable", Some(error)),
+            Some(Err(error)) => ("unavailable", Some(error)),
         };
         let status = ChatModelProviderStatus {
             status: status.into(),
@@ -139,43 +251,42 @@ pub fn chat_models_with_codex_result(
         providers.insert(provider.into(), serde_json::json!(status));
     };
     let native = native_configuration(settings)?;
-    let native_setup = |result: &Result<_, _>, program: &Option<String>| match result {
-        Ok(_) => "ready",
-        Err(_) if !acp::program_found(program.as_deref().unwrap_or_default(), None) => {
-            "not_installed"
+    let native_setup = |result: &Option<NativeModels>, program: &Option<String>| match result {
+        None => None,
+        Some(Ok(_)) => Some("ready"),
+        Some(Err(_)) if !acp::program_found(program.as_deref().unwrap_or_default(), None) => {
+            Some("not_installed")
         }
-        Err(_) => "unreachable",
+        Some(Err(_)) => Some("unreachable"),
     };
     let codex_setup = native_setup(&codex_result, &native.codex_binary);
-    add(
-        "codex",
-        Some("Codex"),
-        codex_result,
-        Some(codex_setup),
-        None,
-    );
-    let claude_result = claude_code_chat_models(&native);
+    add("codex", Some("Codex"), codex_result, codex_setup, None);
+    let claude_result = claude_code_chat_models(&native, finished);
     let claude_setup = native_setup(&claude_result, &native.claude_binary);
     add(
         "claude-code",
         Some("Claude Code"),
         claude_result,
-        Some(claude_setup),
+        claude_setup,
         None,
     );
     let configuration = spark_storage::settings::read_execution_configuration(
         &settings.config_dir,
         &spark_common::paths::ProcessEnvironment,
     )?;
-    for (id, harness, mut discovery) in acp_discoveries(&configuration.agents, work_area) {
+    for (id, harness, discovery) in acp_discoveries(&configuration.agents, work_area, finished) {
         let provider = format!("acp:{id}");
+        let Some(mut discovery) = discovery else {
+            add(&provider, Some(&harness.name), None, None, None);
+            continue;
+        };
         if discovery.setup_status == "unreachable" && !acp_program_found(harness) {
             discovery.setup_status = "not_installed".into();
         }
-        let result = match discovery.setup_status.as_str() {
+        let result = Some(match discovery.setup_status.as_str() {
             "ready" => Ok(acp_chat_models(&provider, &discovery.config_options)),
             _ => Err(discovery.error.clone().unwrap_or_default()),
-        };
+        });
         add(
             &provider,
             Some(&harness.name),
@@ -188,7 +299,7 @@ pub fn chat_models_with_codex_result(
         add(
             &format!("acp:{id}"),
             Some(&misconfigured.name),
-            Err(misconfigured.error.clone()),
+            Some(Err(misconfigured.error.clone())),
             Some("misconfigured"),
             None,
         );
@@ -207,10 +318,12 @@ pub fn chat_models_with_codex_result(
             add(
                 provider,
                 None,
-                cache
-                    .get_or_insert_with(Default::default)
-                    .models(config, &unified_llm_adapter::NativeHttpTransport::new())
-                    .map(|models| models.into_iter().map(unified_chat_model).collect()),
+                Some(
+                    cache
+                        .get_or_insert_with(Default::default)
+                        .models(config, &unified_llm_adapter::NativeHttpTransport::new())
+                        .map(|models| models.into_iter().map(unified_chat_model).collect()),
+                ),
                 None,
                 None,
             );
@@ -251,74 +364,50 @@ pub fn acp_sign_in(
     Ok(serde_json::json!({"setup_status": discovery.setup_status, "error": discovery.error}))
 }
 
-/// Each registered harness with its discovery in `work_area`, probing those
-/// not cached, in parallel.
+/// Each registered harness with its last discovery in `work_area`, or
+/// `None` while its first is running.
 fn acp_discoveries<'a>(
     agents: &'a SessionConfig,
     work_area: &Path,
+    finished: &CheckFinished,
 ) -> Vec<(
     &'a String,
     &'a spark_common::agent_settings::AcpHarness,
-    AcpDiscovery,
+    Option<AcpDiscovery>,
 )> {
-    let mut cache = ACP_DISCOVERY_CACHE
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    // A harness whose program is gone is checked again.
-    cache.retain(|((_, id, ..), _)| agents.acp_harnesses.get(id).is_none_or(acp_program_found));
-    let keyed = agents
+    agents
         .acp_harnesses
         .iter()
         .map(|(id, harness)| {
             let generation = acp::launch_generation(harness, agents.environment_inheritance);
-            let key = (
-                work_area.to_path_buf(),
-                id.clone(),
-                generation,
-                env!("CARGO_PKG_VERSION"),
-            );
-            (id, harness, key)
-        })
-        .collect::<Vec<_>>();
-    let probed = std::thread::scope(|scope| {
-        keyed
-            .iter()
-            .filter(|(_, _, key)| !cache.iter().any(|(cached, _)| cached == key))
-            .map(|(id, harness, key)| {
-                let probe = scope.spawn(|| {
-                    acp::discover(id, harness, agents.environment_inheritance, work_area)
+            let run = {
+                let (id, harness, work_area) =
+                    (id.clone(), harness.clone(), work_area.to_path_buf());
+                let inheritance = agents.environment_inheritance;
+                move || acp::discover(&id, &harness, inheritance, &work_area)
+            };
+            let finished = {
+                let (finished, provider) = (finished.clone(), format!("acp:{id}"));
+                move || finished(&provider)
+            };
+            let discovery = ACP_DISCOVERY_CACHE
+                .result(
+                    (work_area.to_path_buf(), id.clone()),
+                    (generation.clone(), env!("CARGO_PKG_VERSION")),
+                    run,
+                    finished,
+                )
+                .map(|mut discovery| {
+                    // A session's acknowledged state supersedes the probe's.
+                    if let Some(options) = acp::acknowledged_options(work_area, id, &generation)
+                        .filter(|_| discovery.setup_status == "ready")
+                    {
+                        discovery.config_options = options;
+                        discovery.modes = None;
+                    }
+                    discovery
                 });
-                (key.clone(), probe)
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|(key, probe)| (key, probe.join().expect("ACP discovery probe panicked")))
-            .collect::<Vec<_>>()
-    });
-    // Only ready discoveries are kept, so installing or signing in to a
-    // harness shows the next time models are listed.
-    cache.extend(
-        probed
-            .iter()
-            .filter(|(_, discovery)| discovery.setup_status == "ready")
-            .cloned(),
-    );
-    keyed
-        .into_iter()
-        .filter_map(|(id, harness, key)| {
-            let (_, discovery) = probed
-                .iter()
-                .chain(cache.iter())
-                .find(|(cached, _)| *cached == key)?;
-            let mut discovery = discovery.clone();
-            // A session's acknowledged state supersedes the probe's.
-            if let Some(options) = acp::acknowledged_options(work_area, id, &key.2)
-                .filter(|_| discovery.setup_status == "ready")
-            {
-                discovery.config_options = options;
-                discovery.modes = None;
-            }
-            Some((id, harness, discovery))
+            (id, harness, discovery)
         })
         .collect()
 }
@@ -385,20 +474,40 @@ pub fn native_configuration(settings: &SparkSettings) -> WorkspaceResult<NativeA
     Ok(configuration.agents.native)
 }
 
-fn claude_code_chat_models(native: &NativeAgentSettings) -> Result<Vec<ChatModelMetadata>, String> {
-    let mut cache = CLAUDE_CODE_MODELS_CACHE
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    if let Some((_, result)) = cache.iter().find(|(captured, _)| captured == native) {
-        return result.clone();
-    }
-    let result = spark_agent_adapter::claude_code::list_available_claude_code_models_with_settings(
-        Some(native),
+/// A native harness's last model check, or `None` while its first runs.
+fn native_chat_models(
+    cache: &'static Checks<(), NativeAgentSettings, NativeModels>,
+    provider: &'static str,
+    native: &NativeAgentSettings,
+    finished: &CheckFinished,
+    run: fn(&NativeAgentSettings) -> NativeModels,
+) -> Option<NativeModels> {
+    let (captured, finished) = (native.clone(), finished.clone());
+    cache.result(
+        (),
+        native.clone(),
+        move || run(&captured),
+        move || finished(provider),
     )
-    .map(claude_code_chat_models_from_metadata)
-    .map_err(|error| error.message);
-    cache.push((native.clone(), result.clone()));
-    result
+}
+
+fn claude_code_chat_models(
+    native: &NativeAgentSettings,
+    finished: &CheckFinished,
+) -> Option<NativeModels> {
+    native_chat_models(
+        &CLAUDE_CODE_MODELS_CACHE,
+        "claude-code",
+        native,
+        finished,
+        |native| {
+            spark_agent_adapter::claude_code::list_available_claude_code_models_with_settings(Some(
+                native,
+            ))
+            .map(claude_code_chat_models_from_metadata)
+            .map_err(|error| error.message)
+        },
+    )
 }
 
 pub fn claude_code_chat_models_from_metadata(
@@ -427,20 +536,17 @@ pub fn claude_code_chat_models_from_metadata(
 
 /// Codex models come from the local install itself (`model/list`), so the
 /// chooser only offers what codex will actually serve.
-fn codex_chat_models(native: &NativeAgentSettings) -> Result<Vec<ChatModelMetadata>, String> {
-    let mut cache = CODEX_MODELS_CACHE
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    if let Some((_, result)) = cache.iter().find(|(captured, _)| captured == native) {
-        return result.clone();
-    }
-    let result = spark_agent_adapter::codex_app_server::list_available_codex_models_with_settings(
-        Some(native),
-    )
-    .map(codex_chat_models_from_metadata)
-    .map_err(|error| format!("Codex model discovery failed: {error}"));
-    cache.push((native.clone(), result.clone()));
-    result
+fn codex_chat_models(
+    native: &NativeAgentSettings,
+    finished: &CheckFinished,
+) -> Option<NativeModels> {
+    native_chat_models(&CODEX_MODELS_CACHE, "codex", native, finished, |native| {
+        spark_agent_adapter::codex_app_server::list_available_codex_models_with_settings(Some(
+            native,
+        ))
+        .map(codex_chat_models_from_metadata)
+        .map_err(|error| format!("Codex model discovery failed: {error}"))
+    })
 }
 
 pub fn codex_chat_models_from_metadata(

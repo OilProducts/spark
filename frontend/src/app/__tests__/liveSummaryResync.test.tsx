@@ -289,3 +289,15 @@ describe('a project thread list that was in flight when the feed initialized', (
         expect(useStore.getState().homeConversationCache.conversationsById.open).toBeDefined()
     })
 })
+
+it('signals model listings to refetch when a harness check ends, without a settings change', () => {
+    render(<WorkspaceLiveEventsController />)
+    const checked = vi.fn(), settings = vi.fn()
+    window.addEventListener('spark:harness-checked', checked)
+    window.addEventListener('spark:settings-live-event', settings)
+    emit({ type: 'harness.checked', project_path: null, resource: { kind: 'settings', id: 'harnesses' }, payload: { provider: 'acp:slow' } })
+    window.removeEventListener('spark:harness-checked', checked)
+    window.removeEventListener('spark:settings-live-event', settings)
+    expect(checked).toHaveBeenCalledTimes(1)
+    expect(settings).not.toHaveBeenCalled()
+})

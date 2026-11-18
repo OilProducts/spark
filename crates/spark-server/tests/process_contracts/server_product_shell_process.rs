@@ -330,8 +330,20 @@ fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
             .env("SPARK_CLAUDE_CODE_BIN", &claude);
     });
 
-    // Model discovery launches both agents.
-    http_get(server.port, "/workspace/api/projects/chat-models");
+    // Model discovery launches both agents, in the background: listed until
+    // neither is still being checked.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while String::from_utf8_lossy(
+        &http_get(server.port, "/workspace/api/projects/chat-models").body,
+    )
+    .contains(r#""status":"checking""#)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agents' checks ended"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
 
     let data_dir = root.join("spark-home");
     let agent_env = |name: &str| -> BTreeMap<String, String> {

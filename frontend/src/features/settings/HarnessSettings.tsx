@@ -70,6 +70,7 @@ const natives = {
 function nativeStatus(provider: Provider, connection: Connection | undefined, checking: boolean, failed: boolean): Status {
     if (checking) return 'checking'
     if (!provider) return failed ? 'unchecked' : 'checking'
+    if (provider.status === 'checking') return 'checking'
     if (provider.setup_status === 'not_installed') return 'not_installed'
     if (connection === 'pending') return 'signing_in'
     if (connection === 'disconnected') return 'signed_out'
@@ -103,12 +104,15 @@ export function HarnessSettings() {
 
     const show = useCallback((next: AgentSettingsView) => { revision.current = next.revision; setView(next); setViewError('') }, [])
     const load = useCallback(() => fetchAgentSettings().then(show, (error: unknown) => setViewError(errorText(error, 'Unable to load harness settings.'))), [show])
-    const check = useCallback((refresh: boolean) => {
+    // `quiet` shows what the server found since, without checking anything.
+    const check = useCallback((refresh: boolean, quiet = false) => {
         const current = ++request.current
-        setChecking(true)
-        // Sign-in is read again with the programs the check finds.
-        setChecks((value) => value + 1)
-        setConnections({})
+        if (!quiet) {
+            setChecking(true)
+            // Sign-in is read again with the programs the check finds.
+            setChecks((value) => value + 1)
+            setConnections({})
+        }
         return fetchHarnessCatalog(null, refresh).then((next) => {
             if (current === request.current) { setCatalog(next); setCatalogError('') }
             return next
@@ -145,8 +149,14 @@ export function HarnessSettings() {
             void load()
             void check(false)
         }
+        // A harness check ended on the server.
+        const checked = () => void check(false, true)
         window.addEventListener('spark:settings-live-event', changed)
-        return () => window.removeEventListener('spark:settings-live-event', changed)
+        window.addEventListener('spark:harness-checked', checked)
+        return () => {
+            window.removeEventListener('spark:settings-live-event', changed)
+            window.removeEventListener('spark:harness-checked', checked)
+        }
     }, [load, check])
 
     const remove = async (id: string, name: string) => {
@@ -193,7 +203,7 @@ export function HarnessSettings() {
                 onConnection={onConnection} checking={checking} checks={checks} onCheck={recheck} onSignedIn={refresh} onSaved={saved} />)}
             {acpRows.map(([id, entry, status]) => editing.includes(id)
                 ? <AcpHarnessForm key={id} id={id} entry={entry} view={view} onCancel={() => close(id)} onSaved={(next, name) => { close(id); saved(next, `Saved ${name}.`, `acp:${id}`) }} />
-                : <AcpHarness key={id} id={id} entry={entry} provider={providers[`acp:${id}`]} status={status} checking={checking} onCheck={recheck} onSignedIn={refresh}
+                : <AcpHarness key={id} id={id} entry={entry} provider={providers[`acp:${id}`]} status={status} checking={checking} onCheck={recheck} onSignedIn={recheck}
                     onEdit={() => edit(id)} onRemove={(name) => void remove(id, name)} />)}
             {editing.includes('') ? <AcpHarnessForm id={null} entry={null} view={view} onCancel={() => close('')} onSaved={(next, name, added) => { close(''); saved(next, `Added ${name}.`, `acp:${added}`) }} />
                 : <Button variant="outline" disabled={!view} onClick={() => edit('')}>Add ACP harness</Button>}
@@ -254,7 +264,7 @@ function NativeHarness({ id, view, provider, status, onConnection, checking, che
             {error && <FieldError role="alert">{error}</FieldError>}
         </Field>
         {/* A missing program has nothing to sign in to; read sign-in once the program is checked. */}
-        {provider && provider.setup_status !== 'not_installed' && (id === 'codex'
+        {provider?.setup_status && provider.setup_status !== 'not_installed' && (id === 'codex'
             ? <CodexConnectionControls key={checks} onStatus={onStatus} showCheck={false} />
             : <ClaudeCodeConnectionControls key={checks} onStatus={onStatus} showCheck={false} />)}
     </HarnessRow>
