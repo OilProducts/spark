@@ -1233,8 +1233,8 @@ const DESIGN_REVIEWERS: [&str; 5] = [
     "zoom_out",
 ];
 
-/// Two findings, a Blocker and a Major, whose evidence ends well past the
-/// 200 characters `last_response` keeps.
+/// Two findings, a Blocker and a Major, whose evidence ends well past 200
+/// characters, so a truncated copy would lose the tails.
 fn lens_findings(lens: &str) -> serde_json::Value {
     let padding = "the cited line does not match the code ".repeat(6);
     json!([
@@ -1244,9 +1244,20 @@ fn lens_findings(lens: &str) -> serde_json::Value {
 }
 
 fn session_flow(nodes: serde_json::Value) -> FlowDefinition {
+    flow_with_inputs(nodes, &[])
+}
+
+/// A flow whose launch context supplies `inputs`.
+fn flow_with_inputs(nodes: serde_json::Value, inputs: &[&str]) -> FlowDefinition {
+    let inputs: Vec<_> = inputs
+        .iter()
+        .map(|key| json!({"key": key, "label": key}))
+        .collect();
     attractor_dsl::validated_flow(
-        serde_json::from_value(json!({"schema_version": "2", "id": "sessions", "nodes": nodes}))
-            .expect("flow json"),
+        serde_json::from_value(
+            json!({"schema_version": "2", "id": "sessions", "inputs": inputs, "nodes": nodes}),
+        )
+        .expect("flow json"),
     )
     .expect("valid flow")
 }
@@ -1773,8 +1784,10 @@ fn agent_task_runs_in_the_directory_named_by_runtime_workdir_from() {
         if let Some(key) = workdir_from {
             task["runtime"] = json!({"workdir_from": key});
         }
-        let flow =
-            session_flow(json!({"start": start_to("task"), "done": exit_node(), "task": task}));
+        let flow = flow_with_inputs(
+            json!({"start": start_to("task"), "done": exit_node(), "task": task}),
+            &["context.ws"],
+        );
         let launch = ws
             .map(|ws| ContextMap::from([("context.ws".to_string(), json!(ws))]))
             .unwrap_or_default();
@@ -1864,10 +1877,13 @@ for line in [
         task["execution"] = json!({"llm_provider": "claude-code", "llm_model": "m"});
         task
     };
-    let flow = session_flow(json!({
-        "start": start_to("first"), "first": task("second"), "second": task("done"),
-        "done": exit_node(),
-    }));
+    let flow = flow_with_inputs(
+        json!({
+            "start": start_to("first"), "first": task("second"), "second": task("done"),
+            "done": exit_node(),
+        }),
+        &["context.checkout"],
+    );
     let runner = || {
         RuntimeHandlerRunner::new()
             .with_codergen_backend_factory(|| Box::new(RustLlmCodergenBackend::new(Client::new())))

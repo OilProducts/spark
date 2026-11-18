@@ -5,7 +5,8 @@ use serde_json::Value;
 
 use crate::error::{AttractorCoreError, Result};
 
-/// Allowed context key prefixes preserved from the Python runtime.
+/// Allowed context key prefixes. A flow owns every `context.*` key; Spark
+/// owns every other key.
 pub const ALLOWED_CONTEXT_PREFIXES: &[&str] = &[
     "context.",
     "graph.",
@@ -13,9 +14,59 @@ pub const ALLOWED_CONTEXT_PREFIXES: &[&str] = &[
     "parallel.",
     "stack.",
     "human.gate.",
-    "work.",
+    "tool.",
     "_attractor.",
 ];
+
+/// The flow's own namespace: the only keys a flow writes.
+pub const FLOW_CONTEXT_PREFIX: &str = "context.";
+
+/// Every Spark-owned key a flow may read. Every other key outside
+/// `context.*` is private to Spark. The authoring guide's Context keys
+/// section lists exactly these.
+pub const READABLE_SPARK_KEYS: &[&str] = &[
+    "internal.run_id",
+    "internal.root_run_id",
+    "internal.run_workdir",
+    "internal.runs_dir",
+    "internal.project_work_dir",
+    "parallel.results",
+    "human.gate.selected",
+    "human.gate.label",
+    "human.gate.note",
+    "tool.output",
+    "tool.exit_code",
+    "stack.child.run_id",
+    "stack.child.status",
+    "stack.child.outcome",
+    "stack.child.outcome_reason_code",
+    "stack.child.outcome_reason_message",
+    "stack.child.active_stage",
+    "stack.child.completed_nodes",
+    "stack.child.route_trace",
+    "stack.child.failure_reason",
+    "stack.child.failure_kind",
+    "stack.child.retry_count",
+    "stack.child.retry_counts",
+    "stack.child.artifact_count",
+    "stack.child.event_count",
+    "stack.child.checkpoint_timestamp",
+    "stack.child.latest_event_at",
+    "stack.child.started_at",
+    "stack.child.ended_at",
+    "stack.child.intervention",
+    "stack.child.intervention_status",
+    "stack.child.intervention_delivery_mode",
+    "stack.child.intervention_reason",
+];
+
+/// The readable Spark keys starting with `prefix`, such as `stack.child.`.
+pub fn readable_spark_keys(prefix: &str) -> impl Iterator<Item = &'static str> + '_ {
+    READABLE_SPARK_KEYS
+        .iter()
+        .copied()
+        .filter(move |key| key.starts_with(prefix))
+}
 
 const ALLOWED_LAUNCH_CONTEXT_KEYS: &[&str] = &[
     "_attractor.runtime.launch_model",
@@ -124,28 +175,6 @@ impl AttractorContext {
     pub fn clone_isolated(&self) -> Self {
         self.clone()
     }
-
-    /// Resolve a context path by checking flat keys before nested object paths.
-    pub fn get_context_path(&self, path: &str) -> String {
-        let path = path.trim();
-        if path.is_empty() {
-            return String::new();
-        }
-
-        for candidate in flat_path_candidates(path) {
-            if let Some(value) = self.values.get(&candidate) {
-                return context_value_to_string(value);
-            }
-        }
-
-        for candidate in nested_path_candidates(path) {
-            if let Some(value) = lookup_nested(&self.values, &candidate) {
-                return context_value_to_string(value);
-            }
-        }
-
-        String::new()
-    }
 }
 
 /// Host-provided launch context normalized for runtime initialization.
@@ -206,32 +235,6 @@ pub fn validate_launch_context(values: &ContextMap) -> Result<ContextMap> {
 
 pub fn apply_launch_context(context: &mut AttractorContext, launch: &LaunchContext) -> Result<()> {
     context.apply_updates(launch.values())
-}
-
-fn flat_path_candidates(path: &str) -> Vec<String> {
-    if let Some(stripped) = path.strip_prefix("context.") {
-        vec![path.to_string(), stripped.to_string()]
-    } else {
-        vec![path.to_string(), format!("context.{path}")]
-    }
-}
-
-fn nested_path_candidates(path: &str) -> Vec<String> {
-    if let Some(stripped) = path.strip_prefix("context.") {
-        vec![path.to_string(), stripped.to_string()]
-    } else {
-        vec![path.to_string(), format!("context.{path}")]
-    }
-}
-
-fn lookup_nested<'a>(values: &'a ContextMap, path: &str) -> Option<&'a ContextValue> {
-    let mut parts = path.split('.');
-    let first = parts.next()?;
-    let mut current = values.get(first)?;
-    for part in parts {
-        current = current.as_object()?.get(part)?;
-    }
-    Some(current)
 }
 
 fn validate_json_compatible_value(value: &ContextValue, path: &str) -> Result<()> {

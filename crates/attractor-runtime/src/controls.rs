@@ -520,7 +520,7 @@ impl RuntimeControls {
             let children = self.store.list_child_run_bundles(run_id)?;
             let linked = checkpoint
                 .context
-                .get("context.stack.child.run_id")
+                .get("stack.child.run_id")
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty());
             let candidates = children

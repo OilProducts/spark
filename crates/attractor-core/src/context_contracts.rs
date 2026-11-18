@@ -5,20 +5,6 @@ use serde::{Deserialize, Serialize};
 use crate::context::ContextMap;
 use crate::graph::{attr_string, DotAttribute};
 
-const ALLOWED_CONTEXT_UPDATE_PREFIXES: &[&str] = &[
-    "context.",
-    "graph.",
-    "internal.",
-    "parallel.",
-    "stack.",
-    "human.gate.",
-    "work.",
-    "_attractor.",
-];
-
-const CONTEXT_READ_SHORTHAND_PREFIXES: &[&str] =
-    &["request.", "review.", "planflow.", "milestone.", "item."];
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextWriteContract {
     #[serde(default)]
@@ -79,31 +65,9 @@ impl ContextWriteContractViolation {
     }
 }
 
-pub fn normalize_context_update_key(key: &str) -> String {
-    normalize_context_key(key)
-}
-
-pub fn normalize_context_read_key(key: &str) -> String {
-    let normalized = key.trim();
-    if normalized.is_empty() || !normalized.contains('.') {
-        return normalized.to_string();
-    }
-    if invalid_context_key_reason(normalized).is_some() {
-        return normalized.to_string();
-    }
-    if starts_with_any(normalized, ALLOWED_CONTEXT_UPDATE_PREFIXES) {
-        return normalized.to_string();
-    }
-    if starts_with_any(normalized, CONTEXT_READ_SHORTHAND_PREFIXES) {
-        return format!("context.{normalized}");
-    }
-    normalized.to_string()
-}
-
 pub fn parse_context_write_contract(raw: Option<&str>) -> ContextWriteContract {
     let parsed = parse_context_key_contract(
         raw,
-        normalize_context_update_key,
         "expected non-empty context update keys",
         "context update key",
     );
@@ -116,7 +80,6 @@ pub fn parse_context_write_contract(raw: Option<&str>) -> ContextWriteContract {
 pub fn parse_context_read_contract(raw: Option<&str>) -> ContextReadContract {
     let parsed = parse_context_key_contract(
         raw,
-        normalize_context_read_key,
         "expected non-empty context read keys",
         "context read key",
     );
@@ -144,48 +107,40 @@ pub fn resolve_context_read_contract(
     parse_context_read_contract(raw_value.as_deref())
 }
 
-pub fn normalize_context_updates(updates: &ContextMap) -> ContextMap {
-    updates
-        .iter()
-        .map(|(key, value)| (normalize_context_update_key(key), value.clone()))
-        .collect()
-}
-
 pub fn validate_context_updates_against_contract(
     updates: &ContextMap,
     contract: &ContextWriteContract,
 ) -> Option<ContextWriteContractViolation> {
-    validate_context_updates_against_contract_with_exemptions(updates, contract, &[], &[])
+    validate_context_updates_against_contract_with_exemptions(updates, contract, &[])
 }
 
+/// Compares update keys literally with the contract; `exempt_keys` are the
+/// Spark keys the node's kind emits itself.
 pub fn validate_context_updates_against_contract_with_exemptions(
     updates: &ContextMap,
     contract: &ContextWriteContract,
     exempt_keys: &[&str],
-    exempt_prefixes: &[&str],
 ) -> Option<ContextWriteContractViolation> {
-    let mut normalized_authored_keys = BTreeSet::new();
+    let mut authored_keys = BTreeSet::new();
     let mut invalid_authored_keys = BTreeSet::new();
 
-    for raw_key in updates.keys() {
-        let raw_key_text = raw_key.trim();
-        let normalized_key = normalize_context_update_key(raw_key_text);
-        if is_exempt_context_update_key(&normalized_key, exempt_keys, exempt_prefixes) {
+    for key in updates.keys() {
+        if exempt_keys.contains(&key.as_str()) {
             continue;
         }
-        if invalid_context_key_reason(raw_key_text).is_some() {
-            invalid_authored_keys.insert(raw_key_text.to_string());
+        if invalid_context_key_reason(key).is_some() {
+            invalid_authored_keys.insert(key.clone());
             continue;
         }
-        normalized_authored_keys.insert(normalized_key);
+        authored_keys.insert(key.clone());
     }
 
-    if normalized_authored_keys.is_empty() && invalid_authored_keys.is_empty() {
+    if authored_keys.is_empty() && invalid_authored_keys.is_empty() {
         return None;
     }
 
     let allowed: BTreeSet<_> = contract.allowed_keys.iter().cloned().collect();
-    let mut offending_keys: Vec<String> = normalized_authored_keys
+    let mut offending_keys: Vec<String> = authored_keys
         .iter()
         .filter(|key| !allowed.contains(*key))
         .cloned()
@@ -196,7 +151,7 @@ pub fn validate_context_updates_against_contract_with_exemptions(
         return None;
     }
     if !contract.parse_error.is_empty() && offending_keys.is_empty() && invalid_keys.is_empty() {
-        offending_keys = normalized_authored_keys.into_iter().collect();
+        offending_keys = authored_keys.into_iter().collect();
     }
 
     Some(ContextWriteContractViolation {
@@ -207,20 +162,6 @@ pub fn validate_context_updates_against_contract_with_exemptions(
     })
 }
 
-fn normalize_context_key(key: &str) -> String {
-    let normalized = key.trim();
-    if normalized.is_empty() || !normalized.contains('.') {
-        return normalized.to_string();
-    }
-    if invalid_context_key_reason(normalized).is_some() {
-        return normalized.to_string();
-    }
-    if starts_with_any(normalized, ALLOWED_CONTEXT_UPDATE_PREFIXES) {
-        return normalized.to_string();
-    }
-    format!("context.{normalized}")
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ParsedContextKeyContract {
     keys: Vec<String>,
@@ -229,7 +170,6 @@ struct ParsedContextKeyContract {
 
 fn parse_context_key_contract(
     raw: Option<&str>,
-    normalize_key: fn(&str) -> String,
     empty_key_error: &'static str,
     invalid_key_label: &'static str,
 ) -> ParsedContextKeyContract {
@@ -260,55 +200,50 @@ fn parse_context_key_contract(
         };
     };
 
-    let mut normalized_keys = BTreeSet::new();
+    let mut keys = BTreeSet::new();
     for item in items {
-        let Some(text) = item.as_str() else {
+        let Some(key) = item.as_str() else {
             return ParsedContextKeyContract {
                 keys: Vec::new(),
                 parse_error: "expected a JSON array of strings".to_string(),
             };
         };
-        let normalized_item = text.trim();
-        if normalized_item.is_empty() {
+        if key.is_empty() {
             return ParsedContextKeyContract {
                 keys: Vec::new(),
                 parse_error: empty_key_error.to_string(),
             };
         }
-        if let Some(reason) = invalid_context_key_reason(normalized_item) {
+        if let Some(reason) = invalid_context_key_reason(key) {
             return ParsedContextKeyContract {
                 keys: Vec::new(),
-                parse_error: format!("invalid {invalid_key_label} '{normalized_item}': {reason}"),
+                parse_error: format!("invalid {invalid_key_label} '{key}': {reason}"),
             };
         }
-        let normalized_item = normalize_key(normalized_item);
-        if normalized_item.is_empty() {
-            return ParsedContextKeyContract {
-                keys: Vec::new(),
-                parse_error: empty_key_error.to_string(),
-            };
-        }
-        normalized_keys.insert(normalized_item);
+        keys.insert(key.to_string());
     }
 
     ParsedContextKeyContract {
-        keys: normalized_keys.into_iter().collect(),
+        keys: keys.into_iter().collect(),
         parse_error: String::new(),
     }
 }
 
-fn invalid_context_key_reason(key: &str) -> Option<&'static str> {
-    let normalized = key.trim();
-    if normalized.is_empty() {
+/// Why `key` is not a literal context key; keys are never trimmed.
+pub fn invalid_context_key_reason(key: &str) -> Option<&'static str> {
+    if key.is_empty() {
         return Some("keys must be non-empty");
     }
-    if normalized.contains('/') || normalized.contains('\\') {
+    if key.chars().any(char::is_whitespace) {
+        return Some("keys must not contain whitespace");
+    }
+    if key.contains('/') || key.contains('\\') {
         return Some("path separators are not allowed");
     }
-    if normalized.starts_with('.') || normalized.ends_with('.') || normalized.contains("..") {
+    if key.starts_with('.') || key.ends_with('.') || key.contains("..") {
         return Some("empty dotted segments are not allowed");
     }
-    if !normalized
+    if !key
         .split('.')
         .all(|segment| segment.chars().all(is_context_key_char))
     {
@@ -319,15 +254,6 @@ fn invalid_context_key_reason(key: &str) -> Option<&'static str> {
 
 fn is_context_key_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'
-}
-
-fn starts_with_any(value: &str, prefixes: &[&str]) -> bool {
-    prefixes.iter().any(|prefix| value.starts_with(prefix))
-}
-
-fn is_exempt_context_update_key(key: &str, exempt_keys: &[&str], exempt_prefixes: &[&str]) -> bool {
-    exempt_keys.iter().any(|candidate| key == *candidate)
-        || exempt_prefixes.iter().any(|prefix| key.starts_with(prefix))
 }
 
 fn join_or_none(values: &[String]) -> String {

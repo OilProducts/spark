@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use attractor_core::{
-    apply_launch_context, attr_i64, attr_text, dot_value_to_json, normalize_context_updates,
+    apply_launch_context, attr_i64, dot_value_to_json, readable_spark_keys,
     resolve_context_write_contract, validate_context_updates_against_contract_with_exemptions,
-    AttractorContext, CheckpointState, ContextMap, DotAttribute, DotGraph, FailureKind,
-    FlowDefinition, FlowNode, LaunchContext, NodeKind, Outcome,
+    AttractorContext, CheckpointState, ContextMap, DotGraph, FailureKind, FlowDefinition, FlowNode,
+    LaunchContext, NodeKind, Outcome, FLOW_CONTEXT_PREFIX,
 };
 use serde_json::{json, Value};
 
@@ -27,15 +27,6 @@ pub const INTERNAL_PIPELINE_RETRY_RUN_ID_KEY: &str = "internal.pipeline_retry_ru
 /// tools and agent processes see it as [`PROJECT_WORK_DIR_ENV`].
 pub const PROJECT_WORK_DIR_KEY: &str = "internal.project_work_dir";
 pub use spark_common::project::PROJECT_WORK_DIR_ENV;
-const CODERGEN_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] =
-    &["last_response", "last_stage", RUNTIME_SESSIONS_KEY];
-const MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] = &[RUNTIME_SESSIONS_KEY];
-const PARALLEL_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] = &["parallel.results", RUNTIME_SESSIONS_KEY];
-const TOOL_CONTEXT_UPDATE_EXEMPT_PREFIXES: &[&str] = &["context.tool."];
-const HUMAN_CONTEXT_UPDATE_EXEMPT_PREFIXES: &[&str] = &["human.gate."];
-const FAN_IN_CONTEXT_UPDATE_EXEMPT_PREFIXES: &[&str] = &["parallel.fan_in."];
-const MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_PREFIXES: &[&str] = &["context.stack.child."];
-
 pub fn graph_attr_context_seed(graph: &DotGraph) -> ContextMap {
     let mut seeded = ContextMap::new();
     for (key, attr) in &graph.graph_attrs {
@@ -109,34 +100,28 @@ pub fn checkpoint_from_context(
     }
 }
 
+/// Applies a node's context updates when its write contract admits them;
+/// the Spark keys its kind emits need no declaration.
 pub fn apply_outcome_context_updates(
     node_id: &str,
-    node_attrs: &BTreeMap<String, DotAttribute>,
+    node: &FlowNode,
     context: &mut AttractorContext,
     outcome: &Outcome,
 ) -> Result<Outcome> {
-    let mut normalized_updates = normalize_context_updates(&outcome.context_updates);
-    let contract = resolve_context_write_contract(node_attrs);
-    let exemptions = context_update_contract_exemptions(node_attrs);
-    if let Some(violation) = validate_context_updates_against_contract_with_exemptions(
-        &normalized_updates,
-        &contract,
-        exemptions.exact_keys,
-        exemptions.prefixes,
-    ) {
+    if let Some(violation) = context_contract_violation(node_id, node, outcome) {
         let failure = contract_failure(node_id, outcome, &violation);
         apply_runtime_outcome_fields(node_id, context, &failure)?;
         return Ok(failure);
     }
-
-    normalized_updates.remove(NODE_OUTCOMES_KEY);
-    let normalized_outcome = Outcome {
-        context_updates: normalized_updates,
+    let mut updates = outcome.context_updates.clone();
+    updates.remove(NODE_OUTCOMES_KEY);
+    let applied = Outcome {
+        context_updates: updates,
         ..outcome.clone()
     };
-    context.apply_updates(&normalized_outcome.context_updates)?;
-    apply_runtime_outcome_fields(node_id, context, &normalized_outcome)?;
-    Ok(normalized_outcome)
+    context.apply_updates(&applied.context_updates)?;
+    apply_runtime_outcome_fields(node_id, context, &applied)?;
+    Ok(applied)
 }
 
 /// A context write outside the node's contract: a nonretryable contract
@@ -157,182 +142,46 @@ fn contract_failure(
     }
 }
 
-pub fn apply_outcome_context_updates_for_node(
-    node_id: &str,
-    node: &FlowNode,
-    context: &mut AttractorContext,
-    outcome: &Outcome,
-) -> Result<Outcome> {
-    let node_attrs = crate::flow_runtime::node_attrs_for_handler(node_id, node);
-    let mut normalized_updates = normalize_context_updates(&outcome.context_updates);
-    let contract = resolve_context_write_contract(&node_attrs);
-    let exemptions = context_update_contract_exemptions_for_node(node);
-    if let Some(violation) = validate_context_updates_against_contract_with_exemptions(
-        &normalized_updates,
-        &contract,
-        exemptions.exact_keys,
-        exemptions.prefixes,
-    ) {
-        let failure = contract_failure(node_id, outcome, &violation);
-        apply_runtime_outcome_fields(node_id, context, &failure)?;
-        return Ok(failure);
-    }
-
-    normalized_updates.remove(NODE_OUTCOMES_KEY);
-    let normalized_outcome = Outcome {
-        context_updates: normalized_updates,
-        ..outcome.clone()
-    };
-    context.apply_updates(&normalized_outcome.context_updates)?;
-    apply_runtime_outcome_fields(node_id, context, &normalized_outcome)?;
-    Ok(normalized_outcome)
-}
-
 pub(crate) fn outcome_satisfies_context_contract_for_node(
     node_id: &str,
     node: &FlowNode,
     outcome: &Outcome,
 ) -> bool {
+    context_contract_violation(node_id, node, outcome).is_none()
+}
+
+fn context_contract_violation(
+    node_id: &str,
+    node: &FlowNode,
+    outcome: &Outcome,
+) -> Option<attractor_core::ContextWriteContractViolation> {
     let node_attrs = crate::flow_runtime::node_attrs_for_handler(node_id, node);
-    let updates = normalize_context_updates(&outcome.context_updates);
     let contract = resolve_context_write_contract(&node_attrs);
-    let exemptions = context_update_contract_exemptions_for_node(node);
     validate_context_updates_against_contract_with_exemptions(
-        &updates,
+        &outcome.context_updates,
         &contract,
-        exemptions.exact_keys,
-        exemptions.prefixes,
-    )
-    .is_none()
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ContextUpdateContractExemptions {
-    exact_keys: &'static [&'static str],
-    prefixes: &'static [&'static str],
-}
-
-fn context_update_contract_exemptions(
-    node_attrs: &BTreeMap<String, DotAttribute>,
-) -> ContextUpdateContractExemptions {
-    match resolved_builtin_handler_type(node_attrs) {
-        "codergen" => ContextUpdateContractExemptions {
-            exact_keys: CODERGEN_CONTEXT_UPDATE_EXEMPT_KEYS,
-            prefixes: &[],
-        },
-        "parallel" => ContextUpdateContractExemptions {
-            exact_keys: PARALLEL_CONTEXT_UPDATE_EXEMPT_KEYS,
-            prefixes: &[],
-        },
-        "parallel.fan_in" => ContextUpdateContractExemptions {
-            exact_keys: &[],
-            prefixes: FAN_IN_CONTEXT_UPDATE_EXEMPT_PREFIXES,
-        },
-        "tool" => ContextUpdateContractExemptions {
-            exact_keys: &[],
-            prefixes: TOOL_CONTEXT_UPDATE_EXEMPT_PREFIXES,
-        },
-        "wait.human" => ContextUpdateContractExemptions {
-            exact_keys: &[],
-            prefixes: HUMAN_CONTEXT_UPDATE_EXEMPT_PREFIXES,
-        },
-        "stack.manager_loop" => ContextUpdateContractExemptions {
-            exact_keys: MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_KEYS,
-            prefixes: MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_PREFIXES,
-        },
-        _ => ContextUpdateContractExemptions {
-            exact_keys: &[],
-            prefixes: &[],
-        },
-    }
-}
-
-fn context_update_contract_exemptions_for_node(node: &FlowNode) -> ContextUpdateContractExemptions {
-    match node.kind {
-        NodeKind::AgentTask => ContextUpdateContractExemptions {
-            exact_keys: CODERGEN_CONTEXT_UPDATE_EXEMPT_KEYS,
-            prefixes: &[],
-        },
-        NodeKind::Parallel => ContextUpdateContractExemptions {
-            exact_keys: PARALLEL_CONTEXT_UPDATE_EXEMPT_KEYS,
-            prefixes: &[],
-        },
-        NodeKind::FanIn => ContextUpdateContractExemptions {
-            exact_keys: &[],
-            prefixes: FAN_IN_CONTEXT_UPDATE_EXEMPT_PREFIXES,
-        },
-        NodeKind::Tool => ContextUpdateContractExemptions {
-            exact_keys: &[],
-            prefixes: TOOL_CONTEXT_UPDATE_EXEMPT_PREFIXES,
-        },
-        NodeKind::HumanGate => ContextUpdateContractExemptions {
-            exact_keys: &[],
-            prefixes: HUMAN_CONTEXT_UPDATE_EXEMPT_PREFIXES,
-        },
-        NodeKind::Subflow => ContextUpdateContractExemptions {
-            exact_keys: MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_KEYS,
-            prefixes: MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_PREFIXES,
-        },
-        NodeKind::Start | NodeKind::Exit | NodeKind::Switch => ContextUpdateContractExemptions {
-            exact_keys: &[],
-            prefixes: &[],
-        },
-    }
-}
-
-fn resolved_builtin_handler_type(node_attrs: &BTreeMap<String, DotAttribute>) -> &'static str {
-    if let Some(handler_type) = attr_text(node_attrs, "type") {
-        if known_builtin_handler_type(&handler_type) {
-            return match handler_type.as_str() {
-                "start" => "start",
-                "exit" => "exit",
-                "codergen" => "codergen",
-                "wait.human" => "wait.human",
-                "switch" => "switch",
-                "parallel" => "parallel",
-                "parallel.fan_in" => "parallel.fan_in",
-                "tool" => "tool",
-                "stack.manager_loop" => "stack.manager_loop",
-                _ => "codergen",
-            };
-        }
-    }
-    if let Some(shape) = attr_text(node_attrs, "shape") {
-        if let Some(handler_type) = handler_type_for_shape(&shape) {
-            return handler_type;
-        }
-    }
-    "codergen"
-}
-
-pub fn known_builtin_handler_type(handler_type: &str) -> bool {
-    matches!(
-        handler_type,
-        "start"
-            | "exit"
-            | "codergen"
-            | "wait.human"
-            | "switch"
-            | "parallel"
-            | "parallel.fan_in"
-            | "tool"
-            | "stack.manager_loop"
+        &spark_keys_emitted_by(&node.kind),
     )
 }
 
-pub fn handler_type_for_shape(shape: &str) -> Option<&'static str> {
-    match shape {
-        "Mdiamond" => Some("start"),
-        "Msquare" => Some("exit"),
-        "box" => Some("codergen"),
-        "hexagon" => Some("wait.human"),
-        "diamond" => Some("switch"),
-        "component" => Some("parallel"),
-        "tripleoctagon" => Some("parallel.fan_in"),
-        "parallelogram" => Some("tool"),
-        "house" => Some("stack.manager_loop"),
-        _ => None,
+/// The Spark keys a node kind writes itself, outside any write contract.
+fn spark_keys_emitted_by(kind: &NodeKind) -> Vec<&'static str> {
+    let (prefix, sessions) = match kind {
+        NodeKind::AgentTask => ("", true),
+        NodeKind::Parallel => ("parallel.results", true),
+        NodeKind::Tool => ("tool.", false),
+        NodeKind::HumanGate => ("human.gate.", false),
+        NodeKind::Subflow => ("stack.child.", true),
+        NodeKind::Start | NodeKind::Exit | NodeKind::Switch | NodeKind::FanIn => ("", false),
+    };
+    let mut keys = Vec::new();
+    if !prefix.is_empty() {
+        keys.extend(readable_spark_keys(prefix));
     }
+    if sessions {
+        keys.push(RUNTIME_SESSIONS_KEY);
+    }
+    keys
 }
 
 pub fn seed_builtin_context(context: &mut AttractorContext, current_node: &str) -> Result<()> {
@@ -386,11 +235,7 @@ fn remember_last_node_updates(
     let updates: serde_json::Map<String, Value> = outcome
         .context_updates
         .iter()
-        .filter(|(key, _)| {
-            key.starts_with("context.")
-                && !key.starts_with("context.tool.")
-                && !key.starts_with("context.stack.")
-        })
+        .filter(|(key, _)| key.starts_with(FLOW_CONTEXT_PREFIX))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     context.set(RUNTIME_LAST_NODE_ID_KEY, json!(node_id))?;

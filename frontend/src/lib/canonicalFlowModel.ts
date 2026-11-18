@@ -86,7 +86,6 @@ const FLOW_METADATA_CORE_KEYS = new Set([
 const NODE_EXTENSION_CORE_KEYS = new Set([
     'kind',
     'config',
-    'context',
     'contracts',
     'runtime',
     'manager',
@@ -840,7 +839,6 @@ function nodeFromCanonicalAttrs(
         description: editedText(attrs, 'description', baseNode?.description),
         role: editedText(attrs, 'role', baseNode?.role),
         config: nodeConfigFromAttrs(kind, attrs, asRecord(baseNode?.config), fork),
-        context: asRecord(attrs.context) ?? asRecord(baseNode?.context) ?? undefined,
         contracts: contractsFromAttrs(attrs, kind, asRecord(baseNode?.contracts)),
         runtime: runtimeFromAttrs(attrs, asRecord(baseNode?.runtime)),
         manager: managerFromAttrs(attrs, asRecord(baseNode?.manager)),

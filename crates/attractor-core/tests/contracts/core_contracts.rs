@@ -1,9 +1,8 @@
 use std::collections::BTreeMap;
 
 use attractor_core::{
-    apply_launch_context, attr_bool, attr_i64, attr_text, evaluate_condition,
-    node_has_explicit_attr, normalize_condition_literal, normalize_context_read_key,
-    normalize_context_update_key, normalize_context_updates, parse_context_read_contract,
+    apply_launch_context, attr_bool, attr_i64, attr_text, condition_keys, evaluate_condition,
+    node_has_explicit_attr, normalize_condition_literal, parse_context_read_contract,
     parse_context_write_contract, resolve_context_read_contract, resolve_context_write_contract,
     routing_edge_from_dot_edge, validate_context_updates_against_contract, AttractorContext,
     AttractorCoreError, ContextMap, DotAttribute, DotEdge, DotValue, DotValueType, EdgeId,
@@ -113,12 +112,12 @@ fn context_set_get_string_delete_batch_validation_and_isolation() {
 
     let invalid = context_map([
         ("context.ok", json!("yes")),
-        ("tool.output", json!("blocked")),
+        ("work.output", json!("blocked")),
     ]);
     let error = context.apply_updates(&invalid).expect_err("invalid batch");
     assert!(matches!(
         error,
-        AttractorCoreError::InvalidContextNamespace { key } if key == "tool.output"
+        AttractorCoreError::InvalidContextNamespace { key } if key == "work.output"
     ));
     assert_eq!(context.get("context.ok"), None);
 
@@ -143,28 +142,13 @@ fn context_namespaces_and_path_lookup_match_runtime_contracts() {
         ("parallel.results", json!([])),
         ("stack.supervisor", json!("manager")),
         ("human.gate.selected", json!("A")),
-        ("work.item.id", json!("42")),
+        ("tool.output", json!("out")),
         ("_attractor.runtime.sessions", json!({})),
     ] {
         context.set(key, value).expect("allowed namespace");
     }
     assert!(context.set("unknown.value", json!("nope")).is_err());
-
-    let values = context_map([
-        ("context.item.title", json!("prefixed flat wins")),
-        ("context.item.id", json!("ITEM-1")),
-        ("context", json!({"item": {"title": "Nested title"}})),
-        ("object", json!({"enabled": true})),
-    ]);
-    let context = AttractorContext::from_map(values).expect("context map");
-    assert_eq!(context.get_context_path("object.enabled"), "true");
-    assert_eq!(context.get_context_path("item.id"), "ITEM-1");
-    assert_eq!(context.get_context_path("item.title"), "prefixed flat wins");
-    assert_eq!(
-        context.get_context_path("context.item.title"),
-        "prefixed flat wins"
-    );
-    assert_eq!(context.get_context_path("missing.path"), "");
+    assert!(context.set("work.item.id", json!("42")).is_err());
 }
 
 #[test]
@@ -192,20 +176,12 @@ fn launch_context_only_accepts_context_namespace_and_applies_after_graph_values(
 }
 
 #[test]
-fn context_contracts_parse_normalize_sort_and_report_violations() {
+fn context_contracts_keep_keys_literal_and_report_violations() {
     let write = parse_context_write_contract(Some(r#"["review.summary","missing_prerequisites"]"#));
     assert_eq!(write.parse_error, "");
     assert_eq!(
         write.allowed_keys,
-        ["context.review.summary", "missing_prerequisites"]
-    );
-    assert_eq!(
-        normalize_context_update_key("review.summary"),
-        "context.review.summary"
-    );
-    assert_eq!(
-        normalize_context_update_key("runtime/state.json"),
-        "runtime/state.json"
+        ["missing_prerequisites", "review.summary"]
     );
 
     let read = parse_context_read_contract(Some(
@@ -213,15 +189,7 @@ fn context_contracts_parse_normalize_sort_and_report_violations() {
     ));
     assert_eq!(
         read.declared_keys,
-        [
-            "context.review.summary",
-            "custom.live.binding",
-            "internal.run_id"
-        ]
-    );
-    assert_eq!(
-        normalize_context_read_key("custom.live.binding"),
-        "custom.live.binding"
+        ["custom.live.binding", "internal.run_id", "review.summary"]
     );
 
     let malformed = parse_context_write_contract(Some(r#"{"bad":true}"#));
@@ -233,71 +201,74 @@ fn context_contracts_parse_normalize_sort_and_report_violations() {
         invalid.parse_error,
         "invalid context update key 'runtime/state.json': path separators are not allowed"
     );
+    let padded = parse_context_read_contract(Some(r#"[" context.review.summary"]"#));
+    assert_eq!(
+        padded.parse_error,
+        "invalid context read key ' context.review.summary': keys must not contain whitespace"
+    );
 
+    // Shorthand, padded and Spark-owned keys are never matched to a
+    // declared key; they go to contract repair.
     let contract = parse_context_write_contract(Some(
-        r#"["context.review.summary","context.review.required_changes","missing_prerequisites"]"#,
+        r#"["context.review.summary","context.review.required_changes"]"#,
     ));
     let violation = validate_context_updates_against_contract(
         &context_map([
             ("review.summary", json!("ready")),
             ("context.review.extra", json!("nope")),
             ("runtime/state.json", json!("bad")),
-            ("missing_prerequisites", json!([])),
+            ("context.review.required_changes ", json!("padded")),
+            ("tool.output", json!("spark")),
+            ("context.review.summary", json!("ok")),
         ]),
         &contract,
     )
     .expect("violation");
-    assert_eq!(violation.offending_keys, ["context.review.extra"]);
-    assert_eq!(violation.invalid_keys, ["runtime/state.json"]);
+    assert_eq!(
+        violation.offending_keys,
+        ["context.review.extra", "review.summary", "tool.output"]
+    );
+    assert_eq!(
+        violation.invalid_keys,
+        ["context.review.required_changes ", "runtime/state.json"]
+    );
     assert_eq!(
         violation.allowed_keys,
-        [
-            "context.review.required_changes",
-            "context.review.summary",
-            "missing_prerequisites"
-        ]
+        ["context.review.required_changes", "context.review.summary"]
     );
+    assert!(validate_context_updates_against_contract(
+        &context_map([("context.review.summary", json!("ok"))]),
+        &contract,
+    )
+    .is_none());
 }
 
 #[test]
-fn graph_attr_contract_resolvers_and_context_update_normalization_are_runtime_ready() {
+fn graph_attr_contract_resolvers_keep_keys_literal() {
     let attrs = BTreeMap::from([
         (
             "spark.writes_context".to_string(),
-            dot_string_attr("spark.writes_context", r#"["review.summary","flat.key"]"#),
+            dot_string_attr(
+                "spark.writes_context",
+                r#"["context.review.summary","flat.key"]"#,
+            ),
         ),
         (
             "spark.reads_context".to_string(),
             dot_string_attr(
                 "spark.reads_context",
-                r#"["request.id","custom.live.binding","internal.run_id"]"#,
+                r#"["request.id","context.request.id","internal.run_id"]"#,
             ),
         ),
     ]);
 
     let write = resolve_context_write_contract(&attrs);
-    assert_eq!(
-        write.allowed_keys,
-        ["context.flat.key", "context.review.summary"]
-    );
+    assert_eq!(write.allowed_keys, ["context.review.summary", "flat.key"]);
     let read = resolve_context_read_contract(&attrs);
     assert_eq!(
         read.declared_keys,
-        [
-            "context.request.id",
-            "custom.live.binding",
-            "internal.run_id"
-        ]
+        ["context.request.id", "internal.run_id", "request.id"]
     );
-
-    let normalized = normalize_context_updates(&context_map([
-        ("review.summary", json!("ready")),
-        ("context.keep", json!(true)),
-        ("artifact_path", json!("bare stays bare")),
-    ]));
-    assert_eq!(normalized["context.review.summary"], json!("ready"));
-    assert_eq!(normalized["context.keep"], json!(true));
-    assert_eq!(normalized["artifact_path"], json!("bare stays bare"));
 }
 
 #[test]
@@ -428,13 +399,16 @@ fn switch_cases_compare_exact_json_scalars_without_coercion() {
 }
 
 #[test]
-fn conditions_match_python_resolution_and_literal_rules() {
+fn conditions_look_keys_up_exactly() {
     let context: AttractorContext = serde_json::from_value(json!({
         "values": {
             "context.flag": true,
             "context.flat.key": "flat",
             "flat.direct": "direct",
+            // Decoys: a nested object and an unprefixed key never answer
+            // for context.nested.value or context.number.
             "context": {"nested": {"value": "nested"}},
+            "context.ticket": {"id": "nested"},
             "number": 3,
             "enabled": true,
             "phrase": "a && b",
@@ -452,7 +426,10 @@ fn conditions_match_python_resolution_and_literal_rules() {
         r#"context.flag=true && number=3 && enabled"#,
         &context
     ));
-    assert!(evaluate_condition("context.nested.value=nested", &context));
+    assert!(!evaluate_condition("context.nested.value=nested", &context));
+    assert!(!evaluate_condition("context.ticket.id=nested", &context));
+    assert!(!evaluate_condition("context.number=3", &context));
+    assert!(!evaluate_condition("context.number", &context));
     assert!(evaluate_condition("flat.direct=direct", &context));
     assert!(evaluate_condition("context.flat.key=flat", &context));
     assert!(!evaluate_condition("flat.key=flat", &context));
@@ -465,6 +442,10 @@ fn conditions_match_python_resolution_and_literal_rules() {
     assert_eq!(
         normalize_condition_literal(r#""a \"b\" \\ c""#),
         "a \"b\" \\ c"
+    );
+    assert_eq!(
+        condition_keys(r#"stack.child.status=done && context.ready && phrase="a && b""#),
+        ["stack.child.status", "context.ready", "phrase"]
     );
 }
 
@@ -787,7 +768,7 @@ fn sessions_output_maps_and_removed_fidelity_fields_are_validated() {
     // `workdir_from` is only for agent tasks, and must be a valid context key.
     assert_eq!(
         rules(linear(
-            agent(json!({"workdir_from": "context.workspace.path"}), json!({})),
+            agent(json!({"workdir_from": "internal.run_workdir"}), json!({})),
             agent(json!({}), json!({}))
         )),
         Vec::new()
@@ -796,18 +777,15 @@ fn sessions_output_maps_and_removed_fidelity_fields_are_validated() {
         tool(json!({"workdir_from": "context.workspace.path"})),
         agent(json!({"workdir_from": "invalid.namespace"}), json!({})),
     ));
-    assert_eq!(
-        diagnostics
-            .iter()
-            .filter(|(rule, _)| rule == "workdir_from")
-            .count(),
-        2,
-        "{diagnostics:?}"
-    );
     assert!(diagnostics
         .iter()
         .any(|(rule, message)| rule == "workdir_from"
             && message.contains("only allowed on agent_task")));
+    assert!(diagnostics
+        .iter()
+        .any(|(rule, message)| rule == "context_key"
+            && message
+                .contains("runtime.workdir_from key 'invalid.namespace' is not a context.* key")));
 
     // Every output_map parent key must be declared in writes_context.
     let subflow = |writes: serde_json::Value| {

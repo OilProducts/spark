@@ -5,7 +5,9 @@ use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::context::validate_context_key;
+use crate::conditions::condition_keys;
+use crate::context::{ALLOWED_CONTEXT_PREFIXES, FLOW_CONTEXT_PREFIX, READABLE_SPARK_KEYS};
+use crate::context_contracts::invalid_context_key_reason;
 use crate::graph::{
     DotAttribute, DotEdge, DotGraph, DotNode, DotScopeDefaults, DotValue, DotValueType,
 };
@@ -172,8 +174,6 @@ pub struct FlowNode {
     pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<NodeConfig>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub context: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<NodeRuntimeConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -792,6 +792,10 @@ impl FlowDefinition {
             }
         }
 
+        for input in &self.inputs {
+            diagnostics.extend(context_key_diagnostic(None, "inputs", &input.key, true));
+        }
+
         for node_id in self.nodes.keys() {
             if !valid_id(node_id) {
                 diagnostics.push(node_diagnostic(
@@ -850,7 +854,7 @@ impl FlowDefinition {
         }) {
             diagnostics.extend(self.reachability_diagnostics(start_nodes.first()));
             diagnostics.extend(self.fork_diagnostics());
-            diagnostics.extend(self.switch_writer_diagnostics());
+            diagnostics.extend(self.context_source_diagnostics());
         }
 
         for diagnostic in &mut diagnostics {
@@ -895,25 +899,11 @@ impl FlowDefinition {
                 ));
             }
         }
-        for key in node.context.keys() {
-            if let Err(error) = validate_context_key(key) {
-                diagnostics.push(node_diagnostic("context_key", format!("{error}"), node_id));
-            }
+        for (field, key) in node_reads(node) {
+            diagnostics.extend(context_key_diagnostic(Some(node_id), field, &key, false));
         }
-        if let Some(contracts) = node.contracts.as_ref() {
-            for key in contracts
-                .reads_context
-                .iter()
-                .chain(contracts.writes_context.iter())
-            {
-                if let Err(error) = validate_context_key(key) {
-                    diagnostics.push(node_diagnostic(
-                        "context_contract",
-                        format!("{error}"),
-                        node_id,
-                    ));
-                }
-            }
+        for (field, key) in node_write_fields(node) {
+            diagnostics.extend(context_key_diagnostic(Some(node_id), field, key, true));
         }
         if node.kind == NodeKind::AgentTask {
             let response = node
@@ -967,8 +957,6 @@ impl FlowDefinition {
                     format!("workdir_from '{key}' is only allowed on agent_task nodes"),
                     node_id,
                 ));
-            } else if let Err(error) = validate_context_key(key) {
-                diagnostics.push(node_diagnostic("workdir_from", format!("{error}"), node_id));
             }
         }
         for (key, _) in node
@@ -982,9 +970,24 @@ impl FlowDefinition {
                 node_id,
             ));
         }
+        let writes = node
+            .contracts
+            .as_ref()
+            .map(|contracts| contracts.writes_context.as_slice())
+            .unwrap_or_default();
+        if let Some(NodeConfig::Tool { output_map, .. }) = node.config.as_ref() {
+            for key in output_map.keys().filter(|key| !writes.contains(key)) {
+                diagnostics.push(node_diagnostic(
+                    "tool_output_map",
+                    format!(
+                        "{node_id}.md: config.output_map writes '{key}', which must be listed in the node's writes_context"
+                    ),
+                    node_id,
+                ));
+            }
+        }
         if let Some(NodeConfig::Subflow {
             flow_ref,
-            input_map,
             output_map,
             ..
         }) = node.config.as_ref()
@@ -996,20 +999,15 @@ impl FlowDefinition {
                     node_id,
                 ));
             }
-            for child_key in input_map.keys() {
-                if let Err(error) = validate_context_key(child_key) {
-                    diagnostics.push(node_diagnostic(
-                        "subflow_input_map",
-                        format!("invalid child input key '{child_key}': {error}"),
-                        node_id,
-                    ));
-                }
+            // The child's keys are read from the child's context.
+            for child_key in output_map.keys() {
+                diagnostics.extend(context_key_diagnostic(
+                    Some(node_id),
+                    "config.output_map",
+                    child_key,
+                    false,
+                ));
             }
-            let writes = node
-                .contracts
-                .as_ref()
-                .map(|contracts| contracts.writes_context.as_slice())
-                .unwrap_or_default();
             for parent_key in output_map.values() {
                 if !writes.contains(parent_key) {
                     diagnostics.push(node_diagnostic(
@@ -1201,19 +1199,9 @@ impl FlowDefinition {
             (
                 NodeKind::Switch,
                 Some(NodeConfig::Switch {
-                    on,
-                    cases,
-                    otherwise,
+                    cases, otherwise, ..
                 }),
             ) => {
-                let reads = node
-                    .contracts
-                    .as_ref()
-                    .map(|contracts| contracts.reads_context.as_slice())
-                    .unwrap_or_default();
-                if !reads.contains(on) {
-                    domain(format!("switch key '{on}' must be listed in reads_context"));
-                }
                 if node
                     .contracts
                     .as_ref()
@@ -1507,34 +1495,72 @@ impl FlowDefinition {
         interior
     }
 
-    /// A switch's key needs a writer on some node that can run before it.
-    fn switch_writer_diagnostics(&self) -> Vec<FlowDiagnostic> {
-        let outgoing = self.successors();
+    /// Every `context.*` key a node reads needs a possible source: a flow
+    /// input, or a write on a node that can run before it in the same
+    /// context. Branch contexts are never merged, so a branch's writes are
+    /// visible only later in that branch, never to a sibling, the join or
+    /// anything after it. A node's own write counts only through a cycle.
+    fn context_source_diagnostics(&self) -> Vec<FlowDiagnostic> {
         let mut incoming = BTreeMap::<&str, Vec<&str>>::new();
-        for (from, targets) in &outgoing {
+        for (from, targets) in self.successors() {
             for to in targets {
                 incoming.entry(to).or_default().push(from);
             }
         }
+        let mut branch_of = BTreeMap::<&str, &str>::new();
+        for node in self.nodes.values() {
+            if let Some(NodeConfig::Parallel { branches, join, .. }) = node.config.as_ref() {
+                for entry in branches {
+                    for node_id in self.branch_interior(entry, join) {
+                        branch_of.insert(node_id, entry);
+                    }
+                }
+            }
+        }
+        let inputs = self
+            .inputs
+            .iter()
+            .map(|input| input.key.as_str())
+            .collect::<BTreeSet<_>>();
         let mut diagnostics = Vec::new();
         for (node_id, node) in &self.nodes {
-            let Some(NodeConfig::Switch { on, .. }) = node.config.as_ref() else {
+            let unsourced = node_reads(node)
+                .into_iter()
+                .filter(|(_, key)| {
+                    key.starts_with(FLOW_CONTEXT_PREFIX) && !inputs.contains(key.as_str())
+                })
+                .collect::<Vec<_>>();
+            if unsourced.is_empty() {
                 continue;
-            };
-            let predecessors = incoming.get(node_id.as_str()).cloned().unwrap_or_default();
-            let ancestors = reach(&incoming, predecessors);
-            let written = ancestors
+            }
+            // Walk back from the reader; a branch node is entered only from
+            // within its own branch.
+            let mut before = BTreeSet::new();
+            let mut queue = VecDeque::from([node_id.as_str()]);
+            while let Some(current) = queue.pop_front() {
+                for &previous in incoming.get(current).into_iter().flatten() {
+                    let visible = branch_of
+                        .get(previous)
+                        .is_none_or(|branch| branch_of.get(current) == Some(branch));
+                    if visible && before.insert(previous) {
+                        queue.push_back(previous);
+                    }
+                }
+            }
+            let written = before
                 .iter()
-                .filter(|ancestor| **ancestor != node_id.as_str())
-                .any(|ancestor| self.node_writes(ancestor).contains(on.as_str()));
-            if !written {
-                diagnostics.push(node_diagnostic(
-                    "switch_writer",
-                    format!(
-                        "{node_id}.md: no node before switch '{node_id}' writes '{on}' (writes_context or output_map)"
-                    ),
-                    node_id,
-                ));
+                .flat_map(|node_id| self.node_writes(node_id))
+                .collect::<BTreeSet<_>>();
+            for (field, key) in unsourced {
+                if !written.contains(key.as_str()) {
+                    diagnostics.push(node_diagnostic(
+                        "context_source",
+                        format!(
+                            "{node_id}.md: {field} reads '{key}', which no flow input or node that can run before it writes"
+                        ),
+                        node_id,
+                    ));
+                }
             }
         }
         diagnostics
@@ -1615,6 +1641,117 @@ impl FlowDefinition {
         }
         diagnostics
     }
+}
+
+/// Each key a node reads, with the field that reads it.
+fn node_reads(node: &FlowNode) -> Vec<(&'static str, String)> {
+    let mut reads = Vec::new();
+    if let Some(contracts) = node.contracts.as_ref() {
+        reads.extend(
+            contracts
+                .reads_context
+                .iter()
+                .map(|key| ("contracts.reads_context", key.clone())),
+        );
+    }
+    match node.config.as_ref() {
+        Some(NodeConfig::Switch { on, .. }) => reads.push(("config.on", on.clone())),
+        Some(NodeConfig::Tool { env_map, .. }) => {
+            reads.extend(env_map.values().map(|key| ("config.env_map", key.clone())))
+        }
+        Some(NodeConfig::Subflow { input_map, .. }) => reads.extend(
+            input_map
+                .values()
+                .map(|key| ("config.input_map", key.clone())),
+        ),
+        _ => {}
+    }
+    if let Some(key) = node.runtime.as_ref().and_then(|r| r.workdir_from.as_ref()) {
+        reads.push(("runtime.workdir_from", key.clone()));
+    }
+    if let Some(manager) = node.manager.as_ref() {
+        if let Some(key) = manager.child_workdir_from.as_ref() {
+            reads.push(("manager.child_workdir_from", key.clone()));
+        }
+        if let Some(condition) = manager.stop_condition.as_deref() {
+            reads.extend(
+                condition_keys(condition)
+                    .into_iter()
+                    .map(|key| ("manager.stop_condition", key)),
+            );
+        }
+    }
+    reads
+}
+
+/// Each key a node writes into a flow's context, with the field that writes
+/// it. Subflow `output_map` parent keys must also be in `writes_context`.
+fn node_write_fields(node: &FlowNode) -> Vec<(&'static str, &str)> {
+    let mut writes = node
+        .contracts
+        .iter()
+        .flat_map(|contracts| contracts.writes_context.iter())
+        .map(|key| ("contracts.writes_context", key.as_str()))
+        .collect::<Vec<_>>();
+    match node.config.as_ref() {
+        Some(NodeConfig::Tool { output_map, .. }) => writes.extend(
+            output_map
+                .keys()
+                .map(|key| ("config.output_map", key.as_str())),
+        ),
+        Some(NodeConfig::Subflow { input_map, .. }) => writes.extend(
+            input_map
+                .keys()
+                .map(|key| ("config.input_map", key.as_str())),
+        ),
+        _ => {}
+    }
+    writes
+}
+
+/// Judges one key literally: a flow writes only `context.*` keys and reads
+/// those plus [`READABLE_SPARK_KEYS`]; every other key is Spark's.
+fn context_key_diagnostic(
+    node_id: Option<&str>,
+    field: &str,
+    key: &str,
+    write: bool,
+) -> Option<FlowDiagnostic> {
+    let at = node_id.map(|id| format!("{id}.md: ")).unwrap_or_default();
+    let (rule_id, message) = if let Some(reason) = invalid_context_key_reason(key) {
+        (
+            "context_key",
+            format!("{at}{field} key '{key}' is invalid: {reason}"),
+        )
+    } else if key.starts_with(FLOW_CONTEXT_PREFIX) {
+        return None;
+    } else if !ALLOWED_CONTEXT_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+    {
+        (
+            "context_key",
+            format!("{at}{field} key '{key}' is not a context.* key; keys are literal, so name it 'context.{key}'"),
+        )
+    } else if write {
+        (
+            "context_write",
+            format!(
+                "{at}{field} writes '{key}', which Spark owns; a flow writes only context.* keys"
+            ),
+        )
+    } else if READABLE_SPARK_KEYS.contains(&key) {
+        return None;
+    } else {
+        (
+            "private_context_read",
+            format!("{at}{field} reads '{key}', which is private to Spark"),
+        )
+    };
+    Some(match node_id {
+        Some(node_id) => node_diagnostic(rule_id, message, node_id),
+        None => diagnostic(rule_id, message),
+    })
 }
 
 fn reach<'a>(
@@ -1851,7 +1988,6 @@ fn runtime_dot_node(node_id: &str, node: &FlowNode) -> DotNode {
             insert_i64_attr(&mut attrs, "max_parallel", *value as i64);
         }
     }
-    merge_value_attrs(&mut attrs, &node.context);
     merge_value_attrs(&mut attrs, &node.extensions);
     let explicit_attr_keys = attrs.keys().cloned().collect();
     DotNode {

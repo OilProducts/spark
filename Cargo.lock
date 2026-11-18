@@ -4234,6 +4234,7 @@ dependencies = [
 name = "spark-assets"
 version = "0.1.0"
 dependencies = [
+ "attractor-core",
  "attractor-dsl",
  "include_dir",
  "serde_json",

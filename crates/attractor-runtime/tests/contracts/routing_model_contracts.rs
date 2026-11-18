@@ -396,7 +396,7 @@ fn exit_code_tools_select_mapped_decisions_and_fail_on_unmapped_codes() {
     let (run, calls) = run_tool(codes("exit 1"));
     assert_eq!(run.result.status, "completed");
     assert_eq!(calls.lock().unwrap().clone(), ["repair"]);
-    assert_eq!(run.result.context["context.tool.exit_code"], json!(1));
+    assert_eq!(run.result.context["tool.exit_code"], json!(1));
 
     let (run, calls) = run_tool(codes("echo setup broke >&2; exit 2"));
     assert_eq!(run.result.status, "failed");
@@ -2174,7 +2174,7 @@ fn run_bounded_manager(
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
             runtime_context: ContextMap::from([(
-                "context.stack.child.run_id".to_string(),
+                "stack.child.run_id".to_string(),
                 json!("child-1"),
             )]),
             max_steps: None,
@@ -2198,7 +2198,7 @@ fn a_subflow_keeps_waiting_on_the_same_child_after_its_observation_bounds() {
     for manager in [
         json!({"child_autostart": false, "max_cycles": 1, "poll_interval": "0s", "actions": ["observe", "wait"]}),
         json!({"child_autostart": false, "poll_interval": "0s", "actions": ["observe", "wait"],
-            "stop_condition": "context.stack.child.status=running"}),
+            "stop_condition": "stack.child.status=running"}),
     ] {
         // The child finishes well after the bound ended observation.
         let (run, polls) = run_bounded_manager(
@@ -2619,7 +2619,7 @@ fn a_recovered_parent_keeps_its_failed_childs_routing_class() {
         temp.path(),
         subflow_fork_flow(false),
         runner,
-        ContextMap::from([("context.stack.child.run_id".to_string(), json!("child-1"))]),
+        ContextMap::from([("stack.child.run_id".to_string(), json!("child-1"))]),
     );
     assert_eq!(result.status, "failed");
     assert_eq!(result.failure_kind, Some(FailureKind::Routing));

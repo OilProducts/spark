@@ -2396,7 +2396,6 @@ impl RuntimeHandlerRunner {
             };
             let _ = context.set("current_node", json!(current.clone()));
             let outgoing_edges = outgoing_routing_edges(flow, &current).unwrap_or_default();
-            let node_attrs = crate::flow_runtime::node_attrs_for_handler(&current, &node);
             let mut request_context = context.snapshot();
             mark_unavailable_routes(&mut request_context, flow, &outgoing_edges, &visits);
             let request = NodeExecutionRequest {
@@ -2406,7 +2405,7 @@ impl RuntimeHandlerRunner {
                 context: request_context,
                 prompt: crate::flow_runtime::node_prompt(&node),
                 node: node.clone(),
-                node_attrs: node_attrs.clone(),
+                node_attrs: crate::flow_runtime::node_attrs_for_handler(&current, &node),
                 flow: flow.clone(),
                 outgoing_edges,
                 run_paths: runtime.run_paths.clone(),
@@ -2475,7 +2474,7 @@ impl RuntimeHandlerRunner {
             } else {
                 match crate::context::apply_outcome_context_updates(
                     &current,
-                    &node_attrs,
+                    &node,
                     &mut context,
                     &raw,
                 ) {
@@ -2643,7 +2642,7 @@ struct ShellOutput {
 }
 
 /// The decision a finished tool command selects through its node's one
-/// adapter, with `context.tool.*` and any `output_map` values applied
+/// adapter, with `tool.output`, `tool.exit_code` and any `output_map` values applied
 /// together. Unmapped exits, malformed JSON and undeclared decisions are
 /// execution errors carrying the exit code and stderr.
 fn tool_decision_outcome(runtime: &HandlerRuntime, output: &ShellOutput) -> Outcome {
@@ -2775,8 +2774,8 @@ fn execute_switch(runtime: &HandlerRuntime) -> Outcome {
 
 fn tool_context_updates(output: &str, exit_code: i32) -> ContextMap {
     ContextMap::from([
-        ("context.tool.output".to_string(), json!(output)),
-        ("context.tool.exit_code".to_string(), json!(exit_code)),
+        ("tool.output".to_string(), json!(output)),
+        ("tool.exit_code".to_string(), json!(exit_code)),
     ])
 }
 
@@ -2812,8 +2811,11 @@ fn resolve_tool_env_map(
                 "tool.env_map name '{name}' is not a valid environment variable name"
             ));
         }
-        let value = crate::manager_loop::context_path_value(&runtime.context, &context_key)
+        let value = runtime
+            .context
+            .get(&context_key)
             .filter(|value| !value.is_null())
+            .cloned()
             .ok_or_else(|| {
                 format!("tool.env_map key {context_key} did not resolve to a context value")
             })?;

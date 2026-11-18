@@ -231,10 +231,6 @@
             }
           ]
         },
-        "context": {
-          "additionalProperties": true,
-          "type": "object"
-        },
         "contracts": {
           "anyOf": [
             {

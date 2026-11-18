@@ -920,7 +920,7 @@ fn verify(case: Case, signals: &Signals, result: &PipelineExecutionResult) {
     let node = case.running.node();
     assert_eq!(affected["id"], json!("pre"), "{name}");
     assert!(
-        affected["context"]["context.tool.exit_code"].is_number(),
+        affected["context"]["tool.exit_code"].is_number(),
         "{name}: pre's context is gone: {affected}"
     );
     assert_eq!(affected["visits"]["pre"], json!(1), "{name}: {affected}");
@@ -1047,7 +1047,7 @@ fn verify(case: Case, signals: &Signals, result: &PipelineExecutionResult) {
 
     // No branch's context reached the parent.
     assert!(
-        !result.context.contains_key("context.tool.exit_code"),
+        !result.context.contains_key("tool.exit_code"),
         "{name}: a branch's context was promoted"
     );
     // An external stop finalizes before the fork's outcome applies, so its
@@ -2828,7 +2828,7 @@ fn a_childs_recorded_failure_survives_a_crash_before_its_branch_settled() {
         assert_eq!(affected["visits"]["pre"], json!(1), "{name}: {affected}");
         assert_eq!(affected["visits"]["sub"], json!(1), "{name}: {affected}");
         assert!(
-            affected["context"]["context.tool.exit_code"].is_number(),
+            affected["context"]["tool.exit_code"].is_number(),
             "{name}: {affected}"
         );
         assert_eq!(

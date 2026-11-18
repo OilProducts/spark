@@ -621,7 +621,7 @@ fn typed_legacy_runtime_keys_are_rejected_by_name() {
 }
 
 #[test]
-fn node_context_core_keys_do_not_override_typed_handler_attrs() {
+fn node_extension_core_keys_do_not_override_typed_handler_attrs() {
     let node = FlowNode {
         kind: NodeKind::Subflow,
         config: Some(NodeConfig::Subflow {
@@ -634,13 +634,9 @@ fn node_context_core_keys_do_not_override_typed_handler_attrs() {
             child_autostart: Some(false),
             ..ManagerLoopConfig::default()
         }),
-        context: [
+        extensions: [
             ("stack.child_flow_ref".to_string(), json!("legacy-child")),
             ("stack.child_autostart".to_string(), json!(true)),
-        ]
-        .into_iter()
-        .collect(),
-        extensions: [
             ("manager.actions".to_string(), json!("observe,steer,wait")),
             ("custom.metadata".to_string(), json!("kept")),
         ]
@@ -658,6 +654,28 @@ fn node_context_core_keys_do_not_override_typed_handler_attrs() {
     assert_eq!(attr_bool(&attrs, "stack.child_autostart", true), false);
     assert!(!attrs.contains_key("manager.actions"));
     assert!(attrs.contains_key("custom.metadata"));
+
+    // Tool bindings come only from the typed config, which load validates.
+    let tool = FlowNode {
+        kind: NodeKind::Tool,
+        config: Some(NodeConfig::Tool {
+            command: "true".to_string(),
+            env_map: BTreeMap::new(),
+            output_map: BTreeMap::new(),
+            exit_codes: BTreeMap::from([("0".to_string(), "done".to_string())]),
+            decision_field: None,
+        }),
+        extensions: [
+            ("tool.env_map".to_string(), json!({"PLAN": "review.plan"})),
+            ("tool.output_map".to_string(), json!({"tool.output": "x"})),
+        ]
+        .into_iter()
+        .collect(),
+        ..FlowNode::default()
+    };
+    let attrs = attractor_runtime::flow_runtime::node_attrs_for_handler("probe", &tool);
+    assert!(!attrs.contains_key("tool.env_map"), "{attrs:?}");
+    assert!(!attrs.contains_key("tool.output_map"), "{attrs:?}");
 }
 
 #[test]
@@ -736,7 +754,7 @@ fn subflow_node(input_map: BTreeMap<String, String>, manager: ManagerLoopConfig)
 }
 
 #[test]
-fn default_subflow_launch_applies_typed_input_map_to_child_context() {
+fn default_subflow_launch_maps_child_inputs_by_exact_key() {
     let temp = tempfile::tempdir().expect("tempdir");
     let child_source = json!({
         "schema_version": "2",
@@ -772,7 +790,9 @@ fn default_subflow_launch_applies_typed_input_map_to_child_context() {
                 [
                     ("context.child_ticket", "context.parent_ticket"),
                     ("context.child_count", "context.count"),
+                    // Decoys: a nested object field and an unprefixed key.
                     ("context.child_nested", "context.payload.ticket"),
+                    ("context.child_bare", "context.ticket"),
                 ]
                 .into_iter()
                 .map(|(child, parent)| (child.to_string(), parent.to_string()))
@@ -793,7 +813,8 @@ fn default_subflow_launch_applies_typed_input_map_to_child_context() {
     runner.register_thread_safe_handler_fn(HANDLER_CODERGEN, move |runtime| {
         let has_map = runtime.context.get("context.child_ticket") == Some(&json!("TICKET-7"))
             && runtime.context.get("context.child_count") == Some(&json!(42))
-            && runtime.context.get("context.child_nested") == Some(&json!("nested-7"));
+            && runtime.context.get("context.child_nested").is_none()
+            && runtime.context.get("context.child_bare").is_none();
         observed.store(has_map, Ordering::SeqCst);
         if has_map {
             Ok(Outcome::completed("done"))
@@ -801,7 +822,7 @@ fn default_subflow_launch_applies_typed_input_map_to_child_context() {
             Ok(Outcome::error(
                 FailureKind::Runtime,
                 format!(
-                    "child context did not include mapped input values: {:?}",
+                    "child context did not hold exactly the mapped input values: {:?}",
                     runtime.context
                 ),
                 Some(false),
@@ -820,6 +841,7 @@ fn default_subflow_launch_applies_typed_input_map_to_child_context() {
                     "context.payload".to_string(),
                     json!({ "ticket": "nested-7" }),
                 ),
+                ("ticket".to_string(), json!("bare-7")),
                 (
                     "internal.bundled_root".to_string(),
                     json!(temp.path().to_string_lossy().to_string()),
@@ -1272,7 +1294,11 @@ fn tool_env_map_with_missing_context_value_fails_before_execution() {
             BTreeMap::new(),
         ),
         temp.path(),
-        Vec::new(),
+        // Decoys: neither a nested object field nor an unprefixed key resolves.
+        vec![
+            ("context.workspace".to_string(), json!({"path": "/nested"})),
+            ("path".to_string(), json!("/bare")),
+        ],
     );
 
     assert_eq!(outcome.status, OutcomeStatus::Error);
@@ -1355,7 +1381,7 @@ fn tool_output_map_parses_json_stdout_into_context_updates() {
         Some(&json!(true))
     );
     assert_eq!(
-        outcome.context_updates.get("context.tool.exit_code"),
+        outcome.context_updates.get("tool.exit_code"),
         Some(&json!(0))
     );
 }
@@ -1385,7 +1411,7 @@ fn tool_output_map_with_non_json_stdout_fails() {
         outcome.failure_reason
     );
     assert_eq!(
-        outcome.context_updates.get("context.tool.output"),
+        outcome.context_updates.get("tool.output"),
         Some(&json!("not json")),
         "raw stdout stays observable on mapping failure"
     );
@@ -1839,7 +1865,7 @@ fn execute_reentry_node(
 fn linked_child_id(outcome: &Outcome) -> String {
     outcome
         .context_updates
-        .get("context.stack.child.run_id")
+        .get("stack.child.run_id")
         .and_then(|value| value.as_str())
         .expect("linked child id")
         .to_string()
@@ -1958,7 +1984,7 @@ fn manager_reentry_with_unacknowledged_completed_child_adopts_it() {
     // it must never be replaced by a different child.
     let relinked = second
         .context_updates
-        .get("context.stack.child.run_id")
+        .get("stack.child.run_id")
         .and_then(|value| value.as_str())
         .map(str::to_string);
     assert!(
@@ -2764,8 +2790,6 @@ fn subflow_output_map_copies_and_clears_parent_keys_when_the_child_ends() {
                 json!(temp.path().to_string_lossy()),
             ),
         ]);
-        let node_attrs =
-            attractor_runtime::flow_runtime::node_attrs_for_handler("run_child", &node);
         let outcome = runner
             .execute(node_request(
                 &flow,
@@ -2799,7 +2823,7 @@ fn subflow_output_map_copies_and_clears_parent_keys_when_the_child_ends() {
         let mut context = attractor_core::AttractorContext::from_map(parent_context).unwrap();
         let applied = attractor_runtime::apply_outcome_context_updates(
             "run_child",
-            &node_attrs,
+            &node,
             &mut context,
             &outcome,
         )

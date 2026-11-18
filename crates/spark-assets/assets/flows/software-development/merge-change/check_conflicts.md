@@ -6,9 +6,6 @@ config:
     '0': clean
   on: context.integration.conflict_count
   otherwise: conflicts
-contracts:
-  reads_context:
-  - context.integration.conflict_count
 routes:
   clean:
     to: check_target_moved

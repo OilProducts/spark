@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::artifacts::NodeArtifacts;
 use crate::context::{
-    apply_outcome_context_updates_for_node, checkpoint_from_context, clear_runtime_retry_context,
+    apply_outcome_context_updates, checkpoint_from_context, clear_runtime_retry_context,
     initialize_runtime_context, seed_builtin_context, set_runtime_retry_context, CURRENT_NODE_KEY,
 };
 use crate::error::{Result, RuntimeStorageError};
@@ -673,12 +673,8 @@ where
                     "aborted_by_user",
                 );
             }
-            let outcome = apply_outcome_context_updates_for_node(
-                &current_node,
-                node,
-                &mut context,
-                &raw_outcome,
-            )?;
+            let outcome =
+                apply_outcome_context_updates(&current_node, node, &mut context, &raw_outcome)?;
             node_outcomes.insert(current_node.clone(), outcome.clone());
             write_stage_artifacts(
                 &store,

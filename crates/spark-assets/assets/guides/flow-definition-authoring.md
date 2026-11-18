@@ -183,8 +183,8 @@ Each node is `<node id>.md`. Node ids use letters, digits, `_`, or `-`; `flow`,
 - `type` is the node kind: `start`, `exit`, `agent_task`, `human_gate`,
   `switch`, `parallel`, `fan_in`, `tool`, or `subflow`.
 - `title` is the node label.
-- `description`, `config`, `context`, `runtime`, `contracts`, `manager`,
-  `retry`, `execution`, `ui`, and `extensions` keep the `FlowNode` field names
+- `description`, `config`, `runtime`, `contracts`, `manager`, `retry`,
+  `execution`, `ui`, and `extensions` keep the `FlowNode` field names
   and shapes. `config` holds the kind's settings without `kind` (the `type`
   sets it) and without the field the body carries.
 - `routes` maps each decision the node can produce to its transition (see
@@ -200,6 +200,37 @@ The body depends on the kind:
 
 `index.md` and `log.md` are OKF-reserved and ignored. Any other file or
 directory, hidden ones included, is an error.
+
+## Context Keys
+
+A run's context is a flat map of dotted keys, and every key is literal: no
+shorthand (`review.summary` never means `context.review.summary`), no
+nested-object lookup and no trimming. A flow owns every `context.*` key;
+Spark owns every other key.
+
+- A flow writes only `context.*` keys: its `inputs`,
+  `contracts.writes_context`, tool `output_map` destinations and subflow
+  `output_map` parent keys.
+- A node reads through `contracts.reads_context`, a switch's `config.on`,
+  tool `env_map` values, `runtime.workdir_from`,
+  `manager.child_workdir_from`, subflow `input_map` values and the keys in
+  `manager.stop_condition`. It may read `context.*` keys and the Spark keys
+  below; every other Spark key is private.
+- Every `context.*` key a node reads needs a possible source: a flow input,
+  or a write on a node that can run before it. A parallel branch's writes
+  are visible only later in that branch, never to a sibling, the join or
+  anything after it. A node's own write counts only when a loop can bring
+  execution back to it.
+
+Validation names the node, field and key of every violation.
+
+| Data | Readable Spark keys |
+| --- | --- |
+| Run identity and directories | `internal.run_id`, `internal.root_run_id`, `internal.run_workdir`, `internal.runs_dir`, `internal.project_work_dir` |
+| Parallel results | `parallel.results` |
+| Latest human response | `human.gate.selected`, `human.gate.label`, `human.gate.note` |
+| Latest tool result | `tool.output`, `tool.exit_code` |
+| Child run telemetry | `stack.child.run_id`, `stack.child.status`, `stack.child.outcome`, `stack.child.outcome_reason_code`, `stack.child.outcome_reason_message`, `stack.child.active_stage`, `stack.child.completed_nodes`, `stack.child.route_trace`, `stack.child.failure_reason`, `stack.child.failure_kind`, `stack.child.retry_count`, `stack.child.retry_counts`, `stack.child.artifact_count`, `stack.child.event_count`, `stack.child.checkpoint_timestamp`, `stack.child.latest_event_at`, `stack.child.started_at`, `stack.child.ended_at`, `stack.child.intervention`, `stack.child.intervention_status`, `stack.child.intervention_delivery_mode`, `stack.child.intervention_reason` |
 
 ## Decisions and Routes
 
@@ -401,13 +432,17 @@ source run's.
 
 Tool nodes compose with context through two optional `config` maps:
 
-- `env_map` binds declared context values into named environment variables, so
+- `env_map` binds context keys into named environment variables, so
   commands consume context without shell interpolation. Every binding must
-  resolve to a non-null context value or the node fails before the command runs.
-- `output_map` parses the command's stdout as JSON and maps dotted paths into
-  declared context keys. Commands used with `output_map` must print only JSON
-  on stdout (redirect noisy tooling to `/dev/null` or stderr). Mapped keys
-  outside `context.tool.*` must be declared in `contracts.writes_context`.
+  name a key that holds a non-null value or the node fails before the
+  command runs.
+- `output_map` parses the command's stdout as JSON and maps dotted paths
+  inside it into `context.*` keys, each declared in
+  `contracts.writes_context`. Commands used with `output_map` must print only
+  JSON on stdout (redirect noisy tooling to `/dev/null` or stderr).
+
+Every tool node also sets `tool.output` and `tool.exit_code` to its latest
+result.
 
 `prepare_workspace.md`:
 
@@ -506,9 +541,6 @@ config:
     '0': clean
   on: context.integration.conflict_count
   otherwise: conflicts
-contracts:
-  reads_context:
-  - context.integration.conflict_count
 routes:
   clean:
     to: finish_merge
@@ -526,8 +558,8 @@ routes:
   execution error, never `otherwise`.
 - Each case and `otherwise` names a declared decision, and every declared
   decision is used by one of them.
-- `on` must be listed in `contracts.reads_context`, and some reachable
-  predecessor must write it (`writes_context` or an `output_map` destination).
+- `on` is the switch's declared read, so it needs a source like any other
+  read (see Context Keys).
 - A switch writes no context. Computations belong in a tool.
 
 ## Human Gates
@@ -611,7 +643,7 @@ values back, `config.output_map` (`child_key: parent_key`) copies each listed
 child key into the parent when the child run ends, whether it succeeded or
 failed; a listed child key that is absent clears the parent key. Every
 `parent_key` must be listed in the subflow node's `contracts.writes_context`.
-`context.stack.child.*` reports the child's status as before.
+`stack.child.*` reports the child's status.
 
 `config.results` maps each terminal result name the child can reach to a
 local decision, and `routes` declares exactly those decisions. Every child
@@ -767,8 +799,8 @@ sessions, isolated roles and a visit limit:
   `codebase_check` and `naive_reader` read only the document, which has to stand
   on its own. Each reviewer chooses `done` to the join
   and writes its complete findings to `context.review.lens_findings`, which
-  lands in its own `parallel.results` entry. A response itself reaches later
-  nodes only as `last_response`, cut to 200 characters.
+  lands in its own `parallel.results` entry. A response reaches later nodes
+  only through the keys it writes.
 - `review` tolerates branch execution errors, so a reviewer whose provider
   fails is recorded rather than failing the run.
 - `synthesize`, after the `fan_in`, merges the reviewers' findings from

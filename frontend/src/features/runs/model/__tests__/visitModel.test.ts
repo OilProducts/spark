@@ -338,7 +338,7 @@ describe('buildRunVisits', () => {
         status: 'completed',
         decision: 'clean',
         notes: 'No lint.',
-        context_updates: { 'context.lint.status': 'clean', 'context.tool.output': 'ok', 'context.tool.exit_code': 0 },
+        context_updates: { 'context.lint.status': 'clean', 'tool.output': 'ok', 'tool.exit_code': 0 },
       }),
       execution('typecheck', 0, { status: 'error', failure_kind: 'runtime', tolerable: false, failure_reason: 'tsc exited 2' }),
       execution('done', 1, { status: 'completed', decision: 'done' }),
@@ -361,6 +361,15 @@ describe('buildRunVisits', () => {
     expect(visitToolResult(lint)).toEqual({ output: 'ok', exitCode: 0 })
     expect(typecheck).toMatchObject({ failureKind: 'runtime', reason: 'tsc exited 2', next: null })
     expect(fanOut.executionIdentity).toBeUndefined()
+  })
+
+  it('counts exactly the context.* keys as flow writes', () => {
+    const visit = {
+      kind: 'tool',
+      status: { context_updates: { 'context.stack.note': 'mine', 'stack.child.status': 'running', 'tool.output': 'ok', 'tool.exit_code': 0 } },
+    } as unknown as RunVisit
+    expect(visitContextWrites(visit)).toEqual({ writes: [['context.stack.note', 'mine']], systemCount: 3 })
+    expect(visitToolResult(visit)).toEqual({ output: 'ok', exitCode: 0 })
   })
 
   it('reaches the same visits whichever of the journal and executions arrives first', () => {

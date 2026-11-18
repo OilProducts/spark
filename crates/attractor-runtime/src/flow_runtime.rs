@@ -50,8 +50,10 @@ const CORE_NODE_EXTENSION_KEYS: &[&str] = &[
     "tool.artifacts.stderr",
     "tool.artifacts.stdout",
     "tool.command",
+    "tool.env_map",
     "tool.hooks.post",
     "tool.hooks.pre",
+    "tool.output_map",
     "type",
 ];
 
@@ -276,11 +278,6 @@ pub fn node_attrs_for_handler(node_id: &str, node: &FlowNode) -> BTreeMap<String
                 "session_config",
                 &serde_json::json!(execution.session_config).to_string(),
             );
-        }
-    }
-    for (key, value) in &node.context {
-        if !is_core_node_attr_key(key) {
-            attrs.insert(key.clone(), json_attr(key, value.clone()));
         }
     }
     for (key, value) in &node.extensions {

@@ -543,13 +543,8 @@ export function visitMark(visit: RunVisit): VisitMark | null {
     return visit.next?.loopBack ? 'loop_back' : null
 }
 
-// System keys are runtime bookkeeping: anything outside the context.
-// namespace, plus the context stack.
-export const isSystemContextKey = (key: string): boolean => (
-    !key.startsWith('context.') || key.startsWith('context.stack.')
-)
-
-const TOOL_RESULT_KEYS = new Set(['context.tool.output', 'context.tool.exit_code'])
+// A flow owns its context.* keys; every other key is Spark's own.
+export const isSystemContextKey = (key: string): boolean => !key.startsWith('context.')
 
 export function visitContextWrites(visit: RunVisit): { writes: Array<[string, unknown]>; systemCount: number } {
     const updates = visit.status?.context_updates
@@ -559,7 +554,7 @@ export function visitContextWrites(visit: RunVisit): { writes: Array<[string, un
         for (const [key, value] of Object.entries(updates)) {
             if (isSystemContextKey(key)) {
                 systemCount += 1
-            } else if (!(visit.kind === 'tool' && TOOL_RESULT_KEYS.has(key))) {
+            } else {
                 writes.push([key, value])
             }
         }
@@ -569,8 +564,8 @@ export function visitContextWrites(visit: RunVisit): { writes: Array<[string, un
 
 export function visitToolResult(visit: RunVisit): { output: string | null; exitCode: number | null } {
     const updates = visit.status?.context_updates as Record<string, unknown> | undefined
-    const output = updates?.['context.tool.output']
-    const exitCode = updates?.['context.tool.exit_code']
+    const output = updates?.['tool.output']
+    const exitCode = updates?.['tool.exit_code']
     return {
         output: typeof output === 'string' ? output : null,
         exitCode: typeof exitCode === 'number' ? exitCode : null,

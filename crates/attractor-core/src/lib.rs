@@ -31,16 +31,18 @@ pub mod outcomes;
 /// Runtime identifier boundary.
 pub mod runtime;
 
-pub use conditions::{evaluate_condition, normalize_condition_literal, split_condition_clauses};
+pub use conditions::{
+    condition_keys, evaluate_condition, normalize_condition_literal, split_condition_clauses,
+};
 pub use context::{
-    apply_launch_context, validate_context_key, validate_launch_context, AttractorContext,
-    ContextMap, ContextValue, LaunchContext, ALLOWED_CONTEXT_PREFIXES, RUNTIME_SESSIONS_KEY,
-    RUNTIME_UNAVAILABLE_ROUTES_KEY,
+    apply_launch_context, readable_spark_keys, validate_context_key, validate_launch_context,
+    AttractorContext, ContextMap, ContextValue, LaunchContext, ALLOWED_CONTEXT_PREFIXES,
+    FLOW_CONTEXT_PREFIX, READABLE_SPARK_KEYS, RUNTIME_SESSIONS_KEY, RUNTIME_UNAVAILABLE_ROUTES_KEY,
 };
 pub use context_contracts::{
-    normalize_context_read_key, normalize_context_update_key, normalize_context_updates,
-    parse_context_read_contract, parse_context_write_contract, resolve_context_read_contract,
-    resolve_context_write_contract, validate_context_updates_against_contract,
+    invalid_context_key_reason, parse_context_read_contract, parse_context_write_contract,
+    resolve_context_read_contract, resolve_context_write_contract,
+    validate_context_updates_against_contract,
     validate_context_updates_against_contract_with_exemptions, ContextReadContract,
     ContextWriteContract, ContextWriteContractViolation,
 };

@@ -205,7 +205,7 @@ describe('RunStatusItem', () => {
     const reason = 'tool exited with unmapped code 2; stderr: TS2322'
     const branch = (fork: string, number: number, outcome: VisitOutcome) => visit('typecheck', number, outcome, {
       key: `${fork}-typecheck`, parentKey: fork, kind: 'tool', reason, number, count: 2,
-      status: { context_updates: { 'context.tool.output': 'Found 1 error.', 'context.tool.exit_code': 2 } },
+      status: { context_updates: { 'tool.output': 'Found 1 error.', 'tool.exit_code': 2 } },
     })
     const forkReason = `branch typecheck (index 0) failed at typecheck: ${reason}`
     // The fork failed, was retried and failed again the same way.
@@ -225,7 +225,7 @@ describe('RunStatusItem', () => {
   it("shows the end of a failed command's stdout beside its stderr, where a test runner names what failed", () => {
     const stdout = [...Array.from({ length: 500 }, (_, index) => `test case_${index} ... ok`), '---- contracts::broken stdout ----', "thread 'contracts::broken' panicked", 'test result: FAILED. 500 passed; 1 failed'].join('\n')
     renderStatus(run({ status: 'failed', last_error: 'tool exited with unmapped code 101; stderr: error: test failed' }), [
-      visit('validate', 1, 'failed', { kind: 'tool', status: { context_updates: { 'context.tool.output': stdout, 'context.tool.exit_code': 101 } } }),
+      visit('validate', 1, 'failed', { kind: 'tool', status: { context_updates: { 'tool.output': stdout, 'tool.exit_code': 101 } } }),
     ])
     // The summary says the command failed; its stderr is the detail.
     expect(screen.getByTestId('run-status-failure-detail')).toHaveTextContent(/^error: test failed$/)
@@ -784,7 +784,7 @@ describe('RunVisitsCard returned evidence', () => {
   it("shows a tool's stdout once, under its command", () => {
     const returned = openOnly([visit('check', 1, 'completed', {
       kind: 'tool', decision: 'done', reason: '42 passed',
-      status: { status: 'completed', decision: 'done', notes: '42 passed', context_updates: { 'context.tool.output': '42 passed', 'context.tool.exit_code': 0 } },
+      status: { status: 'completed', decision: 'done', notes: '42 passed', context_updates: { 'tool.output': '42 passed', 'tool.exit_code': 0 } },
     })])
     expect(within(returned).queryByTestId('run-visit-reason')).toBeNull()
     expect(screen.getByTestId('run-visit-tool')).toHaveTextContent('42 passed')
@@ -794,7 +794,7 @@ describe('RunVisitsCard returned evidence', () => {
   it("opens a failed command's output at its end, where the error is, and reaches it from the keyboard", () => {
     vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockReturnValue(900)
     const tool = (outcome: VisitOutcome, exitCode: number) => visit('check', 1, outcome, {
-      kind: 'tool', status: { context_updates: { 'context.tool.output': 'line 1\nline 2', 'context.tool.exit_code': exitCode } },
+      kind: 'tool', status: { context_updates: { 'tool.output': 'line 1\nline 2', 'tool.exit_code': exitCode } },
     })
     openOnly([tool('failed', 101)])
     const output = screen.getByRole('region', { name: 'Command output' })

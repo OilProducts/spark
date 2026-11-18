@@ -274,11 +274,8 @@ fn startup_recovery_resumes_a_linked_orphaned_child_in_place() {
             "internal.run_workdir".to_string(),
             json!(workdir.to_string_lossy().to_string()),
         ),
-        (
-            "context.stack.child.run_id".to_string(),
-            json!("tree-child"),
-        ),
-        ("context.stack.child.status".to_string(), json!("running")),
+        ("stack.child.run_id".to_string(), json!("tree-child")),
+        ("stack.child.status".to_string(), json!("running")),
     ]);
     let root_paths = prepare_fresh_run(
         &store,
@@ -1523,7 +1520,7 @@ fn canceling_a_crashed_run_through_the_route_settles_before_it_publishes() {
         assert_eq!(affected["route_trace"], json!(["pre", work]), "{affected}");
         assert_eq!(affected["visits"]["pre"], json!(1), "{affected}");
         assert!(
-            affected["context"]["context.tool.exit_code"].is_number(),
+            affected["context"]["tool.exit_code"].is_number(),
             "{affected}"
         );
         assert!(affected.get("error").is_none(), "{affected}");
@@ -1813,8 +1810,8 @@ fn seed_failed_retry_tree(settings: &SparkSettings) -> RunStore {
             ),
         ]);
         if let Some(child) = child {
-            context.insert("context.stack.child.run_id".into(), json!(child));
-            context.insert("context.stack.child.status".into(), json!("failed"));
+            context.insert("stack.child.run_id".into(), json!(child));
+            context.insert("stack.child.status".into(), json!("failed"));
         }
         let completed = if node == "branch" {
             vec!["start".into(), node.into()]
