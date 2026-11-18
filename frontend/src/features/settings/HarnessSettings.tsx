@@ -205,6 +205,8 @@ function AcpHarness({ id, entry, provider, checking, onCheck, onEdit, onRemove }
     return <HarnessRow name={name} detail={<>ACP · <code>acp:{id}</code>{command && <> · runs <code>{command}</code></>}</>} status={status}
         problem={entry.error ?? (status === 'checking' || status === 'ready' ? null : provider?.error || null)} next={acpNextStep(status)}
         chat={status === 'ready' ? provider?.chat : undefined} flow={status === 'ready' ? provider?.flow : undefined}>
+        {status === 'ready' && provider?.chat?.state === 'unsupported' && provider.capabilities?.pinned_instructions?.state === 'unsupported'
+            && <p className="text-sm">To use it in chat: if the agent can take instructions through an argument or environment variable, edit it and set Pinned instructions.</p>}
         {env.length > 0 && <p className="text-xs text-muted-foreground">Environment: {env.join(', ')} (values hidden)</p>}
         {status === 'ready' && capabilities.length > 0 && <details>
             <SettingsSummary>What Spark can use</SettingsSummary>

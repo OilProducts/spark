@@ -71,10 +71,15 @@ it('shows each harness with its status and next step, and edits an ACP harness w
 
 it('adds an ACP harness only once its ID, name and program are valid, and removes one after confirmation', async () => {
     vi.mocked(fetchAgentSettings).mockResolvedValue(view)
-    vi.mocked(fetchHarnessCatalog).mockResolvedValue({ models: [], providers: { codex: { status: 'available', error: null, setup_status: 'ready', chat: supported, flow: supported } } })
+    vi.mocked(fetchHarnessCatalog).mockResolvedValue({ models: [], providers: { codex: { status: 'available', error: null, setup_status: 'ready', chat: supported, flow: supported },
+        'acp:helper': { status: 'available', error: null, setup_status: 'ready', chat: { state: 'unsupported', reason: 'Chat pins instructions.' }, flow: supported,
+            capabilities: { pinned_instructions: { state: 'unsupported', reason: 'No channel.' } } } } })
     vi.mocked(saveAcpHarness).mockResolvedValue(view)
     const user = userEvent.setup()
     render(<DialogProvider><HarnessSettings /></DialogProvider>)
+
+    const helper = await screen.findByRole('group', { name: 'Helper' })
+    expect(await within(helper).findByText(/To use it in chat:.*set Pinned instructions/)).toBeInTheDocument()
 
     await user.click(await screen.findByRole('button', { name: 'Add ACP harness' }))
     const form = screen.getByRole('group', { name: 'Add ACP harness' })

@@ -335,6 +335,26 @@ impl Connection {
         tail.lines.iter().cloned().collect::<Vec<_>>().join("\n")
     }
 
+    /// The code the process exited with by itself, waiting up to `within`
+    /// for it to be reaped and its stderr to close, so `stderr` holds what
+    /// it left; `None` while it runs or once a signal, such as a stop's,
+    /// ended it.
+    pub(crate) fn exit_code_within(&self, within: Duration) -> Option<i32> {
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            let status = self.status.borrow().clone();
+            let code = status
+                .exited
+                .map(|exited| exited.ok().and_then(|exit| exit.code()));
+            match code {
+                Some(None) => return None,
+                Some(code) if status.stderr_closed => return code,
+                _ if std::time::Instant::now() >= deadline => return code.flatten(),
+                _ => thread::sleep(SUPERVISOR_POLL),
+            }
+        }
+    }
+
     #[cfg(test)]
     fn status(&self) -> Status {
         self.status.borrow().clone()

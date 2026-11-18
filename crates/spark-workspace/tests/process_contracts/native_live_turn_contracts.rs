@@ -1188,6 +1188,8 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         harness("Copied", copied.to_str().unwrap(), json!({}));
     changed["agents"]["acp_harnesses"]["broken"] = json!({"name": "Broken", "executable": "agent",
         "env": {"SPARK_HOME": "broken-secret-sentinel"}});
+    changed["agents"]["acp_harnesses"]["quits"] = json!({"name": "Quits", "executable": "sh",
+        "args": ["-c", "echo no agent config found >&2; exit 3"]});
     std::fs::write(
         settings.config_dir.join("spark.toml"),
         toml::to_string(&changed).unwrap(),
@@ -1204,6 +1206,14 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         .unwrap()
         .contains("SPARK_HOME"));
     assert!(!response.to_string().contains("broken-secret-sentinel"));
+    let quits = &providers["acp:quits"];
+    assert_eq!(quits["setup_status"], "unreachable");
+    let error = quits["error"].as_str().unwrap();
+    assert!(
+        error.contains("quit during setup with exit code 3")
+            && error.contains("no agent config found"),
+        "a harness that quits says so, with what it wrote: {error}"
+    );
     std::fs::remove_file(&copied).unwrap();
     assert_eq!(
         discover()["providers"]["acp:copied"]["setup_status"],

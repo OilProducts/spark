@@ -400,6 +400,9 @@ struct Probed {
 
 struct ProbeFailure {
     unauthenticated: bool,
+    /// The connection failed rather than the harness answering, as when it
+    /// quits.
+    lost: bool,
     message: String,
 }
 
@@ -407,6 +410,7 @@ impl From<String> for ProbeFailure {
     fn from(message: String) -> Self {
         Self {
             unauthenticated: false,
+            lost: false,
             message,
         }
     }
@@ -458,18 +462,26 @@ fn probe(
         _ => format!("launch failed: {error}"),
     })?;
     let outcome = result.recv_timeout(PROBE_TIMEOUT);
+    // A harness that quit explains a lost connection better than the
+    // connection's own error.
+    let exited = matches!(outcome, Ok(Err(ref failure)) if failure.lost)
+        .then(|| connection.exit_code_within(Duration::from_millis(500)))
+        .flatten();
     let stderr = connection.stderr();
     // Stops the process and waits for its worker.
     drop(connection);
     drop(instruction_file);
-    let mut failure = match outcome {
-        Ok(Ok(probed)) => return Ok(probed),
-        Ok(Err(failure)) => failure,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => ProbeFailure::from(format!(
+    let mut failure = match (outcome, exited) {
+        (Ok(Ok(probed)), _) => return Ok(probed),
+        (Ok(Err(_)), Some(exited)) => ProbeFailure::from(format!(
+            "the harness quit during setup with exit code {exited}"
+        )),
+        (Ok(Err(failure)), None) => failure,
+        (Err(std::sync::mpsc::RecvTimeoutError::Timeout), _) => ProbeFailure::from(format!(
             "the harness did not finish setup within {}s",
             PROBE_TIMEOUT.as_secs()
         )),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+        (Err(std::sync::mpsc::RecvTimeoutError::Disconnected), _) => {
             ProbeFailure::from("the ACP connection worker stopped".to_string())
         }
     };
@@ -540,7 +552,12 @@ async fn probe_protocol(
         .name("spark")
         .connect_with(transport, async |cx| Ok(probe_session(&cx, &cwd).await))
         .await
-        .unwrap_or_else(|error| Err(describe(&error).into()))
+        .unwrap_or_else(|error| {
+            Err(ProbeFailure {
+                lost: true,
+                ..describe(&error).into()
+            })
+        })
         .map_err(|error| match failure.get() {
             Some(unusable) => unusable.clone().into(),
             None => error,
@@ -551,6 +568,8 @@ async fn probe_protocol(
 async fn probe_session(cx: &ConnectionTo<Agent>, cwd: &Path) -> Result<Probed, ProbeFailure> {
     let failed = |error: agent_client_protocol::Error, method: &str| ProbeFailure {
         unauthenticated: is_auth_error(&error),
+        lost: agent_client_protocol::is_incoming_transport_closed(&error)
+            || agent_client_protocol::is_connection_terminated(&error),
         message: setup_error(&error, method),
     };
     let init = cx
