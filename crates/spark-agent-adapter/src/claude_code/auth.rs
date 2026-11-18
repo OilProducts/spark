@@ -62,6 +62,8 @@ pub struct ClaudeCodeConnection {
 }
 
 struct PendingLogin {
+    /// The settings it was started with.
+    native: NativeAgentSettings,
     status: Arc<Mutex<ClaudeCodeConnectionStatus>>,
     stdin: Option<ChildStdin>,
     cancelled: Arc<AtomicBool>,
@@ -78,10 +80,29 @@ impl Drop for PendingLogin {
 }
 
 impl ClaudeCodeConnection {
+    /// Ends a sign-in started with another program or configuration
+    /// directory than `native`'s, which would sign that one in instead.
+    fn end_stale(&mut self, native: &NativeAgentSettings) {
+        let key = |native: &NativeAgentSettings| {
+            (
+                native.claude_binary.clone(),
+                native.claude_config_dir.clone(),
+            )
+        };
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| key(&pending.native) != key(native))
+        {
+            self.pending = None;
+        }
+    }
+
     pub fn status(
         &mut self,
         native: &NativeAgentSettings,
     ) -> Result<ClaudeCodeConnectionStatus, ClaudeCodeError> {
+        self.end_stale(native);
         if let Some(pending) = &self.pending {
             let status = lock(&pending.status)?.clone();
             if status.status != "pending" {
@@ -97,6 +118,7 @@ impl ClaudeCodeConnection {
         native: &NativeAgentSettings,
         completed: impl FnOnce(&ClaudeCodeConnectionStatus) + Send + 'static,
     ) -> Result<ClaudeCodeConnectionStatus, ClaudeCodeError> {
+        self.end_stale(native);
         if let Some(pending) = &self.pending {
             let status = lock(&pending.status)?.clone();
             if status.status == "pending" {
@@ -158,6 +180,7 @@ impl ClaudeCodeConnection {
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_status = Arc::clone(&status);
         let worker_cancelled = Arc::clone(&cancelled);
+        let started_with = native.clone();
         let native = native.clone();
         let worker = thread::spawn(move || {
             let started = Instant::now();
@@ -200,6 +223,7 @@ impl ClaudeCodeConnection {
             completed(&next);
         });
         self.pending = Some(PendingLogin {
+            native: started_with,
             status,
             stdin,
             cancelled,
@@ -208,10 +232,13 @@ impl ClaudeCodeConnection {
         Ok(snapshot)
     }
 
+    /// Passes `code` to the sign-in started with `native`'s program.
     pub fn submit_code(
         &mut self,
+        native: &NativeAgentSettings,
         code: &str,
     ) -> Result<ClaudeCodeConnectionStatus, ClaudeCodeError> {
+        self.end_stale(native);
         let code = code.trim();
         // One line only: anything more would feed the CLI extra input.
         if code.is_empty() || code.contains(['\n', '\r']) {

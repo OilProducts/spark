@@ -350,7 +350,7 @@ const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(180);
 const PROBE_INSTRUCTIONS: &str = "Spark is checking this harness's capabilities. No task follows.";
 
 /// A capability's effective state for Spark's use of a harness: `supported`,
-/// `unsupported` or `unverified`, and why.
+/// `unsupported` or `unverified`, or for flows `limited`, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Capability {
     pub state: String,
@@ -396,14 +396,19 @@ pub struct AcpDiscovery {
     pub modes: Option<Value>,
 }
 
-/// A sign-in method a harness offers that Spark can start with
-/// [`sign_in`].
+/// A sign-in method a harness offers: one Spark starts with [`sign_in`],
+/// or, with `terminal`, one the user runs in a terminal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AcpAuthMethod {
     pub id: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The command to run, as words: the variables the method sets as
+    /// `NAME=value`, then the harness's program, arguments and the method's
+    /// own arguments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<Vec<String>>,
 }
 
 /// What initialize and the temporary session reported.
@@ -488,8 +493,12 @@ fn probe(
     let secrets = environment_values(&command);
     let (done, result) = std::sync::mpsc::channel();
     let method = sign_in.map(str::to_string);
+    let program = std::iter::once(&harness.executable)
+        .chain(&harness.args)
+        .cloned()
+        .collect();
     let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
-        probe_protocol(endpoints, cwd, method, done)
+        probe_protocol(endpoints, cwd, program, method, done)
     })
     .map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => {
@@ -501,7 +510,10 @@ fn probe(
         Some(_) => (SIGN_IN_TIMEOUT, "signing in"),
         None => (PROBE_TIMEOUT, "setup"),
     };
-    let outcome = result.recv_timeout(timeout);
+    let outcome = match sign_in {
+        Some(_) => wait_for_sign_in(harness_id, &result),
+        None => result.recv_timeout(timeout),
+    };
     // A harness that quit explains a lost connection better than the
     // connection's own error.
     let exited = matches!(outcome, Ok(Err(ref failure)) if failure.lost)
@@ -531,16 +543,90 @@ fn probe(
         failure.message = format!("{}; stderr tail:\n{tail}", failure.message);
     }
     failure.message = redact_all(failure.message, &secrets);
+    // A harness may echo what it was launched with in its sign-in methods too.
+    for method in &mut failure.auth_methods {
+        method.name = redact_all(std::mem::take(&mut method.name), &secrets);
+        method.description = method
+            .description
+            .take()
+            .map(|text| redact_all(text, &secrets));
+        for word in method.terminal.iter_mut().flatten() {
+            *word = redact_all(std::mem::take(word), &secrets);
+        }
+    }
     Err(failure)
 }
 
+/// Sign-ins in progress, each with its harness ID and the flag that
+/// cancels it.
+static SIGNING_IN: Mutex<Vec<(String, Arc<AtomicBool>)>> = Mutex::new(Vec::new());
+
+/// Cancels the sign-ins in progress for `harness_id`, stopping the harness;
+/// whether there was one.
+pub fn cancel_sign_in(harness_id: &str) -> bool {
+    let signing = SIGNING_IN.lock().unwrap_or_else(|error| error.into_inner());
+    let mut found = false;
+    for (_, cancelled) in signing.iter().filter(|(id, _)| id == harness_id) {
+        cancelled.store(true, Ordering::Relaxed);
+        found = true;
+    }
+    found
+}
+
+/// What a sign-in found, waiting until [`SIGN_IN_TIMEOUT`] unless it is
+/// cancelled with [`cancel_sign_in`].
+fn wait_for_sign_in(
+    harness_id: &str,
+    result: &std::sync::mpsc::Receiver<Result<Probed, ProbeFailure>>,
+) -> Result<Result<Probed, ProbeFailure>, std::sync::mpsc::RecvTimeoutError> {
+    use std::sync::mpsc::RecvTimeoutError::Timeout;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    SIGNING_IN
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push((harness_id.to_string(), Arc::clone(&cancelled)));
+    let started = std::time::Instant::now();
+    let outcome = loop {
+        match result.recv_timeout(Duration::from_millis(100)) {
+            Err(Timeout) if cancelled.load(Ordering::Relaxed) => {
+                break Ok(Err(ProbeFailure {
+                    unauthenticated: true,
+                    message: "sign-in was cancelled".into(),
+                    ..Default::default()
+                }))
+            }
+            Err(Timeout) if started.elapsed() < SIGN_IN_TIMEOUT => {}
+            outcome => break outcome,
+        }
+    };
+    SIGNING_IN
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .retain(|(_, flag)| !Arc::ptr_eq(flag, &cancelled));
+    outcome
+}
+
 /// `message` with every value in `secrets` redacted, and a run of lines
-/// that were all secret shown as one.
+/// that were all secret shown as one. A line that is one line of a value of
+/// several lines is redacted however short.
+// ponytail: a line under 4 bytes of such a value stays where it is part of a longer line.
 fn redact_all(message: String, secrets: &[String]) -> String {
     let message = secrets
         .iter()
         .fold(message, |message, value| redact(message, value));
-    let mut lines = message.split('\n').collect::<Vec<_>>();
+    let parts = secrets
+        .iter()
+        .filter(|value| value.contains('\n'))
+        .flat_map(|value| value.lines().map(str::trim))
+        .filter(|line| !line.is_empty())
+        .collect::<std::collections::HashSet<_>>();
+    let mut lines = message
+        .split('\n')
+        .map(|line| match parts.contains(line.trim()) {
+            true => "[redacted]",
+            false => line,
+        })
+        .collect::<Vec<_>>();
     lines.dedup_by(|line, earlier| line.trim() == "[redacted]" && earlier.trim() == "[redacted]");
     lines.join("\n")
 }
@@ -572,12 +658,15 @@ fn redact(message: String, value: &str) -> String {
 }
 
 /// The environment values `command` sets, longest first, so one that
-/// contains another is hidden whole. A value of several lines adds each line
+/// contains another is hidden whole, except Spark's own core variables such
+/// as `HOME`, which would hide paths. A value of several lines adds each line
 /// of 4 or more characters, since output may hold only some of them.
 fn environment_values(command: &Command) -> Vec<String> {
     let mut values = command
         .get_envs()
-        .filter_map(|(_, value)| value?.to_str())
+        .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
+        .filter(|(key, value)| !crate::local_environment::is_inherited_core(key, value))
+        .map(|(_, value)| value)
         .flat_map(|value| {
             let lines = value.lines().map(str::trim).filter(|line| line.len() >= 4);
             std::iter::once(value).chain(lines.filter(move |_| value.contains('\n')))
@@ -593,6 +682,7 @@ fn environment_values(command: &Command) -> Vec<String> {
 async fn probe_protocol(
     endpoints: Endpoints,
     cwd: PathBuf,
+    program: Vec<String>,
     sign_in: Option<String>,
     done: std::sync::mpsc::Sender<Result<Probed, ProbeFailure>>,
 ) {
@@ -606,7 +696,7 @@ async fn probe_protocol(
         .v1()
         .name("spark")
         .connect_with(transport, async |cx| {
-            Ok(probe_session(&cx, &cwd, sign_in.as_deref()).await)
+            Ok(probe_session(&cx, &cwd, &program, sign_in.as_deref()).await)
         })
         .await
         .unwrap_or_else(|error| {
@@ -623,16 +713,23 @@ async fn probe_protocol(
     let _ = done.send(result);
 }
 
+/// `program` is the harness's program and arguments, which a terminal
+/// sign-in method extends.
 async fn probe_session(
     cx: &ConnectionTo<Agent>,
     cwd: &Path,
+    program: &[String],
     sign_in: Option<&str>,
 ) -> Result<Probed, ProbeFailure> {
     let failed = |error: agent_client_protocol::Error, method: &str| ProbeFailure {
         unauthenticated: is_auth_error(&error),
         lost: agent_client_protocol::is_incoming_transport_closed(&error)
             || agent_client_protocol::is_connection_terminated(&error),
-        message: setup_error(&error, method),
+        // Shown where the user signs in, so without the turn's pointer there.
+        message: match is_auth_error(&error) {
+            true => auth_error(&error),
+            false => setup_error(&error, method),
+        },
         auth_methods: Vec::new(),
     };
     let init = cx
@@ -650,7 +747,6 @@ async fn probe_session(
         )
         .into());
     }
-    // Terminal methods need a client capability Spark does not advertise.
     let auth_methods = init
         .auth_methods
         .iter()
@@ -659,10 +755,30 @@ async fn probe_session(
                 id: method.id.to_string(),
                 name: method.name.clone(),
                 description: method.description.clone(),
+                terminal: None,
+            }),
+            // Spark has no terminal to run it in; the user runs it in theirs.
+            AuthMethod::Terminal(method) => Some(AcpAuthMethod {
+                id: method.id.to_string(),
+                name: method.name.clone(),
+                description: method.description.clone(),
+                terminal: Some(
+                    BTreeMap::from_iter(&method.env)
+                        .into_iter()
+                        .map(|(name, value)| format!("{name}={value}"))
+                        .chain(program.iter().chain(&method.args).cloned())
+                        .collect(),
+                ),
             }),
             _ => None,
         })
         .collect::<Vec<_>>();
+    if let Some(method) = auth_methods
+        .iter()
+        .find(|method| Some(method.id.as_str()) == sign_in && method.terminal.is_some())
+    {
+        return Err(format!("{} is run in a terminal, not by Spark", method.name).into());
+    }
     let failed = |error, method: &str| ProbeFailure {
         auth_methods: auth_methods.clone(),
         ..failed(error, method)
@@ -845,19 +961,43 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
             None => unsupported("The agent offers no choice of reasoning effort."),
         },
     );
+    // A step's model and reasoning effort are applied or the step refused.
+    let refused = [
+        ("model_selection", "model"),
+        ("reasoning_effort", "reasoning effort"),
+    ]
+    .into_iter()
+    .filter(|(name, _)| !capabilities[*name].supported())
+    .map(|(_, what)| what)
+    .collect::<Vec<_>>();
+    let flow = match refused.join(" or ") {
+        none if none.is_empty() => Capability::new(
+            "supported",
+            "Steps run on it; one that needs messages during a turn or subagent control is refused.",
+        ),
+        refused => Capability::new(
+            "limited",
+            format!(
+                "A step that sets a {refused} is refused: the agent offers no choice of {refused}. Steps that leave it to the agent run, unless they need messages during a turn or subagent control."
+            ),
+        ),
+    };
     AcpDiscovery {
         setup_status: "ready".to_string(),
         error: None,
         auth_methods: Vec::new(),
         capabilities,
         chat,
-        flow: Capability::new(
-            "supported",
-            "Flow steps need no pinned instructions; a step that needs messages during a turn or subagent control is refused.",
-        ),
+        flow,
         modes: options
             .is_empty()
-            .then(|| probed.session.get("modes").filter(|modes| !modes.is_null()).cloned())
+            .then(|| {
+                probed
+                    .session
+                    .get("modes")
+                    .filter(|modes| !modes.is_null())
+                    .cloned()
+            })
             .flatten(),
         config_options: options,
     }
@@ -1460,9 +1600,12 @@ impl<'a> Turn<'a> {
             Some(text) if !plan.channel_rendered => {
                 if capabilities.session_capabilities.system_prompt.is_none() {
                     return Err(format!(
-                        "this work carries pinned system instructions, but ACP harness {id} \
-                         advertises no systemPrompt and its registration declares no \
-                         system_instructions channel"
+                        "this chat or flow step has pinned instructions, which ACP harness \
+                         {id} can't take: the agent doesn't take ACP system prompts, and its \
+                         registration has no Pinned instructions setting. If the agent can \
+                         take instructions through an argument or environment variable, set \
+                         Pinned instructions when you edit it in Settings > Models & \
+                         accounts > Agent harnesses"
                     ));
                 }
                 Some(SystemPrompt::new(vec![ContentBlock::from(text.clone())]))
@@ -2002,11 +2145,15 @@ fn reset_reason(error: &agent_client_protocol::Error, method: &str) -> Result<St
     ))
 }
 
+fn auth_error(error: &agent_client_protocol::Error) -> String {
+    format!("the harness requires authentication: {}", describe(error))
+}
+
 fn setup_error(error: &agent_client_protocol::Error, method: &str) -> String {
     if is_auth_error(error) {
         format!(
-            "the harness requires authentication: {}. Sign in from Settings > Models & accounts > Agent harnesses, then retry",
-            describe(error)
+            "{}. Sign in from Settings > Models & accounts > Agent harnesses, then retry",
+            auth_error(error)
         )
     } else {
         format!("{method} failed: {}", describe(error))

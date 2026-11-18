@@ -999,9 +999,12 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     ]);
     let modes =
         json!({"currentModeId": "code", "availableModes": [{"id": "code", "name": "Code"}]});
-    // Twelve lines, more than the stderr tail Spark keeps.
+    // Twelve lines, more than the stderr tail Spark keeps, some of them short.
     let key = (1..=12)
-        .map(|line| format!("key-line-{line}-sentinel"))
+        .map(|line| match line % 3 {
+            0 => format!("Q{line:02}"),
+            _ => format!("key-line-{line}-sentinel"),
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let harness = |name: &str, executable: &str, script: Value| {
@@ -1015,6 +1018,8 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     let signed_in = temp.path().join("locked-signed-in");
     let browser =
         json!({"id": "browser", "name": "Browser sign-in", "description": "Opens your browser."});
+    let terminal = json!({"id": "tui", "name": "Terminal", "type": "terminal", "args": ["login"],
+        "env": {"LOGIN_MODE": "device"}, "description": "Signs in with discovery-secret-sentinel."});
     let settings = settings(temp.path());
     let project = temp.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
@@ -1025,7 +1030,7 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
             "fake": harness("Fake ACP", FAKE_ACP, json!({"system_prompt": true, "resume": true, "config_options": options})),
             "plain": harness("Plain", FAKE_ACP, json!({"modes": modes})),
             "locked": harness("Locked", FAKE_ACP, json!({"new_error": {"code": -32000, "message": "Authentication required: run locked login"},
-                "auth_methods": [browser, {"id": "tui", "name": "Terminal", "type": "terminal", "args": ["login"]}], "signed_in": signed_in})),
+                "auth_methods": [browser, terminal], "signed_in": signed_in})),
             "leaky": harness("Leaky", FAKE_ACP, json!({"echo_env": ["AGENT_TOKEN", "AGENT_PIN"], "new_error": {"code": -32603, "message": "model catalog unavailable"}})),
             "spills": harness("Spills", FAKE_ACP, json!({"echo_env": ["AGENT_KEY"], "new_error": {"code": -32603, "message": "bad key"}})),
             "missing": harness("Missing", "/nonexistent/acp-agent", json!({})),
@@ -1108,7 +1113,10 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         plain["chat"]["state"], "unsupported",
         "no systemPrompt or channel"
     );
-    assert_eq!(plain["flow"]["state"], "supported");
+    assert_eq!(
+        plain["flow"]["state"], "limited",
+        "a step that sets a model is refused: {plain}"
+    );
     assert_eq!(
         plain["capabilities"]["model_selection"]["state"],
         "unsupported"
@@ -1134,8 +1142,13 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     );
     assert_eq!(
         locked["auth_methods"],
-        json!([browser]),
-        "only methods Spark can start"
+        json!([browser, {"id": "tui", "name": "Terminal", "description": "Signs in with [redacted].",
+            "terminal": ["LOGIN_MODE=device", FAKE_ACP, "login"]}]),
+        "a terminal method is the command to run, and what the harness echoes stays hidden"
+    );
+    assert!(
+        !locked["error"].as_str().unwrap().contains("Settings"),
+        "shown where the user signs in, so it points nowhere else: {locked}"
     );
     assert_eq!(locked["chat"]["state"], "unverified");
     assert_eq!(
@@ -1174,7 +1187,7 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         providers["acp:spills"]
     );
     assert!(
-        !response.to_string().contains("key-line-"),
+        !response.to_string().contains("key-line-") && !response.to_string().contains("Q06"),
         "no line of a value of several lines shows: {}",
         providers["acp:spills"]
     );
@@ -1221,6 +1234,12 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         harness("Copied", copied.to_str().unwrap(), json!({}));
     changed["agents"]["acp_harnesses"]["broken"] = json!({"name": "Broken", "executable": "agent",
         "env": {"SPARK_HOME": "broken-secret-sentinel"}});
+    changed["agents"]["acp_harnesses"]["waits"] = harness(
+        "Waits",
+        FAKE_ACP,
+        json!({"new_error": {"code": -32000, "message": "Authentication required"},
+        "auth_methods": [browser], "authenticate_waits": true}),
+    );
     changed["agents"]["acp_harnesses"]["quits"] = json!({"name": "Quits", "executable": "sh",
         "args": ["-c", "echo no agent config found >&2; exit 3"]});
     std::fs::write(
@@ -1264,4 +1283,19 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         discover()["providers"]["acp:locked"]["setup_status"],
         "ready"
     );
+
+    // A sign-in the user leaves unfinished can be cancelled.
+    let waiting = std::thread::spawn({
+        let (settings, project) = (settings.clone(), project.clone());
+        move || spark_workspace::models::acp_sign_in(&settings, &project, "waits", "browser")
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !spark_agent_adapter::acp::cancel_sign_in("waits") {
+        assert!(std::time::Instant::now() < deadline, "the sign-in started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let cancelled = waiting.join().unwrap().unwrap();
+    assert_eq!(cancelled["setup_status"], "unauthenticated", "{cancelled}");
+    assert!(cancelled["error"].as_str().unwrap().contains("cancelled"));
+    assert!(!spark_agent_adapter::acp::cancel_sign_in("waits"));
 }

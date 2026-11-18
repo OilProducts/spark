@@ -4,10 +4,10 @@ import { useEffect } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { HarnessSettings } from '../HarnessSettings'
-import { fetchAgentSettings, fetchHarnessCatalog, HIDDEN_ENV_VALUE, saveAcpHarness, signInAcpHarness, type AgentSettingsView } from '../services/executionSettings'
+import { cancelAcpSignIn, fetchAgentSettings, fetchHarnessCatalog, HIDDEN_ENV_VALUE, saveAcpHarness, signInAcpHarness, type AgentSettingsView } from '../services/executionSettings'
 
 vi.mock('../services/executionSettings', async (original) => ({ ...await original<typeof import('../services/executionSettings')>(),
-    fetchAgentSettings: vi.fn(), fetchHarnessCatalog: vi.fn(), saveAcpHarness: vi.fn(), saveAgentSettings: vi.fn(), signInAcpHarness: vi.fn() }))
+    fetchAgentSettings: vi.fn(), fetchHarnessCatalog: vi.fn(), saveAcpHarness: vi.fn(), saveAgentSettings: vi.fn(), signInAcpHarness: vi.fn(), cancelAcpSignIn: vi.fn() }))
 const { SignIn } = vi.hoisted(() => ({ SignIn: ({ onStatus }: { onStatus?: (state: 'connected') => void }) => {
     useEffect(() => onStatus?.('connected'), [onStatus])
     return <p>sign-in controls</p>
@@ -163,4 +163,59 @@ it('keeps a misconfigured registration’s values in its form, and stops a save 
     await waitFor(() => expect(within(edit).queryByText(/changed in another window/)).not.toBeInTheDocument())
     expect(within(edit).getByLabelText('Name', { exact: true })).toHaveValue('Helper')
     expect(within(edit).getByLabelText('Name of environment variable 2')).toHaveValue('OTHER')
+})
+
+it('keeps what it can’t show, says what flows refuse, and leaves details as the user set them across checks', async () => {
+    const odd: AgentSettingsView = { ...view, acp_harnesses: { helper: { registration: { name: 'Helper', executable: '/bin/helper', args: ['--prompt', 'line one\nline two', ''] }, error: null } } }
+    vi.mocked(fetchAgentSettings).mockResolvedValue(odd)
+    const ready = { models: [], providers: { 'acp:helper': { status: 'available' as const, error: null, setup_status: 'ready' as const, chat: supported,
+        flow: { state: 'limited' as const, reason: 'A step that sets a model is refused.' }, capabilities: { model_selection: { state: 'unsupported' as const, reason: 'No choice.' } } } } }
+    vi.mocked(fetchHarnessCatalog).mockResolvedValue(ready)
+    vi.mocked(saveAcpHarness).mockResolvedValue(odd)
+    const user = userEvent.setup()
+    render(<DialogProvider><HarnessSettings /></DialogProvider>)
+
+    const helper = await screen.findByRole('group', { name: 'Helper' })
+    expect(await within(helper).findByText('Partly')).toBeInTheDocument()
+    expect(within(helper).getByText(/A step that sets a model is refused/)).toBeInTheDocument()
+    // Opened details stay open when a check finds it ready again.
+    await user.click(within(helper).getByText('Details'))
+    await user.click(within(helper).getByRole('button', { name: 'Check Helper again' }))
+    await waitFor(() => expect(fetchHarnessCatalog).toHaveBeenCalledTimes(2))
+    expect(await within(helper).findByText('Ready')).toBeInTheDocument()
+    expect(within(helper).getByText('Details').closest('details')).toHaveAttribute('open')
+
+    await user.click(within(helper).getByRole('button', { name: 'Edit Helper' }))
+    const form = screen.getByRole('group', { name: 'Edit Helper' })
+    await user.type(within(form).getByLabelText('Name', { exact: true }), ' Two')
+    await user.click(within(form).getByRole('button', { name: 'Save' }))
+    expect(saveAcpHarness).toHaveBeenLastCalledWith('one', 'helper', expect.objectContaining({ args: ['--prompt', 'line one\nline two', ''] }))
+    // The save's message gives what the check found, not that it is still checking.
+    expect(await screen.findByText('Saved Helper Two. Status: Ready.')).toBeInTheDocument()
+})
+
+it('shows a terminal sign-in as the command to run, and cancels a sign-in left unfinished', async () => {
+    vi.mocked(fetchAgentSettings).mockResolvedValue(view)
+    vi.mocked(fetchHarnessCatalog).mockResolvedValue({ models: [], providers: {
+        'acp:helper': { status: 'unavailable', error: 'the harness requires authentication', setup_status: 'unauthenticated',
+            auth_methods: [{ id: 'browser', name: 'Browser' }, { id: 'tui', name: 'Terminal login', terminal: ['MODE=device', '/bin/helper', '--acp', 'log in'] }] },
+    } })
+    let finish = (_: { setup_status: string; error: string | null }) => {}
+    vi.mocked(signInAcpHarness).mockReturnValue(new Promise((resolve) => { finish = resolve }))
+    vi.mocked(cancelAcpSignIn).mockImplementation(async () => { finish({ setup_status: 'unauthenticated', error: 'sign-in was cancelled' }) })
+    const user = userEvent.setup()
+    render(<DialogProvider><HarnessSettings /></DialogProvider>)
+
+    const helper = await screen.findByRole('group', { name: 'Helper' })
+    expect(await within(helper).findByText("MODE=device /bin/helper --acp 'log in'")).toBeInTheDocument()
+    expect(within(helper).getByRole('button', { name: 'Copy Terminal login command' })).toBeInTheDocument()
+    expect(within(helper).getByText(/Spark also sets API_TOKEN/)).toBeInTheDocument()
+    expect(within(screen.getByRole('navigation', { name: 'Harnesses to fix' })).getByRole('button', { name: 'Helper (signed out)' })).toBeInTheDocument()
+
+    await user.click(within(helper).getByRole('button', { name: 'Sign in to Helper with Browser' }))
+    expect(await within(helper).findByText('Signing in…')).toBeInTheDocument()
+    await user.click(within(helper).getByRole('button', { name: 'Cancel sign-in' }))
+    expect(cancelAcpSignIn).toHaveBeenCalledWith('helper')
+    expect(await within(helper).findByText('Signed out')).toBeInTheDocument()
+    expect(within(helper).queryByRole('alert')).not.toBeInTheDocument()
 })

@@ -8,7 +8,8 @@
 //! during the prompt, each waiting for its reply unless it `exit`s or is
 //! `withdraw`n with `$/cancel_request`. `auth_methods` are offered at
 //! initialize; `authenticate` creates the `signed_in` file, after which
-//! `new_error` no longer applies, as a harness keeps its own sign-in.
+//! `new_error` no longer applies, as a harness keeps its own sign-in, or
+//! with `authenticate_waits` never answers, as a sign-in the user leaves.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -222,6 +223,9 @@ impl Agent {
             "authenticate" => {
                 if let Some(error) = script.get("authenticate_error") {
                     return self.fail(&id, error);
+                }
+                if script["authenticate_waits"] == true {
+                    return;
                 }
                 if let Some(path) = script["signed_in"].as_str() {
                     std::fs::write(path, "").expect("fake ACP sign-in");

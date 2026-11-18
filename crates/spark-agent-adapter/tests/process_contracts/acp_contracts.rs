@@ -380,7 +380,9 @@ fn acp_pinned_instructions_need_system_prompt_or_a_declared_channel() {
     );
     let error = run(&no_channel, |_| {}).0.err().expect("refused");
     assert!(
-        error.contains("systemPrompt") && error.contains("system_instructions"),
+        error.contains("doesn't take ACP system prompts")
+            && error.contains("Pinned instructions")
+            && error.contains("Agent harnesses"),
         "{error}"
     );
     assert!(received(dir.path(), "session/new").is_empty());

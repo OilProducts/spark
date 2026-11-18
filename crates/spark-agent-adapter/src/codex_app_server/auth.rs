@@ -105,6 +105,8 @@ pub struct CodexConnection {
 }
 
 struct PendingLogin {
+    /// The settings it was started with.
+    native: NativeAgentSettings,
     status: Arc<Mutex<CodexConnectionStatus>>,
     cancelled: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -120,11 +122,32 @@ impl Drop for PendingLogin {
 }
 
 impl CodexConnection {
+    /// Ends a sign-in started with another program than `native`'s, which
+    /// would sign that one in instead.
+    fn end_stale(&mut self, native: &NativeAgentSettings) {
+        let key = |native: &NativeAgentSettings| {
+            [
+                &native.codex_binary,
+                &native.codex_runtime_root,
+                &native.codex_seed_dir,
+            ]
+            .map(Option::clone)
+        };
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| key(&pending.native) != key(native))
+        {
+            self.pending = None;
+        }
+    }
+
     pub fn status(
         &mut self,
         working_dir: &Path,
         native: &NativeAgentSettings,
     ) -> Result<CodexConnectionStatus, CodexAppServerError> {
+        self.end_stale(native);
         if let Some(pending) = &self.pending {
             let status = pending.status.lock().map_err(|_| state_error())?.clone();
             if status.status != "pending" {
@@ -164,6 +187,7 @@ impl CodexConnection {
         method: CodexLoginMethod,
         completed: impl FnOnce(&CodexConnectionStatus) + Send + 'static,
     ) -> Result<CodexConnectionStatus, CodexAppServerError> {
+        self.end_stale(native);
         if let Some(pending) = &self.pending {
             let status = pending.status.lock().map_err(|_| state_error())?.clone();
             if status.status == "pending" {
@@ -219,6 +243,7 @@ impl CodexConnection {
             }
         });
         self.pending = Some(PendingLogin {
+            native: native.clone(),
             status: shared_status,
             cancelled,
             worker: Some(worker),

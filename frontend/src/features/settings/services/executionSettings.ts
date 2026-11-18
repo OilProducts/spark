@@ -162,6 +162,11 @@ export function saveAcpHarness(revision: string, id: string, registration: AcpHa
         body: JSON.stringify({ expected_revision: revision, section: 'acp_harness', value: { id, registration } }) }, '/workspace/api/settings', parseAgents)
 }
 
+/** Stops the sign-in in progress for ACP harness `id`. */
+export function cancelAcpSignIn(id: string): Promise<unknown> {
+    return fetchWorkspaceJsonValidated(`/projects/acp-sign-in?harness_id=${encodeURIComponent(id)}`, { method: 'DELETE' }, '/workspace/api/projects/acp-sign-in', (payload) => payload)
+}
+
 /** Signs in to ACP harness `id` with a method it offered, waiting while the user finishes; what its check then found. */
 export function signInAcpHarness(id: string, methodId: string): Promise<{ setup_status: string; error: string | null }> {
     return fetchWorkspaceJsonValidated('/projects/acp-sign-in', { method: 'POST', headers: { 'Content-Type': 'application/json' },

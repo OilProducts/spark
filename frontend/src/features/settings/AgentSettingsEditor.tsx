@@ -27,8 +27,13 @@ const permissionModes = { default: 'Default', acceptEdits: 'Accept edits', bypas
 export function AgentSettingsEditor() {
     const editor = useAgentSettingsEditor()
     const [newToolNames, setNewToolNames] = useState({ tool_output_limits: '', line_limits: '' })
-    return <Card><CardHeader><h2 className="text-base font-semibold">Agent session limits</h2></CardHeader><CardContent className="space-y-3">
+    return <Card id="agent-session-limits" className="scroll-mt-4"><CardHeader><h2 className="text-base font-semibold">Agent session limits</h2></CardHeader><CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
+        {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error} className="text-sm text-destructive">{error}</p>)}
+        {!editor.draft && editor.saved?.repair_defaults && <div className="space-y-1">
+            <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset what can’t be read</Button>
+            <p className="text-xs text-muted-foreground">Shows these settings with the ones that can’t be read set to their defaults, for you to check and save. ACP harnesses are kept as they are.</p>
+        </div>}
         {editor.draft && <fieldset disabled={editor.pending} className="space-y-3">
             {limitFields.map(([key, label, help, unit]) => {
                 const value = editor.draft![key]

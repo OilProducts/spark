@@ -79,7 +79,7 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
             "runtime" => json!(RuntimeSettings::default()),
             "models" => json!(ModelSettings::default()),
             "providers" => json!(spark_common::provider_settings::ProviderConnections::default()),
-            "agents" => json!(spark_common::agent_settings::SessionConfig::default()),
+            "agents" => agents_repair(&document),
             _ => json!(spark_common::settings::ConnectionSettings::default()),
         };
         let view = (|| -> WorkspaceResult<Value> {
@@ -293,11 +293,45 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
     Ok(result)
 }
 
+/// The agents section's defaults with each stored field that reads on its
+/// own, so a repair resets only what can't be read. Registrations are saved
+/// apart and kept as stored.
+fn agents_repair(document: &SettingsDocument) -> Value {
+    use spark_common::agent_settings::SessionConfig;
+    let mut repaired = json!(SessionConfig::default());
+    repaired
+        .as_object_mut()
+        .map(|fields| fields.remove("acp_harnesses"));
+    let stored = document
+        .values
+        .get("agents")
+        .and_then(toml::Value::as_table);
+    for (key, value) in stored.into_iter().flatten() {
+        let mut candidate = repaired.clone();
+        candidate[key] = json!(value);
+        if serde_json::from_value::<SessionConfig>(candidate.clone())
+            .is_ok_and(|agents| agents.validate().is_ok())
+        {
+            repaired = candidate;
+        }
+    }
+    repaired
+}
+
 /// Each stored ACP registration as written, with its environment values and
 /// instruction-channel environment templates hidden, and why it cannot be
 /// used when it cannot.
 fn acp_harnesses_view(path: &std::path::Path, document: &SettingsDocument) -> Value {
-    let misconfigured = spark_storage::settings::agents_section(path, document)
+    // Each registration is checked on its own, whatever the rest of the section holds.
+    let mut registrations_only = document.clone();
+    if let Some(agents) = registrations_only
+        .values
+        .get_mut("agents")
+        .and_then(toml::Value::as_table_mut)
+    {
+        agents.retain(|key, _| key == "acp_harnesses");
+    }
+    let misconfigured = spark_storage::settings::agents_section(path, &registrations_only)
         .map(|(_, misconfigured)| misconfigured)
         .unwrap_or_default();
     let hide = |env: Option<&mut Value>, stand_in: Value| match env {

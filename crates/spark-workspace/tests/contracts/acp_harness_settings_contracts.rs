@@ -128,4 +128,31 @@ fn acp_harnesses_save_one_at_a_time_keep_hidden_values_and_a_misconfigured_one_s
     );
     assert!(harnesses["typo"]["error"].is_null());
     assert_eq!(stored("agent"), kept);
+
+    // An agents section that can't be read still shows each registration's
+    // problem, and its repair resets only what can't be read.
+    let mut limits = view["agents"]["stored"].clone();
+    limits["max_tool_rounds_per_input"] = json!(7);
+    save("agents", limits).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("max_turns = 5"), "{text}");
+    fs::write(&path, text.replace("max_turns = 5", "max_turns = 'nine'")).unwrap();
+    let view = workspace_settings(&settings).unwrap();
+    assert!(view["agents"]["validation_errors"][0]
+        .as_str()
+        .unwrap()
+        .contains("max_turns"));
+    assert!(view["agents"]["acp_harnesses"]["wrongtype"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("`args`"));
+    let repair = view["agents"]["repair_defaults"].clone();
+    assert_eq!(repair["max_turns"], 0);
+    assert_eq!(repair["max_tool_rounds_per_input"], 7);
+    save("agents", repair).unwrap();
+    assert_eq!(stored("agent"), kept);
+    assert_eq!(
+        workspace_settings(&settings).unwrap()["agents"]["validation_errors"],
+        json!([])
+    );
 }

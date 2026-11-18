@@ -55,7 +55,8 @@ export const harnessSetupStatuses = ['ready', 'unreachable', 'unauthenticated', 
 export type HarnessSetupStatus = typeof harnessSetupStatuses[number]
 
 export interface ProjectChatModelCapability {
-    state: 'supported' | 'unsupported' | 'unverified'
+    /** `limited`: some of it is refused, as `reason` says. */
+    state: 'supported' | 'limited' | 'unsupported' | 'unverified'
     reason: string
 }
 
@@ -73,14 +74,14 @@ export interface ProjectChatModelProviderStatusResponse {
     config_options?: Record<string, unknown>[]
     /** Legacy session modes, only when the harness reports no config options. */
     modes?: { currentModeId?: string; availableModes?: { id: string; name: string; description?: string | null }[] }
-    /** For an ACP harness that needs sign-in: the methods it offers that Spark can start. */
-    auth_methods?: { id: string; name: string; description?: string }[]
+    /** For an ACP harness that needs sign-in: the methods it offers, Spark starts each but one with `terminal`, the command the user runs. */
+    auth_methods?: { id: string; name: string; description?: string; terminal?: string[] }[]
 }
 
 function parseCapability(value: unknown, endpoint: string): ProjectChatModelCapability {
     const entry = expectObjectRecord(value, endpoint)
-    if (entry.state !== 'supported' && entry.state !== 'unsupported' && entry.state !== 'unverified') {
-        throw new ApiSchemaError(endpoint, 'Expected capability state to be supported, unsupported or unverified.')
+    if (entry.state !== 'supported' && entry.state !== 'limited' && entry.state !== 'unsupported' && entry.state !== 'unverified') {
+        throw new ApiSchemaError(endpoint, 'Expected capability state to be supported, limited, unsupported or unverified.')
     }
     return { state: entry.state, reason: expectString(entry.reason, endpoint, 'reason') }
 }
@@ -106,7 +107,8 @@ function parseProviderDetails(entry: Record<string, unknown>, endpoint: string):
         ...(Array.isArray(entry.auth_methods) ? { auth_methods: entry.auth_methods.map((value) => {
             const method = expectObjectRecord(value, endpoint)
             return { id: expectString(method.id, endpoint, 'id'), name: expectString(method.name, endpoint, 'name'),
-                ...(typeof method.description === 'string' ? { description: method.description } : {}) }
+                ...(typeof method.description === 'string' ? { description: method.description } : {}),
+                ...(Array.isArray(method.terminal) ? { terminal: method.terminal.map((word) => expectString(word, endpoint, 'terminal')) } : {}) }
         }) } : {}),
     }
 }
