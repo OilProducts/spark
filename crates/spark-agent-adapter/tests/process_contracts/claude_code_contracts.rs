@@ -1840,6 +1840,48 @@ fn claude_code_sign_in_reports_cli_failures_and_cancels_without_signing_in() {
 }
 
 #[test]
+fn a_stuck_auth_status_fails_instead_of_blocking_the_connection() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let pid_file = temp.path().join("pid");
+    let program = temp.path().join("claude");
+    std::fs::write(
+        &program,
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nexec sleep 600\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &program,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let native = spark_common::agent_settings::NativeAgentSettings {
+        claude_binary: Some(program.to_string_lossy().into()),
+        claude_config_dir: Some(temp.path().to_string_lossy().into()),
+        ..Default::default()
+    };
+
+    let started = std::time::Instant::now();
+    let error = ClaudeCodeConnection::default().status(&native).unwrap_err();
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert!(
+        error.message.contains("did not report its sign-in status"),
+        "{}",
+        error.message
+    );
+    // The stuck process is stopped, not left behind.
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    let alive = std::process::Command::new("kill")
+        .args(["-0", pid.trim()])
+        .status()
+        .unwrap()
+        .success();
+    assert!(!alive, "stuck auth status {pid} still running");
+}
+
+#[test]
 fn configured_claude_config_dir_reaches_auth_status_login_and_turns() {
     let _lock = ENV_LOCK
         .lock()

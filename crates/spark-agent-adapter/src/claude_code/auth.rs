@@ -2,12 +2,12 @@
 //! relays the sign-in link and a pasted code; it never reads or stores tokens.
 
 use super::{claude_command, launch_error, ClaudeCodeError};
-use crate::local_environment::spawn_process_group;
+use crate::local_environment::{spawn_process_group, terminate_process_group};
 use serde::Serialize;
 use serde_json::Value;
 use spark_common::agent_settings::NativeAgentSettings;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Stdio};
+use std::process::{ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -17,6 +17,8 @@ pub const AUTH_REQUIRED_MESSAGE: &str =
     "Claude Code needs sign-in. Sign in to Claude, then retry your message or run.";
 
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
+/// How long `claude auth status` may take before Spark reports it as stuck.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Matches the CLI's own auth errors ("Failed to authenticate: …",
 /// "Not logged in · Please run /login"), not agent text that mentions logins.
@@ -290,9 +292,23 @@ fn read_status(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let output = spawn_process_group(command)
-        .and_then(Child::wait_with_output)
-        .map_err(|error| launch_error(&executable, error))?;
+    let child = spawn_process_group(command).map_err(|error| launch_error(&executable, error))?;
+    let group = child.id();
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(child.wait_with_output());
+    });
+    let output = match receiver.recv_timeout(STATUS_TIMEOUT) {
+        Ok(output) => output.map_err(|error| launch_error(&executable, error))?,
+        Err(_) => {
+            terminate_process_group(group, None);
+            return Err(ClaudeCodeError::runtime(format!(
+                "Claude Code ({}) did not report its sign-in status within {}s.",
+                executable.display(),
+                STATUS_TIMEOUT.as_secs()
+            )));
+        }
+    };
     let report = serde_json::from_slice::<Value>(&output.stdout)
         .ok()
         .filter(|report| report.get("loggedIn").is_some_and(Value::is_boolean))
