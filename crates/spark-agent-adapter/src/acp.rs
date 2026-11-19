@@ -387,8 +387,6 @@ pub struct AcpDiscovery {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub auth_methods: Vec<AcpAuthMethod>,
     pub capabilities: BTreeMap<String, Capability>,
-    pub chat: Capability,
-    pub flow: Capability,
     /// The temporary session's config options exactly as the harness sent
     /// them: IDs, value IDs, types, labels, order and groups.
     pub config_options: Vec<Value>,
@@ -414,7 +412,6 @@ pub struct AcpAuthMethod {
 
 /// What initialize and the temporary session reported.
 struct Probed {
-    system_prompt: bool,
     resume: bool,
     load: bool,
     /// The raw `session/new` result.
@@ -449,7 +446,7 @@ pub fn discover(
     inheritance: EnvironmentInheritancePolicy,
     cwd: &Path,
 ) -> AcpDiscovery {
-    discovery(harness, probe(harness_id, harness, inheritance, cwd, None))
+    discovery(probe(harness_id, harness, inheritance, cwd, None))
 }
 
 /// Signs in to `harness` with the method `method_id` it offered, waiting for
@@ -462,10 +459,13 @@ pub fn sign_in(
     cwd: &Path,
     method_id: &str,
 ) -> AcpDiscovery {
-    discovery(
+    discovery(probe(
+        harness_id,
         harness,
-        probe(harness_id, harness, inheritance, cwd, Some(method_id)),
-    )
+        inheritance,
+        cwd,
+        Some(method_id),
+    ))
 }
 
 fn probe(
@@ -490,8 +490,6 @@ fn probe(
         instructions,
         &BTreeMap::new(),
     )?;
-    // A harness may echo what it was launched with, in an error or on stderr.
-    let secrets = environment_values(&command);
     let (done, result) = std::sync::mpsc::channel();
     let method = sign_in.map(str::to_string);
     let program = std::iter::once(&harness.executable)
@@ -543,18 +541,6 @@ fn probe(
     if !tail.is_empty() && !failure.unauthenticated {
         failure.message = format!("{}; stderr tail:\n{tail}", failure.message);
     }
-    failure.message = redact_all(failure.message, &secrets);
-    // A harness may echo what it was launched with in its sign-in methods too.
-    for method in &mut failure.auth_methods {
-        method.name = redact_all(std::mem::take(&mut method.name), &secrets);
-        method.description = method
-            .description
-            .take()
-            .map(|text| redact_all(text, &secrets));
-        for word in method.terminal.iter_mut().flatten() {
-            *word = redact_all(std::mem::take(word), &secrets);
-        }
-    }
     Err(failure)
 }
 
@@ -605,79 +591,6 @@ fn wait_for_sign_in(
         .unwrap_or_else(|error| error.into_inner())
         .retain(|(_, flag)| !Arc::ptr_eq(flag, &cancelled));
     outcome
-}
-
-/// `message` with every value in `secrets` redacted, and a run of lines
-/// that were all secret shown as one. A line that is one line of a value of
-/// several lines is redacted however short.
-// ponytail: a line under 4 bytes of such a value stays where it is part of a longer line.
-fn redact_all(message: String, secrets: &[String]) -> String {
-    let message = secrets
-        .iter()
-        .fold(message, |message, value| redact(message, value));
-    let parts = secrets
-        .iter()
-        .filter(|value| value.contains('\n'))
-        .flat_map(|value| value.lines().map(str::trim))
-        .filter(|line| !line.is_empty())
-        .collect::<std::collections::HashSet<_>>();
-    let mut lines = message
-        .split('\n')
-        .map(|line| match parts.contains(line.trim()) {
-            true => "[redacted]",
-            false => line,
-        })
-        .collect::<Vec<_>>();
-    lines.dedup_by(|line, earlier| line.trim() == "[redacted]" && earlier.trim() == "[redacted]");
-    lines.join("\n")
-}
-
-/// `message` with every occurrence of `value` replaced. A value under 4
-/// bytes is replaced wherever it stands as its own word, so `PIN=abc` loses
-/// its value while "abcde" and error codes keep their text.
-fn redact(message: String, value: &str) -> String {
-    let joined = |outer: Option<char>, inner: Option<char>| {
-        outer
-            .zip(inner)
-            .is_some_and(|(outer, inner)| outer.is_alphanumeric() && inner.is_alphanumeric())
-    };
-    let (mut redacted, mut last) = (String::with_capacity(message.len()), 0);
-    for (at, _) in message.match_indices(value) {
-        let end = at + value.len();
-        if value.len() < 4
-            && (joined(message[..at].chars().next_back(), value.chars().next())
-                || joined(message[end..].chars().next(), value.chars().next_back()))
-        {
-            continue;
-        }
-        redacted.push_str(&message[last..at]);
-        redacted.push_str("[redacted]");
-        last = end;
-    }
-    redacted.push_str(&message[last..]);
-    redacted
-}
-
-/// The environment values `command` sets, longest first, so one that
-/// contains another is hidden whole, except Spark's own core variables such
-/// as `HOME`, which would hide paths. A value of several lines adds each line
-/// of 4 or more characters, since output may hold only some of them.
-fn environment_values(command: &Command) -> Vec<String> {
-    let mut values = command
-        .get_envs()
-        .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
-        .filter(|(key, value)| !crate::local_environment::is_inherited_core(key, value))
-        .map(|(_, value)| value)
-        .flat_map(|value| {
-            let lines = value.lines().map(str::trim).filter(|line| line.len() >= 4);
-            std::iter::once(value).chain(lines.filter(move |_| value.contains('\n')))
-        })
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-    values.dedup();
-    values
 }
 
 async fn probe_protocol(
@@ -808,7 +721,6 @@ async fn probe_session(
         .map_err(|error| failed(error, "session/new"))?;
     let capabilities = init.agent_capabilities;
     Ok(Probed {
-        system_prompt: capabilities.session_capabilities.system_prompt.is_some(),
         resume: capabilities.session_capabilities.resume.is_some(),
         load: capabilities.load_session,
         session,
@@ -858,7 +770,7 @@ pub fn select_option<'a>(options: &'a [Value], category: &str) -> Option<&'a Val
 
 /// Spark's effective support, from what the probe saw and what this backend
 /// implements.
-fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpDiscovery {
+fn discovery(probed: Result<Probed, ProbeFailure>) -> AcpDiscovery {
     let unsupported = |reason: &str| Capability::new("unsupported", reason);
     // Fixed by this implementation, whatever a harness reports.
     let mut capabilities = BTreeMap::from([
@@ -871,21 +783,12 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
     let probed = match probed {
         Ok(probed) => probed,
         Err(failure) => {
-            for name in [
-                "pinned_instructions",
-                "session_resume",
-                "model_selection",
-                "reasoning_effort",
-            ] {
+            for name in ["session_resume", "model_selection", "reasoning_effort"] {
                 capabilities.insert(
                     name.to_string(),
                     Capability::new("unverified", "Known once the agent is ready."),
                 );
             }
-            let unknown = Capability::new(
-                "unverified",
-                "Known once the agent is ready; see its problem.",
-            );
             return AcpDiscovery {
                 setup_status: if failure.unauthenticated {
                     "unauthenticated"
@@ -896,8 +799,6 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
                 error: Some(failure.message),
                 auth_methods: failure.auth_methods,
                 capabilities,
-                chat: unknown.clone(),
-                flow: unknown,
                 config_options: Vec::new(),
                 modes: None,
             };
@@ -907,38 +808,6 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let offered = |id: &str, value: &str| {
-        options.iter().any(|option| {
-            option["id"] == id
-                && option["type"] == "select"
-                && select_values(option)
-                    .iter()
-                    .any(|entry| entry["value"] == value)
-        })
-    };
-    let pinned = match &harness.system_instructions {
-        Some(channel) => match channel.config.iter().find(|(id, value)| !offered(id, value)) {
-            Some((id, value)) => unsupported(&format!(
-                "Its Pinned instructions setting needs session setting {id}={value}, which the agent doesn't offer."
-            )),
-            None => Capability::new("supported", "Passed as its Pinned instructions setting says."),
-        },
-        None if probed.system_prompt => {
-            Capability::new("supported", "The agent takes ACP system prompts.")
-        }
-        None => unsupported("The agent doesn't take ACP system prompts, and its registration has no Pinned instructions setting."),
-    };
-    let chat = match pinned.supported() {
-        true => Capability::new(
-            "supported",
-            "Spark can give it a chat's pinned instructions.",
-        ),
-        false => unsupported(&format!(
-            "Chats need pinned instructions, which it can't take. {}",
-            pinned.reason
-        )),
-    };
-    capabilities.insert("pinned_instructions".to_string(), pinned);
     capabilities.insert(
         "session_resume".to_string(),
         if probed.resume {
@@ -966,34 +835,11 @@ fn discovery(harness: &AcpHarness, probed: Result<Probed, ProbeFailure>) -> AcpD
             None => unsupported("The agent offers no choice of reasoning effort."),
         },
     );
-    // A step's model and reasoning effort are applied or the step refused.
-    let refused = [
-        ("model_selection", "model"),
-        ("reasoning_effort", "reasoning effort"),
-    ]
-    .into_iter()
-    .filter(|(name, _)| !capabilities[*name].supported())
-    .map(|(_, what)| what)
-    .collect::<Vec<_>>();
-    let flow = match refused.join(" or ") {
-        none if none.is_empty() => Capability::new(
-            "supported",
-            "Steps run on it when the model and reasoning effort they set are among its choices, or they set none. A step that sets another, such as another harness's model, is refused, as is one that needs messages during a turn or subagent control.",
-        ),
-        refused => Capability::new(
-            "limited",
-            format!(
-                "A step that sets a {refused} is refused: the agent offers no choice of {refused}. Steps that leave it to the agent run, unless they need messages during a turn or subagent control."
-            ),
-        ),
-    };
     AcpDiscovery {
         setup_status: "ready".to_string(),
         error: None,
         auth_methods: Vec::new(),
         capabilities,
-        chat,
-        flow,
         modes: options
             .is_empty()
             .then(|| {
@@ -1210,8 +1056,6 @@ fn turn(
 
     let (messages, delivered) = std::sync::mpsc::channel();
     let out = Out { messages };
-    // A harness may echo what it was launched with, in an error or on stderr.
-    let secrets = environment_values(&command);
     let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
         drive(endpoints, plan, out, interrupted, (replies, answered))
     })
@@ -1267,7 +1111,7 @@ fn turn(
             } else {
                 format!("ACP harness {harness_id}: {message}; stderr tail:\n{tail}")
             };
-            return Err(redact_all(message, &secrets));
+            return Err(message);
         }
     };
     drop(connection);
@@ -1530,6 +1374,8 @@ struct Ready {
     record: AcpSessionRecord,
     reset: Option<String>,
     resumed: bool,
+    /// Instructions the first prompt of a fresh session carries.
+    in_prompt: bool,
 }
 
 impl<'a> Turn<'a> {
@@ -1562,6 +1408,7 @@ impl<'a> Turn<'a> {
             record,
             reset,
             resumed,
+            in_prompt,
         }) = ready
         else {
             return Ok(self.finish(StopReason::Cancelled, None, None, None, false));
@@ -1569,6 +1416,16 @@ impl<'a> Turn<'a> {
         let mut text = self.plan.prompt.clone();
         if let Some(context) = self.plan.fresh_context.as_ref().filter(|_| !resumed) {
             text = format!("{context}\n\n---\n\n{text}");
+        }
+        // ponytail: instructions sent as prompt text weigh less than a system
+        // prompt and may fade in a long or compacted session.
+        if let Some(instructions) = self
+            .plan
+            .instructions
+            .as_ref()
+            .filter(|_| in_prompt && !resumed)
+        {
+            text = format!("<instructions>\n{instructions}\n</instructions>\n\n{text}");
         }
         let _ = self.out.messages.send(Message::Prompted);
         session
@@ -1601,22 +1458,16 @@ impl<'a> Turn<'a> {
             ));
         }
         let capabilities = init.agent_capabilities;
-        let system_prompt = match &plan.instructions {
-            Some(text) if !plan.channel_rendered => {
-                if capabilities.session_capabilities.system_prompt.is_none() {
-                    return Err(format!(
-                        "this chat or flow step has pinned instructions, which ACP harness \
-                         {id} can't take: the agent doesn't take ACP system prompts, and its \
-                         registration has no Pinned instructions setting. If the agent can \
-                         take instructions through an argument or environment variable, set \
-                         Pinned instructions when you edit it in Settings > Models & \
-                         accounts > Agent harnesses"
-                    ));
-                }
-                Some(SystemPrompt::new(vec![ContentBlock::from(text.clone())]))
-            }
-            _ => None,
-        };
+        // Without a channel or ACP system prompts, the instructions lead the
+        // first prompt of each fresh session instead.
+        let in_prompt = plan.instructions.is_some()
+            && !plan.channel_rendered
+            && capabilities.session_capabilities.system_prompt.is_none();
+        let system_prompt = plan
+            .instructions
+            .as_ref()
+            .filter(|_| !plan.channel_rendered && !in_prompt)
+            .map(|text| SystemPrompt::new(vec![ContentBlock::from(text.clone())]));
 
         let current = AcpSessionRecord {
             harness: id.clone(),
@@ -1731,6 +1582,7 @@ impl<'a> Turn<'a> {
             record,
             reset,
             resumed,
+            in_prompt,
         })
     }
 

@@ -180,10 +180,6 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                             <div className="px-2 pt-3 pb-1 text-xs font-medium text-muted-foreground">{providerLabel(group.provider)}{group.profile ? ` / ${group.label}` : ''}
                                 {!group.profile && checking(group.provider) && <span role="status" className="block">Checking…</span>}
                                 {!group.profile && unavailable(group.provider) && <span role="status" className="block">{statuses?.[group.provider]?.setup_status === 'unauthenticated' ? 'Authentication required. ' : ''}Model discovery unavailable. {statuses?.[group.provider]?.error}{statuses?.[group.provider]?.setup_status ? ' Check and fix it under Settings › Models & accounts › Agent harnesses.' : ''}</span>}
-                                {!group.profile && !unavailable(group.provider) && (['chat', 'flow'] as const).map(use => {
-                                    const eligibility = statuses?.[group.provider]?.[use]
-                                    return eligibility && eligibility.state !== 'supported' && <span key={use} className="block">{use === 'chat' ? 'Chat' : 'Flows'} unavailable: {eligibility.reason}</span>
-                                })}
                             </div>
                             {entries.map(choice => option(choice, choices.indexOf(choice)))}
                         </div>

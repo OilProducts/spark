@@ -357,7 +357,6 @@ it('offers an ACP harness by its label, with a null-model harness default, exact
         providers: {
             codex: { status: 'available', error: null, label: 'Codex' },
             'acp:fake': { status: 'available', error: null, label: 'Fake ACP', setup_status: 'ready',
-                chat: { state: 'unsupported', reason: 'Chat pins instructions.' }, flow: { state: 'supported', reason: 'Ready.' },
                 config_options: [
                     { id: 'effort', name: 'Effort', category: 'thought_level', type: 'select', currentValue: 'Lo', options: [{ value: 'Lo', name: 'Low' }, { value: 'Hi/2', name: 'Very high' }] },
                     { id: 'Mode/ID', name: 'Approval', category: 'mode', type: 'select', currentValue: 'Ask', options: [
@@ -376,8 +375,6 @@ it('offers an ACP harness by its label, with a null-model harness default, exact
     render(<Editor onChange={onChange} />)
     await user.click(await screen.findByRole('button', { name: /Model: Default: Discovered/ }))
     const harness = screen.getByRole('group', { name: 'Fake ACP', exact: true })
-    expect(harness).toHaveTextContent('Chat unavailable: Chat pins instructions.')
-    expect(harness).not.toHaveTextContent('Flows unavailable')
     expect(screen.getByRole('group', { name: 'Locked', exact: true })).toHaveTextContent('Authentication required. Model discovery unavailable. Sign in first.')
     expect(screen.queryByRole('group', { name: 'Session controls' })).not.toBeInTheDocument()
 

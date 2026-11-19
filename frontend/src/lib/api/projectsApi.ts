@@ -55,8 +55,7 @@ export const harnessSetupStatuses = ['ready', 'unreachable', 'unauthenticated', 
 export type HarnessSetupStatus = typeof harnessSetupStatuses[number]
 
 export interface ProjectChatModelCapability {
-    /** `limited`: some of it is refused, as `reason` says. */
-    state: 'supported' | 'limited' | 'unsupported' | 'unverified'
+    state: 'supported' | 'unsupported' | 'unverified'
     reason: string
 }
 
@@ -69,8 +68,6 @@ export interface ProjectChatModelProviderStatusResponse {
     /** For a harness: whether it could be set up. */
     setup_status?: HarnessSetupStatus
     capabilities?: Record<string, ProjectChatModelCapability>
-    chat?: ProjectChatModelCapability
-    flow?: ProjectChatModelCapability
     /** The harness's session config options exactly as it reported them. */
     config_options?: Record<string, unknown>[]
     /** Legacy session modes, only when the harness reports no config options. */
@@ -81,8 +78,8 @@ export interface ProjectChatModelProviderStatusResponse {
 
 function parseCapability(value: unknown, endpoint: string): ProjectChatModelCapability {
     const entry = expectObjectRecord(value, endpoint)
-    if (entry.state !== 'supported' && entry.state !== 'limited' && entry.state !== 'unsupported' && entry.state !== 'unverified') {
-        throw new ApiSchemaError(endpoint, 'Expected capability state to be supported, limited, unsupported or unverified.')
+    if (entry.state !== 'supported' && entry.state !== 'unsupported' && entry.state !== 'unverified') {
+        throw new ApiSchemaError(endpoint, 'Expected capability state to be supported, unsupported or unverified.')
     }
     return { state: entry.state, reason: expectString(entry.reason, endpoint, 'reason') }
 }
@@ -101,8 +98,6 @@ function parseProviderDetails(entry: Record<string, unknown>, endpoint: string):
         ...(setup ? { setup_status: setup } : {}),
         ...(entry.capabilities !== undefined ? { capabilities: Object.fromEntries(Object.entries(expectObjectRecord(entry.capabilities, endpoint))
             .map(([name, capability]) => [name, parseCapability(capability, endpoint)])) } : {}),
-        ...(entry.chat !== undefined ? { chat: parseCapability(entry.chat, endpoint) } : {}),
-        ...(entry.flow !== undefined ? { flow: parseCapability(entry.flow, endpoint) } : {}),
         ...(Array.isArray(entry.config_options) ? { config_options: entry.config_options.map((option) => expectObjectRecord(option, endpoint)) } : {}),
         ...(entry.modes != null ? { modes: expectObjectRecord(entry.modes, endpoint) as ProjectChatModelProviderStatusResponse['modes'] } : {}),
         ...(Array.isArray(entry.auth_methods) ? { auth_methods: entry.auth_methods.map((value) => {

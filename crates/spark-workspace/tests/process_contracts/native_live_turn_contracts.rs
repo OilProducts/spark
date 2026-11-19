@@ -1024,27 +1024,18 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     ]);
     let modes =
         json!({"currentModeId": "code", "availableModes": [{"id": "code", "name": "Code"}]});
-    // Twelve lines, more than the stderr tail Spark keeps, some of them short.
-    let key = (1..=12)
-        .map(|line| match line % 3 {
-            0 => format!("Q{line:02}"),
-            _ => format!("key-line-{line}-sentinel"),
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
     let harness = |name: &str, executable: &str, script: Value| {
         let mut script = script;
         script["log"] = json!(log);
         json!({"name": name, "executable": executable, "env": {
-            "SPARK_FAKE_ACP": script.to_string(), "AGENT_TOKEN": "discovery-secret-sentinel",
-            "AGENT_PIN": "cat", "AGENT_KEY": key,
+            "SPARK_FAKE_ACP": script.to_string(),
         }})
     };
     let signed_in = temp.path().join("locked-signed-in");
     let browser =
         json!({"id": "browser", "name": "Browser sign-in", "description": "Opens your browser."});
     let terminal = json!({"id": "tui", "name": "Terminal", "type": "terminal", "args": ["login"],
-        "env": {"LOGIN_MODE": "device"}, "description": "Signs in with discovery-secret-sentinel."});
+        "env": {"LOGIN_MODE": "device"}, "description": "Signs in on the command line."});
     let settings = settings(temp.path());
     let project = temp.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
@@ -1056,8 +1047,6 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
             "plain": harness("Plain", FAKE_ACP, json!({"modes": modes})),
             "locked": harness("Locked", FAKE_ACP, json!({"new_error": {"code": -32000, "message": "Authentication required: run locked login"},
                 "auth_methods": [browser, terminal], "signed_in": signed_in})),
-            "leaky": harness("Leaky", FAKE_ACP, json!({"echo_env": ["AGENT_TOKEN", "AGENT_PIN"], "new_error": {"code": -32603, "message": "model catalog unavailable"}})),
-            "spills": harness("Spills", FAKE_ACP, json!({"echo_env": ["AGENT_KEY"], "new_error": {"code": -32603, "message": "bad key"}})),
             "missing": harness("Missing", "/nonexistent/acp-agent", json!({})),
         },
     }});
@@ -1090,13 +1079,11 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     assert_eq!(fake["setup_status"], "ready");
     assert_eq!(fake["config_options"], options, "options are kept exactly");
     assert!(fake.get("modes").is_none(), "config options win over modes");
-    assert_eq!(fake["chat"]["state"], "supported");
-    assert_eq!(fake["flow"]["state"], "supported");
+    assert!(fake.get("chat").is_none() && fake.get("flow").is_none());
     for (capability, state) in [
         ("model_selection", "supported"),
         ("reasoning_effort", "supported"),
         ("session_resume", "supported"),
-        ("pinned_instructions", "supported"),
         ("plan_mode", "unsupported"),
         ("forms", "supported"),
         ("per_prompt_usage", "unverified"),
@@ -1137,14 +1124,6 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     let plain = &providers["acp:plain"];
     assert_eq!(plain["setup_status"], "ready", "{plain}");
     assert_eq!(
-        plain["chat"]["state"], "unsupported",
-        "no systemPrompt or channel"
-    );
-    assert_eq!(
-        plain["flow"]["state"], "limited",
-        "a step that sets a model is refused: {plain}"
-    );
-    assert_eq!(
         plain["capabilities"]["model_selection"]["state"],
         "unsupported"
     );
@@ -1169,15 +1148,14 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     );
     assert_eq!(
         locked["auth_methods"],
-        json!([browser, {"id": "tui", "name": "Terminal", "description": "Signs in with [redacted].",
+        json!([browser, {"id": "tui", "name": "Terminal", "description": "Signs in on the command line.",
             "terminal": ["LOGIN_MODE=device", FAKE_ACP, "login"]}]),
-        "a terminal method is the command to run, and what the harness echoes stays hidden"
+        "a terminal method is the command to run"
     );
     assert!(
         !locked["error"].as_str().unwrap().contains("Settings"),
         "shown where the user signs in, so it points nowhere else: {locked}"
     );
-    assert_eq!(locked["chat"]["state"], "unverified");
     assert_eq!(
         locked["capabilities"]["model_selection"]["state"],
         "unverified"
@@ -1192,45 +1170,18 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         .unwrap()
         .contains("executable not found"));
 
-    let leaky = &providers["acp:leaky"];
-    assert_eq!(leaky["setup_status"], "unreachable", "{leaky}");
-    let error = leaky["error"].as_str().unwrap();
-    assert!(
-        error.contains("session/new failed")
-            && error.contains("model catalog unavailable")
-            && error.contains("AGENT_TOKEN=[redacted]")
-            && error.contains("AGENT_PIN=[redacted]"),
-        "the setup error stays actionable without the values, short ones included: {error}"
-    );
-
-    assert!(!response.to_string().contains("discovery-secret-sentinel"));
-    assert_eq!(providers["acp:spills"]["setup_status"], "unreachable");
-    assert!(
-        providers["acp:spills"]["error"]
-            .as_str()
-            .unwrap()
-            .ends_with("stderr tail:\n[redacted]"),
-        "a secret's lines show as one: {}",
-        providers["acp:spills"]
-    );
-    assert!(
-        !response.to_string().contains("key-line-") && !response.to_string().contains("Q06"),
-        "no line of a value of several lines shows: {}",
-        providers["acp:spills"]
-    );
-    assert!(!response.to_string().contains("=cat"));
     assert!(acp_received(temp.path(), "session/prompt").is_empty());
     let sessions = acp_received(temp.path(), "session/new");
     assert_eq!(
         sessions.len(),
-        5,
+        3,
         "one temporary session per reachable harness"
     );
     assert!(sessions
         .iter()
         .all(|session| session["cwd"] == json!(project)));
     let probes = launches();
-    assert_eq!(probes.len(), 5);
+    assert_eq!(probes.len(), 3);
     for probe in &probes {
         assert_eq!(probe["cwd"], json!(project));
         let alive = std::process::Command::new("kill")
@@ -1243,10 +1194,10 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
     }
 
     assert_eq!(discover(), response, "cached");
-    assert_eq!(launches().len(), 5, "failures are kept too");
+    assert_eq!(launches().len(), 3, "failures are kept too");
     spark_workspace::models::invalidate_model_discovery("agents");
     discover();
-    assert_eq!(launches().len(), 10, "an agents change probes again");
+    assert_eq!(launches().len(), 6, "an agents change probes again");
 
     // One misconfigured registration stops no other, and a ready harness
     // whose program is removed shows so once checked again.

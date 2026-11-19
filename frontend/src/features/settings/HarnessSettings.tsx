@@ -38,10 +38,10 @@ const statuses: Record<Status, [string, StatusTone]> = {
 
 const capabilityNames: Record<string, string> = {
     model_selection: 'Model choice', reasoning_effort: 'Reasoning effort', session_resume: 'Resuming sessions',
-    pinned_instructions: 'Pinned instructions', plan_mode: 'Plan mode', steering: 'Messages during a turn',
+    plan_mode: 'Plan mode', steering: 'Messages during a turn',
     child_intervention: 'Subagent control', forms: 'Questions and forms', per_prompt_usage: 'Token usage',
 }
-const stateWords = { supported: 'Yes', limited: 'Partly', unsupported: 'No', unverified: 'Unverified' } as const
+const stateWords = { supported: 'Yes', unsupported: 'No', unverified: 'Unverified' } as const
 // Statuses the user has something to fix.
 const attention: Status[] = ['misconfigured', 'not_installed', 'unreachable', 'unauthenticated', 'signed_out']
 // A word a shell reads as it is, else quoted.
@@ -241,13 +241,11 @@ function NativeHarness({ id, view, provider, status, onConnection, checking, che
     const next = status === 'not_installed' ? `${install}, or set Program below to the full path of its ${program} executable, then check again.`
         : status === 'signed_out' ? `Sign in below. Spark checks it again when you finish.`
             : status === 'unreachable' ? `Check that Program below is ${name}'s ${program} executable and that it starts from a terminal, then check again.` : ''
-    const ready = status === 'ready'
-    const builtIn = { state: 'supported', reason: 'Built in.' } as const
     const configured = view?.effective?.native?.[key]
     return <HarnessRow anchor={id} name={name} kind="Built in" command={configured ?? program} status={status}
         problem={status === 'signed_out' ? `${name} is not signed in.` : status === 'not_installed' ? `Its program, ${configured ?? `${program} on PATH`}, wasn’t found.`
             : status === 'unreachable' ? provider?.error ?? null : null} next={next}
-        chat={ready ? builtIn : undefined} flow={ready ? builtIn : undefined} more="Program and sign-in"
+        more="Program and sign-in"
         actions={<Button size="sm" variant="outline" aria-label={`Check ${name} again`} disabled={checking} onClick={onCheck}>Check again</Button>}>
         <Field>
             <FieldLabel htmlFor={`harness-${id}-program`}>Program</FieldLabel>
@@ -333,9 +331,7 @@ function AcpHarness({ id, entry, provider, status: checked, checking, onCheck, o
     return <HarnessRow anchor={`acp:${id}`} name={name} kind={`ACP · acp:${id}`} command={command} status={status}
         problem={entry.error ?? (['checking', 'ready', 'signing_in'].includes(status) ? null : provider?.error || null)}
         next={acpNextStep(status, methods.length > 0 ? 'spark' : terminal.length > 0 ? 'terminal' : null)} fix={fix || null}
-        chat={status === 'ready' ? provider?.chat : undefined} flow={status === 'ready' ? provider?.flow : undefined} more={more ? 'Details' : undefined}
-        hint={status === 'ready' && provider?.chat?.state === 'unsupported' && provider.capabilities?.pinned_instructions?.state === 'unsupported'
-            ? 'To use it in chat: if the agent can take instructions through an argument or environment variable, edit it and set Pinned instructions.' : undefined}
+        more={more ? 'Details' : undefined}
         actions={<>
             <Button size="sm" variant="outline" aria-label={`Edit ${name}`} onClick={onEdit}>Edit</Button>
             <Button size="sm" variant="outline" aria-label={`Check ${name} again`} disabled={checking || signing} onClick={onCheck}>Check again</Button>
@@ -355,9 +351,9 @@ function CapabilityRow({ name, capability }: { name: string; capability: Project
     </>
 }
 
-function HarnessRow({ anchor, name, kind, command, status, problem, next, fix, chat, flow, hint, actions, more, children }: {
+function HarnessRow({ anchor, name, kind, command, status, problem, next, fix, actions, more, children }: {
     anchor: string; name: string; kind: string; command: string; status: Status; problem: string | null; next: string; fix?: ReactNode
-    chat?: ProjectChatModelCapability; flow?: ProjectChatModelCapability; hint?: string; actions: ReactNode; more?: string; children?: ReactNode
+    actions: ReactNode; more?: string; children?: ReactNode
 }) {
     const heading = useId()
     const [label, tone] = statuses[status]
@@ -379,11 +375,6 @@ function HarnessRow({ anchor, name, kind, command, status, problem, next, fix, c
             </div>
             <StatusPill tone={tone}>{label}</StatusPill>
         </div>
-        {chat && flow ? <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-sm">
-            <CapabilityRow name="Chat" capability={chat} />
-            <CapabilityRow name="Flows" capability={flow} />
-        </dl> : settled && <p className="text-sm text-muted-foreground">Chat and flows can use it once it is ready.</p>}
-        {hint && <p className="text-sm">{hint}</p>}
         {(problem || fix) && <div className="space-y-1 border-l-2 border-destructive/60 pl-3 text-sm">
             {problem && <p><span className="font-medium">Problem: </span><span className="whitespace-pre-wrap break-words">{problem}</span></p>}
             {problem && next && <p><span className="font-medium">What to do: </span>{next}</p>}
@@ -528,7 +519,7 @@ function AcpHarnessForm({ id, entry, view, onCancel, onSaved }: {
             <details open={initial.channel}>
                 <SettingsSummary>Pinned instructions</SettingsSummary>
                 <div className="space-y-3 pt-2">
-                    <p className="text-xs text-muted-foreground">For an agent that can’t take ACP system prompts: how Spark passes a chat’s or flow’s pinned instructions when it starts the agent. Write {'{{instructions}}'} for the text, or {'{{instructions_file}}'} for the path of a file holding it.</p>
+                    <p className="text-xs text-muted-foreground">Optional. Without it, an agent that can’t take ACP system prompts gets a chat’s or flow’s pinned instructions at the start of its first message. Set it to pass them when Spark starts the agent instead. Write {'{{instructions}}'} for the text, or {'{{instructions_file}}'} for the path of a file holding it.</p>
                     <Label className="flex items-center gap-2 text-sm"><Switch checked={draft.channel} onCheckedChange={(channel) => set({ channel })} />Pass pinned instructions when starting the agent</Label>
                     {draft.channel && <>
                         <Field>

@@ -63,13 +63,13 @@ describe('projectsApi parsing', () => {
         options: [{ group: 'g', name: 'Manual', options: [{ value: 'Ask', name: 'Ask first' }] }] },
       { id: 'dial', name: 'Dial', type: 'slider', currentValue: 3 },
     ]
-    const capability = { state: 'unsupported', reason: 'No systemPrompt.' }
+    const capability = { state: 'unsupported', reason: 'No choice of model.' }
     const payload = parseProjectChatModelsResponse({
       models: [],
       providers: {
         codex: { status: 'available', error: null, label: 'Codex' },
         'acp:fake': { status: 'available', error: null, label: 'Fake ACP', setup_status: 'ready',
-          capabilities: { pinned_instructions: capability }, chat: capability, flow: { state: 'supported', reason: 'Ready.' },
+          capabilities: { model_selection: capability },
           config_options: options, modes: { currentModeId: 'code', availableModes: [{ id: 'code', name: 'Code' }] } },
         'acp:locked': { status: 'unavailable', error: 'Authentication required', setup_status: 'unauthenticated' },
         'acp:slow': { status: 'checking', error: null, label: 'Slow' },
@@ -78,12 +78,12 @@ describe('projectsApi parsing', () => {
 
     expect(payload.providers.codex).toEqual({ status: 'available', error: null, label: 'Codex' })
     expect(payload.providers['acp:fake']).toEqual({ status: 'available', error: null, label: 'Fake ACP', setup_status: 'ready',
-      capabilities: { pinned_instructions: capability }, chat: capability, flow: { state: 'supported', reason: 'Ready.' },
+      capabilities: { model_selection: capability },
       config_options: options, modes: { currentModeId: 'code', availableModes: [{ id: 'code', name: 'Code' }] } })
     expect(payload.providers['acp:locked'].setup_status).toBe('unauthenticated')
     expect(payload.providers['acp:slow']).toEqual({ status: 'checking', error: null, label: 'Slow' })
     expect(() => parseProjectChatModelsResponse({ models: [], providers: {
-      codex: { status: 'available', error: null }, 'acp:x': { status: 'available', error: null, chat: { state: 'maybe', reason: '' } },
+      codex: { status: 'available', error: null }, 'acp:x': { status: 'available', error: null, capabilities: { forms: { state: 'maybe', reason: '' } } },
     } })).toThrow()
   })
 })

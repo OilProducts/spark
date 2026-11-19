@@ -1003,14 +1003,6 @@ fn map_io_error(error: std::io::Error, path: PathBuf) -> EnvironmentError {
     }
 }
 
-/// Whether `key` holds `value` as Spark's own core variable, such as `HOME`,
-/// which a child inherits unchanged and which is no secret.
-pub(crate) fn is_inherited_core(key: &str, value: &str) -> bool {
-    is_core_env_key(key)
-        && !is_sensitive_env_key(key)
-        && env::var(key).is_ok_and(|own| own == value)
-}
-
 fn is_sensitive_env_key(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
     upper.ends_with("_API_KEY")

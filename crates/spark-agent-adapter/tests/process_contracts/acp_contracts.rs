@@ -406,26 +406,35 @@ fn acp_cancel_that_never_settles_stops_the_process_and_drops_continuity() {
 }
 
 #[test]
-fn acp_pinned_instructions_need_system_prompt_or_a_declared_channel() {
+fn acp_pinned_instructions_reach_every_harness() {
+    let _env = super::test_support::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     // Exact bytes, including quoting, newlines and trailing whitespace.
     let instructions = "Be \"exact\".\nLine two\\n  \n";
 
-    // Neither channel: refused before any session or prompt.
+    // Neither channel: they lead the first prompt of a fresh session, and a
+    // resumed session already has them.
     let dir = tempfile::tempdir().unwrap();
-    let mut no_channel = request(dir.path(), json!({}), json!({}));
+    let mut no_channel = request(dir.path(), json!({"resume": true}), json!({}));
     no_channel.metadata.insert(
         AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
         json!(instructions),
     );
-    let error = run(&no_channel, |_| {}).0.err().expect("refused");
+    let turn = run(&no_channel, |_| {}).0.expect("turn");
+    assert!(received(dir.path(), "session/new")[0]["systemPrompt"].is_null());
+    let prompt = received(dir.path(), "session/prompt")[0].to_string();
     assert!(
-        error.contains("doesn't take ACP system prompts")
-            && error.contains("Pinned instructions")
-            && error.contains("Agent harnesses"),
-        "{error}"
+        prompt.contains("<instructions>") && prompt.contains("exact"),
+        "{prompt}"
     );
-    assert!(received(dir.path(), "session/new").is_empty());
-    assert!(received(dir.path(), "session/prompt").is_empty());
+    run(&with_history(no_channel, &turn.record.unwrap()), |_| {})
+        .0
+        .expect("resumed");
+    assert_eq!(received(dir.path(), "session/resume").len(), 1);
+    assert!(!received(dir.path(), "session/prompt")[1]
+        .to_string()
+        .contains("<instructions>"));
 
     // Instruction-free work runs on the same harness.
     let dir = tempfile::tempdir().unwrap();

@@ -41,7 +41,6 @@ it('shows each harness with its status and next step, and edits an ACP harness w
     const codex = await screen.findByRole('group', { name: 'Codex' })
     expect(await within(codex).findByText('Ready')).toBeInTheDocument()
     expect(screen.getByLabelText('Harness overview')).toHaveTextContent('1 ready · 1 signed out · 1 not installed · 1 misconfigured')
-    expect(within(codex).getAllByText('Yes')).toHaveLength(2)
     const claude = screen.getByRole('group', { name: 'Claude Code' })
     expect(within(claude).getByText('Not installed')).toBeInTheDocument()
     expect(within(claude).getByText(/set Program below to the full path/)).toBeInTheDocument()
@@ -72,15 +71,11 @@ it('shows each harness with its status and next step, and edits an ACP harness w
 
 it('adds an ACP harness only once its ID, name and program are valid, and removes one after confirmation', async () => {
     vi.mocked(fetchAgentSettings).mockResolvedValue(view)
-    vi.mocked(fetchHarnessCatalog).mockResolvedValue({ models: [], providers: { codex: { status: 'available', error: null, setup_status: 'ready', chat: supported, flow: supported },
-        'acp:helper': { status: 'available', error: null, setup_status: 'ready', chat: { state: 'unsupported', reason: 'Chat pins instructions.' }, flow: supported,
-            capabilities: { pinned_instructions: { state: 'unsupported', reason: 'No channel.' } } } } })
+    vi.mocked(fetchHarnessCatalog).mockResolvedValue({ models: [], providers: { codex: { status: 'available', error: null, setup_status: 'ready' },
+        'acp:helper': { status: 'available', error: null, setup_status: 'ready' } } })
     vi.mocked(saveAcpHarness).mockResolvedValue(view)
     const user = userEvent.setup()
     render(<DialogProvider><HarnessSettings /></DialogProvider>)
-
-    const helper = await screen.findByRole('group', { name: 'Helper' })
-    expect(await within(helper).findByText(/To use it in chat:.*set Pinned instructions/)).toBeInTheDocument()
 
     await user.click(await screen.findByRole('button', { name: 'Add ACP harness' }))
     const form = screen.getByRole('group', { name: 'Add ACP harness' })
@@ -110,7 +105,7 @@ it('signs in to an ACP harness with a method it offers, then checks it again', a
     vi.mocked(fetchHarnessCatalog).mockResolvedValueOnce({ models: [], providers: {
         'acp:helper': { status: 'unavailable', error: 'the harness requires authentication: run helper login', setup_status: 'unauthenticated',
             auth_methods: [{ id: 'browser', name: 'Browser', description: 'Opens your browser.' }] },
-    } }).mockResolvedValue({ models: [], providers: { 'acp:helper': { status: 'available', error: null, setup_status: 'ready', chat: { state: 'supported', reason: 'Yes.' }, flow: { state: 'supported', reason: 'Yes.' } } } })
+    } }).mockResolvedValue({ models: [], providers: { 'acp:helper': { status: 'available', error: null, setup_status: 'ready' } } })
     vi.mocked(signInAcpHarness).mockResolvedValue({ setup_status: 'ready', error: null })
     const user = userEvent.setup()
     render(<DialogProvider><HarnessSettings /></DialogProvider>)
@@ -223,19 +218,18 @@ it('keeps a misconfigured registration’s values in its form, and stops a save 
     expect(within(edit).getByLabelText('Name of environment variable 2')).toHaveValue('OTHER')
 })
 
-it('keeps what it can’t show, says what flows refuse, and leaves details as the user set them across checks', async () => {
+it('keeps what it can’t show, and leaves details as the user set them across checks', async () => {
     const odd: AgentSettingsView = { ...view, acp_harnesses: { helper: { registration: { name: 'Helper', executable: '/bin/helper', args: ['--prompt', 'line one\nline two', ''] }, error: null } } }
     vi.mocked(fetchAgentSettings).mockResolvedValue(odd)
-    const ready = { models: [], providers: { 'acp:helper': { status: 'available' as const, error: null, setup_status: 'ready' as const, chat: supported,
-        flow: { state: 'limited' as const, reason: 'A step that sets a model is refused.' }, capabilities: { model_selection: { state: 'unsupported' as const, reason: 'No choice.' } } } } }
+    const ready = { models: [], providers: { 'acp:helper': { status: 'available' as const, error: null, setup_status: 'ready' as const,
+        capabilities: { model_selection: { state: 'unsupported' as const, reason: 'No choice.' } } } } }
     vi.mocked(fetchHarnessCatalog).mockResolvedValue(ready)
     vi.mocked(saveAcpHarness).mockResolvedValue(odd)
     const user = userEvent.setup()
     render(<DialogProvider><HarnessSettings /></DialogProvider>)
 
     const helper = await screen.findByRole('group', { name: 'Helper' })
-    expect(await within(helper).findByText('Partly')).toBeInTheDocument()
-    expect(within(helper).getByText(/A step that sets a model is refused/)).toBeInTheDocument()
+    expect(await within(helper).findByText('Ready')).toBeInTheDocument()
     // Opened details stay open when a check finds it ready again.
     await user.click(within(helper).getByText('Details'))
     await user.click(within(helper).getByRole('button', { name: 'Check Helper again' }))

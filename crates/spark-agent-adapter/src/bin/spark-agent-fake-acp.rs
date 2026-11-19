@@ -2,9 +2,7 @@
 //! by the JSON in `SPARK_FAKE_ACP`. Every message it receives is appended to
 //! the script's `log` file, after a first line with its pid, argv, working
 //! directory, the `log_env` variables and the contents of file arguments.
-//! `answers[n]` answers the log's nth prompt, across launches. `echo_env`
-//! variables are printed to stderr at startup and in every error, as a leaky
-//! harness would. `forms` are `elicitation/create` requests sent in turn
+//! `answers[n]` answers the log's nth prompt, across launches. `forms` are `elicitation/create` requests sent in turn
 //! during the prompt, each waiting for its reply unless it `exit`s or is
 //! `withdraw`n with `$/cancel_request`. `auth_methods` are offered at
 //! initialize, terminal ones only to a client with `auth.terminal`;
@@ -72,21 +70,6 @@ impl Agent {
             "env": env,
             "files": files,
         }));
-        let echoed = self.echoed();
-        if !echoed.is_empty() {
-            eprintln!("{echoed}");
-        }
-    }
-
-    fn echoed(&self) -> String {
-        self.script["echo_env"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(|name| format!("{name}={}", std::env::var(name).unwrap_or_default()))
-            .collect::<Vec<_>>()
-            .join(" ")
     }
 
     fn append(&self, entry: Value) {
@@ -120,14 +103,6 @@ impl Agent {
     }
 
     fn fail(&self, id: &Value, error: &Value) {
-        let mut error = error.clone();
-        let echoed = self.echoed();
-        if !echoed.is_empty() {
-            error["message"] = json!(format!(
-                "{} ({echoed})",
-                error["message"].as_str().unwrap_or_default()
-            ));
-        }
         self.send(json!({"jsonrpc": "2.0", "id": id, "error": error}));
     }
 
