@@ -1,9 +1,11 @@
 import { useId, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { NativeSelect } from '@/components/ui/native-select'
+import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { parseExecutionProfiles, parseLlmProfiles, type LlmProfileSettings, type ExecutionProfileSettings } from './services/profileSettings'
 import { useProfileSettingsEditor } from './hooks/useProfileSettingsEditor'
@@ -38,18 +40,22 @@ export function LlmProfilesEditor() {
                     default: profile.default_model && !profile.models.includes(profile.default_model) ? 'Choose a default from this profile’s models.' : '',
                 }
                 const errorId = `${id}-${index}-errors`
-                return <details key={index} ref={(node) => { if (node && Object.values(errors).some(Boolean)) node.open = true }} className="space-y-2 rounded-xl bg-muted p-3">
+                return <details key={index} ref={(node) => { if (node && Object.values(errors).some(Boolean)) node.open = true }} className="space-y-3 rounded-xl bg-muted p-3">
                 <SettingsSummary>{profile.label || profile.id || `LLM profile ${index + 1}`} · {editor.saved?.credential_status?.[profile.id] ?? 'unsaved'}</SettingsSummary>
-                <label className="grid gap-2 text-sm font-medium">Profile ID<Input aria-label={`LLM profile ${index + 1} ID`} aria-invalid={!!errors.id} aria-describedby={errors.id ? errorId : undefined} value={profile.id} onChange={(event) => change(index, { id: event.target.value })} /></label>
-                <label className="grid gap-2 text-sm font-medium">Label<Input value={profile.label ?? ''} onChange={(event) => change(index, { label: event.target.value || undefined })} /></label>
+                <Field><FieldLabel htmlFor={`${id}-${index}-id`}>Profile ID</FieldLabel><Input id={`${id}-${index}-id`} aria-label={`LLM profile ${index + 1} ID`} aria-invalid={!!errors.id} aria-describedby={errors.id ? errorId : undefined} value={profile.id} onChange={(event) => change(index, { id: event.target.value })} /></Field>
+                <Field><FieldLabel htmlFor={`${id}-${index}-label`}>Label</FieldLabel><Input id={`${id}-${index}-label`} value={profile.label ?? ''} onChange={(event) => change(index, { label: event.target.value || undefined })} /></Field>
                 <p className="text-xs text-muted-foreground">Provider: OpenAI compatible</p>
-                <label className="grid gap-2 text-sm font-medium">Endpoint<Input aria-invalid={!!errors.endpoint} aria-describedby={errors.endpoint ? errorId : undefined} value={profile.base_url} onChange={(event) => change(index, { base_url: event.target.value })} /></label>
-                <label className="grid gap-2 text-sm font-medium">Credential environment variable<Input aria-invalid={!!errors.credential} aria-describedby={errors.credential ? errorId : undefined} value={profile.api_key_env ?? ''} onChange={(event) => change(index, { api_key_env: event.target.value || undefined })} /></label>
+                <Field><FieldLabel htmlFor={`${id}-${index}-endpoint`}>Endpoint</FieldLabel><Input id={`${id}-${index}-endpoint`} aria-invalid={!!errors.endpoint} aria-describedby={errors.endpoint ? errorId : undefined} value={profile.base_url} onChange={(event) => change(index, { base_url: event.target.value })} /></Field>
+                <Field><FieldLabel htmlFor={`${id}-${index}-credential`}>Credential environment variable</FieldLabel><Input id={`${id}-${index}-credential`} aria-invalid={!!errors.credential} aria-describedby={errors.credential ? errorId : undefined} value={profile.api_key_env ?? ''} onChange={(event) => change(index, { api_key_env: event.target.value || undefined })} /></Field>
                 <p className="text-xs text-muted-foreground">Saved credential status: {editor.saved?.credential_status?.[profile.id] ?? 'unsaved'}</p>
-                <label className="grid gap-2 text-sm font-medium">Models (one per line)<textarea aria-invalid={!!errors.models} aria-describedby={errors.models ? errorId : undefined} className="block w-full rounded border p-2" value={profile.models.join('\n')} onChange={(event) => change(index, { models: event.target.value.split('\n') })} /></label>
-                <label className="grid gap-2 text-sm font-medium">Default model<NativeSelect aria-label="Default model" aria-invalid={!!errors.default} aria-describedby={errors.default ? errorId : undefined} value={profile.default_model ?? ''} onChange={(event) => change(index, { default_model: event.target.value || undefined })}>
+                <Field><FieldLabel htmlFor={`${id}-${index}-models`}>Models (one per line)</FieldLabel><Textarea id={`${id}-${index}-models`} aria-invalid={!!errors.models} aria-describedby={errors.models ? errorId : undefined} value={profile.models.join('\n')} onChange={(event) => change(index, { models: event.target.value.split('\n') })} /></Field>
+                <Field><FieldLabel htmlFor={`${id}-${index}-default`}>Default model</FieldLabel><NativeSelect id={`${id}-${index}-default`} aria-label="Default model" aria-invalid={!!errors.default} aria-describedby={errors.default ? errorId : undefined} value={profile.default_model ?? ''} onChange={(event) => change(index, { default_model: event.target.value || undefined })}>
                     <option value="">Require an explicit model</option>{profile.models.map((model, at) => <option key={at} value={model}>{model}</option>)}
-                </NativeSelect></label>
+                </NativeSelect></Field>
+                <Label className="flex items-center gap-2 text-sm">
+                    <Switch checked={!!profile.vision} onCheckedChange={(vision) => change(index, { vision: vision || undefined })} />
+                    Supports image input (vision)
+                </Label>
                 <div id={errorId}>{Object.entries(errors).filter(([, error]) => error).map(([key, error]) => <p role="alert" key={key}>{error}</p>)}</div>
                 <Button variant="outline" onClick={() => editor.setDraft(profiles.filter((_, at) => at !== index))}>Delete LLM profile {profile.id}</Button>
             </details>})}
@@ -74,24 +80,24 @@ function ExecutionProfileFields({ profile, index, change, remove, onValidity, de
     const [error, setError] = useState('')
     const mounts = profile.metadata['container.mounts']
     const [mountText, setMountText] = useState(Array.isArray(mounts) ? mounts.join('\n') : '')
-    return <details ref={(node) => { if (node && (invalidId || !profile.label.trim() || (profile.mode === 'local_container' && !profile.image?.trim()) || !!error)) node.open = true }} className="space-y-2 rounded-xl bg-muted p-3"><SettingsSummary>{profile.label || profile.id || `Execution profile ${index + 1}`} · {EXECUTION_MODE_PLACES[profile.mode]}{profile.enabled ? '' : ' · Off'}{saved ? '' : ' · Not saved yet'}</SettingsSummary>
-        <label className="grid gap-2 text-sm font-medium">Profile ID<Input aria-invalid={invalidId} aria-describedby={invalidId ? `${id}-profile-error` : undefined} value={profile.id} onChange={(event) => change({ id: event.target.value })} /></label>
-        <label className="grid gap-2 text-sm font-medium">Label<Input aria-invalid={!profile.label.trim()} aria-describedby={!profile.label.trim() ? `${id}-profile-error` : undefined} value={profile.label} onChange={(event) => change({ label: event.target.value })} /></label>
+    return <details ref={(node) => { if (node && (invalidId || !profile.label.trim() || (profile.mode === 'local_container' && !profile.image?.trim()) || !!error)) node.open = true }} className="space-y-3 rounded-xl bg-muted p-3"><SettingsSummary>{profile.label || profile.id || `Execution profile ${index + 1}`} · {EXECUTION_MODE_PLACES[profile.mode]}{profile.enabled ? '' : ' · Off'}{saved ? '' : ' · Not saved yet'}</SettingsSummary>
+        <Field><FieldLabel htmlFor={`${id}-id`}>Profile ID</FieldLabel><Input id={`${id}-id`} aria-invalid={invalidId} aria-describedby={invalidId ? `${id}-profile-error` : undefined} value={profile.id} onChange={(event) => change({ id: event.target.value })} /></Field>
+        <Field><FieldLabel htmlFor={`${id}-label`}>Label</FieldLabel><Input id={`${id}-label`} aria-invalid={!profile.label.trim()} aria-describedby={!profile.label.trim() ? `${id}-profile-error` : undefined} value={profile.label} onChange={(event) => change({ label: event.target.value })} /></Field>
         {(invalidId || !profile.label.trim()) && <p id={`${id}-profile-error`} role="alert">Enter a unique profile ID without surrounding whitespace and a nonempty label.</p>}
-        <label className="grid gap-2 text-sm font-medium">Mode<NativeSelect aria-label="Mode" value={profile.mode} onChange={(event) => change({ mode: event.target.value as ExecutionProfileSettings['mode'] })}><option value="native">{EXECUTION_MODE_PLACES.native}</option><option value="local_container">{EXECUTION_MODE_PLACES.local_container}</option></NativeSelect></label>
+        <Field><FieldLabel htmlFor={`${id}-mode`}>Mode</FieldLabel><NativeSelect id={`${id}-mode`} aria-label="Mode" value={profile.mode} onChange={(event) => change({ mode: event.target.value as ExecutionProfileSettings['mode'] })}><option value="native">{EXECUTION_MODE_PLACES.native}</option><option value="local_container">{EXECUTION_MODE_PLACES.local_container}</option></NativeSelect></Field>
         <Label className="flex items-center gap-2"><Switch checked={profile.enabled} onCheckedChange={(enabled) => change({ enabled })} />Enabled</Label>
-        <div hidden={profile.mode !== 'local_container'}>
-        <label className="grid gap-2 text-sm font-medium">Container image<Input aria-invalid={profile.mode === 'local_container' && !profile.image?.trim()} aria-describedby={profile.mode === 'local_container' && !profile.image?.trim() ? `${id}-image-error` : undefined} value={profile.image ?? ''} onChange={(event) => change({ image: event.target.value || undefined })} /></label>
+        <div hidden={profile.mode !== 'local_container'} className="space-y-3">
+        <Field><FieldLabel htmlFor={`${id}-image`}>Container image</FieldLabel><Input id={`${id}-image`} aria-invalid={profile.mode === 'local_container' && !profile.image?.trim()} aria-describedby={profile.mode === 'local_container' && !profile.image?.trim() ? `${id}-image-error` : undefined} value={profile.image ?? ''} onChange={(event) => change({ image: event.target.value || undefined })} /></Field>
         {profile.mode === 'local_container' && !profile.image?.trim() && <p id={`${id}-image-error`} role="alert">A container image is required.</p>}
-        <label className="grid gap-2 text-sm font-medium">Mounts (host:container[:options], one per line)<textarea className="block w-full rounded border p-2" value={mountText} onChange={(event) => {
+        <Field><FieldLabel htmlFor={`${id}-mounts`}>Mounts (host:container[:options], one per line)</FieldLabel><Textarea id={`${id}-mounts`} value={mountText} onChange={(event) => {
             setMountText(event.target.value)
             const next = { ...profile.metadata, 'container.mounts': splitLines(event.target.value) }
             change({ metadata: next }); setMetadata(JSON.stringify(next, null, 2)); setError(''); onValidity(false)
-        }} /></label>
+        }} /></Field>
         </div>
-        <details ref={(node) => { if (node && (!!error)) node.open = true }}><SettingsSummary>Advanced</SettingsSummary>
-        <label className="grid gap-2 text-sm font-medium">Capabilities (one per line)<textarea className="block w-full rounded border p-2" value={profile.capabilities.join('\n')} onChange={(event) => change({ capabilities: event.target.value.split('\n') })} onBlur={(event) => change({ capabilities: splitLines(event.target.value) })} /></label>
-        <label className="grid gap-2 text-sm font-medium">Metadata (JSON object)<textarea className="block w-full rounded border p-2 font-mono" aria-invalid={!!error} aria-describedby={error ? `${id}-metadata-error` : undefined} value={metadata} onChange={(event) => {
+        <details ref={(node) => { if (node && (!!error)) node.open = true }} className="space-y-3"><SettingsSummary>Advanced</SettingsSummary>
+        <Field><FieldLabel htmlFor={`${id}-capabilities`}>Capabilities (one per line)</FieldLabel><Textarea id={`${id}-capabilities`} value={profile.capabilities.join('\n')} onChange={(event) => change({ capabilities: event.target.value.split('\n') })} onBlur={(event) => change({ capabilities: splitLines(event.target.value) })} /></Field>
+        <Field><FieldLabel htmlFor={`${id}-metadata`}>Metadata (JSON object)</FieldLabel><Textarea id={`${id}-metadata`} className="font-mono text-xs" aria-invalid={!!error} aria-describedby={error ? `${id}-metadata-error` : undefined} value={metadata} onChange={(event) => {
             setMetadata(event.target.value)
             try {
                 const value: unknown = JSON.parse(event.target.value)
@@ -99,7 +105,7 @@ function ExecutionProfileFields({ profile, index, change, remove, onValidity, de
                 const next = value as Record<string, unknown>
                 change({ metadata: next }); setMountText(Array.isArray(next['container.mounts']) ? next['container.mounts'].join('\n') : ''); setError(''); onValidity(false)
             } catch { setError('Enter a valid JSON object.'); onValidity(true) }
-        }} /></label>
+        }} /></Field>
         {error && <p id={`${id}-metadata-error`} role="alert">{error}</p>}
         </details>
         <Button variant="outline" disabled={deletionBlocked} aria-describedby={deletionBlocked ? "execution-delete-help" : undefined} onClick={remove}>Delete execution profile {profile.id}</Button>
@@ -107,6 +113,7 @@ function ExecutionProfileFields({ profile, index, change, remove, onValidity, de
 }
 
 export function ExecutionProfilesEditor() {
+    const id = useId()
     const [invalidMetadata, setInvalidMetadata] = useState<Record<number, boolean>>({})
     const editor = useProfileSettingsEditor('execution_profiles', parseExecutionProfiles, Object.values(invalidMetadata).some(Boolean))
     const [generation, setGeneration] = useState(0)
@@ -117,9 +124,9 @@ export function ExecutionProfilesEditor() {
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
         <p className="text-sm text-muted-foreground">Where runs execute: directly on the Spark machine or in a local container. Running work keeps the profile it started with.</p>
         <fieldset disabled={editor.pending || !editor.saved} className="space-y-3">
-            <label className="grid gap-2 text-sm font-medium">Default execution profile<NativeSelect aria-label="Default execution profile" value={editor.draft?.default_execution_profile_id ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, default_execution_profile_id: event.target.value || null }))}>
+            <Field><FieldLabel htmlFor={`${id}-default`}>Default execution profile</FieldLabel><NativeSelect id={`${id}-default`} aria-label="Default execution profile" value={editor.draft?.default_execution_profile_id ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, default_execution_profile_id: event.target.value || null }))}>
                 <option value="">Spark default</option>{profiles.filter((profile) => profile.enabled).map((profile, index) => <option key={index} value={profile.id}>{profile.label || profile.id}</option>)}
-            </NativeSelect></label>
+            </NativeSelect></Field>
             {profiles.map((profile, index) => <ExecutionProfileFields key={`${editor.saved?.revision}-${generation}-${index}`} profile={profile} index={index} saved={!!editor.saved?.stored?.profiles.some((saved) => saved.id === profile.id)} invalidId={!profile.id.trim() || profile.id !== profile.id.trim() || profiles.filter((p) => p.id === profile.id).length > 1} deletionBlocked={Object.values(invalidMetadata).some(Boolean)} change={(patch) => change(index, patch)}
                 onValidity={(invalid) => setInvalidMetadata((value) => ({ ...value, [index]: invalid }))}
                 remove={() => { if (Object.values(invalidMetadata).some(Boolean)) return; editor.setDraft((draft) => draft && ({ ...draft, profiles: profiles.filter((_, at) => at !== index) })); setGeneration((value) => value + 1); setInvalidMetadata({}) }} />)}

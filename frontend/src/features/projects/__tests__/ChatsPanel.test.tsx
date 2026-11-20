@@ -227,6 +227,71 @@ it('names the open thread in the header and switches its mode from the compact c
     await waitFor(() => expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan'))
 })
 
+it('hides Plan mode for an ACP harness without plan_mode support, blocks /plan, and still allows leaving Plan mode', async () => {
+    const user = userEvent.setup()
+    let chatMode: 'chat' | 'plan' = 'chat'
+    const acpModelSettings = {
+        scope: 'conversation', source: 'conversation', revision: '1',
+        stored: { provider: 'acp:opencode', llm_profile: null, model: 'big', reasoning_effort: null },
+        effective: { provider: 'acp:opencode', llm_profile: null, model: 'big', reasoning_effort: null },
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.includes('/projects/chat-models')) {
+            return json({
+                providers: {
+                    codex: { status: 'available', error: null },
+                    'acp:opencode': {
+                        status: 'available', error: null, label: 'OpenCode', setup_status: 'ready',
+                        capabilities: { plan_mode: { state: 'unsupported', reason: 'No read-only plan mode is verified.' } },
+                    },
+                },
+                models: [{ provider: 'acp:opencode', id: 'big', display: 'Big', is_default: true, supported_reasoning_efforts: [], default_reasoning_effort: null }],
+            })
+        }
+        if (url.includes('/projects/conversations')) {
+            const projectPath = new URL(url, 'http://localhost').searchParams.get('project_path') ?? ''
+            return json(summarySnapshot(chatsByProject[projectPath] ?? [], { project_path: projectPath }))
+        }
+        const conversationId = decodeURIComponent(url.match(/\/api\/conversations\/([^/?]+)/)?.[1] ?? '')
+        if (conversationId && init?.method === 'PUT') {
+            const body = JSON.parse(String(init.body))
+            settingsWrites.push({ url, body })
+            chatMode = body.chat_mode ?? chatMode
+            return json(conversationMutationAck({ ...snapshot(HOME, conversationId), revision: 2, chat_mode: chatMode, settings: { models: acpModelSettings } }))
+        }
+        if (conversationId) {
+            return json(conversationPage({ ...snapshot(HOME, conversationId), chat_mode: chatMode, settings: { models: acpModelSettings } }))
+        }
+        return json({})
+    }))
+
+    const { unmount } = renderChats()
+    await user.click(await within(group(HOME)).findByRole('button', { name: 'Chat home-1' }))
+    await waitFor(() => expect(screen.getByTestId('chat-title')).toHaveTextContent('New thread'))
+    await waitFor(() => expect(screen.queryByTestId('project-active-chat-mode-badge')).not.toBeInTheDocument())
+    // Wait for model discovery to settle so the capability's exact reason is active.
+    await waitFor(() => expect(screen.getByRole('button', { name: /Model:.*Big/ })).toBeInTheDocument())
+
+    await user.type(screen.getByTestId('project-ai-conversation-input'), '/plan')
+    await user.click(screen.getByTestId('project-ai-conversation-send-button'))
+    expect(await screen.findByTestId('project-panel-error')).toHaveTextContent('No read-only plan mode is verified.')
+    expect(settingsWrites).toEqual([])
+    unmount()
+
+    // A chat that was already in Plan mode keeps the selector so the user can return to Chat.
+    chatMode = 'plan'
+    useStore.setState({ homeConversationCache: { conversationsById: {}, summariesByProjectPath: {} }, homeThreadSummariesStatusByProjectPath: {}, projectSessionsByPath: {} })
+    renderChats()
+    await user.click(await within(group(HOME)).findByRole('button', { name: 'Chat home-1' }))
+    const mode = await screen.findByTestId('project-active-chat-mode-badge')
+    expect(mode).toHaveValue('plan')
+    expect(within(mode).getByRole('option', { name: 'Plan (unsupported)' })).toBeDisabled()
+    await user.selectOptions(mode, 'chat')
+    await waitFor(() => expect(settingsWrites.at(-1)?.body).toMatchObject({ project_path: HOME, chat_mode: 'chat' }))
+    await waitFor(() => expect(screen.queryByTestId('project-active-chat-mode-badge')).not.toBeInTheDocument())
+})
+
 it('opens Home\'s project page without a way to remove it', async () => {
     const user = userEvent.setup()
     renderChats()

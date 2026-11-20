@@ -1,9 +1,12 @@
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { useRuntimeSettingsEditor } from './hooks/useRuntimeSettingsEditor'
 import { SaveStatus } from './SaveStatus'
+
+const isShadowed = (source?: string) => !!source && !['stored', 'built-in default'].includes(source)
 
 export function RuntimeSettingsEditor() {
     const { saved, draft, setDraft, pending, error, message, setMessage, dirty, invalidRoots, save, discard } = useRuntimeSettingsEditor()
@@ -13,16 +16,25 @@ export function RuntimeSettingsEditor() {
             {pending ? <p role="status">Updating…</p> : !saved && !error ? <p role="status">Loading settings…</p> : null}
             <p className="text-sm text-muted-foreground">Changes require restart. Leave a path empty to use its default.</p>
             {draft && saved && <>
-                {(['runs_dir', 'ui_dir'] as const).map((key) => <Field key={key}>
-                    <FieldLabel htmlFor={`runtime-${key}`}>{({ runs_dir: 'Runs directory', ui_dir: 'UI directory' })[key]}</FieldLabel>
-                    <Input id={`runtime-${key}`} disabled={pending} value={draft[key] ?? ''} onChange={(event) => { setDraft({ ...draft, [key]: event.target.value || null }); setMessage('') }} />
-                    <p className="text-xs text-muted-foreground">In use: {saved.effective ? saved.effective[key] ?? ({ runs_dir: "Each project's private storage", ui_dir: 'Not configured' })[key] : 'Unavailable'} · {saved.sources?.[key]} · Requires restart</p>
-                </Field>)}
+                {(['runs_dir', 'ui_dir'] as const).map((key) => {
+                    const fallback = ({ runs_dir: "Each project's private storage", ui_dir: 'Not configured' })[key]
+                    const effective = saved.effective?.[key] ?? null
+                    const stored = saved.stored?.[key] ?? null
+                    const source = saved.sources?.[key]
+                    const showEffective = !saved.effective || isShadowed(source) || effective !== stored
+                    return <Field key={key}>
+                        <FieldLabel htmlFor={`runtime-${key}`}>{({ runs_dir: 'Runs directory', ui_dir: 'UI directory' })[key]}</FieldLabel>
+                        <Input id={`runtime-${key}`} disabled={pending} value={draft[key] ?? ''} placeholder={fallback} onChange={(event) => { setDraft({ ...draft, [key]: event.target.value || null }); setMessage('') }} />
+                        {showEffective && <p className="text-xs text-muted-foreground">In use: {saved.effective ? effective ?? fallback : 'Unavailable'}{source ? ` · ${source}` : ''}</p>}
+                    </Field>
+                })}
                 <Field>
                     <FieldLabel htmlFor="runtime-project-roots">Project roots (one absolute path per line)</FieldLabel>
-                    <textarea id="runtime-project-roots" className="min-h-20 rounded border p-2 text-sm" disabled={pending} aria-invalid={invalidRoots} aria-describedby={invalidRoots ? 'runtime-roots-error' : undefined} value={draft.project_roots.join('\n')} onChange={(event) => { setDraft({ ...draft, project_roots: event.target.value ? event.target.value.split('\n') : [] }); setMessage('') }} />
+                    <Textarea id="runtime-project-roots" className="min-h-20" disabled={pending} placeholder="Default roots" aria-invalid={invalidRoots} aria-describedby={invalidRoots ? 'runtime-roots-error' : undefined} value={draft.project_roots.join('\n')} onChange={(event) => { setDraft({ ...draft, project_roots: event.target.value ? event.target.value.split('\n') : [] }); setMessage('') }} />
                     {invalidRoots && <p id="runtime-roots-error" role="alert">Each project root must be an absolute path.</p>}
-                    <p className="text-xs text-muted-foreground">In use: {saved.effective ? saved.effective.project_roots.join(', ') || 'Default roots' : 'Unavailable'} · {saved.sources?.project_roots} · Requires restart</p>
+                    {(!saved.effective || isShadowed(saved.sources?.project_roots) || saved.effective.project_roots.join('\n') !== (saved.stored?.project_roots ?? []).join('\n')) && (
+                        <p className="text-xs text-muted-foreground">In use: {saved.effective ? saved.effective.project_roots.join(', ') || 'Default roots' : 'Unavailable'}{saved.sources?.project_roots ? ` · ${saved.sources.project_roots}` : ''}</p>
+                    )}
                 </Field>
                 <div className="flex flex-wrap gap-2">
                     <Button size="sm" aria-label="Save runtime paths" disabled={!dirty || pending || invalidRoots} onClick={() => void save()}>Save</Button>

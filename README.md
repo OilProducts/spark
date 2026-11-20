@@ -160,6 +160,10 @@ Supported provider variables:
 | LiteLLM | `LITELLM_BASE_URL`, `LITELLM_API_KEY` |
 | OpenAI-compatible | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_API_KEY` |
 
+### Agent harnesses (ACP)
+
+Codex and Claude Code are built in. To add another coding agent that speaks the Agent Client Protocol (ACP) — such as OpenCode, Antigravity (`agy`), Gemini CLI, or Goose — open **Settings → Models & accounts → Agent harnesses** and click **Add ACP harness** (starter templates are included), or configure `[agents.acp_harnesses.<id>]` in `$SPARK_HOME/config/spark.toml`. See [ACP harnesses](docs/configuration.md#acp-harnesses) for fields, pinned-instruction templates, and CLI updates.
+
 ## Development
 
 Build and launch the desktop app with the production frontend and release optimizations:

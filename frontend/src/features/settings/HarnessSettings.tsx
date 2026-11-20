@@ -18,7 +18,7 @@ import { SettingsSummary } from './SettingsSummary'
 import { SaveStatus } from './SaveStatus'
 import { useSettingsNavigationProtection } from './hooks/useSettingsNavigationProtection'
 import { cancelAcpSignIn, fetchAgentSettings, fetchHarnessCatalog, HIDDEN_ENV_VALUE, saveAcpHarness, saveAgentSettings, signInAcpHarness, type AcpHarnessEntry, type AcpHarnessRegistration, type AgentSettingsView,
-    type HarnessSetupStatus, type ProjectChatModelCapability, type ProjectChatModelProviderStatusResponse, type ProjectChatModelsResponse } from './services/executionSettings'
+    type DetectedAcpHarness, type HarnessSetupStatus, type NativeAgentSettings, type ProjectChatModelCapability, type ProjectChatModelProviderStatusResponse, type ProjectChatModelsResponse } from './services/executionSettings'
 
 type Connection = 'connected' | 'disconnected' | 'pending' | 'error'
 type Status = HarnessSetupStatus | 'signed_out' | 'signing_in' | 'checking' | 'unchecked'
@@ -162,11 +162,23 @@ export function HarnessSettings() {
         setError('')
         try { show(await saveAcpHarness(view.revision, id, null)); setMessage(`Removed ${name}.`); void check(false) } catch (error) { setError(errorText(error, `Unable to remove ${name}.`)) }
     }
+    const [addingDetected, setAddingDetected] = useState<string | null>(null)
+    const addDetected = async (harness: DetectedAcpHarness) => {
+        if (!view || addingDetected) return
+        setAddingDetected(harness.id); setError('')
+        try {
+            const next = await saveAcpHarness(view.revision, harness.id, {
+                name: harness.name, executable: harness.executable, args: harness.args, permission_policy: 'allow', env: {},
+            })
+            saved(next, `Added ${harness.name}.`, `acp:${harness.id}`)
+        } catch (error) { setError(errorText(error, `Unable to add ${harness.name}.`)) } finally { setAddingDetected(null) }
+    }
 
     const providers: Partial<ProjectChatModelsResponse['providers']> = catalog?.providers ?? {}
     const failed = !!catalogError
     const nativeRows = (['codex', 'claude-code'] as const).map((id) => [id, nativeStatus(providers[id], connections[id], failed)] as const)
     const acpRows = Object.entries(view?.acp_harnesses ?? {}).map(([id, entry]) => [id, entry, acpStatus(entry, providers[`acp:${id}`], failed)] as const)
+    const detected = (view?.detected_acp_harnesses ?? []).filter((entry) => !(entry.id in (view?.acp_harnesses ?? {})))
     // In the order statuses are listed, ready first.
     const counts = new Map(Object.values(statuses).map(([label]) => [label.toLowerCase(), 0]))
     for (const status of [...nativeRows.map(([, status]) => status), ...acpRows.map(([, , status]) => status)]) {
@@ -203,6 +215,19 @@ export function HarnessSettings() {
                 ? <AcpHarnessForm key={id} id={id} entry={entry} view={view} onCancel={() => close(id)} onSaved={(next, name) => { close(id); saved(next, `Saved ${name}.`, `acp:${id}`) }} />
                 : <AcpHarness key={id} id={id} entry={entry} provider={providers[`acp:${id}`]} status={status} checking={checking} onCheck={recheck} onSignedIn={refresh}
                     onEdit={() => edit(id)} onRemove={(name) => void remove(id, name)} />)}
+            {detected.length > 0 && <Well role="region" aria-label="Found on this machine" className="space-y-2 px-3 py-2.5">
+                <p className="text-xs font-medium text-muted-foreground">Found on this machine</p>
+                <div className="space-y-1.5">
+                    {detected.map((harness) => <div key={harness.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                        <div className="min-w-0">
+                            <span className="font-medium">{harness.name}</span>
+                            <span className="ml-2 text-xs text-muted-foreground"><code className="font-mono">{[harness.executable, ...harness.args].join(' ')}</code></span>
+                        </div>
+                        <Button size="sm" variant="outline" aria-label={`Add detected ${harness.name}`} disabled={!view || addingDetected !== null}
+                            onClick={() => void addDetected(harness)}>{addingDetected === harness.id ? 'Adding…' : 'Add'}</Button>
+                    </div>)}
+                </div>
+            </Well>}
             {editing.includes('') ? <AcpHarnessForm id={null} entry={null} view={view} onCancel={() => close('')} onSaved={(next, name, added) => { close(''); saved(next, `Added ${name}.`, `acp:${added}`) }} />
                 : <Button variant="outline" disabled={!view} onClick={() => edit('')}>Add ACP harness</Button>}
             <SaveStatus message={message} error={error} />
@@ -210,18 +235,31 @@ export function HarnessSettings() {
     </Card>
 }
 
+const claudePermissionModes = { default: 'Default', acceptEdits: 'Accept edits', bypassPermissions: 'Bypass permissions', plan: 'Plan', dontAsk: 'Do not ask', auto: 'Automatic' } as const
+const nativePathLabels = { codex_runtime_root: 'Codex runtime root', codex_seed_dir: 'Codex seed directory', claude_config_dir: 'Claude configuration directory' } as const
+const nativePathDefault = (key: keyof typeof nativePathLabels) => key === 'claude_config_dir' ? '<SPARK_HOME>/runtime/claude' : 'Platform default'
+const isShadowedSource = (source?: string) => !!source && !['stored', 'built-in default'].includes(source)
+
 function NativeHarness({ id, view, provider, status, onConnection, checking, checks, onCheck, onSignedIn, onSaved }: {
     id: keyof typeof natives; view: AgentSettingsView | null; provider: Provider; status: Status; onConnection: (id: string, state: Connection) => void
     checking: boolean; checks: number; onCheck: () => void; onSignedIn: () => void; onSaved: (view: AgentSettingsView, message: string) => void
 }) {
     const { name, key, program, install } = natives[id]
-    const stored = view?.stored?.native?.[key] ?? ''
-    const [draft, setDraft] = useState<string | null>(null)
-    const value = draft ?? stored
-    const dirty = draft !== null && draft.trim() !== stored
+    const storedNative = view?.stored?.native ?? {}
+    const pathKeys = id === 'codex' ? (['codex_runtime_root', 'codex_seed_dir'] as const) : (['claude_config_dir'] as const)
+    const [draft, setDraft] = useState<Partial<NativeAgentSettings> | null>(null)
+    const current = { ...storedNative, ...(draft ?? {}) }
+    const fieldValue = (field: keyof NativeAgentSettings) => typeof current[field] === 'string' ? current[field] : ''
+    const hasInvalidPath = pathKeys.some((field) => current[field] != null && !String(current[field]).trim())
+    const dirty = draft !== null && (
+        fieldValue(key).trim() !== (storedNative[key] ?? '')
+        || pathKeys.some((field) => fieldValue(field).trim() !== (storedNative[field] ?? ''))
+        || (id === 'claude-code' && (current.claude_permission_mode ?? null) !== (storedNative.claude_permission_mode ?? null))
+        || (id === 'codex' && (current.codex_jsonrpc_trace ?? false) !== (storedNative.codex_jsonrpc_trace ?? false))
+    )
     const [pending, setPending] = useState(false)
     const [error, setError] = useState('')
-    useSettingsNavigationProtection(dirty, pending, `${name} program`)
+    useSettingsNavigationProtection(dirty, pending, `${name} settings`)
     const last = useRef<Connection | null>(null)
     const onStatus = useCallback((state: Connection) => {
         // A finished sign-in checks the harness again.
@@ -229,36 +267,85 @@ function NativeHarness({ id, view, provider, status, onConnection, checking, che
         last.current = state
         onConnection(id, state)
     }, [id, onConnection, onSignedIn])
+    const patch = (next: Partial<NativeAgentSettings>) => setDraft((prev) => ({ ...(prev ?? {}), ...next }))
     const save = async () => {
-        if (!view?.stored) return
+        if (!view?.stored || hasInvalidPath) return
         setPending(true); setError('')
         try {
-            const next = await saveAgentSettings(view.revision, { ...view.stored, native: { ...view.stored.native, [key]: value.trim() || null } })
+            const nextNative: NativeAgentSettings = {
+                ...view.stored.native,
+                [key]: fieldValue(key).trim() || null,
+                ...Object.fromEntries(pathKeys.map((field) => [field, fieldValue(field).trim() || null])),
+                ...(id === 'claude-code' ? { claude_permission_mode: current.claude_permission_mode || null } : {}),
+                ...(id === 'codex' ? { codex_jsonrpc_trace: current.codex_jsonrpc_trace ?? null } : {}),
+            }
+            const next = await saveAgentSettings(view.revision, { ...view.stored, native: nextNative })
             setDraft(null)
-            onSaved(next, `Saved the ${name} program.`)
-        } catch (error) { setError(errorText(error, `Unable to save the ${name} program.`)) } finally { setPending(false) }
+            onSaved(next, `Saved ${name} settings.`)
+        } catch (error) { setError(errorText(error, `Unable to save ${name} settings.`)) } finally { setPending(false) }
     }
     const next = status === 'not_installed' ? `${install}, or set Program below to the full path of its ${program} executable, then check again.`
         : status === 'signed_out' ? `Sign in below. Spark checks it again when you finish.`
             : status === 'unreachable' ? `Check that Program below is ${name}'s ${program} executable and that it starts from a terminal, then check again.` : ''
     const configured = view?.effective?.native?.[key]
+    const programSource = view?.sources?.[`native.${key}`]
     return <HarnessRow anchor={id} name={name} kind="Built in" command={configured ?? program} status={status}
         problem={status === 'signed_out' ? `${name} is not signed in.` : status === 'not_installed' ? `Its program, ${configured ?? `${program} on PATH`}, wasn’t found.`
             : status === 'unreachable' ? provider?.error ?? null : null} next={next}
-        more="Program and sign-in"
+        more="Settings and sign-in"
         actions={<Button size="sm" variant="outline" aria-label={`Check ${name} again`} disabled={checking} onClick={onCheck}>Check again</Button>}>
         <Field>
             <FieldLabel htmlFor={`harness-${id}-program`}>Program</FieldLabel>
-            <div className="flex flex-wrap gap-2">
-                <Input id={`harness-${id}-program`} className="min-w-0 flex-1" value={value} placeholder={`${program} (found on PATH)`} disabled={pending || !view?.stored}
-                    aria-describedby={`harness-${id}-program-help`} onChange={(event) => setDraft(event.target.value)} />
-                <Button size="sm" aria-label={`Save ${name} program`} disabled={!dirty || pending || !view?.stored} onClick={() => void save()}>Save</Button>
-            </div>
+            <Input id={`harness-${id}-program`} value={fieldValue(key)} placeholder={`${program} (found on PATH)`} disabled={pending || !view?.stored}
+                aria-describedby={`harness-${id}-program-help`} onChange={(event) => patch({ [key]: event.target.value })} />
             <p id={`harness-${id}-program-help`} className="text-xs text-muted-foreground">
-                In use: {view?.effective?.native?.[key] ?? `${program} from PATH`}{view?.sources?.[`native.${key}`] ? ` · ${view.sources[`native.${key}`]}` : ''}. Leave blank to find {program} on PATH.
+                Leave blank to find {program} on PATH.
+                {isShadowedSource(programSource) ? ` Overridden (${programSource}): ${configured ?? program}.` : ''}
             </p>
-            {error && <FieldError role="alert">{error}</FieldError>}
         </Field>
+        {id === 'claude-code' && <Field>
+            <FieldLabel htmlFor="harness-claude-permission">Permission mode</FieldLabel>
+            <NativeSelect id="harness-claude-permission" disabled={pending || !view?.stored} value={current.claude_permission_mode ?? ''}
+                onChange={(event) => patch({ claude_permission_mode: event.target.value || null })}>
+                <option value="">Default (bypass permissions)</option>
+                {Object.entries(claudePermissionModes).map(([mode, label]) => <option key={mode} value={mode}>{label}</option>)}
+            </NativeSelect>
+            {isShadowedSource(view?.sources?.['native.claude_permission_mode']) && <p className="text-xs text-muted-foreground">
+                In use: {claudePermissionModes[(view?.effective?.native?.claude_permission_mode ?? 'bypassPermissions') as keyof typeof claudePermissionModes] ?? view?.effective?.native?.claude_permission_mode} · {view?.sources?.['native.claude_permission_mode']}
+            </p>}
+        </Field>}
+        <details open={hasInvalidPath || undefined}>
+            <SettingsSummary>Paths and diagnostics</SettingsSummary>
+            <div className="space-y-3 pt-2">
+                {pathKeys.map((field) => {
+                    const invalid = current[field] != null && !String(current[field]).trim()
+                    const effective = view?.effective?.native?.[field]
+                    const source = view?.sources?.[`native.${field}`]
+                    const showEffective = isShadowedSource(source) || (effective ?? null) !== (storedNative[field] ?? null)
+                    return <Field key={field}>
+                        <FieldLabel htmlFor={`harness-native-${field}`}>{nativePathLabels[field]}</FieldLabel>
+                        <Input id={`harness-native-${field}`} value={fieldValue(field)} placeholder={nativePathDefault(field)} disabled={pending || !view?.stored}
+                            aria-invalid={invalid} aria-describedby={invalid ? `harness-native-${field}-error` : undefined}
+                            onChange={(event) => patch({ [field]: event.target.value === '' ? null : event.target.value })} />
+                        {invalid && <FieldError id={`harness-native-${field}-error`} role="alert">Enter a nonempty path or leave blank for the default.</FieldError>}
+                        <p className="text-xs text-muted-foreground">
+                            Requires restart.
+                            {showEffective ? ` In use: ${effective ?? nativePathDefault(field)}${source ? ` (${source})` : ''}.` : ''}
+                        </p>
+                    </Field>
+                })}
+                {id === 'codex' && <Label className="flex items-center gap-2 text-sm">
+                    <Switch disabled={pending || !view?.stored} checked={current.codex_jsonrpc_trace ?? false}
+                        onCheckedChange={(checked) => patch({ codex_jsonrpc_trace: checked })} />
+                    Codex protocol log
+                </Label>}
+            </div>
+        </details>
+        <div className="flex flex-wrap gap-2">
+            <Button size="sm" aria-label={`Save ${name} settings`} disabled={!dirty || pending || !view?.stored || hasInvalidPath} onClick={() => void save()}>Save</Button>
+            {dirty && <Button size="sm" variant="ghost" disabled={pending} onClick={() => { setDraft(null); setError('') }}>Discard</Button>}
+        </div>
+        {error && <FieldError role="alert">{error}</FieldError>}
         {/* A missing program has nothing to sign in to; read sign-in once the program is checked. */}
         {provider?.setup_status && provider.setup_status !== 'not_installed' && (id === 'codex'
             ? <CodexConnectionControls key={checks} onStatus={onStatus} showCheck={false} />
@@ -389,7 +476,15 @@ function HarnessRow({ anchor, name, kind, command, status, problem, next, fix, a
 }
 
 type EnvRow = { key: string; value: string; hidden: boolean; saved: boolean }
-type Draft = { id: string; name: string; executable: string; args: string; permission_policy: 'allow' | 'deny'; env: EnvRow[]; channel: boolean; channelArgs: string; channelEnv: EnvRow[]; channelConfig: string }
+type Draft = { id: string; name: string; executable: string; args: string; permission_policy: 'allow' | 'deny'; env: EnvRow[] }
+
+type AcpPreset = { id: string; name: string; executable: string; args: string[] }
+const acpPresets: readonly AcpPreset[] = [
+    { id: 'opencode', name: 'OpenCode', executable: 'opencode', args: ['acp'] },
+    { id: 'agy', name: 'Antigravity', executable: 'agy', args: ['acp'] },
+    { id: 'gemini', name: 'Gemini CLI', executable: 'gemini', args: ['--acp'] },
+    { id: 'goose', name: 'Goose', executable: 'goose', args: ['acp'] },
+]
 
 // A hand-written string of arguments is split where a shell would, so the form shows each one.
 const strings = (value: unknown) => typeof value === 'string' ? value.split(/\s+/).filter(Boolean)
@@ -399,12 +494,9 @@ const savedRows = (value: unknown): EnvRow[] => Object.keys(record(value)).map((
 
 function draftFor(id: string | null, entry: AcpHarnessEntry | null): Draft {
     const registration = entry?.registration ?? {}
-    const channel = registration.system_instructions ? record(registration.system_instructions) : null
     return {
         id: id ?? '', name: typeof registration.name === 'string' ? registration.name : '', executable: typeof registration.executable === 'string' ? registration.executable : '',
         args: strings(registration.args).join('\n'), permission_policy: registration.permission_policy === 'deny' ? 'deny' : 'allow', env: savedRows(registration.env),
-        channel: !!channel, channelArgs: strings(channel?.args).join('\n'), channelEnv: savedRows(channel?.env),
-        channelConfig: Object.entries(record(channel?.config)).map(([key, value]) => `${key}=${String(value)}`).join('\n'),
     }
 }
 
@@ -412,22 +504,17 @@ function draftFor(id: string | null, entry: AcpHarnessEntry | null): Draft {
 const unlessEdited = <T,>(text: string, initial: string, stored: unknown, valid: (value: unknown) => value is T, read: (text: string) => T): T =>
     text === initial && valid(stored) ? stored : read(text)
 const isArgs = (value: unknown): value is string[] => Array.isArray(value) && value.every((entry) => typeof entry === 'string')
-const isConfig = (value: unknown): value is Record<string, string> => !!value && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every((entry) => typeof entry === 'string')
 
 function registrationFor(draft: Draft, initial: Draft, stored: Partial<AcpHarnessRegistration>): AcpHarnessRegistration {
-    const channel = record(stored.system_instructions)
     return {
         name: draft.name.trim(), executable: draft.executable.trim(), args: unlessEdited(draft.args, initial.args, stored.args, isArgs, lines), permission_policy: draft.permission_policy,
         env: Object.fromEntries(draft.env.map((row) => [row.key.trim(), row.hidden ? HIDDEN_ENV_VALUE : row.value])),
-        ...(draft.channel ? { system_instructions: {
-            args: unlessEdited(draft.channelArgs, initial.channelArgs, channel.args, isArgs, lines),
-            env: Object.fromEntries(draft.channelEnv.map((row) => [row.key.trim(), { text: row.hidden ? HIDDEN_ENV_VALUE : row.value }])),
-            config: unlessEdited(draft.channelConfig, initial.channelConfig, channel.config, isConfig, (text) => Object.fromEntries(lines(text).map((line) => [line.slice(0, line.indexOf('=')).trim(), line.slice(line.indexOf('=') + 1).trim()]))),
-        } } : {}),
+        // Keep any TOML-configured instruction channel untouched across UI edits.
+        ...(stored.system_instructions ? { system_instructions: stored.system_instructions } : {}),
     }
 }
 
-function draftErrors(draft: Draft, isNew: boolean, taken: string[]): Partial<Record<'id' | 'name' | 'executable' | 'env' | 'channelEnv' | 'channelConfig', string>> {
+function draftErrors(draft: Draft, isNew: boolean, taken: string[]): Partial<Record<'id' | 'name' | 'executable' | 'env', string>> {
     const envError = (rows: EnvRow[]) => {
         const keys = rows.map((row) => row.key.trim())
         const bad = keys.find((key) => !key || key.includes('='))
@@ -441,8 +528,6 @@ function draftErrors(draft: Draft, isNew: boolean, taken: string[]): Partial<Rec
         name: draft.name.trim() ? '' : 'Enter a name.',
         executable: draft.executable.trim() ? '' : 'Enter the program that starts the agent.',
         env: envError(draft.env),
-        channelEnv: draft.channel ? envError(draft.channelEnv) : '',
-        channelConfig: draft.channel && lines(draft.channelConfig).some((line) => line.indexOf('=') < 1 || !line.slice(line.indexOf('=') + 1).trim()) ? 'Write each setting as id=value.' : '',
     }).filter(([, message]) => message))
 }
 
@@ -467,6 +552,7 @@ function AcpHarnessForm({ id, entry, view, onCancel, onSaved }: {
     const invalid = Object.keys(found).length > 0
     const errors = tried ? found : {}
     const set = (patch: Partial<Draft>) => setDraft((current) => ({ ...current, ...patch }))
+    const applyPreset = (preset: AcpPreset) => set({ id: preset.id, name: preset.name, executable: preset.executable, args: preset.args.join('\n') })
     const save = async () => {
         setTried(true)
         if (!view || invalid || stale) return
@@ -485,6 +571,11 @@ function AcpHarnessForm({ id, entry, view, onCancel, onSaved }: {
             <Button size="sm" variant="outline" onClick={restart}>Start over from what’s saved</Button>
         </div>}
         <fieldset disabled={pending} className="space-y-3">
+            {id === null && <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                <span className="text-muted-foreground">Start from a template:</span>
+                {acpPresets.map((preset) => <Button key={preset.id} type="button" size="sm" variant="outline" className="h-7 px-2 text-xs"
+                    aria-label={`Use ${preset.name} template`} onClick={() => applyPreset(preset)}>{preset.name}</Button>)}
+            </div>}
             {id === null && <Field>
                 <FieldLabel htmlFor={`${prefix}-id`}>ID</FieldLabel>
                 <Input {...field('id')} value={draft.id} placeholder="my-agent" autoComplete="off" onChange={(event) => set({ id: event.target.value })} />
@@ -505,7 +596,7 @@ function AcpHarnessForm({ id, entry, view, onCancel, onSaved }: {
             <Field>
                 <FieldLabel htmlFor={`${prefix}-args`}>Arguments</FieldLabel>
                 <Textarea id={`${prefix}-args`} value={draft.args} placeholder="--acp" onChange={(event) => set({ args: event.target.value })} />
-                <p className="text-xs text-muted-foreground">One per line.</p>
+                <p className="text-xs text-muted-foreground">One per line. Put secrets in Environment below rather than here.</p>
             </Field>
             <EnvRows label="Environment" rows={draft.env} secret error={errors.env} errorId={`${prefix}-env-error`} onChange={(env) => set({ env })}
                 help="Set for the agent’s process, over what it inherits. Saved values stay hidden; replace one to change it." />
@@ -516,28 +607,6 @@ function AcpHarnessForm({ id, entry, view, onCancel, onSaved }: {
                 </NativeSelect>
                 <p className="text-xs text-muted-foreground">How Spark answers when the agent asks permission to use a tool.</p>
             </Field>
-            <details open={initial.channel}>
-                <SettingsSummary>Pinned instructions</SettingsSummary>
-                <div className="space-y-3 pt-2">
-                    <p className="text-xs text-muted-foreground">Optional. Without it, an agent that can’t take ACP system prompts gets a chat’s or flow’s pinned instructions at the start of its first message. Set it to pass them when Spark starts the agent instead. Write {'{{instructions}}'} for the text, or {'{{instructions_file}}'} for the path of a file holding it.</p>
-                    <Label className="flex items-center gap-2 text-sm"><Switch checked={draft.channel} onCheckedChange={(channel) => set({ channel })} />Pass pinned instructions when starting the agent</Label>
-                    {draft.channel && <>
-                        <Field>
-                            <FieldLabel htmlFor={`${prefix}-channel-args`}>Extra arguments</FieldLabel>
-                            <Textarea id={`${prefix}-channel-args`} value={draft.channelArgs} placeholder="--system-prompt-file={{instructions_file}}" onChange={(event) => set({ channelArgs: event.target.value })} />
-                            <p className="text-xs text-muted-foreground">One per line.</p>
-                        </Field>
-                        <EnvRows label="Environment templates" rows={draft.channelEnv} error={errors.channelEnv} errorId={`${prefix}-channelEnv-error`} onChange={(channelEnv) => set({ channelEnv })}
-                            help="Variables whose values carry the instructions. Saved values stay hidden." />
-                        <Field>
-                            <FieldLabel htmlFor={`${prefix}-channelConfig`}>Required session settings</FieldLabel>
-                            <Textarea {...field('channelConfig')} value={draft.channelConfig} placeholder="mode=custom" onChange={(event) => set({ channelConfig: event.target.value })} />
-                            <p className="text-xs text-muted-foreground">Session settings the agent needs so it reads the instructions, one id=value per line.</p>
-                            {fieldError('channelConfig')}
-                        </Field>
-                    </>}
-                </div>
-            </details>
         </fieldset>
         <div className="flex flex-wrap gap-2">
             <Button size="sm" disabled={pending || stale || (tried && invalid) || (!dirty && id !== null)} onClick={() => void save()}>{id ? 'Save' : 'Add harness'}</Button>

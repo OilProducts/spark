@@ -4,7 +4,7 @@ import { useEffect } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { HarnessSettings } from '../HarnessSettings'
-import { cancelAcpSignIn, fetchAgentSettings, fetchHarnessCatalog, HIDDEN_ENV_VALUE, saveAcpHarness, signInAcpHarness, type AgentSettingsView } from '../services/executionSettings'
+import { cancelAcpSignIn, fetchAgentSettings, fetchHarnessCatalog, HIDDEN_ENV_VALUE, saveAcpHarness, saveAgentSettings, signInAcpHarness, type AgentSettingsView } from '../services/executionSettings'
 
 vi.mock('../services/executionSettings', async (original) => ({ ...await original<typeof import('../services/executionSettings')>(),
     fetchAgentSettings: vi.fn(), fetchHarnessCatalog: vi.fn(), saveAcpHarness: vi.fn(), saveAgentSettings: vi.fn(), signInAcpHarness: vi.fn(), cancelAcpSignIn: vi.fn() }))
@@ -270,4 +270,90 @@ it('shows a terminal sign-in as the command to run, and cancels a sign-in left u
     expect(cancelAcpSignIn).toHaveBeenCalledWith('helper')
     expect(await within(helper).findByText('Signed out')).toBeInTheDocument()
     expect(within(helper).queryByRole('alert')).not.toBeInTheDocument()
+})
+
+it('fills an ACP harness from a starter template and keeps TOML-configured system_instructions intact across UI edits', async () => {
+    const withChannel: AgentSettingsView = {
+        ...view,
+        acp_harnesses: {
+            opencode: {
+                registration: {
+                    name: 'OpenCode', executable: 'opencode', args: ['acp'],
+                    system_instructions: { env: { OPENCODE_CONFIG_CONTENT: { json: HIDDEN_ENV_VALUE } } },
+                },
+                error: null,
+            },
+        },
+    }
+    vi.mocked(fetchAgentSettings).mockResolvedValue(view)
+    vi.mocked(fetchHarnessCatalog).mockResolvedValue({ models: [], providers: { codex: { status: 'available', error: null, setup_status: 'ready' } } })
+    vi.mocked(saveAcpHarness).mockResolvedValue(withChannel)
+    const user = userEvent.setup()
+    render(<DialogProvider><HarnessSettings /></DialogProvider>)
+
+    // Adding from a template populates ID, name, program and args without showing pinned-instructions plumbing.
+    await user.click(await screen.findByRole('button', { name: 'Add ACP harness' }))
+    const addForm = screen.getByRole('group', { name: 'Add ACP harness' })
+    expect(within(addForm).queryByText('Pinned instructions')).not.toBeInTheDocument()
+    await user.click(within(addForm).getByRole('button', { name: 'Use OpenCode template' }))
+    expect(within(addForm).getByLabelText('ID')).toHaveValue('opencode')
+    expect(within(addForm).getByLabelText('Name', { exact: true })).toHaveValue('OpenCode')
+    expect(within(addForm).getByLabelText('Program')).toHaveValue('opencode')
+    expect(within(addForm).getByLabelText('Arguments')).toHaveValue('acp')
+    await user.click(within(addForm).getByRole('button', { name: 'Add harness' }))
+    expect(saveAcpHarness).toHaveBeenLastCalledWith('one', 'opencode', expect.objectContaining({
+        name: 'OpenCode', executable: 'opencode', args: ['acp'],
+    }))
+
+    // Editing a harness that already has system_instructions in spark.toml preserves it untouched.
+    const row = await screen.findByRole('group', { name: 'OpenCode' })
+    await user.click(within(row).getByRole('button', { name: 'Edit OpenCode' }))
+    const editForm = screen.getByRole('group', { name: 'Edit OpenCode' })
+    expect(within(editForm).queryByText('Pinned instructions')).not.toBeInTheDocument()
+    await user.type(within(editForm).getByLabelText('Name', { exact: true }), ' Local')
+    await user.click(within(editForm).getByRole('button', { name: 'Save' }))
+    expect(saveAcpHarness).toHaveBeenLastCalledWith('one', 'opencode', expect.objectContaining({
+        name: 'OpenCode Local',
+        system_instructions: { env: { OPENCODE_CONFIG_CONTENT: { json: HIDDEN_ENV_VALUE } } },
+    }))
+})
+
+it('offers one-click Add for detected ACP harnesses and edits native harness settings in place', async () => {
+    const detectedView: AgentSettingsView = {
+        ...view,
+        detected_acp_harnesses: [{ id: 'agy', name: 'Antigravity', executable: 'agy', args: ['acp'] }],
+    }
+    vi.mocked(fetchAgentSettings).mockResolvedValue(detectedView)
+    vi.mocked(fetchHarnessCatalog).mockResolvedValue({ models: [], providers: {
+        codex: { status: 'available', error: null, setup_status: 'ready' },
+        'claude-code': { status: 'available', error: null, setup_status: 'ready' },
+    } })
+    vi.mocked(saveAcpHarness).mockResolvedValue({ ...view, detected_acp_harnesses: [] })
+    vi.mocked(saveAgentSettings).mockImplementation(async (_, value) => ({ ...detectedView, stored: value, effective: value }))
+    const user = userEvent.setup()
+    render(<DialogProvider><HarnessSettings /></DialogProvider>)
+
+    const detected = await screen.findByRole('region', { name: 'Found on this machine' })
+    expect(within(detected).getByText('Antigravity')).toBeInTheDocument()
+    await user.click(within(detected).getByRole('button', { name: 'Add detected Antigravity' }))
+    expect(saveAcpHarness).toHaveBeenLastCalledWith('one', 'agy', {
+        name: 'Antigravity', executable: 'agy', args: ['acp'], permission_policy: 'allow', env: {},
+    })
+
+    const claude = screen.getByRole('group', { name: 'Claude Code' })
+    await user.click(within(claude).getByText('Settings and sign-in'))
+    await user.selectOptions(within(claude).getByLabelText('Permission mode'), 'acceptEdits')
+    await user.click(within(claude).getByRole('button', { name: 'Save Claude Code settings' }))
+    expect(saveAgentSettings).toHaveBeenLastCalledWith('one', expect.objectContaining({
+        native: expect.objectContaining({ claude_permission_mode: 'acceptEdits' }),
+    }))
+
+    const codex = screen.getByRole('group', { name: 'Codex' })
+    await user.click(within(codex).getByText('Settings and sign-in'))
+    await user.click(within(codex).getByText('Paths and diagnostics'))
+    await user.click(within(codex).getByRole('switch', { name: 'Codex protocol log' }))
+    await user.click(within(codex).getByRole('button', { name: 'Save Codex settings' }))
+    expect(saveAgentSettings).toHaveBeenLastCalledWith('one', expect.objectContaining({
+        native: expect.objectContaining({ codex_jsonrpc_trace: true }),
+    }))
 })

@@ -22,7 +22,7 @@ export function EnvironmentsCard({ navigate }: { navigate?: (url: string) => voi
             setEntries(next)
             return true
         } catch {
-            setError('Could not save environments in this browser.')
+            setError(isTauri() ? 'Could not save environments on this device.' : 'Could not save environments in this browser.')
             return false
         }
     }
@@ -61,7 +61,7 @@ export function EnvironmentsCard({ navigate }: { navigate?: (url: string) => voi
     return <Card className="gap-4 py-4">
         <CardHeader className="px-4"><h2 className="text-base font-semibold">Environments</h2></CardHeader>
         <CardContent className="space-y-3 px-4 text-sm">
-            <p className="text-muted-foreground">Other Spark environments to open from here, saved in this browser only. Open first checks that the origin still serves the expected environment ID, shown at the origin’s /environment.</p>
+            <p className="text-muted-foreground">Other Spark environments to open from here, {isTauri() ? 'saved on this device only' : 'saved in this browser only'}. Open first checks that the origin still serves the expected environment ID, shown at the origin’s /environment.</p>
             {entries.length > 0 && <ul className="space-y-2">
                 {entries.map((entry) => {
                     const name = entry.label || entry.origin

@@ -26,7 +26,7 @@ spark settings validate --base-url http://127.0.0.1:8000 --json settings-update.
 spark settings set --base-url http://127.0.0.1:8000 --json settings-update.json
 ```
 
-`--json` takes inline JSON, a filename, or `-` to read stdin. The corresponding endpoints are `GET /workspace/api/settings`, `POST /workspace/api/settings/validate`, and `PATCH /workspace/api/settings`. Reads accept `project_path` and `conversation_id` query parameters. Supported update sections are `runtime`, `connections`, `providers`, `agents`, `models`, `project_models`, `project_execution`, `conversation_models`, `client_preferences`, `llm_profiles`, and `execution_profiles`.
+`--json` takes inline JSON, a filename, or `-` to read stdin. The corresponding endpoints are `GET /workspace/api/settings`, `POST /workspace/api/settings/validate`, and `PATCH /workspace/api/settings`. Reads accept `project_path` and `conversation_id` query parameters. Supported update sections are `runtime`, `connections`, `providers`, `agents`, `acp_harness`, `models`, `utility_models`, `project_models`, `project_execution`, `conversation_models`, `client_preferences`, `llm_profiles`, and `execution_profiles`.
 
 Example conversation override update:
 
@@ -268,6 +268,53 @@ sessions consume those captures. Continuations retain the original capture;
 subsequent independent messages/runs read and validate current files. Credential
 references are captured; credential values and OAuth material are not persisted
 in snapshots.
+
+### ACP harnesses
+
+Any agent that speaks the Agent Client Protocol (ACP) v1 over stdio can be registered under `[agents.acp_harnesses.<id>]` in `$SPARK_HOME/config/spark.toml` and selected in chats, defaults, or flows as `acp:<id>`. Manage them in **Settings → Models & accounts → Agent harnesses** (which includes starter templates for OpenCode, Antigravity, Gemini CLI, and Goose), save one at a time via `spark settings set` (`section: "acp_harness"`), or edit `spark.toml` directly.
+
+```toml
+[agents.acp_harnesses.opencode]
+name = "OpenCode"
+executable = "opencode"
+args = ["acp"]
+permission_policy = "allow"
+
+[agents.acp_harnesses.opencode.env]
+# Put API keys or tokens here; env values are hidden in UI responses and redacted from execution snapshots.
+
+[agents.acp_harnesses.opencode.system_instructions.env]
+OPENCODE_CONFIG_CONTENT = { json = { instructions = ["{{instructions_file}}"] } }
+```
+
+Registration fields:
+
+- **ID (`<id>`):** `1–64` lowercase ASCII letters, digits, `-`, or `_`, starting with a letter or digit. The ID owns the harness's sessions (`acp:<id>`) and cannot be renamed in place.
+- **`name`:** Display label shown in Settings and model pickers.
+- **`executable` and `args`:** Launched directly without a shell (`executable` may be an absolute path or a name on `PATH`). Put secrets in `env`, not `args`: execution snapshots redact `env` values, while `args` are kept as written.
+- **`env`:** Applied over the inherited environment (controlled by `agents.environment_inheritance`). Spark's reserved bindings (`SPARK_HOME`, `SPARK_API_BASE_URL`, `SPARK_PROJECT_WORK_DIR`) cannot be overridden.
+- **`permission_policy`:** `"allow"` (default; chooses an offered allow-once option, else allow-always) or `"deny"`.
+- **`system_instructions` (optional, TOML/API only):** Launch-time channel for Spark's pinned instructions when an agent does not support ACP `systemPrompt`. Accepts `args` (string array), `env` (entries of `{ text = "..." }` or `{ json = ... }`), and `config` (required ACP session config `id = "value"` pairs). At least one `args` or `env` entry must reference `{{instructions}}` (the raw text) or `{{instructions_file}}` (path to a private temporary file holding the text). Most setups can omit this: Spark uses ACP `systemPrompt` if advertised, otherwise prepends `<instructions>...</instructions>` to the first prompt of each fresh session. Existing TOML `system_instructions` entries are preserved when editing a harness in Settings.
+
+Updating a single harness through the API or CLI uses section `acp_harness` (`registration: null` removes it):
+
+```json
+{
+  "expected_revision": "revision-from-settings-get",
+  "section": "acp_harness",
+  "value": {
+    "id": "gemini",
+    "registration": {
+      "name": "Gemini CLI",
+      "executable": "gemini",
+      "args": ["--acp"],
+      "permission_policy": "allow"
+    }
+  }
+}
+```
+
+Each registration is validated independently: a misconfigured entry is reported in Settings without affecting native harnesses or other ACP registrations. Background checks probe capabilities, offered `configOptions` (models, `thought_level`, and extra session controls), and sign-in methods without sending a prompt. ACP harnesses currently do not support Plan mode, mid-turn steering, subagent intervention, or utility calls.
 
 ## Reusable presentation and layouts
 

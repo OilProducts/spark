@@ -25,12 +25,14 @@ interface ModelChooserProps {
     title?: string
     /** Offers an ACP harness's session controls; off where they would not be saved. */
     sessionControls?: boolean
+    /** Hides ACP harnesses (`acp:*`), e.g. for utility calls that only support native harnesses and API providers. */
+    excludeAcp?: boolean
 }
 
 const effortLabel = (effort: string) => effort === 'xhigh' ? 'XHigh' : effort.charAt(0).toUpperCase() + effort.slice(1)
 const empty: ModelSettings = { provider: null, llm_profile: null, model: null, reasoning_effort: null }
 
-export function ModelChooser({ value, inherited, onChange, projectPath, inheritLabel, layout = 'fields', disabled = false, invalidModel = false, defaultPrefix = 'Default', title, sessionControls: withControls = true }: ModelChooserProps) {
+export function ModelChooser({ value, inherited, onChange, projectPath, inheritLabel, layout = 'fields', disabled = false, invalidModel = false, defaultPrefix = 'Default', title, sessionControls: withControls = true, excludeAcp = false }: ModelChooserProps) {
     const id = useId()
     const profiles = useLlmProfiles()
     const discovery = useModelOptions(projectPath)
@@ -66,6 +68,7 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const describe = (entry: ReturnType<typeof resolve>) => entry.model
         ? `${entry.model} · ${entry.effort ? effortLabel(entry.effort) : 'Default effort'}` : inheritLabel
     const providers = [...new Set([...Object.keys(discovery?.payload?.providers ?? {}), ...(discovery?.payload?.models.map(model => model.provider) ?? []), ...profiles.map(profile => profile.provider)])]
+        .filter(provider => !excludeAcp || !provider.startsWith('acp:'))
     const groups = providers.flatMap(provider => {
         const discovered = unavailable(provider) ? [] : discovery?.payload?.models.filter(model => model.provider === provider && !model.llm_profile) ?? []
         return [...(discovery?.payload?.providers[provider] || discovered.length ? [{ provider, profile: null as string | null, label: providerLabel(provider), models: discovered.map(model => model.id) }] : []),

@@ -11,8 +11,6 @@ import { SaveStatus } from './SaveStatus'
 import { SettingsSummary } from './SettingsSummary'
 import { agentLimitError, msToUnit, unitToMs, type agentLimitKeys, type DurationUnit } from './services/executionSettings'
 
-const defaultPath = (key: string) => key === 'claude_config_dir' ? '<SPARK_HOME>/runtime/claude' : 'Platform default'
-const labels = { codex_runtime_root: 'Codex runtime root', codex_seed_dir: 'Codex seed directory', claude_config_dir: 'Claude configuration directory', codex_jsonrpc_trace: 'Codex protocol log', agent_trace: 'Agent trace log' } as const
 // [setting, label, what it affects, unit shown when the stored value is milliseconds]
 const limitFields: [typeof agentLimitKeys[number], string, string, DurationUnit?][] = [
     ['max_turns', 'Maximum turns', 'Stops an agent session after this many turns. 0 means no limit.'],
@@ -22,12 +20,12 @@ const limitFields: [typeof agentLimitKeys[number], string, string, DurationUnit?
     ['max_subagent_depth', 'Subagent levels', 'How many levels deep agents may start subagents. 0 turns subagents off.'],
     ['loop_detection_window', 'Loop check length', 'How many recent tool calls are compared to spot an agent repeating itself.'],
 ]
-const permissionModes = { default: 'Default', acceptEdits: 'Accept edits', bypassPermissions: 'Bypass permissions', plan: 'Plan', dontAsk: 'Do not ask', auto: 'Automatic' } as const
 
 export function AgentSettingsEditor() {
     const editor = useAgentSettingsEditor()
     const [newToolNames, setNewToolNames] = useState({ tool_output_limits: '', line_limits: '' })
     return <Card id="agent-session-limits" className="scroll-mt-4"><CardHeader><h2 className="text-base font-semibold">Agent session limits</h2></CardHeader><CardContent className="space-y-3">
+        <p className="text-sm text-muted-foreground">Limits for Spark’s built-in agent loop (direct API providers and LLM profiles). Codex, Claude Code, and ACP harnesses manage their own turns and tools; their settings live in Models &amp; accounts › Agent harnesses.</p>
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
         {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error} className="text-sm text-destructive">{error}</p>)}
         {!editor.draft && editor.saved?.repair_defaults && <div className="space-y-1">
@@ -51,39 +49,21 @@ export function AgentSettingsEditor() {
                 <p id={`agent-${key}-help`} className="text-xs text-muted-foreground">{help}</p>
                 {error && <FieldError id={`agent-${key}-error`} role="alert">{error}</FieldError>}
             </Field></Fragment>})}
-            <details ref={(node) => { if (node && (Object.values(editor.draft?.native ?? {}).some((value) => typeof value === 'string' && !value.trim()))) node.open = true }}><SettingsSummary>Codex and Claude paths</SettingsSummary>
-            <p className="text-xs text-muted-foreground">The Codex and Claude Code programs are set under Models & accounts › Agent harnesses.</p>
-            {(['codex_runtime_root', 'codex_seed_dir', 'claude_config_dir'] as const).map((key) => <Field key={key}>
-                <FieldLabel htmlFor={`agent-native-${key}`}>{labels[key]}</FieldLabel>
-                <Input id={`agent-native-${key}`} aria-describedby={`agent-native-${key}-error`} aria-invalid={editor.draft?.native?.[key] != null && !editor.draft.native[key]?.trim()} value={editor.draft?.native?.[key] ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, native: { ...draft.native, [key]: event.target.value || null } }))} />
-                {editor.draft?.native?.[key] != null && !editor.draft.native[key]?.trim() && <p id={`agent-native-${key}-error`} role="alert">Enter a nonempty path or leave blank for the default.</p>}
-                {!editor.saved?.effective && editor.saved?.active_startup && ['codex_runtime_root', 'codex_seed_dir', 'claude_config_dir'].includes(key) && <p className="text-xs text-muted-foreground">Startup: {editor.saved.active_startup[key] ?? defaultPath(key)} · Retained until restart</p>}
-                <p className="text-xs text-muted-foreground">In use: {editor.saved?.effective ? editor.saved.effective.native?.[key] ?? defaultPath(key) : 'Unavailable'} · {editor.saved?.sources?.[`native.${key}`]} · Requires restart</p>
-            </Field>)}
-            </details>
-            <details><SettingsSummary>Permissions and environment</SettingsSummary>
-            <Field><FieldLabel htmlFor="agent-environment-inheritance">Environment variables for tools</FieldLabel>
-                <NativeSelect id="agent-environment-inheritance" value={editor.draft.environment_inheritance ?? 'inherit_core_only'} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, environment_inheritance: event.target.value as 'inherit_all' | 'inherit_none' | 'inherit_core_only' }))}>
-                    <option value="inherit_core_only">Core variables only</option><option value="inherit_all">All variables</option><option value="inherit_none">None</option>
-                </NativeSelect>
-            </Field>
-            <Field><FieldLabel htmlFor="agent-claude-permission">Claude permission mode</FieldLabel>
-                <NativeSelect id="agent-claude-permission" value={editor.draft.native?.claude_permission_mode ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, native: { ...draft.native, claude_permission_mode: event.target.value || null } }))}>
-                    <option value="">Default (bypass permissions)</option>
-                    {Object.entries(permissionModes).map(([mode, name]) => <option key={mode} value={mode}>{name}</option>)}
-                </NativeSelect>
-                <p className="text-xs text-muted-foreground">In use: {editor.saved?.effective ? (() => { const mode = editor.saved.effective.native?.claude_permission_mode ?? 'bypassPermissions'; return permissionModes[mode as keyof typeof permissionModes] ?? mode })() : 'Unavailable'}</p>
-            </Field>
-            </details>
-            <details><SettingsSummary>Debug logs</SettingsSummary>
-            <p className="text-xs text-muted-foreground">Extra detail for troubleshooting. Leave off unless you are diagnosing a problem.</p>
-            {(['codex_jsonrpc_trace', 'agent_trace'] as const).map((key) => <Field key={key}>
-                <FieldLabel htmlFor={`agent-${key}`}>{labels[key]}</FieldLabel>
-                <NativeSelect id={`agent-${key}`} value={editor.draft?.native?.[key] == null ? '' : String(editor.draft.native[key])} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, native: { ...draft.native, [key]: event.target.value === '' ? null : event.target.value === 'true' } }))}>
-                    <option value="">Default (off)</option><option value="true">On</option><option value="false">Off</option>
-                </NativeSelect>
-                <p className="text-xs text-muted-foreground">In use: {editor.saved?.effective ? editor.saved.effective.native?.[key] ? 'On' : 'Off' : 'Unavailable'}</p>
-            </Field>)}
+            <details><SettingsSummary>Environment and diagnostics</SettingsSummary>
+            <div className="space-y-3 pt-2">
+                <Field><FieldLabel htmlFor="agent-environment-inheritance">Environment variables for tools</FieldLabel>
+                    <NativeSelect id="agent-environment-inheritance" value={editor.draft.environment_inheritance ?? 'inherit_core_only'} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, environment_inheritance: event.target.value as 'inherit_all' | 'inherit_none' | 'inherit_core_only' }))}>
+                        <option value="inherit_core_only">Core variables only</option><option value="inherit_all">All variables</option><option value="inherit_none">None</option>
+                    </NativeSelect>
+                    <p className="text-xs text-muted-foreground">Which host environment variables Spark passes to direct API tools and ACP harnesses.</p>
+                </Field>
+                <Label className="flex items-center gap-2 text-sm">
+                    <Switch checked={editor.draft.native?.agent_trace ?? false}
+                        onCheckedChange={(checked) => editor.setDraft((draft) => draft && ({ ...draft, native: { ...draft.native, agent_trace: checked } }))} />
+                    Agent trace log
+                </Label>
+                <p className="text-xs text-muted-foreground">Extra diagnostic detail for troubleshooting. Leave off unless diagnosing a problem.</p>
+            </div>
             </details>
             <details ref={(node) => { if (node && ((['tool_output_limits', 'line_limits'] as const).some((key) => Object.entries(editor.draft![key]).some(([tool, value]) => !tool.trim() || !Number.isSafeInteger(value) || value < 0)))) node.open = true }}><SettingsSummary>Tool output limits</SettingsSummary>
             <p className="text-xs text-muted-foreground">Cut long tool output short before an agent reads it. Add a limit by tool name, such as shell.</p>

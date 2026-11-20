@@ -87,6 +87,7 @@ it('opens a verified origin in the system browser from the desktop', async () =>
     localStorage.setItem('spark.environments', JSON.stringify([saved]))
     vi.stubGlobal('fetch', descriptor('env-b'))
     render(<EnvironmentsCard navigate={navigate} />)
+    expect(screen.getByText(/saved on this device only/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Open Build box' }))
     expect(openUrl).toHaveBeenCalledWith('http://127.0.0.1:9000/')
     expect(navigate).not.toHaveBeenCalled()

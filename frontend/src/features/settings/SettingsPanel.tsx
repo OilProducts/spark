@@ -204,16 +204,6 @@ export function SettingsPanel() {
                 <TabsContent value="execution" forceMount hidden={category !== 'execution'} className="space-y-6">
                 <ExecutionProfilesEditor />
                 <AgentSettingsEditor />
-                <Card className="gap-4 py-4">
-                    <CardHeader className="px-4"><h2 className="text-base font-semibold">Flow and trigger settings</h2></CardHeader>
-                    <CardContent className="space-y-3 px-4">
-                        <p className="text-sm text-muted-foreground">Who can launch a flow and which runs wait for each other (execution locks) are set in the flow editor’s graph settings. Automations are set up in Triggers.</p>
-                        <div className="flex flex-wrap gap-2">
-                            <Button variant="outline" onClick={() => useStore.getState().setViewMode('editor')}>Open flow editor</Button>
-                            <Button variant="outline" onClick={() => useStore.getState().setViewMode('triggers')}>Edit triggers</Button>
-                        </div>
-                    </CardContent>
-                </Card>
                 </TabsContent>
                 <TabsContent value="system" forceMount hidden={category !== 'system'} className="space-y-6">
                 {getTauriInvoke() ? (

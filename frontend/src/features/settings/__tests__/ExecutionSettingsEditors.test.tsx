@@ -70,21 +70,17 @@ it('shows why unreadable session limits can’t be read and repairs them for sav
     expect(saveAgentSettings).toHaveBeenCalledWith('one', repair)
 })
 
-it('collapses agent advanced groups, opens invalid paths and output limits, and keeps controls outside disclosures', async () => {
-    const stored = { max_turns: 0, max_tool_rounds_per_input: 0, default_command_timeout_ms: 10000, max_command_timeout_ms: 600000, tool_output_limits: { shell: -1 }, line_limits: {}, enable_loop_detection: true, loop_detection_window: 10, max_subagent_depth: 1, native: { codex_runtime_root: ' ' } }
+it('collapses agent advanced groups, opens invalid output limits, and keeps controls outside disclosures', async () => {
+    const stored = { max_turns: 0, max_tool_rounds_per_input: 0, default_command_timeout_ms: 10000, max_command_timeout_ms: 600000, tool_output_limits: { shell: -1 }, line_limits: {}, enable_loop_detection: true, loop_detection_window: 10, max_subagent_depth: 1 }
     vi.mocked(fetchAgentSettings).mockResolvedValue({ revision: 'one', stored, effective: stored })
     const user = userEvent.setup()
     render(<DialogProvider><AgentSettingsEditor /></DialogProvider>)
-    const path = await screen.findByLabelText('Codex runtime root')
-    expect(path).toBeVisible()
-    expect(path).toHaveAccessibleDescription('Enter a nonempty path or leave blank for the default.')
-    expect(screen.getByText('Codex and Claude paths').closest('details')).toHaveAttribute('open')
+    const limit = await screen.findByLabelText('shell')
+    expect(limit).toBeVisible()
     expect(screen.getByText('Tool output limits').closest('details')).toHaveAttribute('open')
-    for (const name of ['Permissions and environment', 'Debug logs']) expect(screen.getByText(name).closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByText('Environment and diagnostics').closest('details')).not.toHaveAttribute('open')
     expect(screen.getByRole('button', { name: /^Save/ }).closest('details')).toBeNull()
     expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
-    await user.clear(path)
-    const limit = screen.getByLabelText('shell')
     await user.clear(limit); await user.type(limit, '10')
     expect(screen.getByRole('button', { name: /^Save/ })).toBeEnabled()
 })

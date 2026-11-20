@@ -35,6 +35,8 @@ interface ProjectConversationSurfaceProps {
     activeConversationHandle?: string | null
     activeConversationUpdatedAt?: string | null
     activeChatMode: ConversationChatMode | null
+    /** False when the active harness reports `plan_mode` unsupported; hides Plan unless the chat is already in it. */
+    planModeSupported?: boolean
     /** The latest assistant turn's context occupancy, for the meter. */
     contextUsage?: ContextUsage | null
     onChatModeChange?: (mode: ConversationChatMode) => void
@@ -126,6 +128,7 @@ export function ProjectConversationSurface({
     activeConversationHandle = null,
     activeConversationUpdatedAt = null,
     activeChatMode,
+    planModeSupported = true,
     contextUsage = null,
     onChatModeChange,
     hasThinking,
@@ -264,7 +267,7 @@ export function ProjectConversationSurface({
                             controls: (
                                 <>
                                     {onStopTurn ? <Button type="button" variant="outline" size="sm" onClick={onStopTurn} data-testid="project-chat-stop">Stop</Button> : null}
-                                    {activeChatMode ? (
+                                    {activeChatMode && (planModeSupported || activeChatMode === 'plan') ? (
                                         // Full width on a phone: the model name shortens instead.
                                         <div className="shrink-0">
                                             <NativeSelect
@@ -278,7 +281,9 @@ export function ProjectConversationSurface({
                                                 className="rounded-lg"
                                             >
                                                 <NativeSelectOption value="chat">Chat</NativeSelectOption>
-                                                <NativeSelectOption value="plan">Plan</NativeSelectOption>
+                                                <NativeSelectOption value="plan" disabled={!planModeSupported}>
+                                                    {planModeSupported ? 'Plan' : 'Plan (unsupported)'}
+                                                </NativeSelectOption>
                                             </NativeSelect>
                                         </div>
                                     ) : null}

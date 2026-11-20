@@ -144,7 +144,7 @@ export function useProjectsHomeController() {
         latestFlowRunRequestId,
     } = projectsHomeViewModel
     const effectiveModelSettings = activeConversationRecord?.model_settings_view?.effective
-    const activeProjectChatProvider = pendingChatSettings ? pendingChatSettings.llm_profile || pendingChatSettings.provider || 'codex' : effectiveModelSettings?.llm_profile || storedChatProvider
+    const activeProjectChatProvider = pendingChatSettings ? pendingChatSettings.llm_profile || pendingChatSettings.provider || 'codex' : effectiveModelSettings?.llm_profile || effectiveModelSettings?.provider || storedChatProvider
     const currentModelSettings = useMemo<ModelSettings>(() => pendingChatSettings ?? effectiveModelSettings ?? {
         provider: !activeConversationRecord && uiDefaults.llm_profile ? null : storedChatProvider || 'codex',
         llm_profile: !activeConversationRecord ? uiDefaults.llm_profile || null : null,
@@ -159,6 +159,13 @@ export function useProjectsHomeController() {
     // Codex's models are known once its check is in.
     const activeProjectChatModelsResponse = discovery?.payload?.providers.codex.status === 'checking' ? undefined : discovery?.payload
     const activeProjectChatModels = activeProjectChatModelsResponse?.models || []
+    const activeProviderStatus = activeProjectChatProvider ? discovery?.payload?.providers?.[activeProjectChatProvider] : undefined
+    const planModeCapability = activeProviderStatus?.capabilities?.plan_mode
+    const planModeUnsupportedReason = planModeCapability?.state === 'unsupported'
+        ? (planModeCapability.reason || 'Plan mode is unavailable for this harness.')
+        : activeProjectChatProvider?.startsWith('acp:') && planModeCapability?.state !== 'supported'
+            ? 'Plan mode is unavailable for this ACP harness.'
+            : null
     const isCodexProvider = (activeProjectChatProvider || 'codex') === 'codex'
     const codexModels = activeProjectChatModels.filter((model) => model.provider === 'codex')
     // Keep the resolved Codex default separate from the editable model settings.
@@ -255,6 +262,7 @@ export function useProjectsHomeController() {
         attachments: composerAttachments.attachments,
         isUploadBlocking: composerAttachments.isUploadBlocking,
         isChatInputDisabled: isChatSubmissionDisabled || isConversationUnavailable,
+        planModeUnsupportedReason,
         ensureConversationId,
         getCurrentConversationId: (projectPath) => (
             useStore.getState().projectSessionsByPath[projectPath]?.conversationId ?? null
@@ -480,6 +488,7 @@ export function useProjectsHomeController() {
             activeConversationHandle: activeConversationRecord?.conversation_handle || activeConversationSummary?.conversation_handle || null,
             activeConversationUpdatedAt: activeConversationRecord?.updated_at ?? activeConversationSummary?.updated_at ?? null,
             activeChatMode,
+            planModeSupported: !planModeUnsupportedReason,
             contextUsage: latestContextUsage((activeConversationRecord?.orderedTurnIds ?? []).map((turnId) => activeConversationRecord?.turnsById[turnId])),
             onChatModeChange: (mode: ConversationChatMode) => { void onSwitchChatMode(mode) },
             hasThinking: activeConversationHistory.some((entry) => isThinkingEntry(entry) && entry.content.trim().length > 0),

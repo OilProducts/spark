@@ -17,6 +17,7 @@ it('requires Save, protects pending requests, retains failed drafts and reloads 
     await user.click(await screen.findByText('team · missing'))
     const endpoint = await screen.findByLabelText('Endpoint')
     await user.clear(endpoint); await user.type(endpoint, 'http://localhost:1234/v1')
+    await user.click(screen.getByRole('switch', { name: 'Supports image input (vision)' }))
     expect(profileSettingsRequest).toHaveBeenCalledTimes(1)
     let reject!: (reason: Error) => void
     vi.mocked(profileSettingsRequest).mockImplementationOnce(() => new Promise((_, fail) => { reject = fail }))
@@ -26,7 +27,7 @@ it('requires Save, protects pending requests, retains failed drafts and reloads 
     await act(async () => reject(new Error('Concurrent profile update.')))
     await screen.findByText('Concurrent profile update.')
     expect(endpoint).toHaveValue('http://localhost:1234/v1')
-    expect(profileSettingsRequest).toHaveBeenLastCalledWith('llm_profiles', expect.any(Function), { revision: 'one', value: [{ ...llm.stored[0], base_url: 'http://localhost:1234/v1' }] })
+    expect(profileSettingsRequest).toHaveBeenLastCalledWith('llm_profiles', expect.any(Function), { revision: 'one', value: [{ ...llm.stored[0], base_url: 'http://localhost:1234/v1', vision: true }] })
     await user.click(screen.getByRole('button', { name: /^Discard/ }))
     await waitFor(() => expect(endpoint).toHaveValue('http://localhost/v1'))
 })

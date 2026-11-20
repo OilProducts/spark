@@ -52,6 +52,8 @@ type UseConversationComposerArgs = {
     attachments: ComposerAttachment[]
     isUploadBlocking: boolean
     isChatInputDisabled: boolean
+    /** Set when the active harness does not support Plan mode; blocks `/plan` before switching. */
+    planModeUnsupportedReason?: string | null
     ensureConversationId: () => string | null
     getCurrentConversationId: (projectPath: string) => string | null
     getConversationRecord: (conversationId: string) => NormalizedConversationRecord | undefined
@@ -76,6 +78,7 @@ export function useConversationComposer({
     attachments,
     isUploadBlocking,
     isChatInputDisabled,
+    planModeUnsupportedReason = null,
     ensureConversationId,
     getCurrentConversationId,
     getConversationRecord,
@@ -134,6 +137,10 @@ export function useConversationComposer({
         }
 
         setPanelError(null)
+        if (parsedCommand?.chatMode === 'plan' && planModeUnsupportedReason) {
+            setPanelError(planModeUnsupportedReason)
+            return
+        }
         if (parsedCommand?.kind === 'switch_mode' && sending.length === 0) {
             setChatDraft('')
             await switchChatMode(conversationId, parsedCommand.chatMode)

@@ -274,6 +274,7 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
         }
     }
     result["agents"]["acp_harnesses"] = acp_harnesses_view(&path, &document);
+    result["agents"]["detected_acp_harnesses"] = detected_acp_harnesses_view(&document);
     result["agents"]["active_startup"] = json!({"codex_runtime_root":settings.agents.native.codex_runtime_root, "codex_seed_dir":settings.agents.native.codex_seed_dir, "claude_config_dir":settings.agents.native.claude_config_dir});
     let mut utility = json!({"scope":"workspace", "source":"workspace", "revision":document.revision,
         "stored":document.values.get("utility_models"), "effective":null, "sources":{}, "restart_fields":[], "validation_errors":[]});
@@ -356,12 +357,20 @@ fn acp_harnesses_view(path: &std::path::Path, document: &SettingsDocument) -> Va
                 json!({})
             };
             hide(registration.get_mut("env"), json!(HIDDEN_ENV_VALUE));
-            hide(
-                registration
-                    .get_mut("system_instructions")
-                    .and_then(|channel| channel.get_mut("env")),
-                json!({ "text": HIDDEN_ENV_VALUE }),
-            );
+            match registration
+                .get_mut("system_instructions")
+                .and_then(|channel| channel.get_mut("env"))
+            {
+                Some(Value::Object(values)) => values.values_mut().for_each(|value| {
+                    *value = if value.get("json").is_some() {
+                        json!({ "json": HIDDEN_ENV_VALUE })
+                    } else {
+                        json!({ "text": HIDDEN_ENV_VALUE })
+                    };
+                }),
+                Some(other) => *other = json!({}),
+                None => {}
+            }
             let error = misconfigured
                 .get(id)
                 .map(|misconfigured| &misconfigured.error);
@@ -378,6 +387,51 @@ fn stored_registrations(document: &SettingsDocument) -> Option<&toml::Table> {
         .get("agents")?
         .get("acp_harnesses")?
         .as_table()
+}
+
+/// Known ACP agent CLIs found on `PATH` that are not yet registered.
+fn detected_acp_harnesses_view(document: &SettingsDocument) -> Value {
+    const KNOWN: [(&str, &str, &str, &[&str]); 4] = [
+        ("opencode", "OpenCode", "opencode", &["acp"]),
+        ("agy", "Antigravity", "agy", &["acp"]),
+        ("gemini", "Gemini CLI", "gemini", &["--acp"]),
+        ("goose", "Goose", "goose", &["acp"]),
+    ];
+    let registered = stored_registrations(document);
+    let already_registered = |id: &str, executable: &str| {
+        registered.is_some_and(|table| {
+            table.contains_key(id)
+                || table.values().any(|entry| {
+                    entry
+                        .get("executable")
+                        .and_then(toml::Value::as_str)
+                        .is_some_and(|program| {
+                            program == executable
+                                || std::path::Path::new(program)
+                                    .file_name()
+                                    .and_then(|name| name.to_str())
+                                    == Some(executable)
+                        })
+                })
+        })
+    };
+    Value::Array(
+        KNOWN
+            .into_iter()
+            .filter(|(id, _, executable, _)| {
+                !already_registered(id, executable)
+                    && spark_agent_adapter::acp::program_found(executable, None)
+            })
+            .map(|(id, name, executable, args)| {
+                json!({
+                    "id": id,
+                    "name": name,
+                    "executable": executable,
+                    "args": args,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// The current document, if it is still the one the client edited.
@@ -427,7 +481,9 @@ fn acp_registration(
     }
     if let Some(channel) = registration.system_instructions.as_mut() {
         for (key, template) in &mut channel.env {
-            if *template == EnvTemplate::Text(HIDDEN_ENV_VALUE.into()) {
+            let is_hidden = *template == EnvTemplate::Text(HIDDEN_ENV_VALUE.into())
+                || *template == EnvTemplate::Json(Value::String(HIDDEN_ENV_VALUE.into()));
+            if is_hidden {
                 *template = saved(&["system_instructions", "env"], key)?
                     .try_into()
                     .map_err(|_| invalid(format!("enter a value for {key}.")))?;

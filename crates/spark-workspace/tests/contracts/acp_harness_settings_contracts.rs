@@ -34,12 +34,16 @@ fn acp_harnesses_save_one_at_a_time_keep_hidden_values_and_a_misconfigured_one_s
         json!(read_settings_document(&path).unwrap().values["agents"]["acp_harnesses"][id])
     };
     let agent = json!({"name": "Agent", "executable": "/bin/agent", "args": ["--acp"],
-        "env": {"AGENT_TOKEN": "token-sentinel"},
-        "system_instructions": {"env": {"AGENT_PROMPT": {"text": "prompt-sentinel {{instructions}}"}}}});
+    "env": {"AGENT_TOKEN": "token-sentinel"},
+    "system_instructions": {"env": {
+        "AGENT_PROMPT": {"text": "prompt-sentinel {{instructions}}"},
+        "AGENT_JSON": {"json": {"secret": "json-sentinel", "instructions": ["{{instructions_file}}"]}}
+    }}});
     save("acp_harness", json!({"id": "agent", "registration": agent})).unwrap();
     let view = workspace_settings(&settings).unwrap();
     assert!(!view.to_string().contains("token-sentinel"));
     assert!(!view.to_string().contains("prompt-sentinel"));
+    assert!(!view.to_string().contains("json-sentinel"));
     assert!(view["agents"]["stored"].get("acp_harnesses").is_none());
     let shown = &view["agents"]["acp_harnesses"]["agent"];
     assert!(shown["error"].is_null());
@@ -47,6 +51,10 @@ fn acp_harnesses_save_one_at_a_time_keep_hidden_values_and_a_misconfigured_one_s
     assert_eq!(
         shown["registration"]["system_instructions"]["env"]["AGENT_PROMPT"],
         json!({"text": HIDDEN})
+    );
+    assert_eq!(
+        shown["registration"]["system_instructions"]["env"]["AGENT_JSON"],
+        json!({"json": HIDDEN})
     );
 
     // Saved back as shown, edited or alongside other agents settings, the
@@ -67,6 +75,10 @@ fn acp_harnesses_save_one_at_a_time_keep_hidden_values_and_a_misconfigured_one_s
     assert_eq!(
         kept["system_instructions"]["env"]["AGENT_PROMPT"],
         json!({"text": "prompt-sentinel {{instructions}}"})
+    );
+    assert_eq!(
+        kept["system_instructions"]["env"]["AGENT_JSON"],
+        json!({"json": {"secret": "json-sentinel", "instructions": ["{{instructions_file}}"]}})
     );
     let mut unknown = edited.clone();
     unknown["env"]["OTHER"] = json!(HIDDEN);
@@ -166,4 +178,5 @@ fn acp_harnesses_save_one_at_a_time_keep_hidden_values_and_a_misconfigured_one_s
         workspace_settings(&settings).unwrap()["agents"]["validation_errors"],
         json!([])
     );
+    assert!(workspace_settings(&settings).unwrap()["agents"]["detected_acp_harnesses"].is_array());
 }

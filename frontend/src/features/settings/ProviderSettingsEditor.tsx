@@ -24,10 +24,13 @@ export function ProviderSettingsEditor() {
                     const value = editor.draft?.[provider]?.[key] ?? ''
                     const error = providerFieldError(key, value)
                     const id = `provider-${provider}-${key}`
+                    const source = editor.saved?.sources?.[`${provider}.${key}`]
+                    const effective = editor.saved?.effective?.[provider]?.[key]
+                    const shadowed = !!source && !['stored', 'built-in default'].includes(source)
                     return <Field key={key}><FieldLabel htmlFor={id}>{({ base_url: 'Base URL', api_key_env: 'Credential environment variable', organization: 'Organization', project: 'Project', http_referer: 'HTTP referrer', title: 'Application title' })[key]}</FieldLabel>
-                        <Input id={id} value={value} aria-invalid={!!error} aria-describedby={error ? `${id}-error` : undefined} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, [provider]: { ...draft[provider], [key]: event.target.value || null } }))} />
+                        <Input id={id} value={value} placeholder={effective ?? 'Provider default'} aria-invalid={!!error} aria-describedby={error ? `${id}-error` : undefined} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, [provider]: { ...draft[provider], [key]: event.target.value || null } }))} />
                         {error && <p id={`${id}-error`} role="alert">{error}</p>}
-                        <p className="text-xs text-muted-foreground">In use: {editor.saved?.effective ? editor.saved.effective[provider]?.[key] ?? 'Provider default' : 'Unavailable'} · {editor.saved?.sources?.[`${provider}.${key}`]}{key === 'api_key_env' && ` · ${editor.saved?.credential_status[provider] ? 'Configured' : 'Missing'}`}</p>
+                        {(shadowed || !editor.saved?.effective) && <p className="text-xs text-muted-foreground">In use: {editor.saved?.effective ? effective ?? 'Provider default' : 'Unavailable'}{source ? ` · ${source}` : ''}</p>}
                     </Field>
                 })}
             </fieldset></details>)}

@@ -63,12 +63,15 @@ it('blocks navigation while a runtime save is pending and allows it once saved',
     expect(proceed).toHaveBeenCalledOnce()
 })
 
-it('describes an unset runs directory as per-project storage', async () => {
+it('describes an unset runs directory with its default placeholder and only shows provenance when overridden', async () => {
     const unset = { runs_dir: null, ui_dir: null, project_roots: [] }
     vi.mocked(fetchRuntimeSettings).mockResolvedValue({
         scope: 'workspace', revision: 'revision-1', restart_fields: ['runs_dir'], stored: unset, effective: unset,
+        sources: { runs_dir: 'built-in default', ui_dir: 'environment: SPARK_UI_DIR', project_roots: 'built-in default' },
     })
     render(<DialogProvider><RuntimeSettingsEditor /></DialogProvider>)
-    expect(await screen.findByText(/In use: Each project's private storage/)).toBeInTheDocument()
-    expect(screen.getByText(/In use: Not configured/)).toBeInTheDocument()
+    expect(await screen.findByLabelText('Runs directory')).toHaveAttribute('placeholder', "Each project's private storage")
+    expect(screen.getByLabelText('UI directory')).toHaveAttribute('placeholder', 'Not configured')
+    expect(screen.queryByText(/In use: Each project's private storage/)).not.toBeInTheDocument()
+    expect(screen.getByText(/In use: Not configured · environment: SPARK_UI_DIR/)).toBeInTheDocument()
 })

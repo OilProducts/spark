@@ -115,7 +115,8 @@ export interface AcpHarnessRegistration {
 }
 /** A stored registration as written, which may be incomplete when `error` says why it cannot be used. */
 export interface AcpHarnessEntry { registration: Partial<AcpHarnessRegistration>; error: string | null }
-export interface AgentSettingsView { revision: string; stored: AgentSettings | null; repair_defaults?: AgentSettings; effective: AgentSettings | null; active_startup?: NativeAgentSettings; sources?: Record<string, string>; validation_errors?: string[]; acp_harnesses?: Record<string, AcpHarnessEntry> }
+export interface DetectedAcpHarness { id: string; name: string; executable: string; args: string[] }
+export interface AgentSettingsView { revision: string; stored: AgentSettings | null; repair_defaults?: AgentSettings; effective: AgentSettings | null; active_startup?: NativeAgentSettings; sources?: Record<string, string>; validation_errors?: string[]; acp_harnesses?: Record<string, AcpHarnessEntry>; detected_acp_harnesses?: DetectedAcpHarness[] }
 function parseAgents(payload: unknown, endpoint: string): AgentSettingsView {
     const view = expectObjectRecord(expectObjectRecord(payload, endpoint).agents, endpoint)
     const parse = (value: unknown): AgentSettings => {
@@ -146,7 +147,12 @@ function parseAgents(payload: unknown, endpoint: string): AgentSettingsView {
         const fields = expectObjectRecord(entry, endpoint)
         return [id, { registration: expectObjectRecord(fields.registration ?? {}, endpoint) as Partial<AcpHarnessRegistration>, error: fields.error == null ? null : expectString(fields.error, endpoint, 'error') }]
     }))
-    return { revision: expectString(view.revision, endpoint, 'revision'), ...parseRepairableStored(view, parse), active_startup, effective: view.effective == null ? null : parse(view.effective), ...parseSettingsFeedback(view, endpoint), acp_harnesses }
+    const detected_acp_harnesses = Array.isArray(view.detected_acp_harnesses) ? view.detected_acp_harnesses.map((entry) => {
+        const fields = expectObjectRecord(entry, endpoint)
+        const args = Array.isArray(fields.args) ? fields.args.map((arg) => expectString(arg, endpoint, 'args')) : []
+        return { id: expectString(fields.id, endpoint, 'id'), name: expectString(fields.name, endpoint, 'name'), executable: expectString(fields.executable, endpoint, 'executable'), args }
+    }) : []
+    return { revision: expectString(view.revision, endpoint, 'revision'), ...parseRepairableStored(view, parse), active_startup, effective: view.effective == null ? null : parse(view.effective), ...parseSettingsFeedback(view, endpoint), acp_harnesses, detected_acp_harnesses }
 }
 export function fetchAgentSettings(): Promise<AgentSettingsView> {
     return fetchWorkspaceJsonValidated('/settings', undefined, '/workspace/api/settings', parseAgents)

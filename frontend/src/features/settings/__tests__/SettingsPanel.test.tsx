@@ -61,30 +61,29 @@ it('has local default selection, semantic headings, keyboard tabs, and mounted h
     expect(screen.getByRole('tab', { name: 'System' })).toHaveAttribute('aria-selected', 'true')
 })
 
-it('retains hidden validation and dirty drafts, protects leaving, and discards per editor', async () => {
+it('retains hidden dirty drafts, protects leaving, and discards per editor', async () => {
     const user = userEvent.setup()
     render(<DialogProvider><SettingsPanel /></DialogProvider>)
     await user.click(screen.getByRole('tab', { name: 'Preferences' }))
-    const width = await screen.findByLabelText('Flow editor panel width')
-    await waitFor(() => expect(width).toBeEnabled())
-    await user.type(width, '12')
+    const toggle = await screen.findByRole('switch', { name: 'Show advanced controls' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    await user.click(toggle)
     await user.click(screen.getByRole('tab', { name: 'Execution' }))
     expect(screen.queryByRole('alertdialog')).toBeNull()
     const unload = new Event('beforeunload', { cancelable: true })
     act(() => window.dispatchEvent(unload))
     expect(unload.defaultPrevented).toBe(true)
-    await user.click(screen.getByRole('button', { name: 'Open flow editor' }))
+    act(() => useStore.getState().setViewMode('editor'))
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
     expect(useStore.getState().viewMode).toBe('settings')
     act(() => useStore.getState().setViewMode('runs'))
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
     expect(useStore.getState().viewMode).toBe('settings')
     await user.click(screen.getByRole('tab', { name: 'Preferences' }))
-    expect(width).toHaveValue(12)
-    expect(width).toHaveAccessibleDescription(/Choose a whole number from 256 to 560/)
-    expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
+    expect(toggle).toBeChecked()
+    expect(screen.getByRole('button', { name: /^Save/ })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: /^Discard/ }))
-    await waitFor(() => expect(width).toHaveValue(null))
+    await waitFor(() => expect(toggle).not.toBeChecked())
     act(() => useStore.getState().setViewMode('runs'))
     expect(useStore.getState().viewMode).toBe('runs')
 })
@@ -127,13 +126,14 @@ it('keeps hidden requests mounted and blocks navigation before another dirty edi
     render(<DialogProvider><SettingsPanel /></DialogProvider>)
     // Register another dirty editor first to verify pending requests take precedence.
     await user.click(screen.getByRole('tab', { name: 'Preferences' }))
-    await waitFor(() => expect(screen.getByLabelText('Flow editor panel width')).toBeEnabled())
-    await user.type(screen.getByLabelText('Flow editor panel width'), '400')
+    const toggle = await screen.findByRole('switch', { name: 'Show advanced controls' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    await user.click(toggle)
     await user.click(screen.getByRole('tab', { name: 'Models & accounts' }))
     await chooseModel(user, 'anthropic', 'claude-sonnet-4-6', card('Model defaults (workspace)'))
     await user.click(card('Model defaults (workspace)').getByRole('button', { name: /^Save/ }))
     await user.click(screen.getByRole('tab', { name: 'Execution' }))
-    await user.click(screen.getByRole('button', { name: 'Open flow editor' }))
+    act(() => useStore.getState().setViewMode('editor'))
     act(() => useStore.getState().setViewMode('runs'))
     expect(useStore.getState().viewMode).toBe('settings')
     expect(screen.queryByRole('alertdialog')).toBeNull()
@@ -179,12 +179,13 @@ it.each([false, true])('resolves reset from the parent instead of the saved over
     expect(scope.getByRole('button', { name: /^Model:/ })).toHaveTextContent(`Default: ${expected}`)
 })
 
-it('keeps the utility model off until chosen, offers the chat picker models, and saves or clears it', async () => {
+it('keeps the utility model off until chosen, excludes ACP harnesses, and saves or clears it', async () => {
     const user = userEvent.setup()
     vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [
         { provider: 'codex', id: 'discovered', display: 'Discovered' },
         { provider: 'anthropic', id: 'claude-haiku-4-5', display: 'claude-haiku-4-5' },
-    ], providers: { codex: { status: 'available', error: null }, anthropic: { status: 'available', error: null } } } })
+        { provider: 'acp:opencode', id: 'acp-model', display: 'ACP Model' },
+    ], providers: { codex: { status: 'available', error: null }, anthropic: { status: 'available', error: null }, 'acp:opencode': { status: 'available', error: null, label: 'OpenCode' } } } })
     const chosen = { provider: 'anthropic', llm_profile: null, model: 'claude-haiku-4-5', reasoning_effort: null }
     let saved = { scope: 'workspace' as const, source: 'workspace' as const, revision: 'utility-one', stored: null as ModelSettings | null, effective: null as ModelSettings | null }
     const models = vi.mocked(fetchModelSettings).getMockImplementation()!
@@ -206,7 +207,11 @@ it('keeps the utility model off until chosen, offers the chat picker models, and
         await user.keyboard('{Escape}')
         return names
     }
-    expect(await options(utility)).toEqual(await options(card('Model defaults (workspace)')))
+    const workspaceOptions = await options(card('Model defaults (workspace)'))
+    const utilityOptions = await options(utility)
+    expect(workspaceOptions).toContain('ACP Model')
+    expect(utilityOptions).not.toContain('ACP Model')
+    expect(utilityOptions).toEqual(workspaceOptions.filter((name) => name !== 'ACP Model'))
     await chooseModel(user, 'anthropic', 'claude-haiku-4-5', utility)
     await user.click(utility.getByRole('button', { name: 'Save utility model' }))
     expect(saveModelSettings).toHaveBeenCalledWith('utility-one', expect.objectContaining(chosen), undefined, 'utility_models')
