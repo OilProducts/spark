@@ -83,6 +83,7 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
     clientPreferencesLoaded: false,
     clientFlowNodePositions: {},
     clientFlowEdgePorts: {},
+    chatProjectOrder: [],
     clientRunPresentation: {},
     setClientRunPresentation: (patch) => {
         const run_presentation = { ...get().clientRunPresentation, ...patch }

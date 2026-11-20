@@ -75,6 +75,7 @@ export type FlowMetadataErrors = Partial<Record<keyof FlowDefinitionMetadata, st
 export type GraphAttrErrors = FlowMetadataErrors
 
 export interface RegisteredProject {
+    createdAt?: string
     directoryPath: string
     displayName?: string
     isDefault?: boolean
@@ -151,6 +152,7 @@ export interface ProjectSessionState {
 export type ProjectSessionStatePatch = Partial<ProjectSessionState>
 
 export interface HydratedProjectRecord {
+    createdAt?: string
     directoryPath: string
     displayName?: string
     isDefault?: boolean
@@ -223,6 +225,7 @@ export interface EditorNodeInspectorSessionState {
 export interface EditorSlice {
     editorSidebarWidth: number
     setEditorSidebarWidth: (width: number) => void
+    chatProjectOrder: string[]
     clientRunPresentation: import('@/features/settings/services/clientPreferences').RunPresentation
     setClientRunPresentation: (patch: import('@/features/settings/services/clientPreferences').RunPresentation) => void
     clientPreferencesLoaded: boolean

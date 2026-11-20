@@ -121,6 +121,8 @@ pub struct ClientPreferences {
     pub flow_edge_ports: Option<
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, LayoutEdgePorts>>,
     >,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_project_order: Option<Vec<String>>,
     pub run_presentation: Option<RunPresentation>,
     pub editor_mode: Option<EditorMode>,
     pub editor_sidebar_width: Option<u16>,

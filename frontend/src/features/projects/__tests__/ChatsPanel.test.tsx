@@ -3,7 +3,7 @@ import { HomeSessionController } from '@/app/AppSessionControllers'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
 import { useStore } from '@/store'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { conversationMutationAck, conversationPage, conversationBatch, summarySnapshot, tombstoneRow, turnRow } from '@/test/conversationWire'
@@ -35,17 +35,23 @@ beforeEach(() => {
     settingsWrites = []
     deletedIds = new Set()
     useStore.setState({
-        viewMode: 'home', activeProjectPath: null, projectPagePath: null,
+        viewMode: 'home', activeProjectPath: null, projectPagePath: null, chatProjectOrder: [],
         homeConversationCache: { conversationsById: {}, summariesByProjectPath: {} },
         homeThreadSummariesStatusByProjectPath: {}, projectSessionsByPath: {}, homeProjectSessionsByPath: {},
         projectRegistry: {
-            '/work/gone': { directoryPath: '/work/gone', isFavorite: false, lastAccessedAt: '2026-09-30T00:00:00Z', folderExists: false },
+            '/work/gone': { directoryPath: '/work/gone', createdAt: '2026-09-01', isFavorite: false, lastAccessedAt: '2026-09-30T00:00:00Z', folderExists: false },
             [HOME]: { directoryPath: HOME, displayName: 'Home', isDefault: true, isFavorite: false, lastAccessedAt: null },
             '/work/busy': { directoryPath: '/work/busy', isFavorite: false, lastAccessedAt: '2026-09-20T00:00:00Z' },
         },
     })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input)
+        if (url.endsWith('/projects/state') && init?.method === 'PATCH') {
+            const patch = JSON.parse(String(init.body))
+            if (typeof patch.is_favorite === 'boolean') {
+                return json({ project_id: 'busy', display_name: 'busy', ...patch })
+            }
+        }
         if (url.includes('/projects/chat-models')) {
             return json({ providers: { codex: { status: 'available', error: null } }, models: [{ provider: 'codex', id: 'gpt-5.4', display: 'GPT-5.4', is_default: true, supported_reasoning_efforts: ['low'], default_reasoning_effort: 'low' }] })
         }
@@ -72,7 +78,7 @@ afterEach(() => vi.unstubAllGlobals())
 const renderChats = () => render(<DialogProvider><HomeSessionController /><ProjectsPanel /></DialogProvider>)
 const group = (projectPath: string) => screen.getAllByTestId('chats-project-group').find((entry) => entry.dataset.projectPath === projectPath)!
 
-it('groups chats by project with Home first and open, others by recent use and collapsed', async () => {
+it('groups chats by project with Home first and open, others newest-added first and collapsed', async () => {
     renderChats()
     expect(screen.getAllByTestId('chats-project-group').map((entry) => entry.dataset.projectPath)).toEqual([HOME, '/work/gone', '/work/busy'])
     expect(await within(group(HOME)).findByRole('button', { name: 'Chat home-1' })).toBeVisible()
@@ -80,6 +86,28 @@ it('groups chats by project with Home first and open, others by recent use and c
     expect(within(group(HOME)).getByRole('button', { name: 'Chat home-1' })).toHaveAccessibleDescription(/\S/)
     expect(within(group('/work/busy')).getByTestId('chats-project-toggle')).toHaveAttribute('aria-expanded', 'false')
     expect(within(group('/work/busy')).queryByTestId('chats-chat-row')).not.toBeInTheDocument()
+})
+
+it('drags and keyboard-reorders projects within a group and keeps pinned projects under Home', async () => {
+    const user = userEvent.setup()
+    renderChats()
+    const paths = () => screen.getAllByTestId('chats-project-group').map((entry) => entry.dataset.projectPath)
+    const busy = within(group('/work/busy')).getByTestId('chats-project-toggle')
+    const gone = within(group('/work/gone')).getByTestId('chats-project-toggle')
+    fireEvent.dragStart(busy, { dataTransfer: { setData: vi.fn() } })
+    fireEvent.dragOver(gone)
+    expect(within(group('/work/gone')).getByTestId('chats-project-drop-indicator')).toHaveClass('-top-1')
+    fireEvent.drop(gone)
+    expect(screen.queryByTestId('chats-project-drop-indicator')).not.toBeInTheDocument()
+    expect(paths()).toEqual([HOME, '/work/busy', '/work/gone'])
+    fireEvent.keyDown(busy, { key: 'ArrowDown', altKey: true })
+    expect(paths()).toEqual([HOME, '/work/gone', '/work/busy'])
+    await user.click(screen.getByRole('button', { name: 'Pin busy' }))
+    expect(paths()).toEqual([HOME, '/work/busy', '/work/gone'])
+    fireEvent.keyDown(busy, { key: 'ArrowDown', altKey: true })
+    expect(paths()).toEqual([HOME, '/work/busy', '/work/gone'])
+    await user.click(screen.getByRole('button', { name: 'Unpin busy' }))
+    expect(paths()).toEqual([HOME, '/work/gone', '/work/busy'])
 })
 
 it('shows or hides a project\'s chats from its name, and opens its settings only from the gear', async () => {

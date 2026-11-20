@@ -140,6 +140,7 @@ export const buildRegisteredProject = (project: HydratedProjectRecord): Register
     }
     return {
         directoryPath: normalizedPath,
+        ...(project.createdAt ? { createdAt: project.createdAt } : {}),
         ...(project.displayName ? { displayName: project.displayName } : {}),
         ...(project.isDefault ? { isDefault: true } : {}),
         ...(project.folderExists === false ? { folderExists: false } : {}),
@@ -352,14 +353,15 @@ export const buildRegisterProjectTransition = (
 ) => {
     const nextActiveProjectPath = state.activeProjectPath ?? normalizedPath
     const shouldActivateNewProject = !state.activeProjectPath
-    const nowIso = shouldActivateNewProject ? new Date().toISOString() : null
+    const nowIso = new Date().toISOString()
     const nextProjectSessionStates = { ...state.projectSessionsByPath }
     const nextProjectRegistry = {
         ...state.projectRegistry,
         [normalizedPath]: {
             directoryPath: normalizedPath,
             isFavorite: false,
-            lastAccessedAt: nowIso,
+            createdAt: nowIso,
+            lastAccessedAt: shouldActivateNewProject ? nowIso : null,
         },
     }
     nextProjectSessionStates[normalizedPath] = resolveProjectSessionState(

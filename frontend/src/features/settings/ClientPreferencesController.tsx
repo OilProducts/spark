@@ -20,6 +20,7 @@ export function ClientPreferencesController() {
                 clientPreferencesLoaded: true,
                 clientFlowNodePositions: value.effective.flow_node_positions ?? {},
                 clientFlowEdgePorts: value.effective.flow_edge_ports ?? {},
+                chatProjectOrder: value.effective.chat_project_order ?? [],
                 clientRunPresentation: value.effective.run_presentation ?? {},
                 preferredEditorMode: value.effective.editor_mode,
                 editorSidebarWidth: value.effective.editor_sidebar_width,

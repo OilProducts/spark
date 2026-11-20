@@ -64,12 +64,23 @@ export function launchWorkingDirectory(workingDir: string, workingDirProjectPath
 
 export type ChatGroup<Chat> = { project: RegisteredProject; chats: Chat[] }
 
-/** Each registered project with its chats, newest first, in project order. */
+// A re-registered folder is a new entry in the sidebar.
+export const chatProjectKey = (project: RegisteredProject) => JSON.stringify([project.directoryPath, project.createdAt])
+
+/** Home, pinned projects, then the rest. New registrations lead each custom order. */
 export function groupChatsByProject<Chat extends { updated_at: string, standing_role?: { name: string } | null }>(
     registry: Registry,
     chatsByProjectPath: Record<string, Chat[]>,
+    order: string[] = [],
 ): ChatGroup<Chat>[] {
-    return orderProjects(registry).map((project) => ({
+    const rank = new Map(order.map((key, index) => [key, index]))
+    return Object.values(registry).sort((left, right) => (
+        Number(Boolean(right.isDefault)) - Number(Boolean(left.isDefault))
+        || Number(right.isFavorite) - Number(left.isFavorite)
+        || (rank.get(chatProjectKey(left)) ?? -1) - (rank.get(chatProjectKey(right)) ?? -1)
+        || (right.createdAt ?? '').localeCompare(left.createdAt ?? '')
+        || left.directoryPath.localeCompare(right.directoryPath)
+    )).map((project) => ({
         project,
         chats: [...(chatsByProjectPath[project.directoryPath] ?? [])]
             .sort((left, right) => pinRank(left).localeCompare(pinRank(right)) || right.updated_at.localeCompare(left.updated_at)),

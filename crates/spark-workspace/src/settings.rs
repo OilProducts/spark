@@ -825,6 +825,7 @@ fn client_preferences_view(
             "graph_settings_open": stored.graph_settings_open.unwrap_or(false),
             "show_thinking": stored.show_thinking.unwrap_or(true),
             "runs_scope": stored.runs_scope.clone().unwrap_or(spark_common::settings::PresentationScope::Active),
+            "chat_project_order": stored.chat_project_order,
             "run_presentation": stored.run_presentation,
             "flow_node_positions": stored.flow_node_positions,
             "flow_edge_ports": stored.flow_edge_ports,

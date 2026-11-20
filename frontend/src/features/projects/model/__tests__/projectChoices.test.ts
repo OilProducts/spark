@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { RegisteredProject } from '@/state/store-types'
 
 import {
+    chatProjectKey,
     defaultProjectChoice,
     groupChatsByProject,
     isFolderMissing,
@@ -21,9 +22,9 @@ const project = (directoryPath: string, overrides: Partial<RegisteredProject> = 
 })
 
 const registry = Object.fromEntries([
-    project('/work/old', { lastAccessedAt: '2026-09-01T00:00:00Z' }),
+    project('/work/old', { createdAt: '2026-09-01', lastAccessedAt: '2026-09-01T00:00:00Z' }),
     project('/home/me', { displayName: 'Home', isDefault: true, lastAccessedAt: '2026-08-01T00:00:00Z' }),
-    project('/work/new', { lastAccessedAt: '2026-09-30T00:00:00Z' }),
+    project('/work/new', { createdAt: '2026-09-05', lastAccessedAt: '2026-09-30T00:00:00Z' }),
     project('/work/never'),
 ].map((entry) => [entry.directoryPath, entry]))
 
@@ -46,6 +47,14 @@ describe('project choices', () => {
             ['/work/old', ['old-b', 'old-a']],
             ['/work/never', []],
         ])
+    })
+
+    it('keeps Home and pins above new registrations, then respects manual order despite chat activity', () => {
+        const projects = { ...registry, '/fresh': project('/fresh', { createdAt: '2026-10-01' }),
+            '/work/never': project('/work/never', { isFavorite: true }) }
+        const order = ['/work/old', '/work/new'].map((path) => chatProjectKey(registry[path]))
+        expect(groupChatsByProject(projects, {}, order).map(({ project }) => project.directoryPath))
+            .toEqual(['/home/me', '/work/never', '/fresh', '/work/old', '/work/new'])
     })
 
     it('pins standing roles first, by name, above newer chats', () => {

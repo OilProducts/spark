@@ -169,6 +169,7 @@ export function formatProjectListLabel(projectPath: string) {
 }
 
 export function toHydratedProjectRecord(project: {
+    created_at?: string
     project_path: string
     display_name?: string
     is_default?: boolean
@@ -180,6 +181,7 @@ export function toHydratedProjectRecord(project: {
 }): HydratedProjectRecord {
     return {
         directoryPath: project.project_path,
+        ...(project.created_at ? { createdAt: project.created_at } : {}),
         ...(project.display_name ? { displayName: project.display_name } : {}),
         ...(project.is_default ? { isDefault: true } : {}),
         ...(project.folder_exists === false ? { folderExists: false } : {}),

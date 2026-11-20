@@ -40,6 +40,7 @@ export const runPresentationChoices = {
     sort: ['newest', 'oldest'],
 } as const
 export interface ClientPreferences {
+    chat_project_order?: string[]
     run_presentation?: RunPresentation | null
     flow_node_positions?: FlowNodePositions | null
     flow_edge_ports?: FlowEdgePorts | null
@@ -68,6 +69,10 @@ export function parseClientPreferences(payload: unknown, endpoint: string): Clie
         const width = fields.editor_sidebar_width
         if (width !== null && (typeof width !== 'number' || !Number.isInteger(width) || width < 256 || width > 560)) throw new ApiSchemaError(endpoint, 'Invalid sidebar width.')
         const presentation: Partial<ClientPreferences> = {}
+        if (fields.chat_project_order != null) {
+            if (!Array.isArray(fields.chat_project_order) || !fields.chat_project_order.every((key) => typeof key === 'string')) throw new ApiSchemaError(endpoint, 'Invalid chat project order.')
+            presentation.chat_project_order = fields.chat_project_order
+        }
         if (fields.run_presentation != null) {
             const run = expectObjectRecord(fields.run_presentation, endpoint)
             for (const [key, choices] of Object.entries(runPresentationChoices)) {

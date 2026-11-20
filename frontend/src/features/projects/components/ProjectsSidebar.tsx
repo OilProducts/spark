@@ -1,12 +1,14 @@
 import { useEffect, useState, useSyncExternalStore } from "react"
-import { ChevronDown, ChevronRight, Plus, Settings, Trash2 } from "lucide-react"
+import { ChevronDown, ChevronRight, Pin, Plus, Settings, Trash2 } from "lucide-react"
 
 import { useStore } from "@/store"
 import { cn } from "@/lib/utils"
 
 import type { ProjectConversationSummary } from "../model/types"
 import { chatStatus, markChatRead, readChatReadState, subscribeChatReadState, type ChatStatus } from "../model/chatReadState"
-import { groupChatsByProject, isFolderMissing, projectLabel } from "../model/projectChoices"
+import { completePreferenceInteraction } from "@/features/settings/services/clientPreferences"
+import { updateProjectStateValidated } from "@/lib/workspaceClient"
+import { chatProjectKey, groupChatsByProject, isFolderMissing, projectLabel } from "../model/projectChoices"
 import { InlineError } from "@/components/app/inline-error"
 import { SidePanelRow } from "@/components/app/side-panel-row"
 import { Button } from "@/components/ui/button"
@@ -85,7 +87,34 @@ export function ProjectsSidebar({
             setExpandedByPath((current) => current[activeProjectPath] ? current : { ...current, [activeProjectPath]: true })
         }
     }, [activeProjectPath, activeConversationId])
-    const groups = groupChatsByProject(projectRegistry, conversationSummariesByProjectPath)
+    const order = useStore((state) => state.chatProjectOrder)
+    const groups = groupChatsByProject(projectRegistry, conversationSummariesByProjectPath, order)
+    const [dragging, setDragging] = useState<string | null>(null)
+    const [dropTarget, setDropTarget] = useState<string | null>(null)
+    const [pinError, setPinError] = useState<string | null>(null)
+    async function togglePin(path: string) {
+        setPinError(null)
+        try {
+            const saved = await updateProjectStateValidated({ project_path: path, is_favorite: !projectRegistry[path].isFavorite })
+            const state = useStore.getState()
+            const current = state.projectRegistry[path]
+            if (current && current.isFavorite !== saved.is_favorite) state.toggleProjectFavorite(path)
+        } catch {
+            setPinError(`Couldn’t save the pin for ${projectLabel(projectRegistry, path)}.`)
+        }
+    }
+
+    function moveProject(path: string, targetIndex: number) {
+        const from = groups.findIndex(({ project }) => project.directoryPath === path)
+        const source = groups[from]?.project
+        const target = groups[targetIndex]?.project
+        if (!source || !target || source.isDefault || target.isDefault || source.isFavorite !== target.isFavorite || from === targetIndex) return
+        const keys = groups.map(({ project }) => chatProjectKey(project))
+        keys.splice(from, 1)
+        keys.splice(targetIndex, 0, chatProjectKey(source))
+        useStore.setState({ chatProjectOrder: keys })
+        completePreferenceInteraction({ chat_project_order: keys })
+    }
 
     // The open chat is read while it is on screen: the Chats view is showing in a visible tab.
     // ponytail: on a phone the list can show while a chat stays open; that chat still counts as seen.
@@ -102,6 +131,7 @@ export function ProjectsSidebar({
 
     return (
         <ul data-testid="project-thread-list" aria-label="Chats by project" className="flex flex-col gap-1.5">
+            {pinError && <li><InlineError dense>{pinError}</InlineError></li>}
             {groups.length === 0 && loadFailed ? (
                 <li><InlineError dense>Couldn’t load projects. Spark keeps trying.</InlineError></li>
             ) : groups.length === 0 ? (
@@ -112,7 +142,7 @@ export function ProjectsSidebar({
                         </EmptyHeader>
                     </Empty>
                 </li>
-            ) : groups.map(({ project, chats }) => {
+            ) : groups.map(({ project, chats }, index) => {
                 const projectPath = project.directoryPath
                 const label = projectLabel(projectRegistry, projectPath)
                 const missing = isFolderMissing(project)
@@ -131,14 +161,51 @@ export function ProjectsSidebar({
                         data-project-path={projectPath}
                         data-folder-missing={missing ? 'true' : undefined}
                     >
-                        <div className={cn(
-                            "group/project flex h-8 items-center gap-1 rounded-lg border pl-1 pr-1.5",
+                        <div onDragOver={(event) => {
+                            if (dragging && dragging !== projectPath && !project.isDefault && projectRegistry[dragging]?.isFavorite === project.isFavorite) {
+                                event.preventDefault()
+                                setDropTarget(projectPath)
+                            }
+                        }} onDragLeave={(event) => {
+                            // Moving onto the row's own buttons fires dragleave; only clear when the pointer leaves the row.
+                            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(null)
+                        }} onDrop={(event) => {
+                            if (!dragging) return
+                            event.preventDefault()
+                            moveProject(dragging, index)
+                            setDragging(null)
+                            setDropTarget(null)
+                        }} className={cn(
+                            "group/project relative flex h-8 items-center gap-1 rounded-lg border pl-1 pr-1.5",
                             projectPagePath === projectPath ? "border-border bg-background" : "border-transparent",
+                            dragging === projectPath && "opacity-50",
                         )}>
+                            {/* The dragged project takes this row's place: it lands below the row when moving down, above when moving up. */}
+                            {dragging && dropTarget === projectPath && (
+                                <span aria-hidden data-testid="chats-project-drop-indicator" className={cn(
+                                    "pointer-events-none absolute inset-x-1 h-0.5 rounded-full bg-primary",
+                                    groups.findIndex(({ project }) => project.directoryPath === dragging) < index ? "-bottom-1" : "-top-1",
+                                )} />
+                            )}
                             {/* The project's name shows or hides its chats; its settings are behind the gear. */}
                             <button
                                 type="button"
                                 data-testid="chats-project-toggle"
+                                draggable={!project.isDefault}
+                                title={project.isDefault ? undefined : "Drag to reorder, or use Alt + Up or Down"}
+                                aria-keyshortcuts={project.isDefault ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
+                                onDragStart={(event) => {
+                                    event.dataTransfer.effectAllowed = "move"
+                                    event.dataTransfer.setData("text/plain", label)
+                                    setDragging(projectPath)
+                                }}
+                                onDragEnd={() => { setDragging(null); setDropTarget(null) }}
+                                onKeyDown={(event) => {
+                                    if (!project.isDefault && event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+                                        event.preventDefault()
+                                        moveProject(projectPath, index + (event.key === "ArrowUp" ? -1 : 1))
+                                    }
+                                }}
                                 aria-expanded={expanded}
                                 aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
                                 onClick={() => setExpandedByPath((current) => ({ ...current, [projectPath]: !expanded }))}
@@ -155,6 +222,14 @@ export function ProjectsSidebar({
                                     {label}
                                 </span>
                             </button>
+                            {!project.isDefault && (
+                                <button type="button" aria-label={`${project.isFavorite ? "Unpin" : "Pin"} ${label}`}
+                                    title={project.isFavorite ? "Unpin project" : "Pin project"}
+                                    className={project.isFavorite ? iconButtonClassName : rowActionClassName}
+                                    onClick={() => void togglePin(projectPath)}>
+                                    <Pin className={cn("size-3.5", project.isFavorite && "fill-current")} />
+                                </button>
+                            )}
                             {missing ? (
                                 <span data-testid="chats-project-missing" className="shrink-0 rounded-full bg-warning/10 px-1.5 py-px text-xs font-medium text-warning">folder missing</span>
                             ) : project.isDefault ? (
