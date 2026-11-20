@@ -122,6 +122,14 @@ fn run_default(
             "thread/start" if mode == "server-requests" && server_request_replies < 2 => {
                 withheld_thread_start = Some(request_id);
             }
+            "account/rateLimits/read" => write_json(
+                &mut stdout,
+                json!({"id": request_id, "result": {"rateLimitsByLimitId": {"codex": {
+                    "limitId": "codex", "limitName": null,
+                    "primary": {"usedPercent": 41, "windowDurationMins": 300, "resetsAt": 1795784665},
+                    "secondary": {"usedPercent": 1, "windowDurationMins": 10080, "resetsAt": null},
+                }}}}),
+            ),
             "account/read" if mode == "auth-expired" && !fake_login.exists() => write_json(
                 &mut stdout,
                 json!({"id": request_id, "error": {"message": "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."}}),

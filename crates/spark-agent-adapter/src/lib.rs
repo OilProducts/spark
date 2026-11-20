@@ -30,6 +30,16 @@ pub mod subagents;
 pub mod tools;
 pub mod truncation;
 
+/// One plan limit window of an agent account, as the account's own CLI reports it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct UsageWindow {
+    pub label: String,
+    /// 0 to 100.
+    pub used_percent: f64,
+    /// RFC 3339; absent when the window has not started.
+    pub resets_at: Option<String>,
+}
+
 pub use agent::{
     AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
     AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,

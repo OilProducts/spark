@@ -3063,3 +3063,36 @@ fn app_server_collab_agent_calls_become_subagent_tool_calls() {
         assert_eq!(event.source.item_id.as_deref(), Some("collab-1"));
     }
 }
+
+#[test]
+fn codex_usage_reads_each_plan_limit_window() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("CODEX_HOME", temp.path().join("host"));
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let native = spark_common::agent_settings::NativeAgentSettings {
+        codex_binary: Some(fake_codex_app_server_bin().into()),
+        codex_runtime_root: Some(temp.path().join("runtime").to_string_lossy().into_owned()),
+        codex_seed_dir: Some(temp.path().join("seed").to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let windows =
+        spark_agent_adapter::codex_app_server::auth::read_usage(temp.path(), &native).unwrap();
+    assert_eq!(
+        windows,
+        vec![
+            spark_agent_adapter::UsageWindow {
+                label: "5-hour".into(),
+                used_percent: 41.0,
+                resets_at: Some("2026-11-27T13:04:25Z".into()),
+            },
+            spark_agent_adapter::UsageWindow {
+                label: "Weekly".into(),
+                used_percent: 1.0,
+                resets_at: None,
+            },
+        ]
+    );
+}

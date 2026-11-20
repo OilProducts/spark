@@ -259,6 +259,73 @@ impl CodexConnection {
     }
 }
 
+/// The signed-in account's plan limits, from `account/rateLimits/read`.
+pub fn read_usage(
+    working_dir: &Path,
+    native: &NativeAgentSettings,
+) -> Result<Vec<crate::UsageWindow>, CodexAppServerError> {
+    let mut client = CodexAppServerClient::connect_with_settings(
+        working_dir.to_path_buf(),
+        None,
+        Some(native),
+        Default::default(),
+        None,
+        None,
+    )?;
+    let result = client
+        .account_request("account/rateLimits/read", json!({}))
+        .map_err(|error| CodexAppServerError::runtime(normalize_auth_error(error.message)))?;
+    usage_windows(&result)
+}
+
+fn usage_windows(result: &Value) -> Result<Vec<crate::UsageWindow>, CodexAppServerError> {
+    let invalid = || CodexAppServerError::runtime("Codex returned invalid usage limits.");
+    // Each limit (Codex itself, or a model with its own budget) has up to two windows.
+    let limits: Vec<&Value> = match result.get("rateLimitsByLimitId") {
+        Some(Value::Object(by_id)) => by_id.values().collect(),
+        _ => vec![result.get("rateLimits").ok_or_else(invalid)?],
+    };
+    let mut windows = Vec::new();
+    for limit in limits {
+        let name = limit.get("limitName").and_then(Value::as_str);
+        for window in ["primary", "secondary"].map(|key| limit.get(key)) {
+            let Some(window) = window.filter(|window| !window.is_null()) else {
+                continue;
+            };
+            let used_percent = window
+                .get("usedPercent")
+                .and_then(Value::as_f64)
+                .ok_or_else(invalid)?;
+            let span = match window.get("windowDurationMins").and_then(Value::as_u64) {
+                Some(10080) => "Weekly".to_string(),
+                Some(minutes) if minutes % 1440 == 0 => format!("{}-day", minutes / 1440),
+                Some(minutes) if minutes % 60 == 0 => format!("{}-hour", minutes / 60),
+                Some(minutes) => format!("{minutes}-minute"),
+                None => "Limit".to_string(),
+            };
+            let resets_at = window
+                .get("resetsAt")
+                .and_then(Value::as_i64)
+                .map(|seconds| {
+                    time::OffsetDateTime::from_unix_timestamp(seconds)
+                        .ok()
+                        .and_then(|at| {
+                            at.format(&time::format_description::well_known::Rfc3339)
+                                .ok()
+                        })
+                        .ok_or_else(invalid)
+                })
+                .transpose()?;
+            windows.push(crate::UsageWindow {
+                label: name.map_or(span.clone(), |name| format!("{span} · {name}")),
+                used_percent,
+                resets_at,
+            });
+        }
+    }
+    Ok(windows)
+}
+
 impl CodexAppServerClient {
     fn account_request(
         &mut self,

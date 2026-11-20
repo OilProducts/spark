@@ -2789,3 +2789,25 @@ fn thinking_delta_estimates_reach_live_clients_without_system_token_events() {
     assert!(!recorded.contains("thinking_progress"), "{recorded}");
     assert!(!recorded.contains("estimated_tokens"), "{recorded}");
 }
+
+#[test]
+fn claude_code_usage_reads_each_plan_limit_window() {
+    let temp = tempfile::tempdir().unwrap();
+    let windows =
+        spark_agent_adapter::claude_code::auth::read_usage(&sign_in_settings(temp.path())).unwrap();
+    assert_eq!(
+        windows,
+        vec![
+            spark_agent_adapter::UsageWindow {
+                label: "Weekly".into(),
+                used_percent: 33.0,
+                resets_at: Some("2026-11-23T23:59:59.830429+00:00".into()),
+            },
+            spark_agent_adapter::UsageWindow {
+                label: "Weekly · Fable".into(),
+                used_percent: 8.0,
+                resets_at: Some("2026-11-23T23:59:59.830575+00:00".into()),
+            },
+        ]
+    );
+}

@@ -86,6 +86,31 @@ fn main() {
                     break;
                 }
                 if message["type"] == "control_request"
+                    && message["request"]["subtype"] == "get_usage"
+                {
+                    // Trimmed from a real CLI 2.1.296 reply.
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "type": "control_response",
+                            "response": {
+                                "subtype": "success",
+                                "request_id": message["request_id"],
+                                "response": {
+                                    "subscription_type": "max",
+                                    "rate_limits_available": true,
+                                    "rate_limits": {"five_hour": null, "limits": [
+                                        {"kind": "weekly_all", "group": "weekly", "percent": 33, "resets_at": "2026-11-23T23:59:59.830429+00:00", "scope": null, "is_active": true},
+                                        {"kind": "weekly_scoped", "group": "weekly", "percent": 8, "resets_at": "2026-11-23T23:59:59.830575+00:00", "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}, "is_active": false},
+                                    ]},
+                                },
+                            },
+                        })
+                    );
+                    line.clear();
+                    continue;
+                }
+                if message["type"] == "control_request"
                     && message["request"]["subtype"] == "list_models"
                 {
                     println!(

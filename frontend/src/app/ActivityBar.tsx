@@ -13,6 +13,8 @@ import { cn } from '@/lib/utils'
 import { triggerProblem } from '@/features/triggers/model/triggerForm'
 import { formatRunDate } from '@/features/runs/model/runOverviewModel'
 import { triggerKey, type TriggerResponse } from '@/lib/api/triggersApi'
+import type { UsageHarness } from '@/lib/api/usageApi'
+import { useUsage, type HarnessUsage } from './useUsage'
 
 type ActivityItem = { mode: ViewMode; label: string; icon: LucideIcon; testId: string }
 
@@ -47,6 +49,32 @@ const closeOnFocusLeaving = (close: () => void) => (event: FocusEvent<HTMLElemen
     if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) close()
 }
 
+/** A list that opens from a bar button and closes on a click outside it or Escape, which returns focus to the button. */
+function usePopover() {
+    const [open, setOpen] = useState(false)
+    const containerRef = useRef<HTMLDivElement | null>(null)
+    const buttonRef = useRef<HTMLButtonElement | null>(null)
+    const listId = useId()
+    useEffect(() => {
+        if (!open) return
+        const onPointerDown = (event: PointerEvent) => {
+            if (!containerRef.current?.contains(event.target as Node)) setOpen(false)
+        }
+        const onKeyDown = (event: globalThis.KeyboardEvent) => {
+            if (event.key !== 'Escape' || event.defaultPrevented) return
+            if (containerRef.current?.contains(document.activeElement)) buttonRef.current?.focus()
+            setOpen(false)
+        }
+        window.addEventListener('pointerdown', onPointerDown)
+        window.addEventListener('keydown', onKeyDown)
+        return () => {
+            window.removeEventListener('pointerdown', onPointerDown)
+            window.removeEventListener('keydown', onKeyDown)
+        }
+    }, [open])
+    return { open, setOpen, containerRef, buttonRef, listId }
+}
+
 /** Which views have something waiting on you or running, for the dots on their icons. */
 export function activityDots(
     attention: AttentionItem[],
@@ -77,33 +105,7 @@ function AttentionBell({ items: loadedItems, failed, narrow, triggers }: { items
     const count = items.length + triggers.length
     const registry = useStore((state) => state.projectRegistry)
     const runs = useStore((state) => state.runsListSession.runs)
-    const [open, setOpen] = useState(false)
-    const containerRef = useRef<HTMLDivElement | null>(null)
-    const buttonRef = useRef<HTMLButtonElement | null>(null)
-    const listId = useId()
-
-    useEffect(() => {
-        if (!open) {
-            return
-        }
-        const onPointerDown = (event: PointerEvent) => {
-            if (!containerRef.current?.contains(event.target as Node)) {
-                setOpen(false)
-            }
-        }
-        // Escape closes the list from anywhere, and returns focus to the bell if it was inside.
-        const onKeyDown = (event: globalThis.KeyboardEvent) => {
-            if (event.key !== 'Escape' || event.defaultPrevented) return
-            if (containerRef.current?.contains(document.activeElement)) buttonRef.current?.focus()
-            setOpen(false)
-        }
-        window.addEventListener('pointerdown', onPointerDown)
-        window.addEventListener('keydown', onKeyDown)
-        return () => {
-            window.removeEventListener('pointerdown', onPointerDown)
-            window.removeEventListener('keydown', onKeyDown)
-        }
-    }, [open])
+    const { open, setOpen, containerRef, buttonRef, listId } = usePopover()
 
     const openItem = (item: AttentionItem) => {
         setOpen(false)
@@ -216,29 +218,109 @@ function AttentionBell({ items: loadedItems, failed, narrow, triggers }: { items
     )
 }
 
+const USAGE_HARNESSES: { harness: UsageHarness; name: string }[] = [
+    { harness: 'claude', name: 'Claude Code' },
+    { harness: 'codex', name: 'Codex' },
+]
+const USAGE_HARNESS_IDS = USAGE_HARNESSES.map(({ harness }) => harness)
+const usageTone = (percent: number) => percent >= 90 ? 'bg-destructive' : percent >= 70 ? 'bg-warning' : 'bg-primary'
+
+/** "3d 4h", "2h 5m" or "12m" until `at`. */
+export function untilText(at: string, now: number): string {
+    const minutes = Math.max(0, Math.round((Date.parse(at) - now) / 60_000))
+    const days = Math.floor(minutes / 1440)
+    const hours = Math.floor((minutes % 1440) / 60)
+    if (days > 0) return `${days}d ${hours}h`
+    if (hours > 0) return `${hours}h ${minutes % 60}m`
+    return `${minutes}m`
+}
+
+/**
+ * How much of each signed-in harness account's plan limits is used: a bar per harness for its
+ * tightest window, and every window with its reset time in the list, which checks again as it opens.
+ */
+function UsageMeter() {
+    const { open, setOpen, containerRef, buttonRef, listId } = usePopover()
+    const { usage, check } = useUsage(USAGE_HARNESS_IDS)
+
+    const tightest = (entry: HarnessUsage | undefined) => entry && 'windows' in entry && entry.windows.length > 0
+        ? entry.windows.reduce((most, window) => window.used_percent > most.used_percent ? window : most)
+        : null
+    const summary = USAGE_HARNESSES.map(({ name, harness }) => {
+        const entry = usage[harness]
+        const most = tightest(entry)
+        return most ? `${name} ${Math.round(most.used_percent)}% used` : entry && 'error' in entry ? `${name} unavailable` : null
+    }).filter(Boolean).join(', ')
+    // eslint-disable-next-line react-hooks/purity -- render-time clock for reset countdowns; the list re-renders as it opens
+    const now = Date.now()
+
+    return (
+        <div ref={containerRef} onBlur={closeOnFocusLeaving(() => setOpen(false))} className="relative max-sm:hidden">
+            <button
+                ref={buttonRef}
+                type="button"
+                data-testid="usage-meter"
+                data-bar-item
+                aria-expanded={open}
+                aria-controls={open ? listId : undefined}
+                aria-label={summary ? `Usage: ${summary}` : 'Usage'}
+                title="Plan usage"
+                onClick={() => {
+                    if (!open) check()
+                    setOpen((previous) => !previous)
+                }}
+                className={ITEM_CLASS}
+            >
+                <span aria-hidden="true" className="flex h-4.5 w-6 flex-col justify-center gap-1">
+                    {USAGE_HARNESSES.map(({ harness }) => {
+                        const most = tightest(usage[harness])
+                        return (
+                            <span key={harness} className="h-1 w-full overflow-hidden rounded-full bg-muted">
+                                {most ? <span className={cn('block h-full', usageTone(most.used_percent))} style={{ width: `${Math.min(100, most.used_percent)}%` }} /> : null}
+                            </span>
+                        )
+                    })}
+                </span>
+                <span className={LABEL_CLASS}>Usage</span>
+            </button>
+            {open && (
+                <div id={listId} data-testid="usage-meter-list" className="absolute bottom-0 left-full z-50 ml-2 w-80 rounded-lg border bg-background p-2 shadow-md">
+                    {USAGE_HARNESSES.map(({ harness, name }) => {
+                        const entry = usage[harness]
+                        return (
+                            <section key={harness} data-testid="usage-meter-harness" data-harness={harness} className="px-1 py-1.5">
+                                <h3 className="text-xs font-semibold">{name}</h3>
+                                {!entry ? (
+                                    <p className="text-xs text-muted-foreground">Checking…</p>
+                                ) : 'error' in entry ? (
+                                    <p role="alert" className="text-xs text-destructive">{entry.error}</p>
+                                ) : entry.windows.length === 0 ? (
+                                    <p className="text-xs text-muted-foreground">No plan limits: not signed in with a subscription plan.</p>
+                                ) : entry.windows.map((window) => (
+                                    <div key={window.label} data-testid="usage-meter-window" className="mt-1.5">
+                                        <div className="flex items-baseline justify-between gap-2 text-xs">
+                                            <span>{window.label}</span>
+                                            <span className="text-muted-foreground">
+                                                {Math.round(window.used_percent)}% used{window.resets_at ? ` · resets in ${untilText(window.resets_at, now)}` : ''}
+                                            </span>
+                                        </div>
+                                        <div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-muted">
+                                            <div className={cn('h-full', usageTone(window.used_percent))} style={{ width: `${Math.min(100, window.used_percent)}%` }} />
+                                        </div>
+                                    </div>
+                                ))}
+                            </section>
+                        )
+                    })}
+                </div>
+            )}
+        </div>
+    )
+}
+
 /** On a phone, the views the row has no room for, by name; marked current while one of them is open. */
 function PhoneMoreViews({ viewMode, dots, onOpen }: { viewMode: ViewMode; dots: Partial<Record<ViewMode, ActivityDot>>; onOpen: (mode: ViewMode) => void }) {
-    const [open, setOpen] = useState(false)
-    const containerRef = useRef<HTMLDivElement | null>(null)
-    const buttonRef = useRef<HTMLButtonElement | null>(null)
-    const listId = useId()
-    useEffect(() => {
-        if (!open) return
-        const onPointerDown = (event: PointerEvent) => {
-            if (!containerRef.current?.contains(event.target as Node)) setOpen(false)
-        }
-        const onKeyDown = (event: globalThis.KeyboardEvent) => {
-            if (event.key !== 'Escape' || event.defaultPrevented) return
-            if (containerRef.current?.contains(document.activeElement)) buttonRef.current?.focus()
-            setOpen(false)
-        }
-        window.addEventListener('pointerdown', onPointerDown)
-        window.addEventListener('keydown', onKeyDown)
-        return () => {
-            window.removeEventListener('pointerdown', onPointerDown)
-            window.removeEventListener('keydown', onKeyDown)
-        }
-    }, [open])
+    const { open, setOpen, containerRef, buttonRef, listId } = usePopover()
     const shown = PHONE_MORE_ITEMS.find((item) => item.mode === viewMode) ?? null
     const dot = PHONE_MORE_ITEMS.map((item) => dots[item.mode]).find(Boolean) ?? null
     return (
@@ -376,6 +458,7 @@ export function ActivityBar() {
             <img src="/assets/spark-app-icon.png" alt="Spark" width={28} height={28} className={cn('size-7 rounded-lg max-sm:hidden', isNarrowViewport ? 'mr-1' : 'mb-3')} />
             {ACTIVITY_ITEMS.map(renderItem)}
             <span className="flex-1 max-sm:hidden" />
+            <UsageMeter />
             <AttentionBell items={loadedAttention} failed={attentionFailed} narrow={isNarrowViewport} triggers={failingTriggers} />
             {renderItem(SETTINGS_ITEM)}
             <PhoneMoreViews viewMode={viewMode} dots={dots} onOpen={(mode) => {

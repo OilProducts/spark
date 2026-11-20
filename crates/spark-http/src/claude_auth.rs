@@ -11,6 +11,7 @@ use crate::{HttpAppState, WorkspaceApiError};
 pub(crate) fn router() -> Router<HttpAppState> {
     Router::new()
         .route("/connection", get(status))
+        .route("/usage", get(usage))
         .route("/login", post(login).delete(cancel))
         .route("/login/code", post(code))
 }
@@ -38,6 +39,21 @@ async fn code(
 
 async fn cancel(State(state): State<HttpAppState>) -> Result<Response, WorkspaceApiError> {
     connection_action(state, Action::Cancel).await
+}
+
+async fn usage(State(state): State<HttpAppState>) -> Result<Response, WorkspaceApiError> {
+    let windows = tokio::task::spawn_blocking(move || {
+        let native = spark_workspace::models::native_configuration(&state.settings)?;
+        spark_agent_adapter::claude_code::auth::read_usage(&native)
+            .map_err(|error| WorkspaceError::ServiceUnavailable(error.message))
+    })
+    .await
+    .map_err(|_| WorkspaceError::Internal("Claude Code usage task failed.".into()))??;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({ "windows": windows })),
+    )
+        .into_response())
 }
 
 enum Action {

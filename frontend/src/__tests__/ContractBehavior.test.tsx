@@ -1240,16 +1240,16 @@ describe('Frontend contract behavior', () => {
     const flowsTab = screen.getByTestId('activity-flows')
     const settingsTab = screen.getByTestId('activity-settings')
 
-    // Overview, Chats, Missions, Runs, Triggers, Flows and Roles, then the bell and Settings at the bottom;
+    // Overview, Chats, Missions, Runs, Triggers, Flows and Roles, then usage, the bell and Settings at the bottom;
     // More holds the views a phone's row has no room for (only a phone shows it).
     expect(within(screen.getByTestId('activity-bar')).getAllByRole('button')).toEqual([
-      screen.getByTestId('activity-overview'), chatsTab, missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), screen.getByTestId('attention-bell'), settingsTab, screen.getByTestId('activity-more'),
+      screen.getByTestId('activity-overview'), chatsTab, missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), screen.getByTestId('usage-meter'), screen.getByTestId('attention-bell'), settingsTab, screen.getByTestId('activity-more'),
     ])
     expect(settingsTab).toHaveAccessibleName('Settings')
     expect(chatsTab).toHaveAccessibleName('Chats')
     // Each icon shows its name under it.
     expect(within(screen.getByTestId('activity-bar')).getAllByRole('button').map((button) => button.textContent)).toEqual([
-      'Overview', 'Chats', 'Missions', 'Runs', 'Triggers', 'Flows', 'Roles', 'Inbox', 'Settings', 'More',
+      'Overview', 'Chats', 'Missions', 'Runs', 'Triggers', 'Flows', 'Roles', 'Usage', 'Inbox', 'Settings', 'More',
     ])
 
     chatsTab.focus()
@@ -1263,7 +1263,7 @@ describe('Frontend contract behavior', () => {
     })
     try {
       // Arrow keys only move focus, so passing over a view does not open it; the Inbox is on the way.
-      for (const tab of [missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), screen.getByTestId('attention-bell'), settingsTab, screen.getByTestId('activity-overview'), chatsTab]) {
+      for (const tab of [missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('activity-roles'), screen.getByTestId('usage-meter'), screen.getByTestId('attention-bell'), settingsTab, screen.getByTestId('activity-overview'), chatsTab]) {
         await user.keyboard('{ArrowDown}')
         expect(tab).toHaveFocus()
         expect(useStore.getState().viewMode).toBe('projects')
@@ -1276,7 +1276,7 @@ describe('Frontend contract behavior', () => {
       expect(useStore.getState().viewMode).toBe('projects')
       await user.keyboard('{Enter}')
       expect(useStore.getState().viewMode).toBe('settings')
-      await user.keyboard('{ArrowUp}{ArrowUp}')
+      await user.keyboard('{ArrowUp}{ArrowUp}{ArrowUp}')
       await user.keyboard(' ')
       expect(useStore.getState().viewMode).toBe('roles')
     } finally {

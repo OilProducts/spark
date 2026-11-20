@@ -561,7 +561,7 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('activity-settings'))
     expect(useStore.getState().viewMode).toBe('settings')
-    expect(screen.getByTestId('settings-panel')).toBeVisible()
+    expect(await screen.findByTestId('settings-panel')).toBeVisible()
 
     await user.click(screen.getByTestId('activity-runs'))
     expect(useStore.getState().viewMode).toBe('runs')
@@ -590,10 +590,12 @@ describe('App shell behavior', () => {
     await user.keyboard('{ArrowDown}')
     expect(screen.getByTestId('activity-roles')).toHaveFocus()
     await user.keyboard('{ArrowDown}')
+    expect(screen.getByTestId('usage-meter')).toHaveFocus()
+    await user.keyboard('{ArrowDown}')
     expect(screen.getByTestId('attention-bell')).toHaveFocus()
     await user.keyboard('{ArrowDown}')
     expect(screen.getByTestId('activity-settings')).toHaveFocus()
-    await user.keyboard('{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}')
+    await user.keyboard('{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}')
     expect(screen.getByTestId('activity-overview')).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('editor')
     await user.keyboard('{Enter}')

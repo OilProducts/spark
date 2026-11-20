@@ -352,3 +352,110 @@ fn lock(
         )
     })
 }
+
+/// The signed-in account's plan limits, from the CLI's `get_usage` control
+/// request. The request makes no model call.
+// ponytail: Claude Code marks get_usage experimental; a changed shape reports
+// an error here instead of a wrong number.
+pub fn read_usage(
+    native: &NativeAgentSettings,
+) -> Result<Vec<crate::UsageWindow>, ClaudeCodeError> {
+    let (executable, mut command) = claude_command(Some(native));
+    command
+        .args([
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+        ])
+        .args([
+            "--verbose",
+            "--no-session-persistence",
+            "--strict-mcp-config",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child =
+        spawn_process_group(command).map_err(|error| launch_error(&executable, error))?;
+    let group = child.id();
+    let request = r#"{"type":"control_request","request_id":"spark-usage","request":{"subtype":"get_usage","skip_behaviors":true}}"#;
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let stdout = child.stdout.take().expect("piped stdout");
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = writeln!(stdin, "{request}").and_then(|()| stdin.flush());
+        // stdin stays open until the reply arrives: closing it ends the session first.
+        let reply = BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+            .find(|message| {
+                message["type"] == "control_response"
+                    && message["response"]["request_id"] == "spark-usage"
+            });
+        let _ = sender.send(reply);
+        drop(stdin);
+    });
+    let reply = receiver.recv_timeout(STATUS_TIMEOUT);
+    terminate_process_group(group, None);
+    let _ = child.wait();
+    let reply = match reply {
+        Ok(Some(reply)) => reply,
+        Ok(None) => {
+            return Err(ClaudeCodeError::runtime(
+                "Claude Code exited without reporting its usage.",
+            ))
+        }
+        Err(_) => {
+            return Err(ClaudeCodeError::runtime(format!(
+                "Claude Code did not report its usage within {}s.",
+                STATUS_TIMEOUT.as_secs()
+            )))
+        }
+    };
+    usage_windows(&reply["response"])
+}
+
+fn usage_windows(response: &Value) -> Result<Vec<crate::UsageWindow>, ClaudeCodeError> {
+    if response["subtype"] != "success" {
+        let message = response["error"].as_str().unwrap_or("unknown error");
+        return Err(ClaudeCodeError::runtime(format!(
+            "Claude Code could not read usage: {message}"
+        )));
+    }
+    let usage = &response["response"];
+    // Signed out, or signed in with an API key: no plan, so no limits.
+    if usage["rate_limits_available"] == false {
+        return Ok(Vec::new());
+    }
+    let invalid = || ClaudeCodeError::runtime("Claude Code reported usage in an unknown format.");
+    let limits = usage["rate_limits"]["limits"]
+        .as_array()
+        .ok_or_else(invalid)?;
+    limits
+        .iter()
+        .map(|limit| {
+            let group = limit["group"].as_str().ok_or_else(invalid)?;
+            let mut label = match group {
+                "weekly" => "Weekly".to_string(),
+                other => {
+                    let other = other.replace('_', " ");
+                    let mut chars = other.chars();
+                    chars.next().map_or(String::new(), |first| {
+                        first.to_uppercase().chain(chars).collect()
+                    })
+                }
+            };
+            if let Some(model) = limit["scope"]["model"]["display_name"].as_str() {
+                label = format!("{label} · {model}");
+            }
+            Ok(crate::UsageWindow {
+                label,
+                used_percent: limit["percent"].as_f64().ok_or_else(invalid)?,
+                resets_at: limit["resets_at"].as_str().map(str::to_owned),
+            })
+        })
+        .collect()
+}
