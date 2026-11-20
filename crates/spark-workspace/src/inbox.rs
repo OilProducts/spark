@@ -86,6 +86,80 @@ pub fn install_runtime(settings: &SparkSettings, runtime: InboxRuntime) {
         .unwrap()
         .insert(settings.data_dir.clone(), runtime);
 }
+
+/// Registers a handler so unsolicited post-`end_turn` ACP updates on any
+/// conversation owned by `store` open and stream a live continuation turn.
+/// Holds only a weak reference so shutting down a server releases its store
+/// and home lock.
+pub fn install_acp_continuation(settings: &SparkSettings, store: &Arc<ConversationStore>) {
+    static CONTINUATION_STORES: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                std::path::PathBuf,
+                (SparkSettings, std::sync::Weak<ConversationStore>),
+            >,
+        >,
+    > = std::sync::OnceLock::new();
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    let stores = CONTINUATION_STORES.get_or_init(Default::default);
+    {
+        let mut guard = stores.lock().unwrap();
+        guard.retain(|_, (_, weak)| weak.strong_count() > 0);
+        guard.insert(
+            settings.data_dir.clone(),
+            (settings.clone(), Arc::downgrade(store)),
+        );
+    }
+    REGISTERED.call_once(|| {
+        spark_agent_adapter::acp::register_continuation_handler(Arc::new(
+            move |project_path: &str, conversation_id: &str| {
+                let candidates: Vec<(SparkSettings, Arc<ConversationStore>)> = {
+                    let mut guard = stores.lock().unwrap();
+                    let mut live = Vec::new();
+                    guard.retain(|_, (settings, weak)| {
+                        let Some(store) = weak.upgrade() else {
+                            return false;
+                        };
+                        live.push((settings.clone(), store));
+                        true
+                    });
+                    live
+                };
+                for (settings, store) in candidates {
+                    let owned = ConversationRepository::new(store.clone())
+                        .conversation_project_path(conversation_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|stored| stored == project_path);
+                    if !owned {
+                        continue;
+                    }
+                    let Some(rt) = runtime(&settings) else {
+                        continue;
+                    };
+                    let conversations = conversations(&settings, &store, &rt);
+                    let publish = rt.publish;
+                    let (project_path, conversation_id) =
+                        (project_path.to_string(), conversation_id.to_string());
+                    std::thread::spawn(move || {
+                        let (conv, proj) = (conversation_id.clone(), project_path.clone());
+                        let _ = conversations.run_acp_continuation(
+                            &conversation_id,
+                            &project_path,
+                            move |payload| {
+                                publish(crate::live::conversation_event_envelope(
+                                    &conv, &proj, payload,
+                                ));
+                            },
+                        );
+                    });
+                    return true;
+                }
+                false
+            },
+        ));
+    });
+}
 pub(crate) fn runtime(settings: &SparkSettings) -> Option<InboxRuntime> {
     runtimes().lock().unwrap().get(&settings.data_dir).cloned()
 }

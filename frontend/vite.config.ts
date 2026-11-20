@@ -11,6 +11,12 @@ const wsUrl = backendUrl.startsWith('https')
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    // ponytail: a budget just above today's startup bundle (~1,530 kB), so growth past it still warns.
+    // The editor, runs, triggers and missions screens stay mounted while hidden, so they load at startup;
+    // loading them on first visit is what would bring this under Vite's 500 kB default.
+    chunkSizeWarningLimit: 1600,
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

@@ -186,6 +186,10 @@ function ToolCallDetails({
     const displayedOutput = fullOutput ?? entry.toolCall.output
     const hasPreviewOnly = entry.toolCall.outputTruncated === true && fullOutput === null
     const fileChanges = entry.toolCall.fileChanges ?? []
+    // Older ACP execute segments stored the full command only in `title`.
+    const displayedCommand = entry.toolCall.command
+        ?? (entry.toolCall.kind === 'command_execution' && entry.toolCall.title.trim() ? entry.toolCall.title : null)
+    const showFullTitle = !displayedCommand && (entry.toolCall.title.includes('\n') || entry.toolCall.title.length > 120)
     // A path a diff below already names is not listed again.
     const filePaths = entry.toolCall.filePaths.filter((path) => !fileChanges.some((change) => change.path === path || change.move_from === path))
     return (
@@ -195,9 +199,13 @@ function ToolCallDetails({
                     {entry.toolCall.prompt}
                 </p>
             ) : null}
-            {entry.toolCall.command ? (
+            {displayedCommand ? (
                 <p className="whitespace-pre-wrap break-words rounded-md bg-muted px-2 py-1 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
-                    {entry.toolCall.command}
+                    {displayedCommand}
+                </p>
+            ) : showFullTitle ? (
+                <p className="whitespace-pre-wrap break-words rounded-md bg-muted px-2 py-1 text-xs text-foreground [overflow-wrap:anywhere]">
+                    {entry.toolCall.title}
                 </p>
             ) : null}
             {filePaths.length > 0 ? (
@@ -295,10 +303,12 @@ export const ToolCallRow = memo(function ToolCallRow({
     childCalls?: ReactNode[]
 }) {
     const statusPresentation = getToolCallStatusPresentation(entry.toolCall.status)
-    const summaryDetail = entry.toolCall.command
-        ? stripShellWrapper(entry.toolCall.command)
+    const command = entry.toolCall.command
+        ?? (entry.toolCall.kind === 'command_execution' && entry.toolCall.title.trim() ? entry.toolCall.title : null)
+    const summaryDetail = command
+        ? stripShellWrapper(command)
         : summarizeToolCallDetail(entry.toolCall)
-    const isCommand = entry.toolCall.kind === 'command_execution' && Boolean(entry.toolCall.command)
+    const isCommand = entry.toolCall.kind === 'command_execution' && Boolean(command)
     const statusMark = entry.toolCall.status === 'completed' ? null : (
         <span className={`shrink-0 font-sans ${statusTextClassName(statusPresentation.tone)}`}>
             {statusPresentation.label}
@@ -328,12 +338,12 @@ export const ToolCallRow = memo(function ToolCallRow({
                     type="button"
                     data-testid={`${testIdPrefix}-tool-call-toggle-${entry.toolCall.id}`}
                     aria-expanded={isExpanded}
-                    title={entry.toolCall.command ?? undefined}
+                    title={command ?? entry.toolCall.title}
                     onClick={() => onToggleToolCallExpanded(entry.toolCall.id)}
                     className="flex w-full min-w-0 items-center gap-2.5 rounded-sm text-left font-mono text-xs leading-6 text-foreground/80 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                 >
                     {isCommand ? null : (
-                        <span className="shrink-0 font-sans text-muted-foreground">{entry.toolCall.title}</span>
+                        <span className="min-w-0 max-w-[60%] truncate font-sans text-muted-foreground">{entry.toolCall.title}</span>
                     )}
                     {subagentType}
                     <span className="min-w-0 flex-1 truncate">
@@ -353,13 +363,13 @@ export const ToolCallRow = memo(function ToolCallRow({
                 type="button"
                 data-testid={`${testIdPrefix}-tool-call-toggle-${entry.toolCall.id}`}
                 aria-expanded={isExpanded}
-                title={entry.toolCall.command ?? undefined}
+                title={command ?? entry.toolCall.title}
                 onClick={() => onToggleToolCallExpanded(entry.toolCall.id)}
                 className="group flex w-full min-w-0 items-center gap-2 text-left text-xs"
             >
                 <ChevronRight className={`h-3 w-3 shrink-0 text-muted-foreground/50 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                 {isCommand ? null : (
-                    <span className="shrink-0 text-muted-foreground">{entry.toolCall.title}</span>
+                    <span className="min-w-0 max-w-[60%] truncate text-muted-foreground">{entry.toolCall.title}</span>
                 )}
                 {subagentType}
                 <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground group-hover:text-foreground">

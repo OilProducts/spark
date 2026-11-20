@@ -3,16 +3,19 @@ import { AppNotices, AppSessionControllers } from "@/app/AppSessionControllers"
 import { EditorWorkspace } from "@/features/editor"
 import { ProjectsPanel } from "@/features/projects"
 import { RunStream, RunsPanel } from "@/features/runs"
-import { SettingsPanel } from "@/features/settings"
 import { TriggersPanel } from "@/features/triggers"
 import { useStore } from "@/store"
 import { useNarrowViewport } from "@/lib/useNarrowViewport"
 import { DialogProvider } from "@/components/app/dialog-controller"
 import { Sheet } from "@/components/app/view-layout"
 import { MissionsPanel } from "@/features/missions/MissionsPanel"
-import { OverviewPanel } from "@/features/overview/OverviewPanel"
 import { RolesPanel } from "@/features/roles/RolesPanel"
 import { RunFlowDialog } from "@/features/launch"
+import { lazy, Suspense } from "react"
+
+// Screens that mount only while open load on first visit, keeping them out of the startup bundle.
+const SettingsPanel = lazy(() => import("@/features/settings/SettingsPanel").then((module) => ({ default: module.SettingsPanel })))
+const OverviewPanel = lazy(() => import("@/features/overview/OverviewPanel").then((module) => ({ default: module.OverviewPanel })))
 function App() {
   const viewMode = useStore((state) => state.viewMode)
   const isNarrowViewport = useNarrowViewport()
@@ -81,12 +84,12 @@ function App() {
               <TriggersPanel />
             </div>
             {viewMode === 'overview' ? (
-              <div className="absolute inset-0 flex"><Sheet><OverviewPanel /></Sheet></div>
+              <div className="absolute inset-0 flex"><Sheet><Suspense><OverviewPanel /></Suspense></Sheet></div>
             ) : null}
             <div hidden={viewMode !== 'missions'} className="absolute inset-0"><MissionsPanel active={viewMode === 'missions'} /></div>
             {viewMode === 'roles' ? <div className="absolute inset-0"><RolesPanel /></div> : null}
             {isSettingsMode ? (
-              <SettingsPanel />
+              <Suspense><SettingsPanel /></Suspense>
             ) : null}
           </div>
         </main>

@@ -504,6 +504,56 @@ impl ConversationRepository {
             .0)
     }
 
+    /// Opens an assistant continuation turn when a live harness emits
+    /// unsolicited work after `end_turn`. Returns `None` if the conversation
+    /// is gone or already has an unsettled assistant turn.
+    pub fn start_continuation_turn(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+        assistant_turn_id: &str,
+    ) -> Result<Option<ConversationCommit>> {
+        let result = self.operate(conversation_id, Some(project_path), Open::Existing, |op| {
+            if op.active_assistant_turn()?.is_some() {
+                return Ok(false);
+            }
+            let execution_settings: Value = op
+                .connection()
+                .query_row(
+                    "SELECT json_extract(payload, '$.execution_settings') FROM turns \
+                     INDEXED BY turns_page WHERE conversation_id = ?1 AND deleted = 0 \
+                     AND role = 'assistant' ORDER BY position DESC, turn_id DESC LIMIT 1",
+                    [&op.conversation_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten()
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_else(|| json!({}));
+            op.put_turn(json!({
+                "id": assistant_turn_id,
+                "role": "assistant",
+                "content": "",
+                "timestamp": op.now.clone(),
+                "status": "streaming",
+                "kind": "message",
+                "execution_settings": execution_settings,
+                "parent_turn_id": Value::Null,
+            }))?;
+            for queued in op.turns_with_status(&["queued"])? {
+                op.put_turn(queued)?;
+            }
+            Ok(true)
+        });
+        match result {
+            Ok((commit, true)) => Ok(commit),
+            Ok((_, false))
+            | Err(StorageError::InvalidConversationInput { .. })
+            | Err(StorageError::InvalidConversationState { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Record what a started execution's request was built from: its
     /// instructions fingerprint and, in plan mode, the plan rejection notes
     /// it delivers, which it returns.
@@ -1481,7 +1531,11 @@ impl Op<'_> {
             }
         };
         for mut segment in self.turn_segments(turn_id, None)? {
-            if !matches!(segment["kind"].as_str(), Some("assistant_message" | "plan")) {
+            // A message that finished before the failure was delivered as it shows; the turn
+            // carries the error, which the transcript shows in a row of its own.
+            if !matches!(segment["kind"].as_str(), Some("assistant_message" | "plan"))
+                || segment["status"] == "complete"
+            {
                 continue;
             }
             fail(&mut segment);

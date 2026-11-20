@@ -480,19 +480,30 @@ fn acp_chat_turns_answer_from_the_harness_and_continue_its_session() {
         .execute_turn("acp-chat", acp_turn(&project, "Again"))
         .unwrap();
     assert_eq!(assistant_turn(&second)["content"], "Hello from ACP.");
-    // The next turn continues the session, so nothing is replayed into it,
-    // and the pinned instructions travel as the system prompt both times.
+    // The next turn reuses the live session process without restarting it.
     assert_eq!(acp_received(temp.path(), "session/new").len(), 1);
-    let resumed = acp_received(temp.path(), "session/resume");
-    assert_eq!(resumed.len(), 1);
-    assert_eq!(resumed[0]["sessionId"], "fake-session");
-    assert!(resumed[0].get("systemPrompt").is_some());
+    assert_eq!(acp_received(temp.path(), "session/resume").len(), 0);
     let prompts = acp_received(temp.path(), "session/prompt");
     assert_eq!(prompts.len(), 2);
     assert_eq!(
         prompts[1]["prompt"],
         json!([{"type": "text", "text": "Again"}])
     );
+
+    // Once the live session is closed (as after idle reaping or restart), the
+    // next turn resumes via session/resume with the pinned system prompt.
+    assert!(spark_agent_adapter::acp::close_session(
+        &project, "acp-chat"
+    ));
+    let third = service
+        .execute_turn("acp-chat", acp_turn(&project, "Once more"))
+        .unwrap();
+    assert_eq!(assistant_turn(&third)["content"], "Hello from ACP.");
+    assert_eq!(acp_received(temp.path(), "session/new").len(), 1);
+    let resumed = acp_received(temp.path(), "session/resume");
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0]["sessionId"], "fake-session");
+    assert!(resumed[0].get("systemPrompt").is_some());
 }
 
 #[test]
@@ -778,6 +789,7 @@ fn a_restart_with_a_changed_inherited_environment_resets_acp_continuity() {
         .insert("environment_inheritance".into(), "inherit_all".into());
     std::fs::write(&config, toml::to_string(&document).unwrap()).unwrap();
     let restart_and_chat = |value: &str| {
+        spark_agent_adapter::acp::close_session(&project, "acp-restart");
         std::env::set_var(PROBE, value);
         // A new service over the same stores, as after a restart.
         let snapshot = crate::conversations(settings(temp.path()))
@@ -901,6 +913,177 @@ fn acp_tool_results_given_only_as_content_reach_chat_history() {
     );
 }
 
+#[test]
+fn an_acp_chat_stays_running_while_background_tool_runs_and_reports_wakeup() {
+    let temp = tempfile::tempdir().unwrap();
+    let gate = temp.path().join("bg-done");
+    let (service, project) = acp_chat(
+        temp.path(),
+        json!({
+            "updates": [
+                {"sessionUpdate": "tool_call", "toolCallId": "bg-test", "title": "cargo test",
+                 "kind": "execute", "status": "in_progress",
+                 "rawInput": {"CommandLine": "cargo test"}},
+                acp_chunk("m0", "Running tests now."),
+            ],
+            "post_prompt_gate": gate,
+            "post_prompt_updates": [
+                {"sessionUpdate": "tool_call_update", "toolCallId": "bg-test", "status": "completed",
+                 "rawOutput": {"output": "1 passed", "exit_code": 0}},
+                acp_chunk("m1", "All tests passed."),
+                {"sessionUpdate": "usage_update", "used": 1200, "size": 200000},
+            ],
+        }),
+    );
+
+    let handle = {
+        let (service, project) = (service.clone(), project.clone());
+        std::thread::spawn(move || service.execute_turn("acp-bg", acp_turn(&project, "Run tests")))
+    };
+
+    // Wait until the commentary closed after the deferred end_turn arrived.
+    let started = std::time::Instant::now();
+    loop {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "commentary segment should materialize while background tool runs"
+        );
+        if let Ok(snapshot) = service.get_snapshot("acp-bg", Some(&project)) {
+            let commentary_closed = segments_of_kind(&snapshot, "assistant_message")
+                .iter()
+                .any(|seg| seg["content"] == "Running tests now." && seg["status"] == "complete");
+            if commentary_closed {
+                let summaries = service.list_project_conversations(&project).unwrap();
+                let summary = summaries
+                    .iter()
+                    .find(|item| item.conversation_id == "acp-bg")
+                    .expect("conversation summary");
+                assert!(
+                    summary.running,
+                    "conversation must stay running while background tool is still in progress"
+                );
+                let tools = segments_of_kind(&snapshot, "tool_call");
+                assert_eq!(tools.len(), 1);
+                assert_eq!(tools[0]["status"], "running");
+                assert_eq!(tools[0]["tool_call"]["status"], "running");
+                assert!(tools[0].get("completed_at").is_none());
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+
+    std::fs::write(&gate, "").unwrap();
+    let final_snapshot = handle.join().unwrap().expect("turn finishes after wakeup");
+    assert_eq!(assistant_turn(&final_snapshot)["status"], "complete");
+    assert_eq!(
+        assistant_turn(&final_snapshot)["content"],
+        "All tests passed."
+    );
+    let tools = segments_of_kind(&final_snapshot, "tool_call");
+    assert_eq!(tools[0]["status"], "complete");
+    assert_eq!(tools[0]["tool_call"]["output"]["output"], "1 passed");
+    let summaries = service.list_project_conversations(&project).unwrap();
+    let summary = summaries
+        .iter()
+        .find(|item| item.conversation_id == "acp-bg")
+        .expect("conversation summary");
+    assert!(!summary.running);
+    spark_agent_adapter::acp::close_session(&project, "acp-bg");
+}
+
+/// Reproduces the race where a background tool finishes just before `end_turn`
+/// settles, and the harness immediately streams a follow-up reactive wakeup on
+/// the parked process: Spark opens a live continuation turn, marks the chat
+/// running while it executes, captures every tool call and final message, and
+/// settles back to idle when done.
+#[test]
+fn an_acp_post_settle_wakeup_opens_a_live_continuation_turn_and_captures_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let gate = temp.path().join("wakeup-go");
+    let (service, project) = acp_chat(
+        temp.path(),
+        json!({
+            "updates": [
+                {"sessionUpdate": "tool_call", "toolCallId": "run-1", "title": "vitest",
+                 "kind": "execute", "status": "in_progress"},
+                {"sessionUpdate": "tool_call_update", "toolCallId": "run-1", "status": "completed",
+                 "rawOutput": {"output": "1 failed", "exit_code": 1}},
+                acp_chunk("m0", "Checking the test run — I'll inspect the failure once it finishes."),
+            ],
+            "post_prompt_gate": gate,
+            "post_prompt_updates": [
+                {"sessionUpdate": "tool_call", "toolCallId": "edit-1", "title": "edit_file",
+                 "kind": "edit", "status": "in_progress"},
+                {"sessionUpdate": "tool_call_update", "toolCallId": "edit-1", "status": "completed",
+                 "rawOutput": {"output": "edited"}},
+                acp_chunk("m1", "Done — fixed the failing test and verified."),
+                {"sessionUpdate": "usage_update", "used": 1400, "size": 200000},
+            ],
+        }),
+    );
+    let test_settings = settings(temp.path());
+    let store = crate::shared_store(test_settings.data_dir.clone());
+    spark_workspace::inbox::install_runtime(
+        &test_settings,
+        spark_workspace::inbox::InboxRuntime {
+            agent_turn_backend: WorkspaceConversationService::default_agent_turn_backend(
+                &test_settings,
+            ),
+            runtime_handler_runner_factory: attractor_api::default_runtime_handler_runner_factory(),
+            publish: std::sync::Arc::new(|_| {}),
+        },
+    );
+    spark_workspace::inbox::install_acp_continuation(&test_settings, &store);
+
+    // Turn 1 settles because run-1 completed before PromptResponse(end_turn).
+    let first = service
+        .execute_turn("acp-post-settle", acp_turn(&project, "Fix tests"))
+        .unwrap();
+    assert_eq!(assistant_turn(&first)["status"], "complete");
+    assert_eq!(
+        assistant_turn(&first)["content"],
+        "Checking the test run — I'll inspect the failure once it finishes."
+    );
+
+    // Trigger the unsolicited post-settle wakeup on the parked ACP process.
+    std::fs::write(&gate, "").unwrap();
+
+    // Wait for the continuation turn to complete and capture the wakeup output.
+    let started = std::time::Instant::now();
+    let final_snapshot = loop {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(15),
+            "post-settle continuation turn should complete with the wakeup message"
+        );
+        let snapshot = service
+            .get_snapshot("acp-post-settle", Some(&project))
+            .unwrap();
+        let latest = assistant_turn(&snapshot);
+        if latest["status"] == "complete"
+            && latest["content"] == "Done — fixed the failing test and verified."
+        {
+            break snapshot;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+
+    let tools = segments_of_kind(&final_snapshot, "tool_call");
+    assert!(
+        tools
+            .iter()
+            .any(|seg| seg["tool_call"]["id"] == "edit-1" && seg["status"] == "complete"),
+        "continuation edit_file tool call must be captured: {final_snapshot}"
+    );
+    let summaries = service.list_project_conversations(&project).unwrap();
+    let summary = summaries
+        .iter()
+        .find(|item| item.conversation_id == "acp-post-settle")
+        .expect("conversation summary");
+    assert!(!summary.running);
+    spark_agent_adapter::acp::close_session(&project, "acp-post-settle");
+}
+
 /// Discovery probes each registered harness in the work area without a
 /// prompt, reports raw config options and separate setup and capability
 /// states, and reuses its result until the agents settings change.
@@ -934,7 +1117,10 @@ fn acp_choosers_offer_what_a_session_last_acknowledged() {
         temp.path(),
         json!({
             "config_options": [model("fast"), effort(&["Low"]), approval(&["ask"])],
-            "on_set": {"model=deep": [model("deep"), effort(&["Low", "High"]), approval(&["ask"])]},
+            "on_set": {
+                "model=deep": [model("deep"), effort(&["Low", "High"]), approval(&["ask"])],
+                "model=fast": [model("fast"), effort(&["Low"]), approval(&["ask"])],
+            },
             "updates": updates,
         }),
     );

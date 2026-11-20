@@ -1,12 +1,14 @@
 //! Stable ACP v1 client for registered harnesses (`acp:<id>`), driven by the
 //! pinned SDK over the shared stdio transport.
 //!
-//! One process per turn: initialize, create or resume the session, apply
-//! required selections, then exactly one primary prompt. The SDK connection
-//! runs on the transport's worker; events reach the caller's sink on the
-//! calling thread, in order, and are returned exactly as delivered.
+//! Chat conversations keep their ACP session process warm across turns until
+//! idle timeout, config/instruction change, or explicit close so harness-owned
+//! background work survives turn boundaries. When `end_turn` arrives while a
+//! non-daemon tool call is still `in_progress`, the turn stays open until the
+//! background tool and its post-wakeup response settle. Flow nodes run
+//! one-shot processes after draining any open background tool calls.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -60,6 +62,20 @@ pub const ACP_SESSION_METADATA_KEY: &str = "spark.runtime.acp.session";
 pub const ACP_SESSION_ESTABLISHED: &str = "session_established";
 /// How long a cancelled prompt may take to settle before its process is stopped.
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
+/// How long a deferred end-of-turn waits for the harness to start its
+/// post-tool wakeup once the last background tool call completes.
+const POST_TOOL_WAKEUP_WAIT: Duration = Duration::from_secs(30);
+/// How long a post-tool wakeup may go quiet before settling when no
+/// `usage_update` ends the step.
+const POST_WAKEUP_STREAM_IDLE: Duration = Duration::from_secs(15);
+/// Brief settle window after a post-tool `usage_update` so an immediately
+/// following tool call can still arrive before the turn closes.
+const POST_WAKEUP_USAGE_SETTLE: Duration = Duration::from_secs(2);
+/// How long an idle pooled chat ACP process lives before being reaped.
+const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// How long an idle worker buffers unsolicited continuation updates waiting
+/// for the workspace continuation handler to attach before draining them.
+const CONTINUATION_ATTACH_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often a flow's form checks for its answer.
 const FORM_POLL: Duration = Duration::from_millis(100);
 /// How long a chat answer waits for the turn to take it.
@@ -119,9 +135,197 @@ struct Live {
     interrupts: Sender<()>,
     stop: Mutex<Option<Stop>>,
     terminated: AtomicBool,
+    do_not_pool: AtomicBool,
     closed: AtomicBool,
     /// Replies for the turn's pending forms.
     replies: UnboundedSender<FormAnswer>,
+}
+
+/// Everything a parked chat ACP process is valid for.
+#[derive(Clone, PartialEq, Eq)]
+struct SessionIdentity {
+    record: AcpSessionRecord,
+    policy: AcpPermissionPolicy,
+}
+
+impl SessionIdentity {
+    fn matches(&self, plan: &Plan) -> bool {
+        let Some(saved) = &plan.saved else {
+            return false;
+        };
+        self.policy == plan.policy
+            && self.record.harness == plan.harness_id
+            && self.record.session_id == saved.session_id
+            && self.record.cwd == plan.cwd.to_string_lossy()
+            && self.record.configuration_generation == plan.generation
+            && self.record.instructions_sha256 == plan.instructions_sha256
+    }
+}
+
+/// A live ACP worker process and its channel for subsequent turns.
+struct LiveWorker {
+    /// Dropped BEFORE `connection` so `more_turns.recv()` closes and lets the
+    /// worker thread exit before `Connection::drop` joins it.
+    turns: UnboundedSender<TurnWork>,
+    connection: stdio_transport::Connection,
+    _instruction_file: Option<tempfile::NamedTempFile>,
+    alive: Arc<AtomicBool>,
+    /// Signaled once the calling thread has released `registry()` and parked
+    /// this worker into `pool()`, so idle continuation wakeups never race
+    /// ahead of parking.
+    parked: Arc<tokio::sync::Notify>,
+    /// True while the idle worker has buffered unsolicited post-`end_turn`
+    /// activity waiting for a continuation turn to attach.
+    pending_continuation: Arc<AtomicBool>,
+}
+
+impl LiveWorker {
+    fn alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst) && !self.turns.is_closed()
+    }
+}
+
+/// Callback invoked when a parked chat ACP session starts emitting unsolicited
+/// agent activity after `end_turn`. Returns `true` if it claimed the
+/// conversation and scheduled `run_continuation`.
+pub type ContinuationHandler = Arc<dyn Fn(&str, &str) -> bool + Send + Sync + 'static>;
+
+fn continuation_handlers() -> &'static Mutex<Vec<ContinuationHandler>> {
+    static HANDLERS: OnceLock<Mutex<Vec<ContinuationHandler>>> = OnceLock::new();
+    HANDLERS.get_or_init(Mutex::default)
+}
+
+/// Registers a handler that claims and runs unsolicited ACP continuations for
+/// its owned conversations.
+pub fn register_continuation_handler(handler: ContinuationHandler) {
+    continuation_handlers()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push(handler);
+}
+
+fn notify_continuation(project_path: &str, conversation_id: &str) -> bool {
+    let handlers = continuation_handlers()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    handlers
+        .into_iter()
+        .any(|handler| handler(project_path, conversation_id))
+}
+
+/// A warm ACP session parked between chat turns.
+struct PooledSession {
+    worker: LiveWorker,
+    identity: SessionIdentity,
+}
+
+fn pool() -> &'static Mutex<HashMap<Key, PooledSession>> {
+    static POOL: OnceLock<Mutex<HashMap<Key, PooledSession>>> = OnceLock::new();
+    POOL.get_or_init(Mutex::default)
+}
+
+/// The harness ID of a live parked ACP session for `(project_path, conversation_id)`.
+pub fn pooled_harness(project_path: &str, conversation_id: &str) -> Option<String> {
+    let key = (project_path.to_string(), conversation_id.to_string());
+    let entries = pool().lock().unwrap_or_else(|error| error.into_inner());
+    entries
+        .get(&key)
+        .filter(|session| session.worker.alive())
+        .map(|session| session.identity.record.harness.clone())
+}
+
+/// Whether a parked ACP session for `(project_path, conversation_id)` has
+/// buffered unsolicited post-`end_turn` activity waiting for a continuation.
+pub fn has_pending_continuation(project_path: &str, conversation_id: &str) -> bool {
+    let key = (project_path.to_string(), conversation_id.to_string());
+    let entries = pool().lock().unwrap_or_else(|error| error.into_inner());
+    entries.get(&key).is_some_and(|session| {
+        session.worker.alive() && session.worker.pending_continuation.load(Ordering::SeqCst)
+    })
+}
+
+/// Takes a matching warm session out of the pool for `key`, sweeping dead
+/// entries and dropping any mismatched session outside the pool lock.
+fn take_pooled_session(key: &Key, plan: &Plan) -> Option<LiveWorker> {
+    let mut dead = Vec::new();
+    let candidate = {
+        let mut entries = pool().lock().unwrap_or_else(|error| error.into_inner());
+        let dead_keys = entries
+            .iter()
+            .filter(|(entry_key, session)| *entry_key != key && !session.worker.alive())
+            .map(|(entry_key, _)| entry_key.clone())
+            .collect::<Vec<_>>();
+        for dead_key in dead_keys {
+            if let Some(session) = entries.remove(&dead_key) {
+                dead.push(session);
+            }
+        }
+        entries.remove(key)
+    };
+    drop(dead);
+    match candidate {
+        Some(pooled) if pooled.worker.alive() && pooled.identity.matches(plan) => {
+            Some(pooled.worker)
+        }
+        Some(other) => {
+            drop(other);
+            None
+        }
+        None => None,
+    }
+}
+
+/// Takes any live parked session for `key` to attach a post-`end_turn`
+/// continuation.
+fn take_pooled_for_continuation(key: &Key) -> Option<PooledSession> {
+    let candidate = {
+        let mut entries = pool().lock().unwrap_or_else(|error| error.into_inner());
+        entries.remove(key)
+    };
+    match candidate {
+        Some(pooled) if pooled.worker.alive() => Some(pooled),
+        Some(other) => {
+            drop(other);
+            None
+        }
+        None => None,
+    }
+}
+
+/// Parks a healthy session in the pool and wakes its worker to watch for
+/// idle updates; any displaced session is dropped outside the pool lock.
+fn park_pooled_session(key: Key, worker: LiveWorker, identity: SessionIdentity) {
+    if !worker.alive() {
+        drop(worker);
+        return;
+    }
+    let parked = Arc::clone(&worker.parked);
+    let displaced = {
+        let mut entries = pool().lock().unwrap_or_else(|error| error.into_inner());
+        entries.insert(key, PooledSession { worker, identity })
+    };
+    drop(displaced);
+    parked.notify_one();
+}
+
+/// Closes any parked ACP session for `(project_path, conversation_id)`, and
+/// prevents a currently running turn from being parked when it finishes.
+pub fn close_session(project_path: &str, conversation_id: &str) -> bool {
+    let marked = if let Some(live) = find(project_path, conversation_id) {
+        live.do_not_pool.store(true, Ordering::SeqCst);
+        true
+    } else {
+        false
+    };
+    let key = (project_path.to_string(), conversation_id.to_string());
+    let removed = {
+        let mut entries = pool().lock().unwrap_or_else(|error| error.into_inner());
+        entries.remove(&key)
+    };
+    let had_pooled = removed.is_some();
+    drop(removed);
+    marked || had_pooled
 }
 
 /// A reply for one of a turn's pending forms, by its Spark request ID, and
@@ -190,16 +394,25 @@ pub fn answer(
     live.replies.send(answer).is_ok() && received.recv_timeout(FORM_DELIVERY).unwrap_or(false)
 }
 
-/// Stops the turn's process group directly.
+/// Stops the turn's process group directly, and closes any parked session.
 pub fn terminate(project_path: &str, conversation_id: &str) -> bool {
-    let Some(live) = find(project_path, conversation_id) else {
-        return false;
-    };
-    live.terminated.store(true, Ordering::SeqCst);
-    if let Some(stop) = live.stop.lock().unwrap().as_ref() {
-        stop.stop();
+    let mut stopped = false;
+    if let Some(live) = find(project_path, conversation_id) {
+        live.terminated.store(true, Ordering::SeqCst);
+        live.do_not_pool.store(true, Ordering::SeqCst);
+        if let Some(stop) = live.stop.lock().unwrap().as_ref() {
+            stop.stop();
+        }
+        stopped = true;
     }
-    true
+    let key = (project_path.to_string(), conversation_id.to_string());
+    let removed = {
+        let mut entries = pool().lock().unwrap_or_else(|error| error.into_inner());
+        entries.remove(&key)
+    };
+    let had_pooled = removed.is_some();
+    drop(removed);
+    stopped || had_pooled
 }
 
 // ---- the turn ------------------------------------------------------------
@@ -210,6 +423,40 @@ enum Message {
     /// The primary prompt is about to be sent.
     Prompted,
     Done(Result<Finished, String>),
+    /// A pooled worker exited before starting this turn, returning it intact.
+    Rejected(TurnWork),
+}
+
+/// Everything one prompted turn hands to a new or pooled session worker.
+struct PromptWork {
+    plan: Plan,
+    out: Out,
+    interrupts: Receiver<()>,
+    replies: UnboundedSender<FormAnswer>,
+    answered: UnboundedReceiver<FormAnswer>,
+}
+
+/// Everything an unsolicited post-`end_turn` continuation hands to a parked
+/// session worker.
+struct ContinuationWork {
+    out: Out,
+    interrupts: Receiver<()>,
+    replies: UnboundedSender<FormAnswer>,
+    answered: UnboundedReceiver<FormAnswer>,
+}
+
+enum TurnWork {
+    Prompt(PromptWork),
+    Continuation(ContinuationWork),
+}
+
+impl TurnWork {
+    fn out_sender(&self) -> std::sync::mpsc::Sender<Message> {
+        match self {
+            Self::Prompt(work) => work.out.messages.clone(),
+            Self::Continuation(work) => work.out.messages.clone(),
+        }
+    }
 }
 
 struct Finished {
@@ -289,6 +536,157 @@ pub fn run_turn(
     let mut seen = AcpFailure::default();
     let result = turn(request, harness_id, sink, clarification, &mut seen);
     result.map_err(|message| AcpFailure { message, ..seen })
+}
+
+/// Attaches to a parked chat ACP session that emitted unsolicited post-`end_turn`
+/// activity, streaming its updates through `sink` until the wakeup settles.
+/// Returns `Ok(None)` if no parked session is available.
+pub fn run_continuation(
+    project_path: &str,
+    conversation_id: &str,
+    sink: Option<&AgentTurnEventSink>,
+) -> Result<Option<AcpTurn>, AcpFailure> {
+    let mut seen = AcpFailure::default();
+    let result = continuation(project_path, conversation_id, sink, &mut seen);
+    result.map_err(|message| AcpFailure { message, ..seen })
+}
+
+fn continuation(
+    project_path: &str,
+    conversation_id: &str,
+    sink: Option<&AgentTurnEventSink>,
+    seen: &mut AcpFailure,
+) -> Result<Option<AcpTurn>, String> {
+    let key = (project_path.to_string(), conversation_id.to_string());
+    let (interrupts, interrupted) = tokio::sync::mpsc::channel(1);
+    let (replies, answered) = tokio::sync::mpsc::unbounded_channel();
+    let live = Arc::new(Live {
+        interrupts,
+        stop: Mutex::new(None),
+        terminated: AtomicBool::new(false),
+        do_not_pool: AtomicBool::new(false),
+        closed: AtomicBool::new(false),
+        replies: replies.clone(),
+    });
+    let registered = {
+        let mut entries = registry().lock().unwrap();
+        if entries
+            .get(&key)
+            .and_then(Weak::upgrade)
+            .is_some_and(|other| !other.closed.load(Ordering::SeqCst))
+        {
+            return Ok(None);
+        }
+        entries.insert(key.clone(), Arc::downgrade(&live));
+        Registered(key.clone(), Arc::clone(&live))
+    };
+
+    let Some(pooled) = take_pooled_for_continuation(&key) else {
+        return Ok(None);
+    };
+    let harness_id = pooled.identity.record.harness.clone();
+    let identity = pooled.identity;
+    let worker = pooled.worker;
+    attach_stop(&live, &worker.connection);
+
+    let (messages, delivered) = std::sync::mpsc::channel();
+    let work = TurnWork::Continuation(ContinuationWork {
+        out: Out { messages },
+        interrupts: interrupted,
+        replies,
+        answered,
+    });
+    if worker.turns.send(work).is_err() {
+        drop(worker);
+        return Ok(None);
+    }
+
+    let app_turn_id = uuid::Uuid::new_v4().to_string();
+    let mut done: Option<Result<Finished, String>> = None;
+    for message in delivered {
+        match message {
+            Message::Event(mut event) => {
+                event.source.app_turn_id = Some(app_turn_id.clone());
+                if let Some(sink) = sink {
+                    sink(event.clone());
+                }
+                seen.events.push(event);
+            }
+            Message::Prompted => seen.prompted = true,
+            Message::Done(result) => {
+                done = Some(result);
+                break;
+            }
+            Message::Rejected(_) => {
+                drop(worker);
+                return Ok(None);
+            }
+        }
+    }
+
+    let finished = match done {
+        Some(Ok(finished)) => finished,
+        failed => {
+            let stderr = worker.connection.stderr();
+            let lines = stderr.lines().collect::<Vec<_>>();
+            let tail = lines[lines.len().saturating_sub(10)..].join("\n");
+            drop(worker);
+            let message = match failed {
+                Some(Err(message)) => message,
+                _ => "the ACP connection worker stopped".to_string(),
+            };
+            let message = if tail.is_empty() {
+                format!("ACP harness {harness_id}: {message}")
+            } else {
+                format!("ACP harness {harness_id}: {message}; stderr tail:\n{tail}")
+            };
+            return Err(message);
+        }
+    };
+    let record = finished.record.filter(|_| !finished.forced);
+    let should_park = !finished.forced
+        && !live.terminated.load(Ordering::SeqCst)
+        && !live.do_not_pool.load(Ordering::SeqCst)
+        && record.is_some();
+    drop(registered);
+    if should_park {
+        park_pooled_session(
+            key,
+            worker,
+            SessionIdentity {
+                record: record.clone().unwrap(),
+                policy: identity.policy,
+            },
+        );
+    } else {
+        drop(worker);
+    }
+    let reset = match finished.forced {
+        true => Some(format!(
+            "ACP harness {harness_id} did not settle the cancelled prompt within {}s, so it was stopped; the next turn starts a fresh session",
+            CANCEL_GRACE.as_secs()
+        )),
+        false => finished.reset,
+    };
+    let thread_resume_failure = reset.map(|message| crate::agent::AgentThreadResumeFailure {
+        message,
+        error_code: Some("thread_resume_failure".into()),
+        details: Some(json!({"harness": harness_id})),
+    });
+    Ok(Some(AcpTurn {
+        output: AgentTurnOutput {
+            events: std::mem::take(&mut seen.events),
+            app_thread_id: record.as_ref().map(|record| record.session_id.clone()),
+            app_turn_id: Some(app_turn_id),
+            final_assistant_text: finished.final_text,
+            token_usage: finished.usage.clone(),
+            token_usage_breakdown: finished.usage,
+            raw_log_lines: finished.logs,
+            thread_resume_failure,
+        },
+        stop_reason: finished.stop_reason,
+        record,
+    }))
 }
 
 /// `harness_id`'s current registration in the settings the work was captured
@@ -945,14 +1343,7 @@ fn turn(
         .system_instructions
         .as_ref()
         .filter(|_| instructions.is_some());
-    let (command, instruction_file) = launch_command(
-        harness_id,
-        &harness,
-        config.environment_inheritance,
-        &cwd,
-        instructions.as_deref(),
-        &request.metadata,
-    )?;
+    let persist = !request.metadata.contains_key("spark.runtime.run_id") && clarification.is_none();
 
     let mut selections = Vec::new();
     if let Some(model) = request
@@ -1034,6 +1425,7 @@ fn turn(
         interrupts,
         stop: Mutex::new(None),
         terminated: AtomicBool::new(false),
+        do_not_pool: AtomicBool::new(false),
         closed: AtomicBool::new(false),
         replies: replies.clone(),
     });
@@ -1041,7 +1433,7 @@ fn turn(
         request.project_path.clone(),
         request.conversation_id.clone(),
     );
-    let _registered = {
+    let registered = {
         let mut entries = registry().lock().unwrap();
         if entries
             .get(&key)
@@ -1051,57 +1443,159 @@ fn turn(
             return Err("An ACP turn is already running for this conversation.".into());
         }
         entries.insert(key.clone(), Arc::downgrade(&live));
-        Registered(key, Arc::clone(&live))
+        Registered(key.clone(), Arc::clone(&live))
     };
 
+    let app_turn_id = uuid::Uuid::new_v4().to_string();
     let (messages, delivered) = std::sync::mpsc::channel();
-    let out = Out { messages };
-    let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
-        drive(endpoints, plan, out, interrupted, (replies, answered))
-    })
-    .map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            format!(
-                "ACP harness {harness_id} executable not found: {}",
-                harness.executable
-            )
-        } else {
-            format!("ACP harness {harness_id} launch failed: {error}")
+    let mut pending = Some((
+        PromptWork {
+            plan,
+            out: Out { messages },
+            interrupts: interrupted,
+            replies,
+            answered,
+        },
+        delivered,
+    ));
+
+    // Reuse a warm chat session when its identity still matches; fall back to
+    // a fresh process if the pooled worker exited right before taking the turn.
+    let mut worker: Option<LiveWorker> = None;
+    let mut done: Option<Result<Finished, String>> = None;
+    if persist {
+        let pooled = pending
+            .as_ref()
+            .and_then(|(work, _)| take_pooled_session(&key, &work.plan));
+        if let Some(pooled) = pooled {
+            let (work, delivered) = pending.take().unwrap();
+            attach_stop(&live, &pooled.connection);
+            match pooled.turns.send(TurnWork::Prompt(work)) {
+                Ok(()) => {
+                    let mut rejected = None;
+                    for message in delivered {
+                        match message {
+                            Message::Event(mut event) => {
+                                event.source.app_turn_id = Some(app_turn_id.clone());
+                                if let Some(sink) = sink {
+                                    sink(event.clone());
+                                }
+                                seen.events.push(event);
+                            }
+                            Message::Prompted => seen.prompted = true,
+                            Message::Done(result) => {
+                                done = Some(result);
+                                break;
+                            }
+                            Message::Rejected(TurnWork::Prompt(returned)) => {
+                                rejected = Some(returned);
+                                break;
+                            }
+                            Message::Rejected(TurnWork::Continuation(_)) => break,
+                        }
+                    }
+                    if let Some(mut returned) = rejected {
+                        drop(pooled);
+                        let (messages, fresh_delivered) = std::sync::mpsc::channel();
+                        returned.out = Out { messages };
+                        pending = Some((returned, fresh_delivered));
+                    } else {
+                        worker = Some(pooled);
+                    }
+                }
+                Err(error) => {
+                    drop(pooled);
+                    let TurnWork::Prompt(mut returned) = error.0 else {
+                        unreachable!("sent PromptWork");
+                    };
+                    let (messages, fresh_delivered) = std::sync::mpsc::channel();
+                    returned.out = Out { messages };
+                    pending = Some((returned, fresh_delivered));
+                }
+            }
         }
-    })?;
-    {
-        let stop = connection.stop_handle();
-        if live.terminated.load(Ordering::SeqCst) {
-            stop.stop();
-        }
-        *live.stop.lock().unwrap() = Some(stop);
     }
 
-    // The sink runs here, off the worker, which keeps servicing the connection.
-    let app_turn_id = uuid::Uuid::new_v4().to_string();
-    let mut done = None;
-    for message in delivered {
-        match message {
-            Message::Event(mut event) => {
-                event.source.app_turn_id = Some(app_turn_id.clone());
-                if let Some(sink) = sink {
-                    sink(event.clone());
+    let worker = match worker {
+        Some(worker) => worker,
+        None => {
+            let (work, delivered) = pending.take().unwrap();
+            let (command, instruction_file) = launch_command(
+                harness_id,
+                &harness,
+                config.environment_inheritance,
+                &cwd,
+                work.plan.instructions.as_deref(),
+                &request.metadata,
+            )?;
+            let (turns_tx, turns_rx) = tokio::sync::mpsc::unbounded_channel();
+            let alive = Arc::new(AtomicBool::new(true));
+            let parked = Arc::new(tokio::sync::Notify::new());
+            let pending_continuation = Arc::new(AtomicBool::new(false));
+            let alive_worker = Arc::clone(&alive);
+            let parked_worker = Arc::clone(&parked);
+            let pending_worker = Arc::clone(&pending_continuation);
+            let worker_key = key.clone();
+            let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
+                drive_session(
+                    endpoints,
+                    worker_key,
+                    work,
+                    turns_rx,
+                    persist,
+                    alive_worker,
+                    parked_worker,
+                    pending_worker,
+                )
+            })
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    format!(
+                        "ACP harness {harness_id} executable not found: {}",
+                        harness.executable
+                    )
+                } else {
+                    format!("ACP harness {harness_id} launch failed: {error}")
                 }
-                seen.events.push(event);
+            })?;
+            attach_stop(&live, &connection);
+            let launched = LiveWorker {
+                connection,
+                _instruction_file: instruction_file,
+                turns: turns_tx,
+                alive,
+                parked,
+                pending_continuation,
+            };
+            // The sink runs here, off the worker, which keeps servicing the connection.
+            for message in delivered {
+                match message {
+                    Message::Event(mut event) => {
+                        event.source.app_turn_id = Some(app_turn_id.clone());
+                        if let Some(sink) = sink {
+                            sink(event.clone());
+                        }
+                        seen.events.push(event);
+                    }
+                    Message::Prompted => seen.prompted = true,
+                    Message::Done(result) => {
+                        done = Some(result);
+                        break;
+                    }
+                    Message::Rejected(_) => break,
+                }
             }
-            Message::Prompted => seen.prompted = true,
-            Message::Done(result) => {
-                done = Some(result);
-                break;
-            }
+            launched
         }
-    }
+    };
+
     let finished = match done {
         Some(Ok(finished)) => finished,
         failed => {
-            let stderr = connection.stderr();
+            let stderr = worker.connection.stderr();
             let lines = stderr.lines().collect::<Vec<_>>();
             let tail = lines[lines.len().saturating_sub(10)..].join("\n");
+            drop(worker);
             let message = match failed {
                 Some(Err(message)) => message,
                 _ => "the ACP connection worker stopped".to_string(),
@@ -1114,10 +1608,26 @@ fn turn(
             return Err(message);
         }
     };
-    drop(connection);
-    drop(instruction_file);
     // A stopped process leaves its session in an unknown state: never resume it.
     let record = finished.record.filter(|_| !finished.forced);
+    let should_park = persist
+        && !finished.forced
+        && !live.terminated.load(Ordering::SeqCst)
+        && !live.do_not_pool.load(Ordering::SeqCst)
+        && record.is_some();
+    drop(registered);
+    if should_park {
+        park_pooled_session(
+            key,
+            worker,
+            SessionIdentity {
+                record: record.clone().unwrap(),
+                policy: harness.permission_policy,
+            },
+        );
+    } else {
+        drop(worker);
+    }
     let reset = match finished.forced {
         true => Some(format!(
             "ACP harness {harness_id} did not settle the cancelled prompt within {}s, so it was stopped; the next turn starts a fresh session",
@@ -1287,17 +1797,52 @@ fn outgoing(stdin: Outgoing) -> impl futures_util::Sink<String, Error = std::io:
     })
 }
 
-async fn drive(
+fn attach_stop(live: &Live, connection: &stdio_transport::Connection) {
+    let stop = connection.stop_handle();
+    if live.terminated.load(Ordering::SeqCst) {
+        stop.stop();
+    }
+    *live.stop.lock().unwrap() = Some(stop);
+}
+
+fn is_continuation_trigger(dispatch: &Dispatch) -> bool {
+    match dispatch {
+        Dispatch::Request(request, _) => matches!(
+            request.method(),
+            "session/request_permission" | "elicitation/create"
+        ),
+        Dispatch::Notification(notification) => {
+            notification.method() == "session/update"
+                && matches!(
+                    notification.params()["update"]["sessionUpdate"].as_str(),
+                    Some(
+                        "agent_message_chunk"
+                            | "agent_thought_chunk"
+                            | "tool_call"
+                            | "tool_call_update"
+                            | "plan"
+                    )
+                )
+        }
+        Dispatch::Response(_, _) => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive_session(
     endpoints: Endpoints,
-    plan: Plan,
-    out: Out,
-    interrupts: Receiver<()>,
-    (replies, answered): (UnboundedSender<FormAnswer>, UnboundedReceiver<FormAnswer>),
+    key: Key,
+    first_work: PromptWork,
+    more_turns: UnboundedReceiver<TurnWork>,
+    persist: bool,
+    alive: Arc<AtomicBool>,
+    parked: Arc<tokio::sync::Notify>,
+    pending_continuation: Arc<AtomicBool>,
 ) {
     let Endpoints {
         stdout,
         stdin,
-        status: _,
+        mut status,
         stop,
     } = endpoints;
     let failure = Failure::default();
@@ -1305,19 +1850,216 @@ async fn drive(
         Box::pin(outgoing(stdin)),
         Box::pin(incoming(stdout, Arc::clone(&failure))),
     );
-    let result = Client
+    // Holds the active turn's output channel if `connect_with` itself fails
+    // before the closure can deliver `Message::Done`.
+    let active_out: Arc<Mutex<Option<Out>>> = Arc::new(Mutex::new(Some(Out {
+        messages: first_work.out.messages.clone(),
+    })));
+    let active_out_closure = Arc::clone(&active_out);
+    let failure_closure = Arc::clone(&failure);
+    let more_turns_cell = Arc::new(Mutex::new(Some(more_turns)));
+    let more_turns_closure = Arc::clone(&more_turns_cell);
+    let pending_closure = Arc::clone(&pending_continuation);
+    let session_result = Client
         .v1()
         .name("spark")
-        .connect_with(transport, async |cx| {
-            Ok(Turn::new(&plan, &out, stop, replies)
-                .run(cx, interrupts, answered)
-                .await)
+        .connect_with(transport, async move |cx| {
+            let mut more_turns = more_turns_closure.lock().unwrap().take().unwrap();
+            let mut runner = Turn::new(first_work, stop);
+            let established = runner.run_first(&cx, &failure_closure).await;
+            if let Ok(Some((mut session, mut options, record))) = established {
+                active_out_closure.lock().unwrap().take();
+                if persist {
+                    let mut buffered: Vec<Dispatch> = Vec::new();
+                    let mut attach_deadline: Option<Instant> = None;
+                    let mut wait_for_park = true;
+                    // Idle loop between chat turns: keep servicing stdout so
+                    // background tasks survive, and wake a continuation turn
+                    // whenever the harness emits unsolicited agent work.
+                    loop {
+                        if wait_for_park {
+                            let next = tokio::select! {
+                                biased;
+                                () = parked.notified() => None,
+                                next = more_turns.recv() => match next {
+                                    Some(work) => Some(work),
+                                    None => break,
+                                },
+                                _ = status.wait_for(|s| s.exited.is_some() || s.write_failure.is_some()) => break,
+                            };
+                            wait_for_park = false;
+                            if let Some(next_work) = next {
+                                pending_closure.store(false, Ordering::SeqCst);
+                                attach_deadline = None;
+                                let pending_buffered = std::mem::take(&mut buffered);
+                                *active_out_closure.lock().unwrap() = Some(Out {
+                                    messages: next_work.out_sender(),
+                                });
+                                let keep = match next_work {
+                                    TurnWork::Prompt(work) => {
+                                        runner
+                                            .run_next(
+                                                work,
+                                                pending_buffered,
+                                                &mut session,
+                                                &mut options,
+                                                &record,
+                                                &failure_closure,
+                                            )
+                                            .await
+                                    }
+                                    TurnWork::Continuation(work) => {
+                                        runner
+                                            .run_continuation(
+                                                work,
+                                                pending_buffered,
+                                                &mut session,
+                                                &mut options,
+                                                &record,
+                                                &failure_closure,
+                                            )
+                                            .await
+                                    }
+                                };
+                                active_out_closure.lock().unwrap().take();
+                                if !keep {
+                                    break;
+                                }
+                                wait_for_park = true;
+                                continue;
+                            }
+                        }
+
+                        let idle_deadline = (buffered.is_empty()
+                            && !runner.has_open_background_tools())
+                        .then(|| Instant::now() + SESSION_IDLE_TIMEOUT);
+                        tokio::select! {
+                            next = more_turns.recv() => match next {
+                                Some(next_work) => {
+                                    pending_closure.store(false, Ordering::SeqCst);
+                                    attach_deadline = None;
+                                    let pending_buffered = std::mem::take(&mut buffered);
+                                    *active_out_closure.lock().unwrap() = Some(Out {
+                                        messages: next_work.out_sender(),
+                                    });
+                                    let keep = match next_work {
+                                        TurnWork::Prompt(work) => {
+                                            runner
+                                                .run_next(
+                                                    work,
+                                                    pending_buffered,
+                                                    &mut session,
+                                                    &mut options,
+                                                    &record,
+                                                    &failure_closure,
+                                                )
+                                                .await
+                                        }
+                                        TurnWork::Continuation(work) => {
+                                            runner
+                                                .run_continuation(
+                                                    work,
+                                                    pending_buffered,
+                                                    &mut session,
+                                                    &mut options,
+                                                    &record,
+                                                    &failure_closure,
+                                                )
+                                                .await
+                                        }
+                                    };
+                                    active_out_closure.lock().unwrap().take();
+                                    if !keep {
+                                        break;
+                                    }
+                                    wait_for_park = true;
+                                }
+                                None => break,
+                            },
+                            update = session.read_update() => match update {
+                                Ok(SessionMessage::Message(dispatch)) => {
+                                    let raw = dispatch.into_raw();
+                                    if !buffered.is_empty() {
+                                        buffered.push(raw);
+                                    } else if is_continuation_trigger(&raw) {
+                                        pending_closure.store(true, Ordering::SeqCst);
+                                        if notify_continuation(&key.0, &key.1) {
+                                            buffered.push(raw);
+                                            attach_deadline =
+                                                Some(Instant::now() + CONTINUATION_ATTACH_TIMEOUT);
+                                        } else {
+                                            pending_closure.store(false, Ordering::SeqCst);
+                                            if runner
+                                                .handle_idle_raw_dispatch(raw, &mut options)
+                                                .await
+                                                .is_err()
+                                            {
+                                                break;
+                                            }
+                                        }
+                                    } else if runner
+                                        .handle_idle_raw_dispatch(raw, &mut options)
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(_) => break,
+                            },
+                            () = sleep_until(attach_deadline) => {
+                                attach_deadline = None;
+                                pending_closure.store(false, Ordering::SeqCst);
+                                for raw in std::mem::take(&mut buffered) {
+                                    if runner
+                                        .handle_idle_raw_dispatch(raw, &mut options)
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                            // Exit the idle loop immediately if the harness
+                            // process dies or stdout/stdin closes between turns.
+                            _ = status.wait_for(|s| s.exited.is_some() || s.write_failure.is_some()) => break,
+                            () = sleep_until(idle_deadline) => break,
+                        }
+                    }
+                }
+            } else {
+                active_out_closure.lock().unwrap().take();
+            }
+            pending_closure.store(false, Ordering::SeqCst);
+            more_turns.close();
+            while let Ok(work) = more_turns.try_recv() {
+                let sender = work.out_sender();
+                let _ = sender.send(Message::Rejected(work));
+            }
+            Ok(())
         })
-        .await
-        .unwrap_or_else(|error| Err(describe(&error)));
-    // Unusable output explains a failed turn better than the closed connection.
-    let result = result.map_err(|error| failure.get().cloned().unwrap_or(error));
-    let _ = out.messages.send(Message::Done(result));
+        .await;
+    alive.store(false, Ordering::SeqCst);
+    pending_continuation.store(false, Ordering::SeqCst);
+    if let Some(mut more_turns) = more_turns_cell.lock().unwrap().take() {
+        more_turns.close();
+        while let Ok(work) = more_turns.try_recv() {
+            let sender = work.out_sender();
+            let _ = sender.send(Message::Rejected(work));
+        }
+    }
+    let pending_out = active_out.lock().unwrap().take();
+    if let Some(out) = pending_out {
+        let error = match session_result {
+            Err(error) => failure.get().cloned().unwrap_or_else(|| describe(&error)),
+            Ok(()) => failure
+                .get()
+                .cloned()
+                .unwrap_or_else(|| "the ACP connection worker stopped".to_string()),
+        };
+        let _ = out.messages.send(Message::Done(Err(error)));
+    }
 }
 
 fn describe(error: &agent_client_protocol::Error) -> String {
@@ -1337,11 +2079,16 @@ fn is_auth_error(error: &agent_client_protocol::Error) -> bool {
     error.code == ErrorCode::AUTH_REQUIRED
 }
 
-struct Turn<'a> {
-    plan: &'a Plan,
-    out: &'a Out,
+struct Turn {
+    plan: Plan,
+    out: Out,
+    interrupts: Receiver<()>,
+    answered: UnboundedReceiver<FormAnswer>,
     stop: Stop,
     translate: Translate,
+    /// Tool call IDs whose permission request Spark denied or cancelled, so
+    /// deferred end-of-turn never waits on them.
+    denied_tools: HashSet<String>,
     /// This launch's connection, which every form it asks is tied to.
     connection: String,
     /// Forms the harness waits on, by Spark request ID.
@@ -1360,7 +2107,7 @@ struct PendingForm {
 }
 
 /// Withdraws every form still pending on any exit, such as a lost connection.
-impl Drop for Turn<'_> {
+impl Drop for Turn {
     fn drop(&mut self) {
         self.expire_forms();
     }
@@ -1371,6 +2118,7 @@ type Session = ActiveSession<'static, Agent>;
 /// A session ready for the primary prompt.
 struct Ready {
     session: Session,
+    options: Vec<SessionConfigOption>,
     record: AcpSessionRecord,
     reset: Option<String>,
     resumed: bool,
@@ -1378,41 +2126,101 @@ struct Ready {
     in_prompt: bool,
 }
 
-impl<'a> Turn<'a> {
-    fn new(plan: &'a Plan, out: &'a Out, stop: Stop, replies: UnboundedSender<FormAnswer>) -> Self {
+/// State after `PromptResponse(EndTurn)` arrived while background tool calls
+/// were still `in_progress`.
+enum DeferredEnd {
+    /// At least one non-daemon tool call is still `in_progress`.
+    WaitingForTools,
+    /// All open tool calls settled; waiting for the harness's post-tool wakeup.
+    AwaitingWakeup(Instant),
+    /// Post-tool wakeup is streaming; settles after quiet/usage_update grace.
+    StreamingWakeup(Instant),
+}
+
+impl DeferredEnd {
+    fn deadline(&self) -> Option<Instant> {
+        match self {
+            Self::WaitingForTools => None,
+            Self::AwaitingWakeup(deadline) | Self::StreamingWakeup(deadline) => Some(*deadline),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum UpdateKind {
+    Tool,
+    Usage,
+    Output,
+    Other,
+}
+
+fn update_kind(update: &SessionUpdate) -> UpdateKind {
+    match update {
+        SessionUpdate::ToolCall(_) | SessionUpdate::ToolCallUpdate(_) => UpdateKind::Tool,
+        SessionUpdate::UsageUpdate(_) => UpdateKind::Usage,
+        SessionUpdate::AgentMessageChunk(_)
+        | SessionUpdate::AgentThoughtChunk(_)
+        | SessionUpdate::Plan(_) => UpdateKind::Output,
+        _ => UpdateKind::Other,
+    }
+}
+
+impl Turn {
+    fn new(work: PromptWork, stop: Stop) -> Self {
+        let harness_id = work.plan.harness_id.clone();
         Self {
-            plan,
-            out,
+            plan: work.plan,
+            out: work.out,
+            interrupts: work.interrupts,
+            answered: work.answered,
             stop,
-            translate: Translate::new(&plan.harness_id),
+            translate: Translate::new(&harness_id),
+            denied_tools: HashSet::new(),
             connection: uuid::Uuid::new_v4().to_string(),
             forms: HashMap::new(),
-            replies,
+            replies: work.replies,
         }
     }
 
-    async fn run(
-        mut self,
-        cx: ConnectionTo<Agent>,
-        mut interrupts: Receiver<()>,
-        answered: UnboundedReceiver<FormAnswer>,
-    ) -> Result<Finished, String> {
+    fn has_open_background_tools(&self) -> bool {
+        self.translate.has_open_background_tools(&self.denied_tools)
+    }
+
+    async fn run_first(
+        &mut self,
+        cx: &ConnectionTo<Agent>,
+        failure: &Failure,
+    ) -> Result<Option<(Session, Vec<SessionConfigOption>, AcpSessionRecord)>, ()> {
+        let mut interrupts =
+            std::mem::replace(&mut self.interrupts, tokio::sync::mpsc::channel(1).1);
         // An interrupt before the prompt is sent skips the prompt.
         let ready = tokio::select! {
             biased;
-            Some(()) = interrupts.recv() => None,
-            ready = self.setup(&cx) => Some(ready?),
+            Some(()) = interrupts.recv() => Ok(None),
+            ready = self.setup(cx) => ready.map(Some),
         };
-        let Some(Ready {
+        self.interrupts = interrupts;
+        let ready = match ready {
+            Ok(Some(ready)) => ready,
+            Ok(None) => {
+                let finished = self.finish(StopReason::Cancelled, None, None, None, false);
+                let _ = self.out.messages.send(Message::Done(Ok(finished)));
+                return Ok(None);
+            }
+            Err(error) => {
+                let error = failure.get().cloned().unwrap_or(error);
+                let _ = self.out.messages.send(Message::Done(Err(error)));
+                return Err(());
+            }
+        };
+        let Ready {
             mut session,
+            mut options,
             record,
             reset,
             resumed,
             in_prompt,
-        }) = ready
-        else {
-            return Ok(self.finish(StopReason::Cancelled, None, None, None, false));
-        };
+        } = ready;
         let mut text = self.plan.prompt.clone();
         if let Some(context) = self.plan.fresh_context.as_ref().filter(|_| !resumed) {
             text = format!("{context}\n\n---\n\n{text}");
@@ -1428,18 +2236,190 @@ impl<'a> Turn<'a> {
             text = format!("<instructions>\n{instructions}\n</instructions>\n\n{text}");
         }
         let _ = self.out.messages.send(Message::Prompted);
-        session
+        if let Err(error) = session
             .send_prompt(text)
-            .map_err(|error| format!("session/prompt failed: {}", describe(&error)))?;
-        self.prompt(&mut session, interrupts, answered, record, reset)
+            .map_err(|error| format!("session/prompt failed: {}", describe(&error)))
+        {
+            let error = failure.get().cloned().unwrap_or(error);
+            let _ = self.out.messages.send(Message::Done(Err(error)));
+            return Err(());
+        }
+        let result = self
+            .prompt(&mut session, &mut options, record.clone(), reset)
             .await
+            .map_err(|error| failure.get().cloned().unwrap_or(error));
+        if result.is_err() {
+            self.expire_forms();
+        }
+        let keep = result
+            .as_ref()
+            .is_ok_and(|finished| !finished.forced && finished.record.is_some());
+        let _ = self.out.messages.send(Message::Done(result));
+        Ok(keep.then_some((session, options, record)))
+    }
+
+    async fn run_next(
+        &mut self,
+        work: PromptWork,
+        buffered: Vec<Dispatch>,
+        session: &mut Session,
+        options: &mut Vec<SessionConfigOption>,
+        record: &AcpSessionRecord,
+        failure: &Failure,
+    ) -> bool {
+        self.expire_forms();
+        self.plan = work.plan;
+        self.out = work.out;
+        self.interrupts = work.interrupts;
+        self.answered = work.answered;
+        self.replies = work.replies;
+        self.denied_tools.clear();
+        self.translate.begin_turn();
+
+        if self.interrupts.try_recv().is_ok() {
+            let finished = self.finish(
+                StopReason::Cancelled,
+                None,
+                Some(record.clone()),
+                None,
+                false,
+            );
+            let _ = self.out.messages.send(Message::Done(Ok(finished)));
+            return true;
+        }
+        self.out.event(self.translate.event(
+            TurnStreamEventKind::Other(ACP_SESSION_ESTABLISHED.into()),
+            ACP_SESSION_ESTABLISHED,
+            |event| {
+                event.details = Some(json!(record));
+                event.status = Some("resumed".into());
+            },
+        ));
+        self.plan.acknowledge(options);
+        if let Err(error) = self.select(session, options).await {
+            let error = failure.get().cloned().unwrap_or(error);
+            let _ = self.out.messages.send(Message::Done(Err(error)));
+            return false;
+        }
+        let _ = self.out.messages.send(Message::Prompted);
+        if let Err(error) = session
+            .send_prompt(self.plan.prompt.clone())
+            .map_err(|error| format!("session/prompt failed: {}", describe(&error)))
+        {
+            let error = failure.get().cloned().unwrap_or(error);
+            let _ = self.out.messages.send(Message::Done(Err(error)));
+            return false;
+        }
+        let result = self
+            .prompt_with_initial(session, options, record.clone(), None, None, buffered)
+            .await
+            .map_err(|error| failure.get().cloned().unwrap_or(error));
+        if result.is_err() {
+            self.expire_forms();
+        }
+        let keep = result
+            .as_ref()
+            .is_ok_and(|finished| !finished.forced && finished.record.is_some());
+        let _ = self.out.messages.send(Message::Done(result));
+        keep
+    }
+
+    async fn run_continuation(
+        &mut self,
+        work: ContinuationWork,
+        buffered: Vec<Dispatch>,
+        session: &mut Session,
+        options: &mut Vec<SessionConfigOption>,
+        record: &AcpSessionRecord,
+        failure: &Failure,
+    ) -> bool {
+        self.expire_forms();
+        self.out = work.out;
+        self.interrupts = work.interrupts;
+        self.answered = work.answered;
+        self.replies = work.replies;
+        self.denied_tools.clear();
+        self.translate.begin_turn();
+
+        self.out.event(self.translate.event(
+            TurnStreamEventKind::Other(ACP_SESSION_ESTABLISHED.into()),
+            ACP_SESSION_ESTABLISHED,
+            |event| {
+                event.details = Some(json!(record));
+                event.status = Some("resumed".into());
+            },
+        ));
+        let initial_deferred = Some(DeferredEnd::StreamingWakeup(
+            Instant::now() + POST_WAKEUP_STREAM_IDLE,
+        ));
+        let result = self
+            .prompt_with_initial(
+                session,
+                options,
+                record.clone(),
+                None,
+                initial_deferred,
+                buffered,
+            )
+            .await
+            .map_err(|error| failure.get().cloned().unwrap_or(error));
+        if result.is_err() {
+            self.expire_forms();
+        }
+        let keep = result
+            .as_ref()
+            .is_ok_and(|finished| !finished.forced && finished.record.is_some());
+        let _ = self.out.messages.send(Message::Done(result));
+        keep
+    }
+
+    /// Services notifications and requests while parked idle between turns so
+    /// the harness stays healthy and stdout never stalls.
+    async fn handle_idle_raw_dispatch(
+        &mut self,
+        dispatch: Dispatch,
+        options: &mut Vec<SessionConfigOption>,
+    ) -> Result<(), String> {
+        let dispatch = match dispatch {
+            Dispatch::Request(request, responder) if request.method() == "elicitation/create" => {
+                let error = agent_client_protocol::Error::new(
+                    ErrorCode::INVALID_REQUEST,
+                    "no active turn to answer elicitation",
+                );
+                let _ = responder.respond_with_error(error);
+                return Ok(());
+            }
+            dispatch => dispatch,
+        };
+        let policy = self.plan.policy;
+        let (translate, plan, denied_tools) =
+            (&mut self.translate, &self.plan, &mut self.denied_tools);
+        MatchDispatch::new(dispatch)
+            .if_notification(async |notification: SessionNotification| {
+                if let SessionUpdate::ConfigOptionUpdate(update) = &notification.update {
+                    *options = update.config_options.clone();
+                    plan.acknowledge(options);
+                }
+                let _ = translate.update(notification.update);
+                Ok(())
+            })
+            .await
+            .if_request(async |request: RequestPermissionRequest, responder| {
+                let (response, _, denied) = permission(&request, policy);
+                if denied {
+                    denied_tools.insert(request.tool_call.tool_call_id.0.to_string());
+                }
+                responder.respond(response)
+            })
+            .await
+            .otherwise_ignore()
+            .map_err(|error| format!("malformed message from the harness: {}", describe(&error)))
     }
 
     /// Initializes, then resumes, loads or creates the session and applies
     /// the required selections.
     async fn setup(&mut self, cx: &ConnectionTo<Agent>) -> Result<Ready, String> {
-        let plan = self.plan;
-        let id = &plan.harness_id;
+        let id = self.plan.harness_id.clone();
         let init = cx
             .send_request(
                 InitializeRequest::new(ProtocolVersion::V1)
@@ -1460,25 +2440,26 @@ impl<'a> Turn<'a> {
         let capabilities = init.agent_capabilities;
         // Without a channel or ACP system prompts, the instructions lead the
         // first prompt of each fresh session instead.
-        let in_prompt = plan.instructions.is_some()
-            && !plan.channel_rendered
+        let in_prompt = self.plan.instructions.is_some()
+            && !self.plan.channel_rendered
             && capabilities.session_capabilities.system_prompt.is_none();
-        let system_prompt = plan
+        let system_prompt = self
+            .plan
             .instructions
             .as_ref()
-            .filter(|_| !plan.channel_rendered && !in_prompt)
+            .filter(|_| !self.plan.channel_rendered && !in_prompt)
             .map(|text| SystemPrompt::new(vec![ContentBlock::from(text.clone())]));
 
         let current = AcpSessionRecord {
             harness: id.clone(),
             session_id: String::new(),
-            cwd: plan.cwd.to_string_lossy().into_owned(),
-            configuration_generation: plan.generation.clone(),
-            instructions_sha256: plan.instructions_sha256.clone(),
+            cwd: self.plan.cwd.to_string_lossy().into_owned(),
+            configuration_generation: self.plan.generation.clone(),
+            instructions_sha256: self.plan.instructions_sha256.clone(),
         };
         let mut reset = None;
         let mut restored = None;
-        if let Some(saved) = &plan.saved {
+        if let Some(saved) = &self.plan.saved {
             let matches = AcpSessionRecord {
                 session_id: saved.session_id.clone(),
                 ..current.clone()
@@ -1486,7 +2467,7 @@ impl<'a> Turn<'a> {
             let restore = if !matches {
                 Err("its harness, work area, configuration or instructions changed".to_string())
             } else if capabilities.session_capabilities.resume.is_some() {
-                let request = ResumeSessionRequest::new(saved.session_id.clone(), &plan.cwd)
+                let request = ResumeSessionRequest::new(saved.session_id.clone(), &self.plan.cwd)
                     .system_prompt(system_prompt.clone());
                 match cx
                     .resume_session_from(request)
@@ -1500,7 +2481,7 @@ impl<'a> Turn<'a> {
                     Err(error) => Err(reset_reason(&error, "resume")?),
                 }
             } else if capabilities.load_session {
-                let request = LoadSessionRequest::new(saved.session_id.clone(), &plan.cwd)
+                let request = LoadSessionRequest::new(saved.session_id.clone(), &self.plan.cwd)
                     .system_prompt(system_prompt.clone());
                 match cx
                     .load_session_from(request)
@@ -1546,7 +2527,7 @@ impl<'a> Turn<'a> {
             Some(setup) => setup,
             None => {
                 let request =
-                    NewSessionRequest::new(&plan.cwd).system_prompt(system_prompt.clone());
+                    NewSessionRequest::new(&self.plan.cwd).system_prompt(system_prompt.clone());
                 cx.build_session_from(request)
                     .block_task()
                     .start_session()
@@ -1579,6 +2560,7 @@ impl<'a> Turn<'a> {
         self.select(&session, &mut options).await?;
         Ok(Ready {
             session,
+            options,
             record,
             reset,
             resumed,
@@ -1689,70 +2671,152 @@ impl<'a> Turn<'a> {
     }
 
     /// Runs the primary prompt to its response, servicing updates, permission
-    /// requests, forms and interrupts meanwhile.
+    /// requests, forms and interrupts meanwhile. If `end_turn` arrives while a
+    /// non-daemon tool call is still `in_progress`, stays open until the tool
+    /// and any post-tool wakeup settle.
     async fn prompt(
-        mut self,
+        &mut self,
         session: &mut Session,
-        mut interrupts: Receiver<()>,
-        mut answered: UnboundedReceiver<FormAnswer>,
+        options: &mut Vec<SessionConfigOption>,
         record: AcpSessionRecord,
         reset: Option<String>,
+    ) -> Result<Finished, String> {
+        self.prompt_with_initial(session, options, record, reset, None, Vec::new())
+            .await
+    }
+
+    async fn handle_turn_raw_dispatch(
+        &mut self,
+        dispatch: Dispatch,
+        options: &mut Vec<SessionConfigOption>,
+        withdrawn: &mut FuturesUnordered<BoxFuture<'static, String>>,
+    ) -> Result<Option<UpdateKind>, String> {
+        let dispatch = match dispatch {
+            Dispatch::Request(request, responder) if request.method() == "elicitation/create" => {
+                if let Some((request_id, cancellation)) = self.elicit(request.params(), responder) {
+                    withdrawn.push(Box::pin(async move {
+                        cancellation.cancelled().await;
+                        request_id
+                    }));
+                }
+                return Ok(None);
+            }
+            dispatch => dispatch,
+        };
+        let (translate, out, plan, denied_tools) = (
+            &mut self.translate,
+            &self.out,
+            &self.plan,
+            &mut self.denied_tools,
+        );
+        let policy = plan.policy;
+        let mut seen_kind = None;
+        MatchDispatch::new(dispatch)
+            .if_notification(async |notification: SessionNotification| {
+                seen_kind = Some(update_kind(&notification.update));
+                if let SessionUpdate::ConfigOptionUpdate(update) = &notification.update {
+                    *options = update.config_options.clone();
+                    plan.acknowledge(options);
+                }
+                for event in translate.update(notification.update) {
+                    out.event(event);
+                }
+                Ok(())
+            })
+            .await
+            .if_request(async |request: RequestPermissionRequest, responder| {
+                let (response, refused, denied) = permission(&request, policy);
+                if denied {
+                    denied_tools.insert(request.tool_call.tool_call_id.0.to_string());
+                }
+                if let Some(message) = refused {
+                    out.event(translate.event(
+                        TurnStreamEventKind::Other("warning".into()),
+                        "permission_policy_refused",
+                        |event| event.message = Some(message.clone()),
+                    ));
+                    translate.log(message);
+                }
+                responder.respond(response)
+            })
+            .await
+            .otherwise_ignore()
+            .map_err(|error| format!("malformed message from the harness: {}", describe(&error)))?;
+        Ok(seen_kind)
+    }
+
+    fn advance_deferred(&self, current: DeferredEnd, seen_kind: Option<UpdateKind>) -> DeferredEnd {
+        if self.has_open_background_tools() {
+            return DeferredEnd::WaitingForTools;
+        }
+        let now = Instant::now();
+        match (current, seen_kind) {
+            (DeferredEnd::WaitingForTools, _) => {
+                DeferredEnd::AwaitingWakeup(now + POST_TOOL_WAKEUP_WAIT)
+            }
+            (_, Some(UpdateKind::Usage)) => {
+                DeferredEnd::StreamingWakeup(now + POST_WAKEUP_USAGE_SETTLE)
+            }
+            (_, Some(UpdateKind::Output | UpdateKind::Tool)) => {
+                DeferredEnd::StreamingWakeup(now + POST_WAKEUP_STREAM_IDLE)
+            }
+            (state, _) => state,
+        }
+    }
+
+    async fn prompt_with_initial(
+        &mut self,
+        session: &mut Session,
+        options: &mut Vec<SessionConfigOption>,
+        record: AcpSessionRecord,
+        reset: Option<String>,
+        initial_deferred: Option<DeferredEnd>,
+        buffered: Vec<Dispatch>,
     ) -> Result<Finished, String> {
         let connection = session.connection().clone();
         let session_id = session.session_id().clone();
         let mut cancelled = false;
         let mut cancel_deadline = None;
         let mut forced = false;
+        let mut deferred = initial_deferred;
+        let mut prompt_usage: Option<Value> = None;
         // Forms the harness withdrew with `$/cancel_request`.
         let mut withdrawn = FuturesUnordered::<BoxFuture<'static, String>>::new();
+        for dispatch in buffered {
+            let seen_kind = self
+                .handle_turn_raw_dispatch(dispatch, options, &mut withdrawn)
+                .await?;
+            if let Some(current) = deferred.take() {
+                deferred = Some(self.advance_deferred(current, seen_kind));
+            }
+        }
         loop {
+            let deferred_deadline = deferred
+                .as_ref()
+                .filter(|_| !cancelled)
+                .and_then(DeferredEnd::deadline);
             tokio::select! {
                 update = session.read_update() => match update {
                     Ok(SessionMessage::Message(dispatch)) => {
-                        let dispatch = match dispatch.into_raw() {
-                            Dispatch::Request(request, responder)
-                                if request.method() == "elicitation/create" =>
-                            {
-                                if let Some((request_id, cancellation)) =
-                                    self.elicit(request.params(), responder)
-                                {
-                                    withdrawn.push(Box::pin(async move {
-                                        cancellation.cancelled().await;
-                                        request_id
-                                    }));
-                                }
-                                continue;
-                            }
-                            dispatch => dispatch,
-                        };
-                        let (translate, out, plan) = (&mut self.translate, self.out, &self.plan);
-                        let policy = plan.policy;
-                        MatchDispatch::new(dispatch)
-                            .if_notification(async |notification: SessionNotification| {
-                                if let SessionUpdate::ConfigOptionUpdate(update) = &notification.update {
-                                    plan.acknowledge(&update.config_options);
-                                }
-                                for event in translate.update(notification.update) {
-                                    out.event(event);
-                                }
-                                Ok(())
-                            })
-                            .await
-                            .if_request(async |request: RequestPermissionRequest, responder| {
-                                let (response, refused) = permission(&request, policy);
-                                if let Some(message) = refused {
-                                    out.event(translate.event(
-                                        TurnStreamEventKind::Other("warning".into()),
-                                        "permission_policy_refused",
-                                        |event| event.message = Some(message.clone()),
+                        let seen_kind = self
+                            .handle_turn_raw_dispatch(dispatch.into_raw(), options, &mut withdrawn)
+                            .await?;
+                        if let Some(current) = deferred.take() {
+                            if cancelled {
+                                deferred = Some(current);
+                                if !self.has_open_background_tools() {
+                                    return Ok(self.finish(
+                                        StopReason::Cancelled,
+                                        prompt_usage,
+                                        Some(record),
+                                        reset,
+                                        forced,
                                     ));
-                                    translate.log(message);
                                 }
-                                responder.respond(response)
-                            })
-                            .await
-                            .otherwise_ignore()
-                            .map_err(|error| format!("malformed message from the harness: {}", describe(&error)))?;
+                            } else {
+                                deferred = Some(self.advance_deferred(current, seen_kind));
+                            }
+                        }
                     }
                     Ok(SessionMessage::PromptResponse(Ok(response))) => {
                         let PromptResponse { stop_reason, usage, .. } = response;
@@ -1764,7 +2828,26 @@ impl<'a> Turn<'a> {
                                 |event| event.token_usage = Some(usage.clone()),
                             ));
                         }
-                        return Ok(self.finish(stop_reason, usage, Some(record), reset, forced));
+                        prompt_usage = usage;
+                        if stop_reason == StopReason::EndTurn
+                            && !cancelled
+                            && self.has_open_background_tools()
+                        {
+                            // Keep the turn open while harness-owned background
+                            // tools finish; any message so far is commentary.
+                            for event in self.translate.close(false) {
+                                self.out.event(event);
+                            }
+                            deferred = Some(DeferredEnd::WaitingForTools);
+                            continue;
+                        }
+                        return Ok(self.finish(
+                            stop_reason,
+                            prompt_usage,
+                            Some(record),
+                            reset,
+                            forced,
+                        ));
                     }
                     Ok(SessionMessage::PromptResponse(Err(error))) if cancelled => {
                         // The cancelled prompt ended with its process.
@@ -1777,25 +2860,57 @@ impl<'a> Turn<'a> {
                     Ok(_) => {}
                     Err(error) => return Err(describe(&error)),
                 },
-                Some(answer) = answered.recv() => self.deliver(answer)?,
+                Some(answer) = self.answered.recv() => self.deliver(answer)?,
                 Some(request_id) = withdrawn.next(), if !withdrawn.is_empty() => {
                     // Dropping the responder sends the cancelled request's error.
                     if let Some(PendingForm { request, gone, .. }) = self.forms.remove(&request_id) {
                         self.expired(request, gone);
                     }
                 }
-                Some(()) = interrupts.recv(), if !cancelled => {
+                Some(()) = self.interrupts.recv(), if !cancelled => {
                     cancelled = true;
                     self.expire_forms();
-                    cancel_deadline = Some(Instant::now() + CANCEL_GRACE);
-                    connection
-                        .send_notification(CancelNotification::new(session_id.clone()))
-                        .map_err(|error| format!("session/cancel failed: {}", describe(&error)))?;
+                    if deferred.is_some() {
+                        let _ = connection.send_notification(CancelNotification::new(session_id.clone()));
+                        if !self.has_open_background_tools() {
+                            return Ok(self.finish(
+                                StopReason::Cancelled,
+                                prompt_usage,
+                                Some(record),
+                                reset,
+                                false,
+                            ));
+                        }
+                        cancel_deadline = Some(Instant::now() + CANCEL_GRACE);
+                    } else {
+                        cancel_deadline = Some(Instant::now() + CANCEL_GRACE);
+                        connection
+                            .send_notification(CancelNotification::new(session_id.clone()))
+                            .map_err(|error| format!("session/cancel failed: {}", describe(&error)))?;
+                    }
+                }
+                () = sleep_until(deferred_deadline) => {
+                    return Ok(self.finish(
+                        StopReason::EndTurn,
+                        prompt_usage,
+                        Some(record),
+                        reset,
+                        forced,
+                    ));
                 }
                 () = sleep_until(cancel_deadline) => {
                     cancel_deadline = None;
                     forced = true;
                     self.stop.stop();
+                    if deferred.is_some() {
+                        return Ok(self.finish(
+                            StopReason::Cancelled,
+                            prompt_usage,
+                            Some(record),
+                            reset,
+                            true,
+                        ));
+                    }
                 }
             }
         }
@@ -2028,11 +3143,12 @@ fn setup_error(error: &agent_client_protocol::Error, method: &str) -> String {
 }
 
 /// The policy's answer: an offered option of the allowed (or, for `deny`,
-/// rejecting) kinds, else the cancellation outcome with a diagnostic.
+/// rejecting) kinds, else the cancellation outcome with a diagnostic, and
+/// whether permission was denied/cancelled.
 fn permission(
     request: &RequestPermissionRequest,
     policy: AcpPermissionPolicy,
-) -> (RequestPermissionResponse, Option<String>) {
+) -> (RequestPermissionResponse, Option<String>, bool) {
     let kinds = match policy {
         AcpPermissionPolicy::Allow => [
             PermissionOptionKind::AllowOnce,
@@ -2056,6 +3172,7 @@ fn permission(
                 SelectedPermissionOutcome::new(option_id),
             )),
             None,
+            policy == AcpPermissionPolicy::Deny,
         ),
         None => (
             RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled),
@@ -2067,6 +3184,7 @@ fn permission(
                     AcpPermissionPolicy::Deny => "deny",
                 }
             )),
+            true,
         ),
     }
 }
@@ -2094,6 +3212,13 @@ struct Translate {
     logs: Vec<AgentRawLogLine>,
 }
 
+fn is_in_progress_tool(raw: &Value) -> bool {
+    matches!(
+        raw["status"].as_str(),
+        Some("in_progress" | "inProgress" | "running")
+    )
+}
+
 impl Translate {
     fn new(harness: &str) -> Self {
         Self {
@@ -2105,6 +3230,24 @@ impl Translate {
             items: 0,
             logs: Vec::new(),
         }
+    }
+
+    /// Resets per-turn state before another prompt on the same live session,
+    /// keeping only still-open tool calls (such as long-lived daemons).
+    fn begin_turn(&mut self) {
+        self.open = None;
+        self.last_assistant = None;
+        self.logs.clear();
+        self.tool_calls.retain(|_, raw| is_in_progress_tool(raw));
+    }
+
+    /// Whether any non-daemon, non-denied tool call is still `in_progress`.
+    fn has_open_background_tools(&self, denied: &HashSet<String>) -> bool {
+        self.tool_calls.iter().any(|(id, raw)| {
+            !denied.contains(id)
+                && is_in_progress_tool(raw)
+                && raw["rawInput"]["IsDaemon"].as_bool() != Some(true)
+        })
     }
 
     fn event(
@@ -2298,17 +3441,43 @@ impl Translate {
     fn tool_event(&self, id: &str, started: bool) -> TurnStreamEvent {
         let raw = &self.tool_calls[id];
         let status = raw["status"].as_str().unwrap_or("pending").to_string();
-        let title = raw["title"].as_str().unwrap_or("tool").to_string();
+        let raw_title = raw["title"].as_str().unwrap_or("tool");
+        let is_execute = raw["kind"] == "execute";
+        let command = raw["rawInput"]["command"]
+            .as_str()
+            .or_else(|| raw["rawInput"]["CommandLine"].as_str())
+            .or_else(|| raw["rawInput"]["cmd"].as_str())
+            .or_else(|| {
+                is_execute
+                    .then_some(raw_title)
+                    .filter(|title| !title.trim().is_empty())
+            });
+        let title = if is_execute {
+            raw["rawInput"]["toolSummary"]
+                .as_str()
+                .map(str::trim)
+                .filter(|summary| !summary.is_empty())
+                .or_else(|| {
+                    raw_title
+                        .lines()
+                        .map(str::trim)
+                        .find(|line| !line.is_empty())
+                })
+                .unwrap_or("tool")
+                .to_string()
+        } else {
+            raw_title.to_string()
+        };
         let mut tool_call = json!({
             "id": id,
             "name": raw["name"].as_str().unwrap_or(&title),
             "title": title,
-            "kind": if raw["kind"] == "execute" { "command_execution" } else { "dynamic_tool" },
+            "kind": if is_execute { "command_execution" } else { "dynamic_tool" },
             "acp_kind": raw["kind"].as_str().unwrap_or("other"),
             "status": status,
             "input": raw["rawInput"],
         });
-        if let Some(command) = raw["rawInput"]["command"].as_str() {
+        if let Some(command) = command {
             tool_call["command"] = json!(command);
         }
         let paths = raw["locations"]

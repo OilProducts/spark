@@ -366,6 +366,15 @@ fn settling_an_orphaned_turn_keeps_its_committed_segments_across_reopens() {
             .expect("assistant turn");
         assert_eq!(turn["status"], "failed");
         assert_eq!(turn["error"], "Spark restarted before this turn finished.");
+        // The answer finished before the restart, so it stays as it was delivered.
+        let answer = snapshot["segments"]
+            .as_array()
+            .expect("segments")
+            .iter()
+            .find(|segment| segment["content"] == "recovered")
+            .expect("answer segment");
+        assert_eq!(answer["status"], "complete");
+        assert!(answer.get("error").is_none_or(Value::is_null), "{answer:#}");
     }
 }
 

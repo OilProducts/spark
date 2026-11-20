@@ -218,3 +218,54 @@ fn settings(root: &Path) -> SparkSettings {
         project_roots: Vec::new(),
     }
 }
+
+#[tokio::test]
+async fn ui_is_gzipped_on_request_and_only_hashed_bundles_are_cached_for_good() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ui_root = temp.path().join("ui");
+    fs::create_dir_all(ui_root.join("assets")).expect("assets");
+    fs::write(ui_root.join("index.html"), "<!doctype html>".repeat(10)).expect("index");
+    fs::write(
+        ui_root.join("assets/index-AbCd1234.js"),
+        "let x = 1;\n".repeat(100),
+    )
+    .expect("js");
+    fs::write(ui_root.join("assets/spark-app-icon.png"), b"icon").expect("icon");
+    let mut settings = settings(temp.path());
+    settings.ui_dir = Some(ui_root);
+    let app = build_app(settings).expect("app");
+
+    let headers = |uri: &'static str| {
+        let app = app.clone();
+        async move {
+            let request = Request::builder()
+                .uri(uri)
+                .header("accept-encoding", "gzip")
+                .body(Body::empty())
+                .expect("request");
+            let response = app.oneshot(request).await.expect("response");
+            let header = |name: &str| {
+                response
+                    .headers()
+                    .get(name)
+                    .map(|value| value.to_str().expect("header").to_string())
+            };
+            (header("content-encoding"), header("cache-control"))
+        }
+    };
+    assert_eq!(
+        headers("/assets/index-AbCd1234.js").await,
+        (
+            Some("gzip".to_string()),
+            Some("public, max-age=31536000, immutable".to_string())
+        )
+    );
+    assert_eq!(
+        headers("/").await,
+        (Some("gzip".to_string()), Some("no-cache".to_string()))
+    );
+    assert_eq!(
+        headers("/assets/spark-app-icon.png").await.1,
+        Some("no-cache".to_string())
+    );
+}

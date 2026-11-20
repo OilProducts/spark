@@ -1929,6 +1929,49 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
         Self::interrupt(project_path, conversation_id)
     }
 
+    fn close_session(&self, project_path: &str, conversation_id: &str) {
+        crate::acp::close_session(project_path, conversation_id);
+    }
+
+    fn has_pending_acp_continuation(&self, project_path: &str, conversation_id: &str) -> bool {
+        crate::acp::has_pending_continuation(project_path, conversation_id)
+    }
+
+    fn run_acp_continuation(
+        &self,
+        project_path: &str,
+        conversation_id: &str,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<Option<AgentTurnOutput>, AgentError> {
+        let Some(harness) = crate::acp::pooled_harness(project_path, conversation_id) else {
+            return Ok(None);
+        };
+        let owner = Owner::Acp(harness.clone());
+        let _owned = owner
+            .reserve(project_path, conversation_id)
+            .map_err(agent_error)?;
+        let Some(turn) =
+            crate::acp::run_continuation(project_path, conversation_id, event_sink.as_ref())
+                .map_err(|failure| agent_error(failure.message))?
+        else {
+            return Ok(None);
+        };
+        let mut output = turn.output;
+        match turn.stop_reason {
+            StopReason::EndTurn => Ok(Some(output)),
+            StopReason::Cancelled => {
+                let reset = output.thread_resume_failure.take();
+                settle_stopped_turn(&mut output, event_sink.as_ref());
+                output.thread_resume_failure = reset;
+                Ok(Some(output))
+            }
+            reason => Err(agent_error(format!(
+                "ACP harness {harness} ended the continuation without an answer ({}).",
+                crate::acp::stop_label(&reason)
+            ))),
+        }
+    }
+
     fn send_message(
         &self,
         project_path: &str,
@@ -1954,17 +1997,21 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
             .map_err(agent_error)?;
         match owner {
             Owner::Codex => {
+                crate::acp::close_session(&request.project_path, &request.conversation_id);
                 return CodexAppServerBackend::new()
                     .run_agent_turn_with_event_sink(request, event_sink)
                     .map_err(codex_app_server_agent_error);
             }
             Owner::ClaudeCode => {
+                crate::acp::close_session(&request.project_path, &request.conversation_id);
                 return ClaudeCodeBackend::new()
                     .run_agent_turn_with_event_sink(request, event_sink)
                     .map_err(claude_code_agent_error);
             }
             Owner::Acp(harness) => return run_acp_chat_turn(&request, &harness, event_sink),
-            Owner::Native => {}
+            Owner::Native => {
+                crate::acp::close_session(&request.project_path, &request.conversation_id);
+            }
         }
         let attachments = crate::attachments::request_attachments(&request.metadata);
         let prompt = request.prompt.clone();

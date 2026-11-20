@@ -428,11 +428,23 @@ fn acp_pinned_instructions_reach_every_harness() {
         prompt.contains("<instructions>") && prompt.contains("exact"),
         "{prompt}"
     );
-    run(&with_history(no_channel, &turn.record.unwrap()), |_| {})
+    let record = turn.record.unwrap();
+    run(&with_history(no_channel.clone(), &record), |_| {})
         .0
-        .expect("resumed");
-    assert_eq!(received(dir.path(), "session/resume").len(), 1);
+        .expect("warm reused");
+    assert_eq!(launches(dir.path()), 1, "warm chat session is reused");
     assert!(!received(dir.path(), "session/prompt")[1]
+        .to_string()
+        .contains("<instructions>"));
+    assert!(acp::close_session(
+        &no_channel.project_path,
+        &no_channel.conversation_id
+    ));
+    run(&with_history(no_channel, &record), |_| {})
+        .0
+        .expect("cold resumed");
+    assert_eq!(received(dir.path(), "session/resume").len(), 1);
+    assert!(!received(dir.path(), "session/prompt")[2]
         .to_string()
         .contains("<instructions>"));
 
@@ -1033,14 +1045,20 @@ fn acp_chat_starts_fresh_when_the_inherited_environment_changes() {
 
     second.metadata.extend(record.to_metadata());
     let output = chat(second.clone(), |_| {}).0.expect("same settings");
-    assert_eq!(received(dir.path(), "session/resume").len(), 1);
+    assert_eq!(
+        launches(dir.path()),
+        1,
+        "same settings reuse the live session"
+    );
+    assert_eq!(received(dir.path(), "session/resume").len(), 0);
     assert!(output.thread_resume_failure.is_none());
 
     agents(&mut second)["environment_inheritance"] = json!("inherit_none");
     let output = chat(second, |_| {}).0.expect("fresh session");
+    assert_eq!(launches(dir.path()), 2, "changed environment relaunches");
     assert_eq!(
         received(dir.path(), "session/resume").len(),
-        1,
+        0,
         "never resumed"
     );
     assert_eq!(received(dir.path(), "session/new").len(), 2);
@@ -1592,4 +1610,209 @@ fn acp_chat_form_answers_reach_only_the_live_turn_that_asked() {
         Some("request_user_input_not_pending"),
         "an ended turn's form is never answered from history"
     );
+}
+
+#[test]
+fn acp_defers_end_turn_while_background_tool_call_runs_and_delivers_wakeup() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = dir.path().join("bg-done");
+    let script = json!({
+        "updates": [
+            {"sessionUpdate": "tool_call", "toolCallId": "bg-1", "title": "cargo test",
+             "kind": "execute", "status": "in_progress",
+             "rawInput": {"CommandLine": "cargo test"}},
+            chunk("agent_message_chunk", "Running tests now."),
+        ],
+        "post_prompt_gate": gate,
+        "post_prompt_updates": [
+            {"sessionUpdate": "tool_call_update", "toolCallId": "bg-1", "status": "completed",
+             "rawOutput": {"output": "1 passed", "exit_code": 0}},
+            chunk("agent_message_chunk", "All tests passed."),
+            {"sessionUpdate": "usage_update", "used": 1200, "size": 200000},
+        ],
+    });
+    let req = request(dir.path(), script, json!({}));
+    let saw_commentary = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let saw_completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let handle = std::thread::spawn({
+        let req = req.clone();
+        let saw_commentary = Arc::clone(&saw_commentary);
+        let saw_completed = Arc::clone(&saw_completed);
+        move || {
+            run(&req, move |event| {
+                if event.kind == TurnStreamEventKind::ContentCompleted
+                    && event.message.as_deref() == Some("Running tests now.")
+                {
+                    saw_commentary.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                if event.kind == TurnStreamEventKind::TurnCompleted {
+                    saw_completed.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            })
+        }
+    });
+
+    // Wait until end_turn closed the commentary while holding the turn open.
+    let started = std::time::Instant::now();
+    while !saw_commentary.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "commentary closes when deferred end_turn arrives"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        !saw_completed.load(std::sync::atomic::Ordering::SeqCst),
+        "turn stays active while the background tool call is still in_progress"
+    );
+
+    // Release the background command completion and post-wakeup response.
+    std::fs::write(&gate, "").unwrap();
+    let (result, seen) = handle.join().unwrap();
+    let turn = result.expect("deferred turn completes");
+    assert_eq!(turn.stop_reason, StopReason::EndTurn);
+    assert_eq!(
+        turn.output.final_assistant_text.as_deref(),
+        Some("All tests passed.")
+    );
+    let completed_messages = seen
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::ContentCompleted)
+        .map(|event| (event.message.clone().unwrap(), event.phase.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        completed_messages,
+        [
+            (
+                "Running tests now.".to_string(),
+                Some("commentary".to_string())
+            ),
+            (
+                "All tests passed.".to_string(),
+                Some("final_answer".to_string())
+            ),
+        ]
+    );
+    let completed_tool = seen
+        .iter()
+        .find(|event| event.kind == TurnStreamEventKind::ToolCallCompleted)
+        .and_then(|event| event.tool_call.as_ref())
+        .expect("background tool call completes");
+    assert_eq!(completed_tool["command"], "cargo test");
+    assert_eq!(completed_tool["output"]["output"], "1 passed");
+    assert_eq!(terminals(&seen), [Some("end_turn".to_string())]);
+    assert!(acp::close_session(&req.project_path, &req.conversation_id));
+}
+
+#[test]
+fn acp_interrupt_during_deferred_background_wait_cancels_cleanly_or_forces_stop() {
+    // Settled cancel: harness closes the background tool call after session/cancel.
+    let dir = tempfile::tempdir().unwrap();
+    let script = json!({
+        "updates": [
+            {"sessionUpdate": "tool_call", "toolCallId": "bg-1", "title": "cargo test",
+             "kind": "execute", "status": "in_progress"},
+            chunk("agent_message_chunk", "Running."),
+        ],
+        "post_prompt_await_cancel": "respond",
+        "post_prompt_updates": [
+            {"sessionUpdate": "tool_call_update", "toolCallId": "bg-1", "status": "failed"},
+        ],
+    });
+    let req = request(dir.path(), script, json!({}));
+    let (project, conversation) = (req.project_path.clone(), req.conversation_id.clone());
+    let (result, _) = run(&req, move |event| {
+        if event.kind == TurnStreamEventKind::ContentCompleted {
+            assert!(acp::interrupt(&project, &conversation));
+        }
+    });
+    let turn = result.expect("settled cancel");
+    assert_eq!(turn.stop_reason, StopReason::Cancelled);
+    assert!(turn.record.is_some());
+    assert_eq!(received(dir.path(), "session/cancel").len(), 1);
+    assert!(acp::close_session(&req.project_path, &req.conversation_id));
+
+    // Ignored cancel: process is force-stopped after CANCEL_GRACE and continuity dropped.
+    let dir = tempfile::tempdir().unwrap();
+    let script = json!({
+        "updates": [
+            {"sessionUpdate": "tool_call", "toolCallId": "bg-2", "title": "cargo test",
+             "kind": "execute", "status": "in_progress"},
+            chunk("agent_message_chunk", "Running."),
+        ],
+        "post_prompt_await_cancel": "ignore",
+    });
+    let req = request(dir.path(), script, json!({}));
+    let (project, conversation) = (req.project_path.clone(), req.conversation_id.clone());
+    let (result, _) = run(&req, move |event| {
+        if event.kind == TurnStreamEventKind::ContentCompleted {
+            assert!(acp::interrupt(&project, &conversation));
+        }
+    });
+    let turn = result.expect("forced stop");
+    assert_eq!(turn.stop_reason, StopReason::Cancelled);
+    assert!(turn.record.is_none());
+    assert!(turn.output.thread_resume_failure.is_some());
+}
+
+#[test]
+fn acp_daemon_tool_call_does_not_block_and_warm_session_reuses_process_across_turns() {
+    let dir = tempfile::tempdir().unwrap();
+    let options = json!([{
+        "id": "model", "name": "Model", "category": "model", "type": "select",
+        "currentValue": "small",
+        "options": [{"value": "small", "name": "Small"}, {"value": "Large-1", "name": "Large"}],
+    }]);
+    let script = json!({
+        "resume": true,
+        "config_options": options,
+        "updates": [
+            {"sessionUpdate": "tool_call", "toolCallId": "srv-1", "title": "vite dev",
+             "kind": "execute", "status": "in_progress",
+             "rawInput": {"CommandLine": "npm run dev", "IsDaemon": true}},
+        ],
+        "answers": ["Server started.", "Still running.", "Resumed cold."],
+    });
+    let first = request(dir.path(), script, json!({}));
+    let turn1 = run(&first, |_| {})
+        .0
+        .expect("first turn finishes despite daemon");
+    assert_eq!(
+        turn1.output.final_assistant_text.as_deref(),
+        Some("Server started.")
+    );
+    let record = turn1.record.expect("session record");
+    assert_eq!(launches(dir.path()), 1);
+
+    // Second turn with changed model reuses the warm process without relaunching.
+    let mut second = with_history(first.clone(), &record);
+    second.model = Some("Large-1".to_string());
+    let turn2 = run(&second, |_| {}).0.expect("second turn on warm process");
+    assert_eq!(
+        turn2.output.final_assistant_text.as_deref(),
+        Some("Still running.")
+    );
+    assert_eq!(launches(dir.path()), 1);
+    assert_eq!(received(dir.path(), "session/resume").len(), 0);
+    let set = received(dir.path(), "session/set_config_option");
+    assert_eq!(set.len(), 1);
+    assert_eq!(
+        (set[0]["configId"].clone(), set[0]["value"].clone()),
+        (json!("model"), json!("Large-1"))
+    );
+
+    // Closing the pooled session drops the process; the next turn resumes cold.
+    assert!(acp::close_session(
+        &first.project_path,
+        &first.conversation_id
+    ));
+    let turn3 = run(&with_history(first, &record), |_| {})
+        .0
+        .expect("cold resume after close");
+    assert_eq!(
+        turn3.output.final_assistant_text.as_deref(),
+        Some("Resumed cold.")
+    );
+    assert_eq!(launches(dir.path()), 2);
+    assert_eq!(received(dir.path(), "session/resume").len(), 1);
 }

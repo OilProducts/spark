@@ -1110,7 +1110,16 @@ pub fn normalize_tool_call_payload(raw: &Value) -> Value {
         return raw.clone();
     };
     if object.contains_key("title") {
-        return raw.clone();
+        let Some(normalized) = object
+            .get("status")
+            .and_then(Value::as_str)
+            .and_then(normalized_tool_payload_status)
+        else {
+            return raw.clone();
+        };
+        let mut out = object.clone();
+        out.insert("status".to_string(), json!(normalized));
+        return Value::Object(out);
     }
     let mut out = object.clone();
     let item_type = object
@@ -1168,17 +1177,22 @@ pub fn normalize_tool_call_payload(raw: &Value) -> Value {
             .collect();
         out.insert("file_paths".to_string(), json!(paths));
     }
-    if let Some(status) = object.get("status").and_then(Value::as_str) {
-        let normalized = match status {
-            "in_progress" | "inProgress" | "started" | "pending" => Some("running"),
-            "declined" | "errored" => Some("failed"),
-            _ => None,
-        };
-        if let Some(normalized) = normalized {
-            out.insert("status".to_string(), json!(normalized));
-        }
+    if let Some(normalized) = object
+        .get("status")
+        .and_then(Value::as_str)
+        .and_then(normalized_tool_payload_status)
+    {
+        out.insert("status".to_string(), json!(normalized));
     }
     Value::Object(out)
+}
+
+fn normalized_tool_payload_status(status: &str) -> Option<&'static str> {
+    match status {
+        "in_progress" | "inProgress" | "started" | "pending" => Some("running"),
+        "declined" | "errored" => Some("failed"),
+        _ => None,
+    }
 }
 
 pub fn tool_call_id(tool_call: &Value) -> Option<String> {
@@ -1196,7 +1210,9 @@ pub fn tool_call_status(event: &TurnStreamEvent, tool_call: &Value) -> String {
         .or_else(|| event.status.as_deref().and_then(non_empty_string));
     if let Some(raw_status) = raw_status {
         return match raw_status.as_str() {
-            "started" | "updated" | "pending" | "streaming" => "running".to_string(),
+            "started" | "updated" | "pending" | "streaming" | "in_progress" | "inProgress" => {
+                "running".to_string()
+            }
             "completed" => "complete".to_string(),
             other => other.to_string(),
         };
@@ -1915,6 +1931,35 @@ mod tests {
             changed[0]["tool_call"]["error_code"],
             "tool_completion_missing"
         );
+    }
+
+    #[test]
+    fn in_progress_tool_calls_normalize_to_running_and_finalize_on_failure() {
+        let mut container = serde_json::json!({});
+        let mut started = command_started("acp-1");
+        started.status = Some("in_progress".to_string());
+        if let Some(tool_call) = started.tool_call.as_mut() {
+            set_string_value(tool_call, "title", "cargo test");
+            set_string_value(tool_call, "status", "in_progress");
+        }
+        let segment = materialize_segment_for_event(
+            &mut container,
+            "turn-1",
+            &started,
+            "2026-07-08T10:00:00Z",
+            None,
+        )
+        .expect("materialized");
+        assert_eq!(segment["status"], "running");
+        assert_eq!(segment["tool_call"]["status"], "running");
+        assert!(segment.get("completed_at").is_none());
+
+        let changed =
+            finalize_turn_segments(&mut container, "turn-1", false, "2026-07-08T10:00:02Z");
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0]["status"], "failed");
+        assert_eq!(changed[0]["tool_call"]["status"], "failed");
+        assert_eq!(changed[0]["error_code"], "tool_completion_missing");
     }
 
     #[test]

@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 use tokio_util::sync::CancellationToken;
+use tower_http::compression::CompressionLayer;
 
 mod claude_auth;
 mod codex_auth;
@@ -231,6 +232,10 @@ fn build_app_on_store(
                 publish: Arc::new(move |envelope| live_hub.publish(envelope)),
             },
         );
+        spark_workspace::inbox::install_acp_continuation(
+            &state.settings,
+            &state.conversation_store,
+        );
         // Then every conversation's inbox: runs that reported while no
         // server ran, and events still waiting for a turn.
         if let Err(error) =
@@ -256,7 +261,7 @@ fn build_app_on_store(
         environment_auth::require_trust,
     );
     let app = Router::new()
-        .route("/", get(serve_index))
+        .route("/", get(serve_index).layer(CompressionLayer::new()))
         .route(
             "/environment",
             get(environment_auth::environment_descriptor),
@@ -266,7 +271,10 @@ fn build_app_on_store(
             axum::routing::post(environment_auth::pair),
         )
         .route("/favicon.ico", get(serve_favicon))
-        .route("/assets/{*asset_path}", get(serve_asset))
+        .route(
+            "/assets/{*asset_path}",
+            get(serve_asset).layer(CompressionLayer::new()),
+        )
         .route("/workspace", any(redirect_workspace_mount))
         .nest(
             "/workspace/api",
@@ -916,7 +924,12 @@ async fn serve_index(State(settings): State<Arc<SparkSettings>>) -> Response {
     let Some(resource) = spark_assets::frontend::load_index(&settings) else {
         return json_detail(StatusCode::NOT_FOUND, "UI index not found");
     };
-    serve_resource(resource, "text/html; charset=utf-8")
+    // The index names the current build's hashed bundles, so check for a new one on every load.
+    let mut response = serve_resource(resource, "text/html; charset=utf-8");
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    response
 }
 
 async fn serve_favicon(State(settings): State<Arc<SparkSettings>>) -> Response {
@@ -933,7 +946,18 @@ async fn serve_asset(
     match spark_assets::frontend::load_asset(&settings, &format!("assets/{asset_path}")) {
         Ok(Some(resource)) => {
             let content_type = content_type_for_asset(resource.logical_path());
-            serve_resource(resource, content_type)
+            // Vite puts a content hash in every bundle name, so a name never changes content.
+            // The icon is copied from frontend/public under a fixed name and must be rechecked.
+            let cache = if resource.logical_path() == "assets/spark-app-icon.png" {
+                "no-cache"
+            } else {
+                "public, max-age=31536000, immutable"
+            };
+            let mut response = serve_resource(resource, content_type);
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
+            response
         }
         Ok(None) | Err(_) => json_detail(StatusCode::NOT_FOUND, "Asset not found"),
     }

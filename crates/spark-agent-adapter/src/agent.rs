@@ -131,6 +131,26 @@ pub trait AgentTurnBackend: Send + Sync {
         false
     }
 
+    /// Closes any idle persistent session kept for this conversation.
+    fn close_session(&self, _project_path: &str, _conversation_id: &str) {}
+
+    /// Whether a parked ACP session for this conversation has buffered
+    /// unsolicited post-`end_turn` activity waiting for a continuation turn.
+    fn has_pending_acp_continuation(&self, _project_path: &str, _conversation_id: &str) -> bool {
+        false
+    }
+
+    /// Streams an unsolicited post-`end_turn` continuation from a parked ACP
+    /// session through `event_sink`. Returns `Ok(None)` when no session waits.
+    fn run_acp_continuation(
+        &self,
+        _project_path: &str,
+        _conversation_id: &str,
+        _event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<Option<AgentTurnOutput>, AgentError> {
+        Ok(None)
+    }
+
     /// Delivers a user message into the conversation's running turn. Returns
     /// whether the live turn accepted it; false when no turn is live or the
     /// backend cannot take messages mid-turn. The running turn reports an

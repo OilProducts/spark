@@ -166,6 +166,64 @@ describe('transcript rows', () => {
         expect(screen.getByRole('group', { name: 'Diff of src/new.rs' })).toHaveFocus()
     })
 
+    it('truncates long commandless execute titles and non-command titles without overflow and wraps them when expanded', () => {
+        const longScript = "python3 - <<'EOF'\n" + 'x = 1\n'.repeat(40) + 'EOF'
+        const acpCommand: TranscriptToolCallEntry = {
+            id: 'acp-cmd',
+            timestamp: '',
+            toolCall: {
+                id: 'acp-cmd',
+                kind: 'command_execution',
+                status: 'completed',
+                title: longScript,
+                command: null,
+                output: 'ok',
+                filePaths: [],
+            },
+        }
+        const longDynamicTitle = 'Dynamic tool ' + 'a'.repeat(200)
+        const dynamicTool: TranscriptToolCallEntry = {
+            id: 'dyn-long',
+            timestamp: '',
+            toolCall: {
+                id: 'dyn-long',
+                kind: 'dynamic_tool',
+                status: 'completed',
+                title: longDynamicTitle,
+                output: null,
+                filePaths: [],
+            },
+        }
+        const { rerender } = render(
+            <ul>
+                <ToolCallRow entry={acpCommand} isExpanded={false} onToggleToolCallExpanded={() => {}} />
+                <ToolCallRow entry={dynamicTool} isExpanded={false} onToggleToolCallExpanded={() => {}} />
+            </ul>,
+        )
+
+        const cmdToggle = screen.getByTestId('project-tool-call-toggle-acp-cmd')
+        expect(cmdToggle).toHaveAttribute('title', longScript)
+        const cmdText = within(cmdToggle).getByText(/python3/)
+        expect(cmdText).toHaveClass('truncate')
+        expect(cmdText).not.toHaveClass('shrink-0')
+
+        const dynToggle = screen.getByTestId('project-tool-call-toggle-dyn-long')
+        const dynTitle = within(dynToggle).getByText(longDynamicTitle)
+        expect(dynTitle).toHaveClass('truncate')
+        expect(dynTitle).not.toHaveClass('shrink-0')
+
+        rerender(
+            <ul>
+                <ToolCallRow entry={acpCommand} isExpanded onToggleToolCallExpanded={() => {}} />
+                <ToolCallRow entry={dynamicTool} isExpanded onToggleToolCallExpanded={() => {}} />
+            </ul>,
+        )
+        const expandedCmd = screen.getByText((content, element) => element?.tagName === 'P' && content.includes("python3 - <<'EOF'"))
+        expect(expandedCmd).toHaveClass('whitespace-pre-wrap', 'break-words')
+        const expandedDyn = screen.getByText(longDynamicTitle, { selector: 'p' })
+        expect(expandedDyn).toHaveClass('whitespace-pre-wrap', 'break-words')
+    })
+
 })
 
 describe('shared primitives', () => {

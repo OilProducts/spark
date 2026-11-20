@@ -312,5 +312,28 @@ impl Agent {
             result["usage"] = usage.clone();
         }
         self.reply(id, result);
+        if let Some(on_cancel) = script["post_prompt_await_cancel"].as_str() {
+            while let Some(message) = self.read() {
+                if message["method"] == "session/cancel" {
+                    if on_cancel == "ignore" {
+                        while self.read().is_some() {}
+                        return;
+                    }
+                    break;
+                }
+            }
+        }
+        if let Some(gate) = script["post_prompt_gate"].as_str() {
+            while !std::path::Path::new(gate).exists() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        for update in script["post_prompt_updates"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            self.update(update);
+        }
     }
 }

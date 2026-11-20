@@ -491,6 +491,29 @@ impl AgentTurnBackend for EnvironmentAgentTurnBackend {
             .interrupt_turn(project_path, conversation_id)
     }
 
+    fn close_session(&self, project_path: &str, conversation_id: &str) {
+        RustLlmAgentTurnBackend::new(unified_llm_adapter::Client::new())
+            .close_session(project_path, conversation_id);
+    }
+
+    fn has_pending_acp_continuation(&self, project_path: &str, conversation_id: &str) -> bool {
+        RustLlmAgentTurnBackend::new(unified_llm_adapter::Client::new())
+            .has_pending_acp_continuation(project_path, conversation_id)
+    }
+
+    fn run_acp_continuation(
+        &self,
+        project_path: &str,
+        conversation_id: &str,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<Option<AgentTurnOutput>, AgentError> {
+        RustLlmAgentTurnBackend::new(unified_llm_adapter::Client::new()).run_acp_continuation(
+            project_path,
+            conversation_id,
+            event_sink,
+        )
+    }
+
     fn send_message(
         &self,
         project_path: &str,
@@ -2174,10 +2197,161 @@ impl WorkspaceConversationService {
             result = self.run_started_turn(next, progress.clone());
             end_thinking();
         }
+        // Catch an ACP post-settle wakeup that arrived while the previous turn
+        // was still settling.
+        while self
+            .agent_turn_backend
+            .has_pending_acp_continuation(&project_path, &conversation_id)
+        {
+            match self.run_acp_continuation_with_progress(
+                &conversation_id,
+                &project_path,
+                progress.clone(),
+            ) {
+                Ok(true) => end_thinking(),
+                Ok(false) | Err(_) => break,
+            }
+            while let Ok(Some((next, _))) = self.start_queued_turn(&conversation_id, &project_path)
+            {
+                result = self.run_started_turn(next, progress.clone());
+                end_thinking();
+            }
+        }
         // Events that arrived meanwhile, or wait behind a live delivery the
         // turn did not take, go out now.
         let _ = crate::inbox::process_conversation(&self.settings, &self.store, &conversation_id);
         result
+    }
+
+    /// Runs an unsolicited post-`end_turn` continuation from a parked ACP
+    /// session, then drains any queued turns or inbox events that arrived
+    /// while it ran.
+    pub fn run_acp_continuation<F>(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+        progress: F,
+    ) -> WorkspaceResult<bool>
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+    {
+        let progress: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(progress);
+        let ran = self.run_acp_continuation_with_progress(
+            conversation_id,
+            project_path,
+            progress.clone(),
+        )?;
+        if !ran {
+            return Ok(false);
+        }
+        loop {
+            if let Ok(Some((next, _))) = self.start_queued_turn(conversation_id, project_path) {
+                let _ = self.run_started_turn(next, progress.clone());
+                continue;
+            }
+            if self
+                .agent_turn_backend
+                .has_pending_acp_continuation(project_path, conversation_id)
+                && matches!(
+                    self.run_acp_continuation_with_progress(
+                        conversation_id,
+                        project_path,
+                        progress.clone(),
+                    ),
+                    Ok(true)
+                )
+            {
+                continue;
+            }
+            break;
+        }
+        let _ = crate::inbox::process_conversation(&self.settings, &self.store, conversation_id);
+        Ok(true)
+    }
+
+    fn run_acp_continuation_with_progress(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+        progress: Arc<dyn Fn(Value) + Send + Sync>,
+    ) -> WorkspaceResult<bool> {
+        let repository = self.repository();
+        let assistant_turn_id = format!("turn-{}", uuid::Uuid::new_v4().simple());
+        let commit = {
+            let lock = conversation_turn_lock(conversation_id);
+            let _lock = lock.lock().unwrap();
+            repository.start_continuation_turn(conversation_id, project_path, &assistant_turn_id)?
+        };
+        let Some(commit) = commit else {
+            return Ok(false);
+        };
+        let mut execution = ExecutionState::new(
+            repository.clone(),
+            conversation_id,
+            project_path,
+            &assistant_turn_id,
+            Some(progress),
+        );
+        execution.base_revision = commit.revision;
+        let stop: Arc<dyn Fn() + Send + Sync> = {
+            let backend = self.agent_turn_backend.clone();
+            let (project_path, conversation_id) =
+                (project_path.to_string(), conversation_id.to_string());
+            Arc::new(move || {
+                let (backend, project_path, conversation_id) = (
+                    backend.clone(),
+                    project_path.clone(),
+                    conversation_id.clone(),
+                );
+                std::thread::spawn(move || backend.interrupt_turn(&project_path, &conversation_id));
+            })
+        };
+        let execution = Arc::new(Mutex::new(execution));
+        let sink_error = Arc::new(Mutex::new(None::<StorageError>));
+        let sink: AgentTurnEventSink = {
+            let (execution, sink_error) = (execution.clone(), sink_error.clone());
+            Arc::new(move |event| {
+                let mut stored = sink_error.lock().unwrap_or_else(|p| p.into_inner());
+                if stored.is_some() {
+                    return;
+                }
+                let ingested = execution
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .ingest(event);
+                if let Err(error) = ingested {
+                    *stored = Some(error);
+                    stop();
+                }
+            })
+        };
+        let output =
+            self.agent_turn_backend
+                .run_acp_continuation(project_path, conversation_id, Some(sink));
+        let sink_error = sink_error.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let mut execution = execution.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(error) = sink_error {
+            let _ = self.settle_execution(
+                &mut execution,
+                Err(AgentError {
+                    message: format!("Spark could not record this turn's progress: {error}"),
+                    retryable: true,
+                    raw: None,
+                }),
+                None,
+            );
+            return Err(error.into());
+        }
+        let outcome = match output {
+            Ok(Some(output)) => Ok(AgentTurnOutput {
+                events: Vec::new(),
+                ..output
+            }),
+            Ok(None) => Ok(AgentTurnOutput::default()),
+            Err(error) => Err(error),
+        };
+        self.settle_execution(&mut execution, outcome, None)?;
+        Ok(true)
     }
 
     fn run_started_turn(
@@ -2368,8 +2542,12 @@ impl WorkspaceConversationService {
     /// Interrupts whatever provider work runs for the conversation, even
     /// when the conversation itself was already deleted.
     pub fn stop_execution(&self, conversation_id: &str, project_path: &str) -> bool {
+        let interrupted = self
+            .agent_turn_backend
+            .interrupt_turn(project_path, conversation_id);
         self.agent_turn_backend
-            .interrupt_turn(project_path, conversation_id)
+            .close_session(project_path, conversation_id);
+        interrupted
     }
 
     /// Whether the conversation has an assistant turn pending or streaming.
@@ -3428,6 +3606,7 @@ impl WorkspaceConversationService {
             )));
         }
         repository.delete_conversation(conversation_id, &project_path)?;
+        self.stop_execution(conversation_id, &project_path);
         Ok(ConversationDeleteResponse {
             status: "deleted",
             conversation_id: conversation_id.to_string(),
