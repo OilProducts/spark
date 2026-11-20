@@ -992,6 +992,115 @@ fn an_acp_chat_stays_running_while_background_tool_runs_and_reports_wakeup() {
     spark_agent_adapter::acp::close_session(&project, "acp-bg");
 }
 
+#[test]
+fn an_acp_chat_delivers_reply_live_during_deferred_background_wait() {
+    let temp = tempfile::tempdir().unwrap();
+    let gate = temp.path().join("bg-done");
+    let (service, project) = acp_chat(
+        temp.path(),
+        json!({
+            "prompt_updates": [
+                [
+                    {"sessionUpdate": "tool_call", "toolCallId": "bg-test", "title": "just test",
+                     "kind": "execute", "status": "in_progress",
+                     "rawInput": {"CommandLine": "just test"}},
+                    acp_chunk("m0", "Started tests. Should I also push?"),
+                ],
+                [
+                    acp_chunk("m1", "Got it — I'll push once tests are green."),
+                ],
+            ],
+            "post_prompt_gate": gate,
+            "post_prompt_updates": [
+                {"sessionUpdate": "tool_call_update", "toolCallId": "bg-test", "status": "completed",
+                 "rawOutput": {"output": "1 passed", "exit_code": 0}},
+                acp_chunk("m2", "Tests passed and pushed."),
+                {"sessionUpdate": "usage_update", "used": 1200, "size": 200000},
+            ],
+        }),
+    );
+
+    let handle = {
+        let (service, project) = (service.clone(), project.clone());
+        std::thread::spawn(move || {
+            service.execute_turn("acp-bg-reply", acp_turn(&project, "Commit work"))
+        })
+    };
+
+    // Wait until prompt 1's commentary closed into DeferredEnd::WaitingForTools.
+    let started = std::time::Instant::now();
+    loop {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "question commentary should close while background tool runs"
+        );
+        if let Ok(snapshot) = service.get_snapshot("acp-bg-reply", Some(&project)) {
+            let asked = segments_of_kind(&snapshot, "assistant_message")
+                .iter()
+                .any(|seg| {
+                    seg["content"] == "Started tests. Should I also push?"
+                        && seg["status"] == "complete"
+                });
+            if asked {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+
+    // Reply while the background tool is still running: accepted live, not queued.
+    let (started_turn, acceptance) = service
+        .send_turn(
+            "acp-bg-reply",
+            acp_turn(&project, "Go ahead and push when done."),
+        )
+        .unwrap();
+    assert!(started_turn.is_none());
+    assert_eq!(acceptance.status, "accepted");
+
+    // Verify the agent answered the reply before the background tool finished.
+    let replied = std::time::Instant::now();
+    loop {
+        assert!(
+            replied.elapsed() < std::time::Duration::from_secs(10),
+            "agent should answer the live reply while background tool is still running"
+        );
+        if let Ok(snapshot) = service.get_snapshot("acp-bg-reply", Some(&project)) {
+            let answered = segments_of_kind(&snapshot, "assistant_message")
+                .iter()
+                .any(|seg| {
+                    seg["content"] == "Got it — I'll push once tests are green."
+                        && seg["status"] == "complete"
+                });
+            if answered {
+                let tools = segments_of_kind(&snapshot, "tool_call");
+                assert_eq!(tools[0]["status"], "running");
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+
+    std::fs::write(&gate, "").unwrap();
+    let final_snapshot = handle.join().unwrap().expect("turn settles after wakeup");
+    assert_eq!(assistant_turn(&final_snapshot)["status"], "complete");
+    assert_eq!(
+        assistant_turn(&final_snapshot)["content"],
+        "Tests passed and pushed."
+    );
+    let delivered = user_messages(&final_snapshot);
+    assert_eq!(delivered.len(), 1, "{final_snapshot}");
+    assert_eq!(delivered[0]["content"], "Go ahead and push when done.");
+    assert_eq!(delivered[0]["status"], "complete");
+    let prompts = acp_received(temp.path(), "session/prompt");
+    let texts = prompts
+        .iter()
+        .map(|prompt| prompt["prompt"][0]["text"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(texts, ["Commit work", "Go ahead and push when done."]);
+    spark_agent_adapter::acp::close_session(&project, "acp-bg-reply");
+}
+
 /// Reproduces the race where a background tool finishes just before `end_turn`
 /// settles, and the harness immediately streams a follow-up reactive wakeup on
 /// the parked process: Spark opens a live continuation turn, marks the chat

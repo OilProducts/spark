@@ -1652,9 +1652,13 @@ impl RustLlmAgentTurnBackend {
                         .is_some_and(|steering| steering.queue_live_message(message_id, message))
                 })
             }
-            // ACP v1 has no portable acceptance for a second prompt, so the
-            // message stays queued for the next turn.
-            Some(Owner::Acp(_)) | None => false,
+            // ACP v1 allows a new `session/prompt` only when no prompt is in
+            // flight (such as during a post-`end_turn` background tool wait);
+            // otherwise the message stays queued for the next turn.
+            Some(Owner::Acp(_)) => {
+                crate::acp::send_message(project_path, conversation_id, message_id, message)
+            }
+            None => false,
         }
     }
 }

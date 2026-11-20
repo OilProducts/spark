@@ -1816,3 +1816,109 @@ fn acp_daemon_tool_call_does_not_block_and_warm_session_reuses_process_across_tu
     assert_eq!(launches(dir.path()), 2);
     assert_eq!(received(dir.path(), "session/resume").len(), 1);
 }
+
+#[test]
+fn acp_delivers_live_message_during_deferred_background_wait() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = dir.path().join("bg-done");
+    let script = json!({
+        "prompt_updates": [
+            [
+                {"sessionUpdate": "tool_call", "toolCallId": "bg-1", "title": "just test",
+                 "kind": "execute", "status": "in_progress",
+                 "rawInput": {"CommandLine": "just test"}},
+                chunk("agent_message_chunk", "Running tests. Should I push when green?"),
+            ],
+            [
+                chunk("agent_message_chunk", "Got it — will push once tests pass."),
+            ],
+        ],
+        "post_prompt_gate": gate,
+        "post_prompt_updates": [
+            {"sessionUpdate": "tool_call_update", "toolCallId": "bg-1", "status": "completed",
+             "rawOutput": {"output": "all passed", "exit_code": 0}},
+            chunk("agent_message_chunk", "Tests passed and pushed."),
+            {"sessionUpdate": "usage_update", "used": 1400, "size": 200000},
+        ],
+    });
+    let req = request(dir.path(), script, json!({}));
+    let saw_question = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let saw_reply = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let handle = std::thread::spawn({
+        let req = req.clone();
+        let saw_question = Arc::clone(&saw_question);
+        let saw_reply = Arc::clone(&saw_reply);
+        move || {
+            run(&req, move |event| {
+                if event.kind == TurnStreamEventKind::ContentCompleted {
+                    match event.message.as_deref() {
+                        Some("Running tests. Should I push when green?") => {
+                            saw_question.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        Some("Got it — will push once tests pass.") => {
+                            saw_reply.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        _ => {}
+                    }
+                }
+            })
+        }
+    });
+
+    // Wait until prompt 1 ended into DeferredEnd::WaitingForTools.
+    let started = std::time::Instant::now();
+    while !saw_question.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "question commentary closes when deferred end_turn arrives"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // Deliver the user's answer live while bg-1 is still running.
+    assert!(
+        acp::send_message(
+            &req.project_path,
+            &req.conversation_id,
+            "msg-1",
+            "Yes, go ahead and push."
+        ),
+        "live message must be accepted during post-end_turn background tool wait"
+    );
+
+    // Wait until the agent answers the live message while bg-1 is STILL open.
+    let replied = std::time::Instant::now();
+    while !saw_reply.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            replied.elapsed() < std::time::Duration::from_secs(10),
+            "agent replies to live message before background tool completes"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // Release bg-1 completion and post-wakeup final answer.
+    std::fs::write(&gate, "").unwrap();
+    let (result, seen) = handle.join().unwrap();
+    let turn = result.expect("turn settles after background wakeup");
+    assert_eq!(turn.stop_reason, StopReason::EndTurn);
+    assert_eq!(
+        turn.output.final_assistant_text.as_deref(),
+        Some("Tests passed and pushed.")
+    );
+    assert!(
+        seen.iter().any(|event| {
+            event.kind == TurnStreamEventKind::Other("user_message_delivered".into())
+                && event.source.item_id.as_deref() == Some("msg-1")
+                && event.status.as_deref() == Some("delivered")
+        }),
+        "must emit user_message_delivered for the live reply"
+    );
+    let prompts = received(dir.path(), "session/prompt");
+    let texts = prompts
+        .iter()
+        .map(|prompt| prompt["prompt"][0]["text"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(texts, ["Do the thing.", "Yes, go ahead and push."]);
+    assert_eq!(launches(dir.path()), 1);
+    assert!(acp::close_session(&req.project_path, &req.conversation_id));
+}

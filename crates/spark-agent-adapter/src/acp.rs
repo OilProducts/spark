@@ -139,6 +139,11 @@ struct Live {
     closed: AtomicBool,
     /// Replies for the turn's pending forms.
     replies: UnboundedSender<FormAnswer>,
+    /// User messages delivered during a post-`end_turn` background wait.
+    messages: UnboundedSender<LiveMessage>,
+    /// True only while the turn is parked between prompts (`WaitingForTools` /
+    /// `AwaitingWakeup`) and can dispatch a new `session/prompt` immediately.
+    accepting_messages: Arc<AtomicBool>,
 }
 
 /// Everything a parked chat ACP process is valid for.
@@ -337,6 +342,14 @@ struct FormAnswer {
     delivered: Option<std::sync::mpsc::Sender<bool>>,
 }
 
+/// A user message to dispatch as a new `session/prompt` while the turn is
+/// waiting between prompts (post-`end_turn` background tool wait).
+struct LiveMessage {
+    message_id: String,
+    message: String,
+    delivered: std::sync::mpsc::Sender<bool>,
+}
+
 fn registry() -> &'static Mutex<HashMap<Key, Weak<Live>>> {
     static REGISTRY: OnceLock<Mutex<HashMap<Key, Weak<Live>>>> = OnceLock::new();
     REGISTRY.get_or_init(Mutex::default)
@@ -394,6 +407,31 @@ pub fn answer(
     live.replies.send(answer).is_ok() && received.recv_timeout(FORM_DELIVERY).unwrap_or(false)
 }
 
+/// Sends `message` into a running ACP turn when it is waiting between prompts
+/// (a post-`end_turn` background tool wait), returning `true` once
+/// `session/prompt` was dispatched. Returns `false` while a prompt is already
+/// in flight or no turn is active, leaving the caller to queue it.
+pub fn send_message(
+    project_path: &str,
+    conversation_id: &str,
+    message_id: &str,
+    message: &str,
+) -> bool {
+    let Some(live) = find(project_path, conversation_id) else {
+        return false;
+    };
+    if !live.accepting_messages.load(Ordering::SeqCst) {
+        return false;
+    }
+    let (delivered, received) = std::sync::mpsc::channel();
+    let pending = LiveMessage {
+        message_id: message_id.to_string(),
+        message: message.to_string(),
+        delivered,
+    };
+    live.messages.send(pending).is_ok() && received.recv_timeout(FORM_DELIVERY).unwrap_or(false)
+}
+
 /// Stops the turn's process group directly, and closes any parked session.
 pub fn terminate(project_path: &str, conversation_id: &str) -> bool {
     let mut stopped = false;
@@ -434,6 +472,8 @@ struct PromptWork {
     interrupts: Receiver<()>,
     replies: UnboundedSender<FormAnswer>,
     answered: UnboundedReceiver<FormAnswer>,
+    live_messages: UnboundedReceiver<LiveMessage>,
+    accepting_messages: Arc<AtomicBool>,
 }
 
 /// Everything an unsolicited post-`end_turn` continuation hands to a parked
@@ -443,6 +483,8 @@ struct ContinuationWork {
     interrupts: Receiver<()>,
     replies: UnboundedSender<FormAnswer>,
     answered: UnboundedReceiver<FormAnswer>,
+    live_messages: UnboundedReceiver<LiveMessage>,
+    accepting_messages: Arc<AtomicBool>,
 }
 
 enum TurnWork {
@@ -560,6 +602,8 @@ fn continuation(
     let key = (project_path.to_string(), conversation_id.to_string());
     let (interrupts, interrupted) = tokio::sync::mpsc::channel(1);
     let (replies, answered) = tokio::sync::mpsc::unbounded_channel();
+    let (messages_tx, live_messages) = tokio::sync::mpsc::unbounded_channel();
+    let accepting_messages = Arc::new(AtomicBool::new(false));
     let live = Arc::new(Live {
         interrupts,
         stop: Mutex::new(None),
@@ -567,6 +611,8 @@ fn continuation(
         do_not_pool: AtomicBool::new(false),
         closed: AtomicBool::new(false),
         replies: replies.clone(),
+        messages: messages_tx,
+        accepting_messages: Arc::clone(&accepting_messages),
     });
     let registered = {
         let mut entries = registry().lock().unwrap();
@@ -595,6 +641,8 @@ fn continuation(
         interrupts: interrupted,
         replies,
         answered,
+        live_messages,
+        accepting_messages,
     });
     if worker.turns.send(work).is_err() {
         drop(worker);
@@ -1421,6 +1469,8 @@ fn turn(
 
     let (interrupts, interrupted) = tokio::sync::mpsc::channel(1);
     let (replies, answered) = tokio::sync::mpsc::unbounded_channel();
+    let (messages_tx, live_messages) = tokio::sync::mpsc::unbounded_channel();
+    let accepting_messages = Arc::new(AtomicBool::new(false));
     let live = Arc::new(Live {
         interrupts,
         stop: Mutex::new(None),
@@ -1428,6 +1478,8 @@ fn turn(
         do_not_pool: AtomicBool::new(false),
         closed: AtomicBool::new(false),
         replies: replies.clone(),
+        messages: messages_tx,
+        accepting_messages: Arc::clone(&accepting_messages),
     });
     let key = (
         request.project_path.clone(),
@@ -1455,6 +1507,8 @@ fn turn(
             interrupts: interrupted,
             replies,
             answered,
+            live_messages,
+            accepting_messages,
         },
         delivered,
     ));
@@ -2095,6 +2149,10 @@ struct Turn {
     forms: HashMap<String, PendingForm>,
     /// Where a flow's answered forms come back.
     replies: UnboundedSender<FormAnswer>,
+    /// User messages arriving while this turn is live.
+    live_messages: UnboundedReceiver<LiveMessage>,
+    /// Shared flag telling `send_message` when the turn is between prompts.
+    accepting_messages: Arc<AtomicBool>,
 }
 
 /// A harness's `elicitation/create` waiting for its reply.
@@ -2109,6 +2167,7 @@ struct PendingForm {
 /// Withdraws every form still pending on any exit, such as a lost connection.
 impl Drop for Turn {
     fn drop(&mut self) {
+        self.close_live_messages();
         self.expire_forms();
     }
 }
@@ -2179,6 +2238,24 @@ impl Turn {
             connection: uuid::Uuid::new_v4().to_string(),
             forms: HashMap::new(),
             replies: work.replies,
+            live_messages: work.live_messages,
+            accepting_messages: work.accepting_messages,
+        }
+    }
+
+    fn can_accept_live_message(deferred: Option<&DeferredEnd>, cancelled: bool) -> bool {
+        !cancelled
+            && matches!(
+                deferred,
+                Some(DeferredEnd::WaitingForTools | DeferredEnd::AwaitingWakeup(_))
+            )
+    }
+
+    fn close_live_messages(&mut self) {
+        self.accepting_messages.store(false, Ordering::SeqCst);
+        self.live_messages.close();
+        while let Ok(live_message) = self.live_messages.try_recv() {
+            let _ = live_message.delivered.send(false);
         }
     }
 
@@ -2248,6 +2325,7 @@ impl Turn {
             .prompt(&mut session, &mut options, record.clone(), reset)
             .await
             .map_err(|error| failure.get().cloned().unwrap_or(error));
+        self.close_live_messages();
         if result.is_err() {
             self.expire_forms();
         }
@@ -2267,12 +2345,15 @@ impl Turn {
         record: &AcpSessionRecord,
         failure: &Failure,
     ) -> bool {
+        self.close_live_messages();
         self.expire_forms();
         self.plan = work.plan;
         self.out = work.out;
         self.interrupts = work.interrupts;
         self.answered = work.answered;
         self.replies = work.replies;
+        self.live_messages = work.live_messages;
+        self.accepting_messages = work.accepting_messages;
         self.denied_tools.clear();
         self.translate.begin_turn();
 
@@ -2314,6 +2395,7 @@ impl Turn {
             .prompt_with_initial(session, options, record.clone(), None, None, buffered)
             .await
             .map_err(|error| failure.get().cloned().unwrap_or(error));
+        self.close_live_messages();
         if result.is_err() {
             self.expire_forms();
         }
@@ -2333,11 +2415,14 @@ impl Turn {
         record: &AcpSessionRecord,
         failure: &Failure,
     ) -> bool {
+        self.close_live_messages();
         self.expire_forms();
         self.out = work.out;
         self.interrupts = work.interrupts;
         self.answered = work.answered;
         self.replies = work.replies;
+        self.live_messages = work.live_messages;
+        self.accepting_messages = work.accepting_messages;
         self.denied_tools.clear();
         self.translate.begin_turn();
 
@@ -2363,6 +2448,7 @@ impl Turn {
             )
             .await
             .map_err(|error| failure.get().cloned().unwrap_or(error));
+        self.close_live_messages();
         if result.is_err() {
             self.expire_forms();
         }
@@ -2791,6 +2877,10 @@ impl Turn {
             }
         }
         loop {
+            self.accepting_messages.store(
+                Self::can_accept_live_message(deferred.as_ref(), cancelled),
+                Ordering::SeqCst,
+            );
             let deferred_deadline = deferred
                 .as_ref()
                 .filter(|_| !cancelled)
@@ -2861,6 +2951,32 @@ impl Turn {
                     Err(error) => return Err(describe(&error)),
                 },
                 Some(answer) = self.answered.recv() => self.deliver(answer)?,
+                Some(live_message) = self.live_messages.recv() => {
+                    let accepted = if Self::can_accept_live_message(deferred.as_ref(), cancelled) {
+                        for event in self.translate.close(false) {
+                            self.out.event(event);
+                        }
+                        match session.send_prompt(live_message.message.clone()) {
+                            Ok(()) => {
+                                self.out.event(self.translate.event(
+                                    TurnStreamEventKind::Other("user_message_delivered".into()),
+                                    "user_message_delivered",
+                                    |event| {
+                                        event.source.item_id = Some(live_message.message_id);
+                                        event.message = Some(live_message.message);
+                                        event.status = Some("delivered".into());
+                                    },
+                                ));
+                                deferred = None;
+                                true
+                            }
+                            Err(_) => false,
+                        }
+                    } else {
+                        false
+                    };
+                    let _ = live_message.delivered.send(accepted);
+                }
                 Some(request_id) = withdrawn.next(), if !withdrawn.is_empty() => {
                     // Dropping the responder sends the cancelled request's error.
                     if let Some(PendingForm { request, gone, .. }) = self.forms.remove(&request_id) {

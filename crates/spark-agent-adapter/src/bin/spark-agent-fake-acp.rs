@@ -33,6 +33,7 @@ fn main() {
             .to_string(),
         script,
         cancelled: false,
+        prompts_handled: 0,
     };
     agent.startup();
     while let Some(message) = agent.read() {
@@ -47,6 +48,7 @@ struct Agent {
     session_id: String,
     /// `session/cancel` arrived while a form waited.
     cancelled: bool,
+    prompts_handled: usize,
 }
 
 impl Agent {
@@ -223,6 +225,8 @@ impl Agent {
     }
 
     fn prompt(&mut self, id: &Value) {
+        self.prompts_handled += 1;
+        let prompt_index = self.prompts_handled - 1;
         let script = self.script.clone();
         if let Some(exit) = script.get("exit_on_prompt") {
             eprintln!(
@@ -235,7 +239,12 @@ impl Agent {
             println!("this is not JSON-RPC");
             std::io::stdout().flush().unwrap();
         }
-        for update in script["updates"].as_array().into_iter().flatten() {
+        let updates = script["prompt_updates"]
+            .as_array()
+            .and_then(|all| all.get(prompt_index))
+            .and_then(Value::as_array)
+            .or_else(|| script["updates"].as_array());
+        for update in updates.into_iter().flatten() {
             self.update(update);
         }
         if let Some(answers) = script["answers"].as_array() {
@@ -312,6 +321,9 @@ impl Agent {
             result["usage"] = usage.clone();
         }
         self.reply(id, result);
+        if self.prompts_handled != 1 {
+            return;
+        }
         if let Some(on_cancel) = script["post_prompt_await_cancel"].as_str() {
             while let Some(message) = self.read() {
                 if message["method"] == "session/cancel" {
@@ -322,11 +334,40 @@ impl Agent {
                     break;
                 }
             }
+            for update in script["post_prompt_updates"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                self.update(update);
+            }
+            return;
         }
         if let Some(gate) = script["post_prompt_gate"].as_str() {
-            while !std::path::Path::new(gate).exists() {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            let gate = gate.to_string();
+            let session_id = self.session_id.clone();
+            let updates = script["post_prompt_updates"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            // Run the post-prompt background gate off the stdin loop so the
+            // fake agent can still receive follow-up `session/prompt` calls.
+            std::thread::spawn(move || {
+                while !std::path::Path::new(&gate).exists() {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                for update in updates {
+                    let message = json!({
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {"sessionId": session_id, "update": update},
+                    });
+                    let mut stdout = std::io::stdout().lock();
+                    let _ = writeln!(stdout, "{message}");
+                    let _ = stdout.flush();
+                }
+            });
+            return;
         }
         for update in script["post_prompt_updates"]
             .as_array()
