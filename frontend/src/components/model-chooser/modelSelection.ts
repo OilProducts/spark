@@ -28,6 +28,10 @@ export interface ModelChoiceOption extends ModelChoiceRef {
     groupLabel: string
     providerKey: string
     label: string
+    /** Discovery-reported display name when present (e.g. "Local / local-model" for profiles). */
+    discoveryDisplay?: string
+    /** Profile display label when this choice belongs to an LLM profile. */
+    profileLabel?: string
     isDefault?: boolean
 }
 
@@ -74,33 +78,55 @@ export function findModelMetadata(
     )
 }
 
+function inheritUnsetSecondarySettings(
+    value: ModelSettings,
+    inherited: ModelSettings | undefined,
+): Partial<ModelSettings> {
+    if (!inherited) return {}
+    const out: Partial<ModelSettings> = {}
+    if (value.thinking != null) {
+        out.thinking = value.thinking
+        if (value.thinking === 'budget') {
+            if (value.thinking_budget_tokens != null) {
+                out.thinking_budget_tokens = value.thinking_budget_tokens
+            } else if (inherited.thinking === 'budget' && inherited.thinking_budget_tokens !== undefined) {
+                out.thinking_budget_tokens = inherited.thinking_budget_tokens
+            }
+        }
+    } else if (inherited.thinking !== undefined) {
+        out.thinking = inherited.thinking
+        if (value.thinking_budget_tokens == null && inherited.thinking_budget_tokens !== undefined) {
+            out.thinking_budget_tokens = inherited.thinking_budget_tokens
+        }
+    }
+    if (value.reasoning_mode == null && inherited.reasoning_mode !== undefined) {
+        out.reasoning_mode = inherited.reasoning_mode
+    }
+    if (value.reasoning_summary == null && inherited.reasoning_summary !== undefined) {
+        out.reasoning_summary = inherited.reasoning_summary
+    }
+    if (value.session_config === undefined && inherited.session_config !== undefined) {
+        out.session_config = { ...inherited.session_config }
+    }
+    return out
+}
+
 export function effectiveModelSettings(value: ModelSettings, inherited?: ModelSettings): ModelSettings {
     const inherits = !value.provider && !value.llm_profile
     return {
         ...value,
+        ...(inherits ? inheritUnsetSecondarySettings(value, inherited) : {}),
         provider: value.provider || (!value.llm_profile ? inherited?.provider : null) || null,
         llm_profile: value.llm_profile || (!value.provider ? inherited?.llm_profile : null) || null,
         model: value.model || (inherits ? inherited?.model : null) || null,
         reasoning_effort: value.reasoning_effort || (inherits ? inherited?.reasoning_effort : null) || null,
-        ...(inherits && inherited?.thinking !== undefined && value.thinking == null ? { thinking: inherited.thinking } : {}),
-        ...(inherits && inherited?.thinking_budget_tokens !== undefined && value.thinking_budget_tokens == null
-            ? { thinking_budget_tokens: inherited.thinking_budget_tokens }
-            : {}),
-        ...(inherits && inherited?.reasoning_mode !== undefined && value.reasoning_mode == null
-            ? { reasoning_mode: inherited.reasoning_mode }
-            : {}),
-        ...(inherits && inherited?.reasoning_summary !== undefined && value.reasoning_summary == null
-            ? { reasoning_summary: inherited.reasoning_summary }
-            : {}),
-        ...(inherits && inherited?.session_config !== undefined && value.session_config === undefined
-            ? { session_config: inherited.session_config }
-            : {}),
     }
 }
 
 /**
- * Pins the same inherited effective model without discarding its inherited Thinking, Mode,
- * Summary, or ACP session controls. Actual provider/model switches use `selectModelSettings`.
+ * Pins the same inherited effective model, preserving any secondary settings explicitly authored on
+ * the current scope while inheriting only fields the current scope leaves unset.
+ * Actual provider/model switches use `selectModelSettings`.
  */
 export function pinInheritedModelSettings(
     value: ModelSettings,
@@ -109,11 +135,7 @@ export function pinInheritedModelSettings(
 ): ModelSettings {
     return {
         ...value,
-        ...(inherited?.thinking !== undefined ? { thinking: inherited.thinking } : {}),
-        ...(inherited?.thinking_budget_tokens !== undefined ? { thinking_budget_tokens: inherited.thinking_budget_tokens } : {}),
-        ...(inherited?.reasoning_mode !== undefined ? { reasoning_mode: inherited.reasoning_mode } : {}),
-        ...(inherited?.reasoning_summary !== undefined ? { reasoning_summary: inherited.reasoning_summary } : {}),
-        ...(inherited?.session_config !== undefined ? { session_config: { ...inherited.session_config } } : {}),
+        ...inheritUnsetSecondarySettings(value, inherited),
         provider: pinTarget.provider,
         llm_profile: pinTarget.llm_profile,
         model: pinTarget.model || null,
@@ -215,7 +237,9 @@ export function buildModelCatalog(
 
     const rows: ModelChoiceOption[] = groups.flatMap((group, groupIndex) =>
         [...new Set(group.models)].map((model) => {
-            const meta = group.profile ? undefined : findModelMetadata(discovery, group.provider, model)
+            const meta = group.profile
+                ? discovery?.payload?.models.find((entry) => entry.llm_profile === group.profile && entry.id === model)
+                : findModelMetadata(discovery, group.provider, model)
             const groupLabel = group.profile ? `${labelOf(group.provider, statuses)} / ${group.label}` : labelOf(group.provider, statuses)
             return {
                 groupIndex,
@@ -224,7 +248,9 @@ export function buildModelCatalog(
                 provider: group.profile ? null : group.provider,
                 llm_profile: group.profile,
                 model,
-                label: meta?.display || model,
+                label: group.profile ? model : (meta?.display || model),
+                discoveryDisplay: meta?.display || undefined,
+                profileLabel: group.profile ? group.label : undefined,
                 isDefault: group.profile
                     ? profiles.find((profile) => profile.id === group.profile)?.default_model === model
                     : meta?.is_default,
@@ -280,11 +306,15 @@ function choiceSelectorLabel(choice: ModelChoiceOption): string {
     return choice.model ? `${prefix}/${choice.model}` : `${prefix} (${choice.label})`
 }
 
-function candidateKeys(choice: ModelChoiceOption, statuses?: ProjectChatModelsResponse['providers']): string[] {
+function primaryCandidateKeys(choice: ModelChoiceOption, statuses?: ProjectChatModelsResponse['providers']): string[] {
     const providerDisplay = labelOf(choice.providerKey, statuses)
     const keys: string[] = [choice.model, choice.label]
+    if (choice.discoveryDisplay) keys.push(choice.discoveryDisplay)
     if (choice.llm_profile) {
         keys.push(`${choice.llm_profile}/${choice.model}`, `${choice.llm_profile}/${choice.label}`, `${choice.groupLabel}/${choice.model}`)
+        if (choice.profileLabel) {
+            keys.push(`${choice.profileLabel}/${choice.model}`, `${choice.profileLabel} / ${choice.model}`)
+        }
     } else if (choice.provider) {
         keys.push(
             `${choice.provider}/${choice.model}`,
@@ -296,7 +326,29 @@ function candidateKeys(choice: ModelChoiceOption, statuses?: ProjectChatModelsRe
     return [...new Set(keys.map((key) => key.trim().toLowerCase()).filter(Boolean))]
 }
 
-/** Matches `/model <query>` against available models by exact id/display/provider-model first, then unique substring. */
+function providerAliasKeys(choice: ModelChoiceOption, statuses?: ProjectChatModelsResponse['providers']): string[] {
+    if (!choice.llm_profile) return []
+    const providerDisplay = labelOf(choice.providerKey, statuses)
+    const keys = [
+        `${choice.providerKey}/${choice.model}`,
+        `${providerDisplay}/${choice.model}`,
+        `${choice.providerKey}/${choice.label}`,
+        `${providerDisplay}/${choice.label}`,
+    ]
+    return [...new Set(keys.map((key) => key.trim().toLowerCase()).filter(Boolean))]
+}
+
+function allCandidateKeys(choice: ModelChoiceOption, statuses?: ProjectChatModelsResponse['providers']): string[] {
+    return [...new Set([...primaryCandidateKeys(choice, statuses), ...providerAliasKeys(choice, statuses)])]
+}
+
+function formatAmbiguityError(trimmed: string, matches: ModelChoiceOption[]): string {
+    const selectors = matches.slice(0, 5).map(choiceSelectorLabel)
+    const more = matches.length > 5 ? ` (+${matches.length - 5} more)` : ''
+    return `Multiple models match "${trimmed}": ${selectors.join(', ')}${more}. Specify one of these selectors (e.g. /model ${selectors[0]}).`
+}
+
+/** Matches `/model <query>` against available models by exact id/display/selector first, then profile provider/model, then unique substring. */
 export function matchAvailableModel(
     query: string,
     rows: ModelChoiceOption[],
@@ -322,30 +374,35 @@ export function matchAvailableModel(
         return `Profile "${name}" is missing required credentials. Configure it in Settings › Models & accounts before selecting it.`
     }
 
-    const exact = availableRows.filter((choice) => candidateKeys(choice, statuses).includes(normalized))
-    if (exact.length === 1) {
-        return { ok: true, choice: exact[0] }
+    const exactPrimary = availableRows.filter((choice) => primaryCandidateKeys(choice, statuses).includes(normalized))
+    if (exactPrimary.length === 1) {
+        return { ok: true, choice: exactPrimary[0] }
     }
-    if (exact.length > 1) {
-        const list = exact.slice(0, 5).map(choiceSelectorLabel).join(', ')
-        const more = exact.length > 5 ? ` (+${exact.length - 5} more)` : ''
-        return { ok: false, error: `Multiple models match "${trimmed}": ${list}${more}. Specify provider/model.` }
+    if (exactPrimary.length > 1) {
+        return { ok: false, error: formatAmbiguityError(trimmed, exactPrimary) }
     }
-    const exactUnconfigured = unconfiguredRows.filter((choice) => candidateKeys(choice, statuses).includes(normalized))
+
+    const exactProfileProvider = availableRows.filter((choice) => providerAliasKeys(choice, statuses).includes(normalized))
+    if (exactProfileProvider.length === 1) {
+        return { ok: true, choice: exactProfileProvider[0] }
+    }
+    if (exactProfileProvider.length > 1) {
+        return { ok: false, error: formatAmbiguityError(trimmed, exactProfileProvider) }
+    }
+
+    const exactUnconfigured = unconfiguredRows.filter((choice) => allCandidateKeys(choice, statuses).includes(normalized))
     if (exactUnconfigured.length > 0) {
         return { ok: false, error: missingCredentialsError(exactUnconfigured[0]) }
     }
 
-    const partial = availableRows.filter((choice) => candidateKeys(choice, statuses).some((key) => key.includes(normalized)))
+    const partial = availableRows.filter((choice) => allCandidateKeys(choice, statuses).some((key) => key.includes(normalized)))
     if (partial.length === 1) {
         return { ok: true, choice: partial[0] }
     }
     if (partial.length > 1) {
-        const list = partial.slice(0, 5).map(choiceSelectorLabel).join(', ')
-        const more = partial.length > 5 ? ` (+${partial.length - 5} more)` : ''
-        return { ok: false, error: `Multiple models match "${trimmed}": ${list}${more}. Be more specific.` }
+        return { ok: false, error: formatAmbiguityError(trimmed, partial) }
     }
-    const partialUnconfigured = unconfiguredRows.filter((choice) => candidateKeys(choice, statuses).some((key) => key.includes(normalized)))
+    const partialUnconfigured = unconfiguredRows.filter((choice) => allCandidateKeys(choice, statuses).some((key) => key.includes(normalized)))
     if (partialUnconfigured.length > 0) {
         return { ok: false, error: missingCredentialsError(partialUnconfigured[0]) }
     }

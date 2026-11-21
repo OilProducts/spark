@@ -727,3 +727,99 @@ it('keeps saved ACP session controls and saved native secondary settings inspect
     await user.click(within(screen.getByRole('group', { name: 'Summary' })).getByRole('button', { name: 'Default', exact: true }))
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ reasoning_summary: null }))
 })
+
+it('preserves explicitly authored secondary settings when pinning an inherited model and inherits only unset fields', async () => {
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({
+        ...catalog,
+        models: [
+            {
+                ...catalog.models[0],
+                supported_thinking: ['off', 'adaptive', 'budget'],
+                supported_reasoning_modes: ['standard', 'pro'],
+                supported_reasoning_summaries: ['auto', 'concise', 'detailed'],
+            },
+        ],
+    })
+    const user = userEvent.setup(), onChange = vi.fn()
+    const inheritedWithSecondary: ModelSettings = {
+        provider: 'codex',
+        llm_profile: null,
+        model: 'discovered',
+        reasoning_effort: 'low',
+        thinking: 'budget',
+        thinking_budget_tokens: 2048,
+        reasoning_mode: 'pro',
+        reasoning_summary: 'detailed',
+        session_config: { Approval: 'auto' },
+    }
+    // Current scope (e.g. Graph Settings or Node Inspector) inherits model, explicitly sets thinking='off' and summary='concise',
+    // and leaves reasoning_mode and session_config unset.
+    const currentScope: ModelSettings = {
+        provider: null,
+        llm_profile: null,
+        model: null,
+        reasoning_effort: null,
+        thinking: 'off',
+        thinking_budget_tokens: null,
+        reasoning_mode: null,
+        reasoning_summary: 'concise',
+    }
+    render(<Editor value={currentScope} inherited={inheritedWithSecondary} onChange={onChange} />)
+    await user.click(await screen.findByRole('button', { name: /^Reasoning effort:/ }))
+    await user.click(screen.getByRole('button', { name: 'Ultra', exact: true }))
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({
+        provider: 'codex',
+        llm_profile: null,
+        model: 'discovered',
+        reasoning_effort: 'ultra',
+        thinking: 'off',
+        thinking_budget_tokens: null,
+        reasoning_mode: 'pro',
+        reasoning_summary: 'concise',
+        session_config: { Approval: 'auto' },
+    })
+})
+
+it('gives each model one Arrow stop when search is empty, prioritizing Pinned and Recent over regular groups', async () => {
+    vi.mocked(useLlmProfiles).mockReturnValue([])
+    localStorage.setItem('spark.model_chooser.pinned', JSON.stringify([
+        { provider: 'claude-code', llm_profile: null, model: 'claude-discovered' },
+    ]))
+    localStorage.setItem('spark.model_chooser.recents', JSON.stringify([
+        { provider: 'codex', llm_profile: null, model: 'other' },
+    ]))
+    const user = userEvent.setup()
+    render(<Editor />)
+    await user.click(await screen.findByRole('button', { name: /Model: Discovered/ }))
+    const search = screen.getByRole('combobox', { name: 'Search models' })
+
+    // 3 unique models total: Claude (Pinned), Other (Recent), Discovered (Codex).
+    // Stepping ArrowDown 4 times visits each unique model once and wraps back to Pinned Claude.
+    const visited: string[] = []
+    for (let step = 0; step < 4; step += 1) {
+        await user.keyboard('{ArrowDown}')
+        const activeId = search.getAttribute('aria-activedescendant')!
+        visited.push(document.getElementById(activeId)!.getAttribute('aria-label')!)
+    }
+    expect(visited).toEqual(['Claude, Claude Code', 'Other, Codex', 'Discovered', 'Claude, Claude Code'])
+})
+
+it('shows appropriate Settings guidance in the expanded footer even when discovery omits setup_status', async () => {
+    vi.mocked(useLlmProfiles).mockReturnValue([])
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({
+        providers: {
+            codex: { status: 'unavailable', error: 'CLI missing' },
+            openai: { status: 'unavailable', error: 'HTTP 401' },
+            gemini: { status: 'available', error: null },
+        },
+        models: [{ provider: 'gemini', id: 'new', display: 'New', is_default: false, supported_reasoning_efforts: [] }],
+    })
+    const user = userEvent.setup()
+    render(<Editor value={{ ...initial, provider: 'gemini', model: 'new' }} />)
+    await user.click(await screen.findByRole('button', { name: 'Model: New, gemini' }))
+    await user.click(screen.getByRole('button', { name: '2 unavailable providers' }))
+    expect(within(screen.getByRole('group', { name: 'codex', exact: true })).getByRole('status'))
+        .toHaveTextContent('Settings › Models & accounts › Agent harnesses.')
+    expect(within(screen.getByRole('group', { name: 'openai', exact: true })).getByRole('status'))
+        .toHaveTextContent('Settings › Models & accounts › Provider connections.')
+})

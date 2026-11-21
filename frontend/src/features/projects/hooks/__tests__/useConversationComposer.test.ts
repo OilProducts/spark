@@ -497,6 +497,85 @@ describe('/model and /effort slash commands', () => {
         expect(sendConversationTurnValidated).not.toHaveBeenCalled()
     })
 
+    it('matches available profile models by discovery display name and provider/model when unique, with actionable ambiguity feedback', async () => {
+        const profileDiscovery = {
+            projectPath,
+            payload: {
+                providers: {
+                    codex: { status: 'available' as const, error: null, label: 'Codex' },
+                },
+                models: [
+                    {
+                        llm_profile: 'local',
+                        provider: 'openai_compatible',
+                        id: 'local-model',
+                        display: 'Local / local-model',
+                        is_default: true,
+                        supported_reasoning_efforts: [],
+                    },
+                    {
+                        llm_profile: 'alpha',
+                        provider: 'openai_compatible',
+                        id: 'shared-model',
+                        display: 'Alpha / shared-model',
+                        is_default: false,
+                        supported_reasoning_efforts: [],
+                    },
+                    {
+                        llm_profile: 'beta',
+                        provider: 'openai_compatible',
+                        id: 'shared-model',
+                        display: 'Beta / shared-model',
+                        is_default: false,
+                        supported_reasoning_efforts: [],
+                    },
+                ],
+            },
+        }
+        const profiles = [
+            { id: 'local', label: 'Local', provider: 'openai_compatible', configured: true, models: ['local-model'], default_model: 'local-model' },
+            { id: 'alpha', label: 'Alpha', provider: 'openai_compatible', configured: true, models: ['shared-model'] },
+            { id: 'beta', label: 'Beta', provider: 'openai_compatible', configured: true, models: ['shared-model'] },
+        ]
+
+        // Match by discovery display name ("Local / local-model").
+        const byDisplay = createComposer({
+            chatDraft: '/model Local / local-model',
+            modelDiscovery: profileDiscovery,
+            llmProfiles: profiles,
+        })
+        byDisplay.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(byDisplay.onModelSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+            provider: null, llm_profile: 'local', model: 'local-model',
+        }))
+
+        // Match by provider/model ("openai_compatible/local-model") when unique.
+        const byProviderModel = createComposer({
+            chatDraft: '/model openai_compatible/local-model',
+            modelDiscovery: profileDiscovery,
+            llmProfiles: profiles,
+        })
+        byProviderModel.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(byProviderModel.onModelSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+            provider: null, llm_profile: 'local', model: 'local-model',
+        }))
+
+        // Ambiguous provider/model across multiple profiles reports actionable profile/model selectors.
+        const ambiguous = createComposer({
+            chatDraft: '/model openai_compatible/shared-model',
+            modelDiscovery: profileDiscovery,
+            llmProfiles: profiles,
+        })
+        ambiguous.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(ambiguous.onModelSettingsChange).not.toHaveBeenCalled()
+        expect(ambiguous.setPanelError).toHaveBeenCalledWith(expect.stringMatching(/alpha\/shared-model.*beta\/shared-model/))
+        expect(ambiguous.setPanelError).toHaveBeenCalledWith(expect.stringMatching(/\/model alpha\/shared-model/))
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+    })
+
     it('preserves inherited Thinking, Mode, Summary, and ACP session controls when /effort pins the inherited model', async () => {
         const inherited = {
             provider: 'codex',

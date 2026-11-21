@@ -14,16 +14,28 @@ type LoadedState = {
     source: ModelSettingsView['source'] | undefined
 }
 
+const MODEL_SETTINGS_SECTIONS = new Set(['models', 'project_models', 'llm_profiles', 'providers'])
+
 // Read the parent scope, never the override that the picker will remove.
 export function useInheritedModelSettingsView(projectPath?: string | null): InheritedModelSettingsState {
     const [settings, setSettings] = useState<LoadedState>()
     useEffect(() => {
         if (projectPath === null) return
         let cancelled = false
-        const refresh = () => {
+        let revision = 0
+        const refresh = (event?: Event) => {
+            if (event?.type === 'spark:settings-live-event') {
+                const section = (event as CustomEvent | undefined)?.detail?.payload?.section
+                if (typeof section === 'string' && !MODEL_SETTINGS_SECTIONS.has(section)) return
+                // Clear stale cached defaults while reloading after a model-settings change.
+                if (!section || section === 'models' || section === 'project_models') {
+                    setSettings(undefined)
+                }
+            }
+            const request = ++revision
             void fetchModelSettings(projectPath || undefined).then(
                 (view) => {
-                    if (!cancelled) {
+                    if (!cancelled && request === revision) {
                         setSettings({
                             path: projectPath,
                             status: 'loaded',
@@ -33,7 +45,7 @@ export function useInheritedModelSettingsView(projectPath?: string | null): Inhe
                     }
                 },
                 () => {
-                    if (!cancelled) {
+                    if (!cancelled && request === revision) {
                         setSettings({
                             path: projectPath,
                             status: 'failed',

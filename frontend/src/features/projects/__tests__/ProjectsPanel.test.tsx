@@ -5662,6 +5662,10 @@ describe('ProjectsPanel', () => {
       expect(await screen.findByText('Settings changed since this document was read. Reload before saving.')).toBeInTheDocument()
       expect(requests).toHaveLength(3)
       expect(effective.model).toBe('my-model')
+      // After rejection, the composer reverts to the acknowledged settings instead of showing the rejected optimistic selection.
+      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('my-model')
+      expect(screen.getByRole('button', { name: /^Reasoning effort:/ })).toHaveTextContent('High')
+      expect(screen.getByTestId('project-ai-conversation-send-button')).toBeDisabled()
     } else {
       expect(requests[3]).toMatchObject({ expected_revision: '4', model_settings: {
         provider: 'claude-code', model: 'final-model', reasoning_effort: 'high',
@@ -5669,10 +5673,10 @@ describe('ProjectsPanel', () => {
       await act(async () => { saves[3]() })
       expect(effective).toEqual({ provider: 'claude-code', llm_profile: null, model: 'final-model', reasoning_effort: 'high', thinking: null, thinking_budget_tokens: null, reasoning_mode: null, reasoning_summary: null })
       expect(requests.map((request) => request.expected_revision)).toEqual(['1', '2', '3', '4'])
+      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('final-model')
+      expect(screen.getByRole('button', { name: /^Reasoning effort:/ })).toHaveTextContent('High')
+      expect(screen.getByTestId('project-ai-conversation-send-button')).toBeEnabled()
     }
-    expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('final-model')
-    expect(screen.getByRole('button', { name: /^Reasoning effort:/ })).toHaveTextContent('High')
-    expect(screen.getByTestId('project-ai-conversation-send-button')).toBeEnabled()
   })
 
   it('keeps a saved Codex summary through a model chosen while Codex checks, once its check is in', async () => {
@@ -6264,6 +6268,150 @@ describe('ProjectsPanel', () => {
     await waitFor(() => expect(turnRequests).toHaveLength(1))
     expect(callOrder).toEqual(['settings:start', 'settings:done', 'turn:start'])
     expect(turnRequests[0]).toMatchObject({ message: 'Run with pinned project default' })
+  })
+
+  it('tracks live project/workspace default changes in an open inherited chat while respecting role precedence', async () => {
+    const user = userEvent.setup()
+    let liveParent = {
+      source: 'workspace' as 'workspace' | 'project',
+      effective: { provider: 'codex', llm_profile: null, model: 'gpt-5.4', reasoning_effort: 'low' },
+    }
+    const settingsWrites: Array<Record<string, unknown>> = []
+    const inheritedSnapshot = () => conversationFixture({
+      conversation_id: 'open-inherited',
+      project_path: '/tmp/live-parent-project',
+      chat_mode: 'chat',
+      provider: 'codex',
+      model: 'gpt-5.4',
+      reasoning_effort: 'low',
+      title: 'Inherited thread',
+      created_at: '2026-04-16T18:00:00Z',
+      updated_at: '2026-04-16T18:01:00Z',
+      revision_override: 1,
+      turns: [],
+      segments: [],
+      flow_run_requests: [],
+      flow_launches: [],
+      settings: {
+        models: {
+          scope: 'conversation',
+          revision: '1',
+          stored: null,
+          effective: { provider: 'codex', llm_profile: null, model: 'gpt-5.4', reasoning_effort: 'low' },
+          source: 'workspace',
+        },
+      },
+    })
+    const roleSnapshot = () => conversationFixture({
+      conversation_id: 'role-thread',
+      project_path: '/tmp/live-parent-project',
+      chat_mode: 'chat',
+      provider: 'codex',
+      model: 'gpt-5.4',
+      reasoning_effort: 'low',
+      title: 'Role thread',
+      created_at: '2026-04-16T18:02:00Z',
+      updated_at: '2026-04-16T18:03:00Z',
+      revision_override: 1,
+      turns: [],
+      segments: [],
+      flow_run_requests: [],
+      flow_launches: [],
+      settings: {
+        models: {
+          scope: 'conversation',
+          revision: '1',
+          stored: null,
+          effective: { provider: 'codex', llm_profile: null, model: 'gpt-5.4', reasoning_effort: 'low' },
+          source: 'role',
+        },
+      },
+    })
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      if (url.includes('/workspace/api/settings')) {
+        return new Response(JSON.stringify({
+          models: {
+            scope: 'project',
+            source: liveParent.source,
+            revision: '2',
+            stored: liveParent.source === 'project' ? liveParent.effective : null,
+            effective: liveParent.effective,
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/workspace/api/projects/chat-models')) {
+        return new Response(JSON.stringify({
+          providers: {
+            codex: { status: 'available', error: null, label: 'Codex' },
+            anthropic: { status: 'available', error: null, label: 'Anthropic' },
+          },
+          models: [
+            { provider: 'codex', id: 'gpt-5.4', display: 'GPT-5.4', is_default: true, supported_reasoning_efforts: ['low', 'high'] },
+            { provider: 'anthropic', id: 'claude-opus-4-6', display: 'Claude Opus 4.6', is_default: true, supported_reasoning_efforts: ['low', 'high'] },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/workspace/api/projects/metadata')) {
+        return new Response(JSON.stringify({ branch: 'main', commit: 'abc123' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/workspace/api/projects/conversations')) {
+        return new Response(JSON.stringify(summarySnapshot([inheritedSnapshot(), roleSnapshot()], { project_path: projectPathParam(url) })), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/conversations/open-inherited') || url.includes('/conversations/role-thread')) {
+        const isRole = url.includes('role-thread')
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body)) as Record<string, unknown>
+          settingsWrites.push(body)
+          const saved = body.model_settings as Record<string, unknown>
+          const base = isRole ? roleSnapshot() : inheritedSnapshot()
+          return new Response(JSON.stringify(conversationMutationAck({
+            ...base,
+            revision: 2,
+            settings: { models: { scope: 'conversation', revision: '2', stored: saved, effective: saved, source: 'conversation' } },
+          })), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        return new Response(JSON.stringify(conversationPage(isRole ? roleSnapshot() : inheritedSnapshot())), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/live-parent-project')
+      useStore.getState().setActiveProjectPath('/tmp/live-parent-project')
+      selectActiveConversation('open-inherited')
+    })
+
+    renderProjectsPanel()
+    await screen.findByRole('button', { name: 'Model: GPT-5.4, Codex, Workspace default' })
+
+    // Project default changes while the inherited chat stays open.
+    liveParent = {
+      source: 'project',
+      effective: { provider: 'anthropic', llm_profile: null, model: 'claude-opus-4-6', reasoning_effort: 'low' },
+    }
+    act(() => {
+      window.dispatchEvent(new CustomEvent('spark:settings-live-event', { detail: { payload: { section: 'project_models' } } }))
+    })
+    await screen.findByRole('button', { name: 'Model: Claude Opus 4.6, Anthropic, Project default' })
+
+    // /effort high pins the live project default (Anthropic), not the stale snapshot (Codex).
+    const input = screen.getByTestId('project-ai-conversation-input')
+    await user.type(input, '/effort high{Enter}')
+    await waitFor(() => expect(settingsWrites).toHaveLength(1))
+    expect(settingsWrites[0]).toMatchObject({
+      model_settings: { provider: 'anthropic', llm_profile: null, model: 'claude-opus-4-6', reasoning_effort: 'high' },
+    })
+
+    // Switching to a role-inherited chat keeps role precedence even though the project default is Anthropic.
+    await user.click(screen.getByRole('button', { name: 'Role thread' }))
+    await screen.findByRole('button', { name: 'Model: GPT-5.4, Codex, Role default' })
+    await chooseEffort(user, 'High')
+    await waitFor(() => expect(settingsWrites).toHaveLength(2))
+    expect(settingsWrites[1]).toMatchObject({
+      model_settings: { provider: 'codex', llm_profile: null, model: 'gpt-5.4', reasoning_effort: 'high' },
+    })
   })
 
 })

@@ -160,10 +160,15 @@ export function ModelChooser({
             .filter((row): row is ModelChoiceOption => Boolean(row))
         : []
 
+    // Give each model one Arrow stop when search is empty, with Pinned and Recent taking precedence over regular groups.
+    const quickRefs = [...pinnedRows, ...recentRows]
     let nextChoiceIndex = 0
     const pinnedChoices: RenderChoice[] = pinnedRows.map((row) => ({ ...row, section: 'pinned', choiceIndex: nextChoiceIndex++ }))
     const recentChoices: RenderChoice[] = recentRows.map((row) => ({ ...row, section: 'recent', choiceIndex: nextChoiceIndex++ }))
-    const groupChoices: RenderChoice[] = filteredRows.map((row) => ({ ...row, section: 'group', choiceIndex: nextChoiceIndex++ }))
+    const groupChoices: RenderChoice[] = filteredRows.map((row) => {
+        const coveredByQuickSection = !query && quickRefs.some((ref) => isSameModelRef(ref, row))
+        return { ...row, section: 'group', choiceIndex: coveredByQuickSection ? -1 : nextChoiceIndex++ }
+    })
     const customChoice: RenderChoice | null = custom && context
         ? {
             groupIndex: -1,
@@ -179,7 +184,12 @@ export function ModelChooser({
         }
         : null
 
-    const choices: RenderChoice[] = [...pinnedChoices, ...recentChoices, ...groupChoices, ...(customChoice ? [customChoice] : [])]
+    const choices: RenderChoice[] = [
+        ...pinnedChoices,
+        ...recentChoices,
+        ...groupChoices.filter((choice) => choice.choiceIndex >= 0),
+        ...(customChoice ? [customChoice] : []),
+    ]
 
     // Pre-highlight discovered/profile matches only; never auto-highlight a synthetic custom model on mistyped search.
     const hasCatalogMatch = groupChoices.length > 0
@@ -383,13 +393,13 @@ export function ModelChooser({
             >
                 <button
                     type="button"
-                    id={`${id}-option-${choice.choiceIndex}`}
+                    id={choice.choiceIndex >= 0 ? `${id}-option-${choice.choiceIndex}` : undefined}
                     role="option"
                     tabIndex={-1}
                     aria-label={optionAriaLabel}
                     aria-description={choice.isDefault ? 'Provider default' : undefined}
                     aria-selected={chosen(choice)}
-                    className={`flex min-w-0 flex-1 items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm break-words ${effectiveActive === choice.choiceIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-accent'} aria-selected:font-semibold`}
+                    className={`flex min-w-0 flex-1 items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm break-words ${choice.choiceIndex >= 0 && effectiveActive === choice.choiceIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-accent'} aria-selected:font-semibold`}
                     onClick={() => commitModel(choice)}
                 >
                     <span className="flex min-w-0 items-center gap-1.5">
@@ -696,16 +706,23 @@ export function ModelChooser({
                                     </button>
                                     {unavailableOpen && (
                                         <div className="mt-1 max-h-40 space-y-2 overflow-y-auto px-2 py-1 text-xs">
-                                            {unavailableProviders.map((provider) => (
-                                                <div key={provider} role="group" aria-label={providerLabel(provider)}>
-                                                    <div className="font-medium text-foreground">{providerLabel(provider)}</div>
-                                                    <p role="status" className="text-muted-foreground">
-                                                        {statuses?.[provider]?.setup_status === 'unauthenticated' ? 'Authentication required. ' : ''}
-                                                        Model discovery unavailable. {statuses?.[provider]?.error}
-                                                        {statuses?.[provider]?.setup_status ? ' Check and fix it under Settings › Models & accounts › Agent harnesses.' : ''}
-                                                    </p>
-                                                </div>
-                                            ))}
+                                            {unavailableProviders.map((provider) => {
+                                                const isHarness = Boolean(statuses?.[provider]?.setup_status)
+                                                    || provider === 'codex'
+                                                    || provider === 'claude-code'
+                                                    || provider.startsWith('acp:')
+                                                const settingsSection = isHarness ? 'Agent harnesses' : 'Provider connections'
+                                                return (
+                                                    <div key={provider} role="group" aria-label={providerLabel(provider)}>
+                                                        <div className="font-medium text-foreground">{providerLabel(provider)}</div>
+                                                        <p role="status" className="text-muted-foreground">
+                                                            {statuses?.[provider]?.setup_status === 'unauthenticated' ? 'Authentication required. ' : ''}
+                                                            Model discovery unavailable. {statuses?.[provider]?.error}
+                                                            {` Check and fix it under Settings › Models & accounts › ${settingsSection}.`}
+                                                        </p>
+                                                    </div>
+                                                )
+                                            })}
                                         </div>
                                     )}
                                 </div>
