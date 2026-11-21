@@ -18,7 +18,8 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 390]) {
         } }))
         // Discovery refetches on a settings live event; the stub above replaces the helper's.
         await page.evaluate(() => window.dispatchEvent(new Event('spark:settings-live-event')))
-        await expect(page.getByRole('button', { name: /^Model:/ })).toContainText('GPT-5.5 · Medium')
+        await expect(page.getByRole('button', { name: /^Model:/ })).toContainText('GPT-5.5')
+        await expect(page.getByRole('button', { name: /^Reasoning effort:/ })).toContainText('Medium')
         await page.evaluate(theme => document.documentElement.classList.toggle('dark', theme === 'dark'), theme)
         const composer = page.getByTestId('project-ai-conversation-surface')
         const trigger = composer.getByRole('button', { name: /^Model:/ })

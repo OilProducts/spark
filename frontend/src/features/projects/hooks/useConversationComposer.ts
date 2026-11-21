@@ -1,5 +1,16 @@
 import type { Dispatch, SetStateAction } from 'react'
 import {
+    buildModelCatalog,
+    EMPTY_MODEL_SETTINGS,
+    matchAvailableModel,
+    recordRecentModel,
+    resolveEffortCommand,
+    selectModelSettings,
+    type ModelDiscoveryState,
+} from '@/components/model-chooser/modelSelection'
+import type { ModelSettings } from '@/lib/api/settingsApi'
+import type { LlmProfileMetadata } from '@/lib/llmSuggestions'
+import {
     retryConversationTurnValidated,
     sendConversationTurnValidated,
     type ConversationAcceptance,
@@ -24,16 +35,34 @@ export type ConversationComposerCommand =
         chatMode: ConversationChatMode
         message: string
     }
+    | {
+        kind: 'open_model_picker'
+    }
+    | {
+        kind: 'set_model'
+        query: string
+    }
+    | {
+        kind: 'set_effort'
+        effort: string
+    }
 
 export function parseConversationComposerCommand(value: string): ConversationComposerCommand | null {
     const trimmed = value.trim()
-    const match = trimmed.match(/^\/(plan|chat)(?:\s+([\s\S]*))?$/)
+    const match = trimmed.match(/^\/(plan|chat|model|effort)(?:\s+([\s\S]*))?$/)
     if (!match) {
         return null
     }
-    const chatMode = match[1] === 'plan' ? 'plan' : 'chat'
-    const message = (match[2] || '').trim()
-    if (!message) {
+    const command = match[1]
+    const arg = (match[2] || '').trim()
+    if (command === 'model') {
+        return arg ? { kind: 'set_model', query: arg } : { kind: 'open_model_picker' }
+    }
+    if (command === 'effort') {
+        return { kind: 'set_effort', effort: arg }
+    }
+    const chatMode = command === 'plan' ? 'plan' : 'chat'
+    if (!arg) {
         return {
             kind: 'switch_mode',
             chatMode,
@@ -42,7 +71,7 @@ export function parseConversationComposerCommand(value: string): ConversationCom
     return {
         kind: 'switch_and_send',
         chatMode,
-        message,
+        message: arg,
     }
 }
 
@@ -52,6 +81,14 @@ type UseConversationComposerArgs = {
     attachments: ComposerAttachment[]
     isUploadBlocking: boolean
     isChatInputDisabled: boolean
+    /** Locks model/effort commands while hydrating, starting a turn, or when the chat is unavailable. */
+    isModelSettingsLocked?: boolean
+    modelSettings?: ModelSettings
+    inheritedModelSettings?: ModelSettings
+    modelDiscovery?: ModelDiscoveryState | null
+    llmProfiles?: LlmProfileMetadata[]
+    onModelSettingsChange?: (value: ModelSettings) => void
+    onOpenModelPicker?: () => void
     /** Set when the active harness does not support Plan mode; blocks `/plan` before switching. */
     planModeUnsupportedReason?: string | null
     ensureConversationId: () => string | null
@@ -78,6 +115,13 @@ export function useConversationComposer({
     attachments,
     isUploadBlocking,
     isChatInputDisabled,
+    isModelSettingsLocked = false,
+    modelSettings = EMPTY_MODEL_SETTINGS,
+    inheritedModelSettings,
+    modelDiscovery = null,
+    llmProfiles = [],
+    onModelSettingsChange,
+    onOpenModelPicker,
     planModeUnsupportedReason = null,
     ensureConversationId,
     getCurrentConversationId,
@@ -122,7 +166,7 @@ export function useConversationComposer({
     }
 
     const onSendChatMessage = async () => {
-        if (!activeProjectPath || isChatInputDisabled || isUploadBlocking) {
+        if (!activeProjectPath) {
             return
         }
         const trimmed = chatDraft.trim()
@@ -131,6 +175,61 @@ export function useConversationComposer({
             return
         }
         const parsedCommand = parseConversationComposerCommand(trimmed)
+        if (
+            parsedCommand?.kind === 'open_model_picker'
+            || parsedCommand?.kind === 'set_model'
+            || parsedCommand?.kind === 'set_effort'
+        ) {
+            if (isModelSettingsLocked) {
+                setPanelError('Model settings cannot be changed right now.')
+                return
+            }
+            if (parsedCommand.kind === 'open_model_picker') {
+                setPanelError(null)
+                setChatDraft('')
+                onOpenModelPicker?.()
+                return
+            }
+            if (parsedCommand.kind === 'set_model') {
+                const { rows } = buildModelCatalog(llmProfiles, modelDiscovery, false)
+                const matched = matchAvailableModel(parsedCommand.query, rows, modelDiscovery)
+                if (!matched.ok) {
+                    setPanelError(matched.error)
+                    return
+                }
+                const next = {
+                    ...selectModelSettings(modelSettings, matched.choice, llmProfiles, modelDiscovery),
+                    reasoning_effort: modelSettings.reasoning_effort,
+                }
+                recordRecentModel({
+                    provider: matched.choice.provider,
+                    llm_profile: matched.choice.llm_profile,
+                    model: matched.choice.model,
+                })
+                setPanelError(null)
+                setChatDraft('')
+                onModelSettingsChange?.(next)
+                return
+            }
+            const resolved = resolveEffortCommand(
+                parsedCommand.effort,
+                modelSettings,
+                inheritedModelSettings,
+                llmProfiles,
+                modelDiscovery,
+            )
+            if (!resolved.ok) {
+                setPanelError(resolved.error)
+                return
+            }
+            setPanelError(null)
+            setChatDraft('')
+            onModelSettingsChange?.(resolved.next)
+            return
+        }
+        if (isChatInputDisabled || isUploadBlocking) {
+            return
+        }
         const conversationId = ensureConversationId()
         if (!conversationId) {
             return

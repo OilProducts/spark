@@ -364,8 +364,9 @@ describe('Accessible node inspector fields', () => {
       fireEvent.click(within(screen.getByRole('group', { name: 'openai', exact: true })).getByRole('option', { name: 'gpt-5.5' }))
       expect(props.onPropertyChange).toHaveBeenCalledWith('llm_provider', 'openai')
       expect(props.onPropertyChange).toHaveBeenCalledWith('llm_model', 'gpt-5.5')
-      // Effort applies to an explicitly chosen model, so the node must hold the choice first.
+      // Effort has its own adjacent control and applies to the selected model.
       view.rerender(<NodeInspectorPanel {...props} selectedNode={{ ...props.selectedNode!, data: { ...props.selectedNode!.data, llm_provider: 'openai', llm_model: 'gpt-5.5' } }} />)
+      fireEvent.click(screen.getByRole('button', { name: /^Reasoning effort:/ }))
       fireEvent.click(screen.getByRole('button', { name: 'High', exact: true }))
       expect(props.onPropertyChange).toHaveBeenCalledWith('reasoning_effort', 'high')
       for (const name of ['Goal Gate', 'Auto Status', 'Allow Partial', 'Retry Target', 'Fallback Retry Target']) {

@@ -71,14 +71,16 @@ interface ProjectConversationSurfaceProps {
     onChatComposerSubmit: () => void
     onChatDraftChange: (value: string) => void
     modelSettingsSource?: 'workspace' | 'project' | 'role' | 'conversation'
+    modelPickerOpen?: boolean
+    onModelPickerOpenChange?: (open: boolean) => void
 }
 
-// Where the chat's model comes from, named on the model button, and where to change it.
+// Where the chat's model comes from, named in the model button's tooltip/label, and where to change it.
 const MODEL_SOURCES = {
     conversation: { prefix: 'Default', title: 'Chosen for this chat with the model picker.' },
     role: { prefix: 'Role default', title: "Set by this chat's role. Pick a model to use another one in this chat." },
     project: { prefix: 'Project default', title: "Change it in this project's settings, or pick a model for this chat." },
-    workspace: { prefix: 'Default', title: 'Change it in Settings, or pick a model for this chat.' },
+    workspace: { prefix: 'Workspace default', title: 'Change it in Settings, or pick a model for this chat.' },
 } as const
 
 /** The chat sheet: header, scrolling transcript and the composer. ViewLayout supplies the sheet itself. */
@@ -159,12 +161,38 @@ export function ProjectConversationSurface({
     onChatComposerSubmit,
     onChatDraftChange,
     modelSettingsSource,
+    modelPickerOpen,
+    onModelPickerOpenChange,
 }: ProjectConversationSurfaceProps) {
     const controlsDisabled = !activeProjectPath || isChatInputDisabled
     const hasProject = Boolean(activeProjectPath && activeProjectLabel)
+    const [uncontrolledModelPickerOpen, setUncontrolledModelPickerOpen] = useState(false)
+    const isModelPickerOpen = modelPickerOpen ?? uncontrolledModelPickerOpen
+    const setModelPickerOpen = (next: boolean) => {
+        if (modelPickerOpen === undefined) setUncontrolledModelPickerOpen(next)
+        onModelPickerOpenChange?.(next)
+    }
+    const modelSourceTitle = modelSettingsSource ? MODEL_SOURCES[modelSettingsSource].title : undefined
+    const modelTriggerTitle = modelSourceTitle
+        ? `${modelSourceTitle} (Ctrl+/ or ⌘/)`
+        : 'Choose model (Ctrl+/ or ⌘/)'
     return (
         <div
             data-testid="project-ai-conversation-surface"
+            onKeyDown={(event) => {
+                if (
+                    !event.defaultPrevented
+                    && (event.metaKey || event.ctrlKey)
+                    && !event.altKey
+                    && !event.shiftKey
+                    && event.key === '/'
+                    && activeProjectPath
+                    && !isModelSettingsLocked
+                ) {
+                    event.preventDefault()
+                    setModelPickerOpen(true)
+                }
+            }}
             // A narrow viewport stacks the chat list above; the chat still fills the view's height so it opens at its latest message with the composer in reach.
             className={cn('flex min-h-0 flex-col', isNarrowViewport ? 'h-[100cqh]' : 'h-full')}
         >
@@ -287,11 +315,12 @@ export function ProjectConversationSurface({
                                             </NativeSelect>
                                         </div>
                                     ) : null}
-                                    {/* One label for the model: the button names it and, when inherited, where from. */}
+                                    {/* Compact model + effort controls; tooltips and aria-labels name the inheritance source. */}
                                     <ModelChooser inherited={inheritedModelSettings} value={modelSettings} onChange={onModelSettingsChange}
                                         projectPath={activeProjectPath} inheritLabel={defaultModel || 'Provider default'}
                                         defaultPrefix={modelSettingsSource ? MODEL_SOURCES[modelSettingsSource].prefix : undefined}
-                                        title={modelSettingsSource ? MODEL_SOURCES[modelSettingsSource].title : undefined}
+                                        title={modelTriggerTitle}
+                                        open={isModelPickerOpen} onOpenChange={setModelPickerOpen}
                                         layout="compact" disabled={!activeProjectPath || isModelSettingsLocked} />
                                 </>
                             ),

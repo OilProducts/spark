@@ -66,6 +66,17 @@ describe('parseConversationComposerCommand', () => {
     it('leaves unknown slash commands alone', () => {
         expect(parseConversationComposerCommand('/unknown something')).toBeNull()
         expect(parseConversationComposerCommand('/planner')).toBeNull()
+        expect(parseConversationComposerCommand('/models')).toBeNull()
+        expect(parseConversationComposerCommand('/effortless')).toBeNull()
+    })
+
+    it('parses /model and /effort slash commands', () => {
+        expect(parseConversationComposerCommand('/model')).toEqual({ kind: 'open_model_picker' })
+        expect(parseConversationComposerCommand('/model   gpt-5.4  ')).toEqual({ kind: 'set_model', query: 'gpt-5.4' })
+        expect(parseConversationComposerCommand('/model codex/gpt-5.4')).toEqual({ kind: 'set_model', query: 'codex/gpt-5.4' })
+        expect(parseConversationComposerCommand('/effort high')).toEqual({ kind: 'set_effort', effort: 'high' })
+        expect(parseConversationComposerCommand('/effort default')).toEqual({ kind: 'set_effort', effort: 'default' })
+        expect(parseConversationComposerCommand('/effort')).toEqual({ kind: 'set_effort', effort: '' })
     })
 })
 
@@ -267,5 +278,207 @@ describe('switchChatMode', () => {
         await composer().onSwitchChatMode('plan')
 
         expect(record()).toMatchObject({ chat_mode: 'chat', title: 'Live', revision: '8', watermark: '8' })
+    })
+})
+
+describe('/model and /effort slash commands', () => {
+    const projectPath = '/tmp/project'
+    const discovery = {
+        projectPath,
+        payload: {
+            providers: {
+                codex: { status: 'available' as const, error: null, label: 'Codex' },
+                'claude-code': { status: 'available' as const, error: null, label: 'Claude Code' },
+                anthropic: { status: 'available' as const, error: null, label: 'Anthropic' },
+            },
+            models: [
+                {
+                    provider: 'codex',
+                    id: 'gpt-5.4',
+                    display: 'GPT-5.4',
+                    is_default: true,
+                    supported_reasoning_efforts: ['low', 'medium', 'high'],
+                    default_reasoning_effort: 'medium',
+                    supported_reasoning_summaries: ['auto', 'detailed'],
+                },
+                {
+                    provider: 'codex',
+                    id: 'gpt-5.4-mini',
+                    display: 'GPT-5.4 Mini',
+                    is_default: false,
+                    supported_reasoning_efforts: ['low', 'medium'],
+                },
+                {
+                    provider: 'claude-code',
+                    id: 'claude-opus-4-6',
+                    display: 'Claude Opus 4.6',
+                    is_default: true,
+                    supported_reasoning_efforts: [],
+                },
+                {
+                    provider: 'anthropic',
+                    id: 'claude-opus-4-6',
+                    display: 'Claude Opus 4.6',
+                    is_default: false,
+                    supported_reasoning_efforts: ['low', 'high'],
+                },
+            ],
+        },
+    }
+
+    const createComposer = (overrides: Partial<Parameters<typeof useConversationComposer>[0]> = {}) => {
+        const setChatDraft = vi.fn()
+        const setPanelError = vi.fn()
+        const onModelSettingsChange = vi.fn()
+        const onOpenModelPicker = vi.fn()
+        const result = useConversationComposer({
+            activeProjectPath: projectPath,
+            chatDraft: '',
+            attachments: [],
+            isUploadBlocking: false,
+            isChatInputDisabled: false,
+            modelSettings: { provider: null, llm_profile: null, model: null, reasoning_effort: null },
+            inheritedModelSettings: { provider: 'codex', llm_profile: null, model: 'gpt-5.4', reasoning_effort: null },
+            modelDiscovery: discovery,
+            llmProfiles: [],
+            onModelSettingsChange,
+            onOpenModelPicker,
+            ensureConversationId: () => 'conversation-1',
+            getCurrentConversationId: () => 'conversation-1',
+            getConversationRecord: () => record(),
+            applyConversationBatch: vi.fn(),
+            formatErrorMessage: (_error, fallback) => fallback,
+            setChatDraft,
+            setPanelError,
+            setPendingConversationTurn: vi.fn(),
+            ...overrides,
+        })
+        return { ...result, setChatDraft, setPanelError, onModelSettingsChange, onOpenModelPicker }
+    }
+
+    beforeEach(() => {
+        useStore.setState(useStore.getInitialState(), true)
+        vi.mocked(sendConversationTurnValidated).mockReset()
+        vi.mocked(updateConversationSettingsValidated).mockReset()
+    })
+
+    it('opens the Model picker on bare /model without sending a message', async () => {
+        const c = createComposer({ chatDraft: '/model' })
+        c.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(c.onOpenModelPicker).toHaveBeenCalledOnce()
+        expect(c.setChatDraft).toHaveBeenCalledWith('')
+        expect(c.setPanelError).toHaveBeenCalledWith(null)
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+    })
+
+    it('selects a unique model by exact id, display name, or provider/model and records recent', async () => {
+        // Exact id beats prefix overlap (gpt-5.4 vs gpt-5.4-mini).
+        const byId = createComposer({ chatDraft: '/model gpt-5.4' })
+        byId.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(byId.onModelSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+            provider: 'codex', llm_profile: null, model: 'gpt-5.4',
+        }))
+        expect(byId.setChatDraft).toHaveBeenCalledWith('')
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+
+        // Unique display name / substring match.
+        const byDisplay = createComposer({ chatDraft: '/model GPT-5.4 Mini' })
+        byDisplay.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(byDisplay.onModelSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+            provider: 'codex', llm_profile: null, model: 'gpt-5.4-mini',
+        }))
+
+        // provider/model disambiguates identical model ids across providers.
+        const byProviderModel = createComposer({ chatDraft: '/model anthropic/claude-opus-4-6' })
+        byProviderModel.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(byProviderModel.onModelSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+            provider: 'anthropic', llm_profile: null, model: 'claude-opus-4-6',
+        }))
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+    })
+
+    it('surfaces clear inline errors on ambiguous or missing /model queries without sending', async () => {
+        const ambiguous = createComposer({ chatDraft: '/model claude-opus-4-6' })
+        ambiguous.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(ambiguous.onModelSettingsChange).not.toHaveBeenCalled()
+        expect(ambiguous.setChatDraft).not.toHaveBeenCalled()
+        expect(ambiguous.setPanelError).toHaveBeenCalledWith(expect.stringMatching(/Multiple models match "claude-opus-4-6"/))
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+
+        const missing = createComposer({ chatDraft: '/model nonexistent-model' })
+        missing.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(missing.onModelSettingsChange).not.toHaveBeenCalled()
+        expect(missing.setPanelError).toHaveBeenCalledWith('No available model matches "nonexistent-model".')
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+    })
+
+    it('handles /effort <level|default>, auto-pinning inherited effective model and validating supported levels', async () => {
+        // Inherited effective model (codex/gpt-5.4): /effort high atomically pins model + effort.
+        const pinInherited = createComposer({ chatDraft: '/effort high' })
+        pinInherited.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(pinInherited.onModelSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+            provider: 'codex', llm_profile: null, model: 'gpt-5.4', reasoning_effort: 'high',
+        }))
+        expect(pinInherited.setChatDraft).toHaveBeenCalledWith('')
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+
+        // Explicit model: /effort default clears reasoning_effort.
+        const clearExplicit = createComposer({
+            chatDraft: '/effort default',
+            modelSettings: { provider: 'codex', llm_profile: null, model: 'gpt-5.4', reasoning_effort: 'high' },
+        })
+        clearExplicit.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(clearExplicit.onModelSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+            provider: 'codex', model: 'gpt-5.4', reasoning_effort: null,
+        }))
+
+        // Unsupported effort level surfaces a clear error and does not send.
+        const unsupported = createComposer({ chatDraft: '/effort xhigh' })
+        unsupported.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(unsupported.onModelSettingsChange).not.toHaveBeenCalled()
+        expect(unsupported.setPanelError).toHaveBeenCalledWith(expect.stringMatching(/not supported.*low, medium, high/i))
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+
+        // Bare /effort surfaces usage error and does not send.
+        const bare = createComposer({ chatDraft: '/effort' })
+        bare.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(bare.onModelSettingsChange).not.toHaveBeenCalled()
+        expect(bare.setPanelError).toHaveBeenCalledWith(expect.stringMatching(/Specify an effort level/i))
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+
+        // Unknown inherited effective model surfaces error.
+        const unknown = createComposer({
+            chatDraft: '/effort high',
+            inheritedModelSettings: undefined,
+        })
+        unknown.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(unknown.onModelSettingsChange).not.toHaveBeenCalled()
+        expect(unknown.setPanelError).toHaveBeenCalledWith(expect.stringMatching(/No active model is resolved/i))
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+    })
+
+    it('still allows /model recovery when chat submission is disabled due to unavailable current model', async () => {
+        const recover = createComposer({
+            chatDraft: '/model anthropic/claude-opus-4-6',
+            isChatInputDisabled: true,
+            isModelSettingsLocked: false,
+        })
+        recover.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(recover.onModelSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+            provider: 'anthropic', model: 'claude-opus-4-6',
+        }))
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
     })
 })

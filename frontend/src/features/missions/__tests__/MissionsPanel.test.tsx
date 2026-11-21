@@ -253,6 +253,7 @@ it('sets a draft mission\'s model on its conversation before Start', async () =>
     const form = within(await detail().findByRole('form', { name: 'Model' }))
     fireEvent.click(form.getByRole('button', { name: /^Model:/ }))
     fireEvent.click(await screen.findByRole('option', { name: 'Opus' }))
+    fireEvent.click(form.getByRole('button', { name: /^Reasoning effort:/ }))
     fireEvent.click(screen.getByRole('button', { name: 'High', exact: true }))
     fireEvent.click(form.getByRole('button', { name: 'Save model' }))
     await waitFor(() => expect(detail().queryByRole('form', { name: 'Model' })).not.toBeInTheDocument())

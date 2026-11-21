@@ -1,4 +1,4 @@
-import { chooseModel, customModel, chooseEffort, openPicker } from '@/components/model-chooser/__tests__/picker'
+import { chooseModel, customModel, chooseEffort, openEffortPicker, openPicker } from '@/components/model-chooser/__tests__/picker'
 import { GraphSettings } from '@/features/editor/GraphSettings'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
 import {
@@ -211,7 +211,9 @@ describe('Graph and settings behavior', () => {
     if (failure === 'unavailable') serverModels.provider = 'codex'
     const saved = useStore.getState().uiDefaults
     render(<SettingsPanel />)
-    await openPicker(userEvent.setup())
+    const user = userEvent.setup()
+    await openPicker(user)
+    await user.click(screen.getByRole('button', { name: /unavailable provider/ }))
     await screen.findAllByText(/Model discovery unavailable\./)
     expect(useStore.getState().uiDefaults).toEqual(saved)
     expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(saved.llm_model)
@@ -249,7 +251,7 @@ describe('Graph and settings behavior', () => {
     // With no agent step, there is nothing to apply the defaults to, and it says so.
     expect(screen.getByRole('button', { name: 'Apply to agent steps' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Apply to agent steps' })).toHaveAccessibleDescription('This flow has no agent steps, the only steps that run a model.')
-    await openPicker(user)
+    await openEffortPicker(user)
     expect(screen.getByRole('button', { name: 'XHigh' })).toBeVisible()
     await user.keyboard('{Escape}')
 

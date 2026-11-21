@@ -1,5 +1,6 @@
 import { useInheritedModelSettings } from '@/components/model-chooser/useInheritedModelSettings'
 import { useModelOptions } from '@/components/model-chooser/useModelOptions'
+import { useLlmProfiles } from '@/lib/useLlmProfiles'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -59,6 +60,8 @@ export function useProjectsHomeController() {
     const activeProjectScope = activeProjectPath ? projectSessionsByPath[activeProjectPath] : null
     const activeConversationId = activeProjectScope?.conversationId ?? null
     const inheritedModelSettings = useInheritedModelSettings(activeProjectPath)
+    const llmProfiles = useLlmProfiles()
+    const [modelPickerOpen, setModelPickerOpen] = useState(false)
     const {
         applyConversationBatch,
         applyConversationPage,
@@ -213,7 +216,8 @@ export function useProjectsHomeController() {
     useEffect(() => {
         setRequestUserInputActionError(null)
         setSubmittingRequestUserInputIds({})
-    }, [activeConversationId])
+        setModelPickerOpen(false)
+    }, [activeConversationId, activeProjectPath])
 
     useEffect(() => {
         if (!pendingConversationTurn || !activeConversationRecord) {
@@ -252,28 +256,10 @@ export function useProjectsHomeController() {
         setPanelError,
     })
 
-    const {
-        onChatComposerSubmit,
-        onRetryTurn,
-        onSwitchChatMode,
-    } = useConversationComposer({
-        activeProjectPath,
-        chatDraft,
-        attachments: composerAttachments.attachments,
-        isUploadBlocking: composerAttachments.isUploadBlocking,
-        isChatInputDisabled: isChatSubmissionDisabled || isConversationUnavailable,
-        planModeUnsupportedReason,
-        ensureConversationId,
-        getCurrentConversationId: (projectPath) => (
-            useStore.getState().projectSessionsByPath[projectPath]?.conversationId ?? null
-        ),
-        getConversationRecord,
-        applyConversationBatch,
-        formatErrorMessage: extractApiErrorMessage,
-        setChatDraft,
-        setPanelError,
-        setPendingConversationTurn,
-    })
+    const isModelSettingsLocked = isConversationHydrating || isConversationTurnStarting || isConversationUnavailable
+    const resolvedInheritedModelSettings = editableModelSettings === INHERITED_MODEL_SETTINGS
+        ? currentModelSettings
+        : inheritedModelSettings
 
     const persistChatSettings = useCallback(async (values: ModelSettings | null) => {
         if (!activeProjectPath) return
@@ -314,6 +300,36 @@ export function useProjectsHomeController() {
             chatSettingsSaves.current.delete(conversationId)
         }
     }, [activeProjectPath, applyConversationBatch, ensureConversationId, setPanelError, currentModelSettings])
+
+    const {
+        onChatComposerSubmit,
+        onRetryTurn,
+        onSwitchChatMode,
+    } = useConversationComposer({
+        activeProjectPath,
+        chatDraft,
+        attachments: composerAttachments.attachments,
+        isUploadBlocking: composerAttachments.isUploadBlocking,
+        isChatInputDisabled: isChatSubmissionDisabled || isConversationUnavailable,
+        isModelSettingsLocked,
+        modelSettings: editableModelSettings,
+        inheritedModelSettings: resolvedInheritedModelSettings,
+        modelDiscovery: discovery,
+        llmProfiles,
+        onModelSettingsChange: (value: ModelSettings) => { void persistChatSettings(value) },
+        onOpenModelPicker: () => setModelPickerOpen(true),
+        planModeUnsupportedReason,
+        ensureConversationId,
+        getCurrentConversationId: (projectPath) => (
+            useStore.getState().projectSessionsByPath[projectPath]?.conversationId ?? null
+        ),
+        getConversationRecord,
+        applyConversationBatch,
+        formatErrorMessage: extractApiErrorMessage,
+        setChatDraft,
+        setPanelError,
+        setPendingConversationTurn,
+    })
 
     const {
         onCreateConversationThread,
@@ -497,10 +513,12 @@ export function useProjectsHomeController() {
             // The picker edits what this conversation stores; effective settings would hide inheritance.
             modelSettings: editableModelSettings,
             // While nothing is stored, the conversation's effective settings are what it inherits.
-            inheritedModelSettings: editableModelSettings === INHERITED_MODEL_SETTINGS ? currentModelSettings : inheritedModelSettings,
+            inheritedModelSettings: resolvedInheritedModelSettings,
             defaultModel: isCodexProvider && !currentModelSettings.model ? activeProjectChatModel : undefined,
             onModelSettingsChange: (value: ModelSettings) => { void persistChatSettings(value) },
-            isModelSettingsLocked: isConversationHydrating || isConversationTurnStarting || isConversationUnavailable,
+            isModelSettingsLocked,
+            modelPickerOpen,
+            onModelPickerOpenChange: setModelPickerOpen,
             chatModelAvailabilityMessage,
             hasRenderableConversationHistory,
             follow,

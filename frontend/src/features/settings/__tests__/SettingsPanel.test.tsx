@@ -102,6 +102,7 @@ it('shares discovery fallback, profiles, custom values and compatibility with pr
     for (const editor of [workspace, project]) {
         expect(editor.getByRole('button', { name: /^Model:/ })).toHaveTextContent('saved-model')
         await openPicker(user, editor)
+        await user.click(screen.getByRole('button', { name: /unavailable provider/ }))
         expect(screen.getAllByText(/Model discovery unavailable\./).length).toBeGreaterThan(0)
         await user.keyboard('{Escape}')
         await chooseModel(user, 'openai_compatible / Team models', 'team-one', editor)
@@ -170,13 +171,18 @@ it.each([false, true])('resolves reset from the parent instead of the saved over
     vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [{ provider: 'codex', id: 'discovered', display: 'Discovered', is_default: true, default_reasoning_effort: 'medium' }], providers: { codex: { status: 'available', error: null } } } })
     render(<DialogProvider><WithProject /></DialogProvider>)
     const scope = card(projectScope ? 'Project model defaults' : 'Model defaults (workspace)')
-    await waitFor(() => expect(scope.getByRole('button', { name: /^Model:/ })).toHaveTextContent('saved-override · High'))
+    await waitFor(() => {
+        expect(scope.getByRole('button', { name: /^Model:/ })).toHaveTextContent('saved-override')
+        expect(scope.getByRole('button', { name: /^Reasoning effort:/ })).toHaveTextContent('High')
+    })
     await openPicker(user, scope)
     const expected = projectScope ? 'workspace-parent · Low' : 'Discovered · Medium'
     const reset = screen.getByRole('button', { name: /^Use default ·/ })
     expect(reset).toHaveTextContent(`Use default · ${expected}`)
     await user.click(reset)
-    expect(scope.getByRole('button', { name: /^Model:/ })).toHaveTextContent(`Default: ${expected}`)
+    expect(scope.getByRole('button', { name: /^Model:/ })).toHaveTextContent(projectScope ? 'workspace-parent' : 'Discovered')
+    expect(scope.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Default')
+    expect(scope.getByRole('button', { name: /^Reasoning effort:/ })).toHaveTextContent(projectScope ? 'Low' : 'Medium')
 })
 
 it('keeps the utility model off until chosen, excludes ACP harnesses, and saves or clears it', async () => {

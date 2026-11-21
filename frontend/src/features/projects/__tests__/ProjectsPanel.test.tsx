@@ -1,4 +1,4 @@
-import { chooseModel, customModel, chooseEffort, openPicker } from '@/components/model-chooser/__tests__/picker'
+import { chooseModel, customModel, chooseEffort, openEffortPicker, openPicker } from '@/components/model-chooser/__tests__/picker'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { HomeSessionController } from '@/app/AppSessionControllers'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
@@ -5206,7 +5206,7 @@ describe('ProjectsPanel', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(/gpt-5.4.mini/i)
-      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('High')
+      expect(screen.getByRole('button', { name: /^Reasoning effort:/ })).toHaveTextContent('High')
     })
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Use the default chat controls.')
@@ -5250,8 +5250,10 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     await waitFor(() => {
-      // The model button alone names the default the chat inherits.
-      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(/^Default: GPT-5\.4/i)
+      // Compact model button shows the resolved model without verbose Default: prefix, naming inheritance in aria-label.
+      const modelButton = screen.getByRole('button', { name: /^Model: GPT-5\.4.*Default/ })
+      expect(modelButton).toHaveTextContent(/GPT-5\.4/i)
+      expect(modelButton).not.toHaveTextContent(/^Default:/i)
     })
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Hello')
     expect(screen.queryByText('The saved Codex model is no longer available. Select another model.')).toBeNull()
@@ -5383,11 +5385,12 @@ describe('ProjectsPanel', () => {
     await user.click(await screen.findByRole('option', { name: 'GPT-5.4 Mini' }))
     await waitFor(() => expect(settingsRequests).toHaveLength(1))
     expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('GPT-5.4 Mini')
+    await openEffortPicker(user)
     expect(screen.getByRole('button', { name: 'Medium', exact: true })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'High', exact: true })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Medium', exact: true }))
     await waitFor(() => expect(settingsRequests).toHaveLength(2))
-    expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Medium')
+    expect(screen.getByRole('button', { name: /^Reasoning effort:/ })).toHaveTextContent('Medium')
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Continue with selected settings.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
@@ -5453,7 +5456,7 @@ describe('ProjectsPanel', () => {
       selectActiveConversation('codex-thread')
     })
     renderProjectsPanel()
-    await waitFor(() => expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(/^Default: GPT-5\.4/i))
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(/GPT-5\.4/i))
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Hello')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeEnabled()
     await chooseEffort(user, 'High')
@@ -5463,7 +5466,6 @@ describe('ProjectsPanel', () => {
     await user.type(screen.getByRole('combobox', { name: 'Search models' }), 'my-model')
     expect(requests).toHaveLength(1)
     await user.click(screen.getByRole('option', { name: 'Use "my-model" as a custom model' }))
-    await user.keyboard('{Escape}')
     expect(requests).toHaveLength(2)
     expect(requests[1]).toMatchObject({ expected_revision: '2', model_settings: { model: 'my-model' } })
     await act(async () => { saves[1]() })
@@ -5474,7 +5476,7 @@ describe('ProjectsPanel', () => {
     await chooseModel(user, 'Claude Code', 'claude-opus-4-6')
     await customModel(user, 'final-model')
     // Unknown Claude Code models have no advertised effort; the stored High remains unchanged.
-    await openPicker(user)
+    await openEffortPicker(user)
     expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button')).toHaveLength(1)
     await user.keyboard('{Escape}')
     expect(requests).toHaveLength(3)
@@ -5492,7 +5494,8 @@ describe('ProjectsPanel', () => {
       expect(effective).toEqual({ provider: 'claude-code', llm_profile: null, model: 'final-model', reasoning_effort: 'high', thinking: null, thinking_budget_tokens: null, reasoning_mode: null, reasoning_summary: null })
       expect(requests.map((request) => request.expected_revision)).toEqual(['1', '2', '3', '4'])
     }
-    expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('final-model · High')
+    expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('final-model')
+    expect(screen.getByRole('button', { name: /^Reasoning effort:/ })).toHaveTextContent('High')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeEnabled()
   })
 
@@ -5543,10 +5546,13 @@ describe('ProjectsPanel', () => {
     await customModel(user, 'gpt-5.4-mini')
     expect(requests).toEqual([expect.objectContaining({ model_settings: { ...saved, model: 'gpt-5.4-mini' } })])
 
-    // Codex's check ends: the chosen model offers the summary, which is still saved.
+    // Codex's check ends: the chosen model offers the summary, which is still saved and discoverable under More options.
     checked = true
     act(() => window.dispatchEvent(new Event('spark:harness-checked')))
     await openPicker(user)
+    const moreOptions = await screen.findByRole('button', { name: /More options/ })
+    expect(moreOptions).toHaveTextContent('Summary: Detailed')
+    await user.click(moreOptions)
     expect(await within(await screen.findByRole('group', { name: 'Summary' })).findByRole('button', { name: 'Detailed' })).toHaveAttribute('aria-pressed', 'true')
     expect(requests).toHaveLength(1)
     expect(effective).toEqual({ ...saved, model: 'gpt-5.4-mini' })
@@ -5591,14 +5597,12 @@ describe('ProjectsPanel', () => {
       selectActiveConversation('profile-thread')
     })
     renderProjectsPanel()
-    await screen.findByRole('button', { name: /Model: Default: model-one/ })
-    // Inheriting the profile group leaves no effort to set until a model is chosen.
-    await openPicker(user)
-    expect(screen.getByRole('button', { name: 'High', exact: true })).toBeDisabled()
-    await chooseModel(user, 'openai_compatible / team', 'model-two')
-    await waitFor(() => expect(requests).toHaveLength(1))
-    expect(requests[0]).toMatchObject({model_settings:{...group,model:'model-two',reasoning_effort:null}})
+    await screen.findByRole('button', { name: /Model: model-one.*Workspace default/ })
+    // Inheriting a resolved profile unlocks effort and atomically pins the effective model on selection.
     await chooseEffort(user, 'High')
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]).toMatchObject({model_settings:{provider:null,llm_profile:'team',model:'model-one',reasoning_effort:'high'}})
+    await chooseModel(user, 'openai_compatible / team', 'model-two')
     await waitFor(() => expect(requests).toHaveLength(2))
     expect(requests[1]).toMatchObject({model_settings:{...group,model:'model-two',reasoning_effort:'high'}})
     await chooseModel(user, 'Claude Code', 'claude-opus-4-6')
@@ -5608,7 +5612,7 @@ describe('ProjectsPanel', () => {
     await user.click(screen.getByRole('button', {name:/^Use default ·/}))
     await waitFor(() => expect(requests).toHaveLength(4))
     expect(requests[3]).toHaveProperty('model_settings', null)
-    await screen.findByRole('button', { name: /Model: Default: model-one/ })
+    await screen.findByRole('button', { name: /Model: model-one.*Workspace default/ })
     await chooseModel(user, 'openai_compatible / manual', 'manual-model')
     await waitFor(() => expect(requests).toHaveLength(5))
     expect(requests[4]).toMatchObject({model_settings:{provider:null,llm_profile:'manual',model:'manual-model',reasoning_effort:null}})
@@ -5732,14 +5736,14 @@ describe('ProjectsPanel', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(/gpt-5.4/i)
-      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('High')
+      expect(screen.getByRole('button', { name: /^Reasoning effort:/ })).toHaveTextContent('High')
     })
 
     await user.click(await screen.findByRole('button', { name: 'Mini model thread' }))
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(/gpt-5.4.mini/i)
-      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Low')
+      expect(screen.getByRole('button', { name: /^Reasoning effort:/ })).toHaveTextContent('Low')
     })
   })
 
@@ -5792,6 +5796,7 @@ describe('ProjectsPanel', () => {
     expect(availability).toHaveTextContent('Codex model discovery failed: app-server exited')
     expect(screen.getByRole('button', { name: /^Model:/ })).toBeEnabled()
     await openPicker(user)
+    await user.click(screen.getByRole('button', { name: '1 unavailable provider' }))
     const codex = within(screen.getByRole('group', { name: 'Codex', exact: true }))
     expect(codex.getByRole('status')).toHaveTextContent('Codex model discovery failed: app-server exited')
     expect(codex.queryByRole('option')).not.toBeInTheDocument()
@@ -5800,6 +5805,120 @@ describe('ProjectsPanel', () => {
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Keep this draft.')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeDisabled()
+  })
+
+  it('opens the Model picker via Ctrl+/ shortcut and handles /model and /effort slash commands in the composer', async () => {
+    const user = userEvent.setup()
+    const settingsRequests: Array<Record<string, unknown>> = []
+    const turnRequests: Array<Record<string, unknown>> = []
+    let stored: Record<string, unknown> | null = null
+    let revision = 1
+    const snapshot = (conversationId: string) => conversationFixture({
+      conversation_id: conversationId,
+      project_path: '/tmp/shortcut-project',
+      chat_mode: 'chat',
+      provider: (stored?.provider as string | null) ?? 'codex',
+      model: (stored?.model as string | null) ?? null,
+      reasoning_effort: (stored?.reasoning_effort as string | null) ?? null,
+      title: 'Shortcut thread',
+      created_at: '2026-04-16T18:00:00Z',
+      updated_at: '2026-04-16T18:01:00Z',
+      revision_override: revision,
+      turns: [],
+      segments: [],
+      flow_run_requests: [],
+      flow_launches: [],
+      settings: {
+        models: {
+          scope: 'conversation',
+          revision: String(revision),
+          stored,
+          effective: stored ?? { provider: 'codex', llm_profile: null, model: 'gpt-5.4', reasoning_effort: null },
+          source: stored ? 'conversation' : 'workspace',
+        },
+      },
+    })
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      if (url.includes('/workspace/api/projects/chat-models')) {
+        return new Response(JSON.stringify({
+          providers: {
+            codex: { status: 'available', error: null, label: 'Codex' },
+            'claude-code': { status: 'available', error: null, label: 'Claude Code' },
+          },
+          models: [
+            { provider: 'codex', id: 'gpt-5.4', display: 'GPT-5.4', is_default: true, supported_reasoning_efforts: ['low', 'high'], default_reasoning_effort: 'low' },
+            { provider: 'codex', id: 'gpt-5.4-mini', display: 'GPT-5.4 Mini', is_default: false, supported_reasoning_efforts: ['medium'] },
+            { provider: 'claude-code', id: 'claude-opus-4-6', display: 'Claude Opus 4.6', is_default: true, supported_reasoning_efforts: [] },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/workspace/api/projects/metadata')) {
+        return new Response(JSON.stringify({ branch: 'main', commit: 'abc123' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/workspace/api/projects/conversations')) {
+        return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      const match = url.match(/\/api\/conversations\/([^/?]+)\/(settings|turns)/)
+      if (match) {
+        const [, conversationId, action] = match
+        const body = JSON.parse(String(init?.body || '{}')) as Record<string, unknown>
+        if (action === 'settings') {
+          settingsRequests.push(body)
+          stored = (body.model_settings as Record<string, unknown> | null) ?? null
+          revision += 1
+          return new Response(JSON.stringify(conversationMutationAck(snapshot(conversationId))), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        turnRequests.push(body)
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/shortcut-project')
+      useStore.getState().setActiveProjectPath('/tmp/shortcut-project')
+    })
+
+    renderProjectsPanel()
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('GPT-5.4'))
+
+    // Ctrl+/ from the composer opens the Model picker and focuses search.
+    const input = screen.getByTestId('project-ai-conversation-input')
+    await user.click(input)
+    await user.keyboard('{Control>}/{/Control}')
+    expect(await screen.findByRole('combobox', { name: 'Search models' })).toHaveFocus()
+    await user.keyboard('{Escape}')
+
+    // Bare /model opens the Model picker without sending a turn.
+    await user.click(input)
+    await user.type(input, '/model{Enter}')
+    expect(await screen.findByRole('combobox', { name: 'Search models' })).toHaveFocus()
+    expect(input).toHaveValue('')
+    await user.keyboard('{Escape}')
+
+    // /effort high on inherited model auto-pins effective model + effort atomically.
+    await user.click(input)
+    await user.type(input, '/effort high{Enter}')
+    await waitFor(() => expect(settingsRequests).toHaveLength(1))
+    expect(settingsRequests[0]).toMatchObject({
+      model_settings: { provider: 'codex', llm_profile: null, model: 'gpt-5.4', reasoning_effort: 'high' },
+    })
+    expect(screen.getByRole('button', { name: /^Reasoning effort:/ })).toHaveTextContent('High')
+
+    // /model <query> switches model directly without sending a turn.
+    await user.click(input)
+    await user.type(input, '/model GPT-5.4 Mini{Enter}')
+    await waitFor(() => expect(settingsRequests).toHaveLength(2))
+    expect(settingsRequests[1]).toMatchObject({
+      model_settings: { provider: 'codex', model: 'gpt-5.4-mini' },
+    })
+
+    // Invalid /effort surfaces inline error and does not send a message.
+    await user.click(input)
+    await user.type(input, '/effort xhigh{Enter}')
+    expect(await screen.findByTestId('project-panel-error')).toHaveTextContent(/not supported/i)
+    expect(turnRequests).toHaveLength(0)
   })
 
 })
