@@ -1922,3 +1922,74 @@ fn acp_delivers_live_message_during_deferred_background_wait() {
     assert_eq!(launches(dir.path()), 1);
     assert!(acp::close_session(&req.project_path, &req.conversation_id));
 }
+
+#[cfg(unix)]
+#[test]
+fn antigravity_usage_reads_windows_from_headless_slash_usage_and_reports_errors() {
+    use spark_common::agent_settings::{
+        AcpHarness, AcpPermissionPolicy, EnvironmentInheritancePolicy,
+    };
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("agy");
+    let fake = |body: &str| {
+        fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+    };
+    let harness = AcpHarness {
+        name: "Antigravity".into(),
+        executable: script.to_string_lossy().into_owned(),
+        args: vec!["acp".into()],
+        env: BTreeMap::new(),
+        permission_policy: AcpPermissionPolicy::Allow,
+        system_instructions: None,
+    };
+    assert!(acp::is_antigravity_harness(&harness));
+    assert!(!acp::is_antigravity_harness(&AcpHarness {
+        executable: "/usr/bin/other-agent".into(),
+        ..harness.clone()
+    }));
+
+    fake(
+        r#"if [ "$1" = "-p" ] && [ "$2" = "/usage" ] && [ "$3" = "--output-format" ] && [ "$4" = "json" ]; then
+cat <<'EOF'
+{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"window":"weekly","remaining_fraction":0.75,"reset_time":"2026-11-28T13:35:29Z"},{"window":"5h","remaining_fraction":0.1,"reset_time":"2026-11-21T18:35:29Z"}]},{"name":"Claude and GPT models","buckets":[{"window":"weekly","remaining_fraction":1.0,"reset_time":""}]}]}}}
+EOF
+else
+  echo "unexpected args: $*" >&2
+  exit 1
+fi"#,
+    );
+    let windows = acp::read_antigravity_usage(&harness, EnvironmentInheritancePolicy::InheritAll)
+        .expect("antigravity usage");
+    assert_eq!(windows.len(), 3);
+    assert_eq!(windows[0].label, "Weekly · Gemini Models");
+    assert!((windows[0].used_percent - 25.0).abs() < 1e-6);
+    assert_eq!(
+        windows[0].resets_at.as_deref(),
+        Some("2026-11-28T13:35:29Z")
+    );
+    assert_eq!(windows[1].label, "5-hour · Gemini Models");
+    assert!((windows[1].used_percent - 90.0).abs() < 1e-6);
+    assert_eq!(
+        windows[1].resets_at.as_deref(),
+        Some("2026-11-21T18:35:29Z")
+    );
+    assert_eq!(windows[2].label, "Weekly · Claude and GPT models");
+    assert!((windows[2].used_percent - 0.0).abs() < 1e-6);
+    assert_eq!(windows[2].resets_at, None);
+
+    fake(r#"printf '{"status":"ERROR","error":"Please sign in first."}'"#);
+    let error = acp::read_antigravity_usage(&harness, EnvironmentInheritancePolicy::InheritAll)
+        .expect_err("error status must fail");
+    assert!(error.contains("Please sign in first."), "{error}");
+
+    fake(r#"printf '{"status":"SUCCESS","command":{"data":{}}}'"#);
+    let error = acp::read_antigravity_usage(&harness, EnvironmentInheritancePolicy::InheritAll)
+        .expect_err("unknown shape must fail");
+    assert!(error.contains("unknown format"), "{error}");
+}

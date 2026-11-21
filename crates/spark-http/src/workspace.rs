@@ -79,6 +79,7 @@ pub fn router() -> Router<HttpAppState> {
     Router::new()
         .nest("/claude", crate::claude_auth::router())
         .nest("/codex", crate::codex_auth::router())
+        .route("/antigravity/usage", get(antigravity_usage))
         .route("/missions", get(list_missions).post(create_mission))
         .route(
             "/missions/{mission_id}",
@@ -1384,6 +1385,21 @@ async fn cancel_project_acp_sign_in(
     let request = query_payload(payload)?;
     let cancelled = spark_agent_adapter::acp::cancel_sign_in(&request.harness_id);
     Ok(Json(json!({ "cancelled": cancelled })))
+}
+
+async fn antigravity_usage(
+    State(state): State<HttpAppState>,
+) -> Result<Response, WorkspaceApiError> {
+    let result = tokio::task::spawn_blocking(move || {
+        spark_workspace::models::antigravity_usage(&state.settings)
+    })
+    .await
+    .map_err(|_| WorkspaceError::Internal("Antigravity usage task failed.".into()))??;
+    let body = match result {
+        Some((name, windows)) => json!({ "registered": true, "name": name, "windows": windows }),
+        None => json!({ "registered": false, "windows": [] }),
+    };
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response())
 }
 
 #[derive(Deserialize)]

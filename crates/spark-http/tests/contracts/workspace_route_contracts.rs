@@ -3064,3 +3064,78 @@ async fn reasoning_controls_round_trip_and_validate_at_settings_scopes() {
         }
     }
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn antigravity_usage_route_reports_unregistered_and_reads_registered_harness() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let app = build_app(settings.clone()).expect("app");
+
+    // Without a registered Antigravity harness, the endpoint reports unregistered without error.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/workspace/api/antigravity/usage")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body, json!({"registered": false, "windows": []}));
+
+    // Register a fake `agy` ACP harness and verify the route returns its parsed windows.
+    let script = temp.path().join("agy");
+    fs::write(
+        &script,
+        r#"#!/bin/sh
+cat <<'EOF'
+{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"window":"5h","remaining_fraction":0.6,"reset_time":"2026-11-21T18:35:29Z"}]}]}}}
+EOF
+"#,
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&script, perms).unwrap();
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    fs::write(
+        settings.config_dir.join("spark.toml"),
+        format!(
+            "schema_version = 1\n\n[agents.acp_harnesses.antigravity]\nname = \"Antigravity\"\nexecutable = {:?}\nargs = [\"acp\"]\npermission_policy = \"allow\"\n",
+            script.to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/workspace/api/antigravity/usage")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["registered"], json!(true));
+    assert_eq!(body["name"], json!("Antigravity"));
+    assert_eq!(body["windows"][0]["label"], json!("5-hour · Gemini Models"));
+    assert!((body["windows"][0]["used_percent"].as_f64().unwrap() - 40.0).abs() < 1e-6);
+    assert_eq!(
+        body["windows"][0]["resets_at"],
+        json!("2026-11-21T18:35:29Z")
+    );
+}

@@ -357,6 +357,29 @@ pub fn acp_sign_in(
     Ok(serde_json::json!({"setup_status": discovery.setup_status, "error": discovery.error}))
 }
 
+/// Plan usage windows for the first registered Antigravity ACP harness, or
+/// `None` when no Antigravity harness is registered.
+pub fn antigravity_usage(
+    settings: &SparkSettings,
+) -> WorkspaceResult<Option<(String, Vec<spark_agent_adapter::UsageWindow>)>> {
+    let configuration = spark_storage::settings::read_execution_configuration(
+        &settings.config_dir,
+        &spark_common::paths::ProcessEnvironment,
+    )?;
+    let Some(harness) = configuration
+        .agents
+        .acp_harnesses
+        .values()
+        .find(|harness| acp::is_antigravity_harness(harness))
+    else {
+        return Ok(None);
+    };
+    let windows =
+        acp::read_antigravity_usage(harness, configuration.agents.environment_inheritance)
+            .map_err(WorkspaceError::ServiceUnavailable)?;
+    Ok(Some((harness.name.clone(), windows)))
+}
+
 /// Each registered harness with its last discovery in `work_area`, or
 /// `None` while its first is running.
 fn acp_discoveries<'a>(

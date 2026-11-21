@@ -16,13 +16,14 @@ it('shows each harness account\'s plan limits, and a harness that cannot report 
             { label: 'Weekly · Fable', used_percent: 92, resets_at: null },
         ] })
         if (url.endsWith('/codex/usage')) return json({ detail: 'Your Codex connection needs sign-in.' }, 503)
+        if (url.endsWith('/antigravity/usage')) return json({ registered: false, windows: [] })
         return json({})
     }))
     const user = userEvent.setup()
     render(<ActivityBar />)
 
     const meter = screen.getByTestId('usage-meter')
-    // The bar names each harness's tightest window.
+    // The bar names each harness's tightest window and hides unregistered optional harnesses.
     await vi.waitFor(() => expect(meter).toHaveAccessibleName('Usage: Claude Code 92% used, Codex unavailable'))
     await user.click(meter)
     const [claude, codex] = within(screen.getByTestId('usage-meter-list')).getAllByTestId('usage-meter-harness')
@@ -31,6 +32,36 @@ it('shows each harness account\'s plan limits, and a harness that cannot report 
         'Weekly · Fable92% used',
     ])
     expect(within(codex).getByRole('alert')).toHaveTextContent('Your Codex connection needs sign-in.')
+})
+
+it('shows Antigravity usage windows when registered', async () => {
+    const resetsAt = new Date(Date.now() + 3 * 3_600_000 + 30_000).toISOString()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith('/claude/usage')) return json({ windows: [] })
+        if (url.endsWith('/codex/usage')) return json({ windows: [] })
+        if (url.endsWith('/antigravity/usage')) return json({
+            registered: true,
+            name: 'Antigravity',
+            windows: [
+                { label: 'Weekly · Gemini Models', used_percent: 25, resets_at: null },
+                { label: '5-hour · Gemini Models', used_percent: 78, resets_at: resetsAt },
+            ],
+        })
+        return json({})
+    }))
+    const user = userEvent.setup()
+    render(<ActivityBar />)
+
+    const meter = screen.getByTestId('usage-meter')
+    await vi.waitFor(() => expect(meter).toHaveAccessibleName('Usage: Antigravity 78% used'))
+    await user.click(meter)
+    const sections = within(screen.getByTestId('usage-meter-list')).getAllByTestId('usage-meter-harness')
+    expect(sections.map((section) => section.getAttribute('data-harness'))).toEqual(['claude', 'codex', 'antigravity'])
+    expect(within(sections[2]).getAllByTestId('usage-meter-window').map((row) => row.textContent)).toEqual([
+        'Weekly · Gemini Models25% used',
+        '5-hour · Gemini Models78% used · resets in 3h 0m',
+    ])
 })
 
 it('counts down to a reset in days, hours or minutes', () => {

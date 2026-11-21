@@ -218,9 +218,10 @@ function AttentionBell({ items: loadedItems, failed, narrow, triggers }: { items
     )
 }
 
-const USAGE_HARNESSES: { harness: UsageHarness; name: string }[] = [
+const USAGE_HARNESSES: { harness: UsageHarness; name: string; optional?: boolean }[] = [
     { harness: 'claude', name: 'Claude Code' },
     { harness: 'codex', name: 'Codex' },
+    { harness: 'antigravity', name: 'Antigravity', optional: true },
 ]
 const USAGE_HARNESS_IDS = USAGE_HARNESSES.map(({ harness }) => harness)
 const usageTone = (percent: number) => percent >= 90 ? 'bg-destructive' : percent >= 70 ? 'bg-warning' : 'bg-primary'
@@ -243,13 +244,23 @@ function UsageMeter() {
     const { open, setOpen, containerRef, buttonRef, listId } = usePopover()
     const { usage, check } = useUsage(USAGE_HARNESS_IDS)
 
+    const visibleHarnesses = USAGE_HARNESSES.filter(({ harness, optional }) => {
+        if (!optional) return true
+        const entry = usage[harness]
+        return Boolean(entry && ('error' in entry || entry.registered))
+    })
+    const labelOf = (harness: UsageHarness, fallback: string) => {
+        const entry = usage[harness]
+        return entry && 'windows' in entry && entry.name ? entry.name : fallback
+    }
     const tightest = (entry: HarnessUsage | undefined) => entry && 'windows' in entry && entry.windows.length > 0
         ? entry.windows.reduce((most, window) => window.used_percent > most.used_percent ? window : most)
         : null
-    const summary = USAGE_HARNESSES.map(({ name, harness }) => {
+    const summary = visibleHarnesses.map(({ name, harness }) => {
         const entry = usage[harness]
+        const label = labelOf(harness, name)
         const most = tightest(entry)
-        return most ? `${name} ${Math.round(most.used_percent)}% used` : entry && 'error' in entry ? `${name} unavailable` : null
+        return most ? `${label} ${Math.round(most.used_percent)}% used` : entry && 'error' in entry ? `${label} unavailable` : null
     }).filter(Boolean).join(', ')
     // eslint-disable-next-line react-hooks/purity -- render-time clock for reset countdowns; the list re-renders as it opens
     const now = Date.now()
@@ -271,8 +282,8 @@ function UsageMeter() {
                 }}
                 className={ITEM_CLASS}
             >
-                <span aria-hidden="true" className="flex h-4.5 w-6 flex-col justify-center gap-1">
-                    {USAGE_HARNESSES.map(({ harness }) => {
+                <span aria-hidden="true" className={cn('flex h-4.5 w-6 flex-col justify-center', visibleHarnesses.length > 2 ? 'gap-0.5' : 'gap-1')}>
+                    {visibleHarnesses.map(({ harness }) => {
                         const most = tightest(usage[harness])
                         return (
                             <span key={harness} className="h-1 w-full overflow-hidden rounded-full bg-muted">
@@ -285,11 +296,11 @@ function UsageMeter() {
             </button>
             {open && (
                 <div id={listId} data-testid="usage-meter-list" className="absolute bottom-0 left-full z-50 ml-2 w-80 rounded-lg border bg-background p-2 shadow-md">
-                    {USAGE_HARNESSES.map(({ harness, name }) => {
+                    {visibleHarnesses.map(({ harness, name }) => {
                         const entry = usage[harness]
                         return (
                             <section key={harness} data-testid="usage-meter-harness" data-harness={harness} className="px-1 py-1.5">
-                                <h3 className="text-xs font-semibold">{name}</h3>
+                                <h3 className="text-xs font-semibold">{labelOf(harness, name)}</h3>
                                 {!entry ? (
                                     <p className="text-xs text-muted-foreground">Checking…</p>
                                 ) : 'error' in entry ? (

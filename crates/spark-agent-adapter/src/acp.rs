@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
@@ -3648,4 +3648,155 @@ impl Translate {
             event.source.item_id = Some(id.to_string());
         })
     }
+}
+
+/// How long `agy -p /usage --output-format json` may take before Spark stops it.
+const USAGE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Whether a registered ACP harness runs the Antigravity CLI (`agy`).
+pub fn is_antigravity_harness(harness: &AcpHarness) -> bool {
+    Path::new(&harness.executable)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("agy"))
+}
+
+/// The signed-in Antigravity account's plan limits, from `agy -p /usage --output-format json`.
+/// The command makes no model call (`num_turns: 0`).
+// ponytail: special case for Antigravity until ACP standardizes plan quota windows;
+// an unknown response shape reports an error instead of a wrong number.
+pub fn read_antigravity_usage(
+    harness: &AcpHarness,
+    inheritance: EnvironmentInheritancePolicy,
+) -> Result<Vec<crate::UsageWindow>, String> {
+    let mut command = Command::new(&harness.executable);
+    crate::local_environment::configure_process_group(&mut command);
+    command
+        .args(["-p", "/usage", "--output-format", "json"])
+        .env_clear()
+        .envs(crate::local_environment::inherited_environment(inheritance))
+        .envs(&harness.env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = crate::local_environment::spawn_process_group(command)
+        .map_err(|error| format!("Could not launch {}: {error}", harness.executable))?;
+    let group = child.id();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(child.wait_with_output());
+    });
+    let output = match receiver.recv_timeout(USAGE_TIMEOUT) {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
+            return Err(format!("Could not read Antigravity usage: {error}"));
+        }
+        Err(_) => {
+            crate::local_environment::terminate_process_group(group, None);
+            return Err(format!(
+                "Antigravity did not report its usage within {}s.",
+                USAGE_TIMEOUT.as_secs()
+            ));
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let trimmed_stdout = stdout.trim();
+    if trimmed_stdout.is_empty() {
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() {
+            "Antigravity exited without reporting its usage.".into()
+        } else {
+            format!("Antigravity could not read usage: {detail}")
+        });
+    }
+    let payload: Value = serde_json::from_str(trimmed_stdout).map_err(|_| {
+        let detail = stderr.trim();
+        if !output.status.success() && !detail.is_empty() {
+            format!("Antigravity could not read usage: {detail}")
+        } else {
+            "Antigravity reported usage in an unknown format.".into()
+        }
+    })?;
+    parse_antigravity_usage(&payload, stderr.trim())
+}
+
+fn parse_antigravity_usage(
+    payload: &Value,
+    stderr: &str,
+) -> Result<Vec<crate::UsageWindow>, String> {
+    if payload.get("status").and_then(Value::as_str) != Some("SUCCESS") {
+        let message = payload
+            .get("error")
+            .and_then(|error| {
+                error
+                    .as_str()
+                    .or_else(|| error.get("message").and_then(Value::as_str))
+            })
+            .or_else(|| payload.get("response").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .or_else(|| (!stderr.is_empty()).then_some(stderr))
+            .unwrap_or("unknown error");
+        return Err(format!("Antigravity could not read usage: {message}"));
+    }
+    let invalid = || "Antigravity reported usage in an unknown format.".to_string();
+    let groups = payload
+        .pointer("/command/data/groups")
+        .and_then(Value::as_array)
+        .ok_or_else(invalid)?;
+    let mut windows = Vec::new();
+    for group in groups {
+        let group_name = group
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(invalid)?;
+        let buckets = group
+            .get("buckets")
+            .and_then(Value::as_array)
+            .ok_or_else(invalid)?;
+        for bucket in buckets {
+            let span = match bucket.get("window").and_then(Value::as_str).map(str::trim) {
+                Some("weekly") => "Weekly".to_string(),
+                Some(hours)
+                    if hours.ends_with('h') && hours[..hours.len() - 1].parse::<u64>().is_ok() =>
+                {
+                    format!("{}-hour", &hours[..hours.len() - 1])
+                }
+                Some(other) if !other.is_empty() => {
+                    let other = other.replace('_', " ");
+                    let mut chars = other.chars();
+                    chars.next().map_or(String::new(), |first| {
+                        first.to_uppercase().chain(chars).collect()
+                    })
+                }
+                _ => bucket
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(invalid)?
+                    .to_string(),
+            };
+            let remaining = bucket
+                .get("remaining_fraction")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite())
+                .ok_or_else(invalid)?;
+            let resets_at = bucket
+                .get("reset_time")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            windows.push(crate::UsageWindow {
+                label: format!("{span} · {group_name}"),
+                used_percent: ((1.0 - remaining) * 100.0).clamp(0.0, 100.0),
+                resets_at,
+            });
+        }
+    }
+    Ok(windows)
 }
