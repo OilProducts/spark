@@ -182,8 +182,14 @@ export function useProjectsHomeController() {
             : null
     const isCodexProvider = (activeProjectChatProvider || 'codex') === 'codex'
     const codexModels = activeProjectChatModels.filter((model) => model.provider === 'codex')
-    // Keep the resolved Codex default separate from the editable model settings.
-    const activeProjectChatModel = (pendingChatSettings ? pendingChatSettings.model || '' : storedChatModel)
+    // Keep the resolved Codex default separate from the editable model settings,
+    // tracking live inherited project/workspace default updates in open inherited chats.
+    const configuredChatModel = pendingChatSettings
+        ? pendingChatSettings.model || ''
+        : effectiveModelSettings
+            ? effectiveModelSettings.model || ''
+            : storedChatModel
+    const activeProjectChatModel = configuredChatModel
         || (isCodexProvider ? codexModels.find((model) => model.is_default)?.id ?? '' : '')
     const isChatModelSelectable = !isCodexProvider || codexModels.some((model) => model.id === activeProjectChatModel)
     const isChatModelReady = !isCodexProvider || Boolean(activeProjectChatModelsResponse) && isChatModelSelectable

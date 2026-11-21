@@ -823,3 +823,28 @@ it('shows appropriate Settings guidance in the expanded footer even when discove
     expect(within(screen.getByRole('group', { name: 'openai', exact: true })).getByRole('status'))
         .toHaveTextContent('Settings › Models & accounts › Provider connections.')
 })
+
+it('renders a visible hint and hoverable tooltip wrapper for disabled Effort, and avoids duplicating profile labels on the trigger', async () => {
+    vi.mocked(useLlmProfiles).mockReturnValue([
+        { id: 'local', label: 'Reviewer Local', provider: 'openai_compatible', configured: true, models: ['review-profile-model'], default_model: 'review-profile-model' },
+    ])
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({
+        providers: { codex: { status: 'unavailable', error: 'CLI missing', label: 'Codex' } },
+        models: [
+            { llm_profile: 'local', provider: 'openai_compatible', id: 'review-profile-model', display: 'Reviewer Local / review-profile-model', is_default: true, supported_reasoning_efforts: [] },
+        ],
+    })
+
+    const view = render(<Editor layout="compact" value={cleared} inherited={{ ...initial, model: null }} />)
+    await waitFor(() => expect(fetchProjectChatModelsValidated).toHaveBeenCalled())
+    const effortTrigger = screen.getByRole('button', { name: 'Reasoning effort: unavailable' })
+    expect(effortTrigger).toBeDisabled()
+    expect(effortTrigger.parentElement).toHaveAttribute('title', 'Choose a model to set reasoning effort.')
+    const hint = screen.getByText('Choose a model to set reasoning effort.')
+    expect(hint).toBeVisible()
+    expect(hint).not.toHaveClass('sr-only')
+
+    view.rerender(<Editor key="profile" layout="compact" value={{ ...initial, provider: null, llm_profile: 'local', model: 'review-profile-model' }} />)
+    const modelTrigger = screen.getByRole('button', { name: 'Model: review-profile-model, Reviewer Local' })
+    expect(modelTrigger.textContent).toBe('review-profile-modelReviewer Local')
+})

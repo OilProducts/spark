@@ -6414,4 +6414,168 @@ describe('ProjectsPanel', () => {
     })
   })
 
+  it('shares one profile load across picker and /model, allows submit button for /model when Codex is unavailable, and clears retired Codex warnings on live default swap', async () => {
+    const user = userEvent.setup()
+    let profileRequestCount = 0
+    let resolveProfiles!: () => void
+    const profilesReady = new Promise<void>((resolve) => { resolveProfiles = resolve })
+    const settingsWrites: Record<string, unknown>[] = []
+    let codexStatus: 'unavailable' | 'available' = 'unavailable'
+    let liveParent = {
+      source: 'workspace' as 'workspace' | 'project',
+      effective: { provider: 'codex', llm_profile: null as string | null, model: 'retired-codex', reasoning_effort: 'low' },
+    }
+
+    const retiredSnapshot = () => conversationFixture({
+      conversation_id: 'retired-inherited',
+      project_path: '/tmp/live-codex-recovery',
+      chat_mode: 'chat',
+      provider: 'codex',
+      model: 'retired-codex',
+      reasoning_effort: 'low',
+      title: 'Retired thread',
+      created_at: '2026-04-16T18:00:00Z',
+      updated_at: '2026-04-16T18:01:00Z',
+      revision_override: 1,
+      turns: [],
+      segments: [],
+      flow_run_requests: [],
+      flow_launches: [],
+      settings: {
+        models: {
+          scope: 'conversation',
+          revision: '1',
+          stored: null,
+          effective: { provider: 'codex', llm_profile: null, model: 'retired-codex', reasoning_effort: 'low' },
+          source: 'workspace',
+        },
+      },
+    })
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      if (url.includes('/llm-profiles')) {
+        profileRequestCount += 1
+        await profilesReady
+        return new Response(JSON.stringify({
+          profiles: [
+            { id: 'review-local', label: 'Reviewer Local', provider: 'openai_compatible', configured: true, models: ['review-profile-model'], default_model: 'review-profile-model' },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/workspace/api/settings')) {
+        return new Response(JSON.stringify({
+          models: {
+            scope: 'project',
+            source: liveParent.source,
+            revision: '2',
+            stored: liveParent.source === 'project' ? liveParent.effective : null,
+            effective: liveParent.effective,
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/workspace/api/projects/chat-models')) {
+        return new Response(JSON.stringify({
+          providers: {
+            codex: codexStatus === 'unavailable'
+              ? { status: 'unavailable', error: 'Codex offline', label: 'Codex' }
+              : { status: 'available', error: null, label: 'Codex' },
+          },
+          models: codexStatus === 'unavailable'
+            ? []
+            : [{ provider: 'codex', id: 'current-codex', display: 'Current Codex', is_default: true, supported_reasoning_efforts: ['low', 'high'] }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/workspace/api/projects/metadata')) {
+        return new Response(JSON.stringify({ branch: 'main', commit: 'abc123' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/workspace/api/projects/conversations')) {
+        return new Response(JSON.stringify(summarySnapshot([retiredSnapshot()], { project_path: projectPathParam(url) })), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/conversations/retired-inherited')) {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body)) as Record<string, unknown>
+          settingsWrites.push(body)
+          const saved = body.model_settings as Record<string, unknown>
+          const base = retiredSnapshot()
+          return new Response(JSON.stringify(conversationMutationAck({
+            ...base,
+            revision: 2,
+            settings: { models: { scope: 'conversation', revision: '2', stored: saved, effective: saved, source: 'conversation' } },
+          })), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        return new Response(JSON.stringify(conversationPage(retiredSnapshot())), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/live-codex-recovery')
+      useStore.getState().setActiveProjectPath('/tmp/live-codex-recovery')
+      selectActiveConversation('retired-inherited')
+    })
+
+    renderProjectsPanel()
+    await screen.findByTestId('project-chat-model-availability')
+
+    // Picker and controller share a single in-flight LLM profile fetch.
+    expect(profileRequestCount).toBe(1)
+
+    const input = screen.getByTestId('project-ai-conversation-input')
+    const sendButton = screen.getByTestId('project-ai-conversation-send-button')
+
+    // Ordinary messages remain blocked when Codex discovery is unavailable.
+    await user.type(input, 'Hello world')
+    expect(sendButton).toBeDisabled()
+
+    // `/model` enables the visible submit button and opens the picker when clicked.
+    await user.clear(input)
+    await user.type(input, '/model')
+    expect(sendButton).toBeEnabled()
+    await user.click(sendButton)
+    expect(await screen.findByRole('listbox', { name: 'Models' })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+
+    // Resolve the single shared profile request: both picker and `/model` see the profile immediately.
+    await act(async () => { resolveProfiles() })
+    await openPicker(user)
+    expect(await screen.findByRole('option', { name: 'review-profile-model' })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+
+    // Codex becomes available with only `current-codex`, leaving `retired-codex` unavailable until the live default changes.
+    codexStatus = 'available'
+    act(() => {
+      window.dispatchEvent(new CustomEvent('spark:settings-live-event', { detail: { payload: { section: 'codex' } } }))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('project-chat-model-availability')).toHaveTextContent('The saved Codex model is no longer available.')
+    })
+    await user.type(input, 'Check send guard')
+    expect(sendButton).toBeDisabled()
+
+    // Live project default update replaces `retired-codex` with `current-codex`: warning clears and Send enables without reload.
+    liveParent = {
+      source: 'project',
+      effective: { provider: 'codex', llm_profile: null, model: 'current-codex', reasoning_effort: 'low' },
+    }
+    act(() => {
+      window.dispatchEvent(new CustomEvent('spark:settings-live-event', { detail: { payload: { section: 'project_models' } } }))
+    })
+    await screen.findByRole('button', { name: 'Model: Current Codex, Codex, Project default' })
+    await waitFor(() => {
+      expect(screen.queryByTestId('project-chat-model-availability')).not.toBeInTheDocument()
+    })
+    expect(sendButton).toBeEnabled()
+
+    // `/model review-local/review-profile-model` agrees with the picker and submits cleanly through the visible submit button.
+    await user.clear(input)
+    await user.type(input, '/model review-local/review-profile-model')
+    expect(sendButton).toBeEnabled()
+    await user.click(sendButton)
+    await waitFor(() => expect(settingsWrites).toHaveLength(1))
+    expect(settingsWrites[0]).toMatchObject({
+      model_settings: { provider: null, llm_profile: 'review-local', model: 'review-profile-model' },
+    })
+  })
+
 })

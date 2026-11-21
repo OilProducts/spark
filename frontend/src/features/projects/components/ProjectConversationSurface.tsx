@@ -20,6 +20,7 @@ import { useStore } from '@/store'
 import { CHAT_HEADING_ID } from '@/app/useAttention'
 import { cn } from '@/lib/utils'
 import { formatConversationAgeShort, formatConversationTimestamp } from '../model/projectsHomeState'
+import { isModelComposerCommand } from '../hooks/useConversationComposer'
 import type { useScrollFollow } from '../hooks/useScrollFollow'
 import type { ComposerAttachment } from '../model/types'
 import { ChatPane } from './ChatPane'
@@ -280,7 +281,10 @@ export function ProjectConversationSurface({
                             onDraftChange: onChatDraftChange,
                             onSubmit: onChatComposerSubmit,
                             inputDisabled: false,
-                            sendDisabled: isChatSendDisabled,
+                            sendDisabled: isModelComposerCommand(chatDraft)
+                                ? (!activeProjectPath || isModelSettingsLocked)
+                                : isChatSendDisabled,
+                            allowSubmitWhileUploadBlocking: isModelComposerCommand(chatDraft),
                             sendLabel: chatSendButtonLabel,
                             attachments: onAddAttachments ? {
                                 items: attachments,

@@ -78,6 +78,13 @@ export function parseConversationComposerCommand(value: string): ConversationCom
     }
 }
 
+export function isModelComposerCommand(value: string): boolean {
+    const parsed = parseConversationComposerCommand(value)
+    return parsed?.kind === 'open_model_picker'
+        || parsed?.kind === 'set_model'
+        || parsed?.kind === 'set_effort'
+}
+
 type UseConversationComposerArgs = {
     activeProjectPath: string | null
     chatDraft: string

@@ -740,21 +740,26 @@ export function ModelChooser({
                             if (target) refreshModelOptions(projectPath)
                         }}
                     >
-                        <Popover.Trigger asChild>
-                            <Button
-                                type="button"
-                                variant="outline"
-                                size={triggerSize}
-                                disabled={disabled || controlsLocked}
-                                title={effortTooltip}
-                                aria-label={effortAriaLabel}
-                                aria-describedby={controlsLocked ? `${id}-effort-hint` : undefined}
-                                className={`shrink-0 justify-between border border-input px-2.5 text-foreground hover:bg-transparent focus-visible:border-ring ${effortIsDefault ? 'text-muted-foreground' : ''} ${isInherited && !controlsLocked ? 'border-dashed' : ''}`}
-                            >
-                                <span>{effortTriggerText}</span>
-                                <ChevronDown aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground opacity-50" />
-                            </Button>
-                        </Popover.Trigger>
+                        <span
+                            className={controlsLocked ? 'inline-flex shrink-0 cursor-not-allowed' : 'contents'}
+                            title={controlsLocked ? effortHint : undefined}
+                        >
+                            <Popover.Trigger asChild>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size={triggerSize}
+                                    disabled={disabled || controlsLocked}
+                                    title={effortTooltip}
+                                    aria-label={effortAriaLabel}
+                                    aria-describedby={controlsLocked ? `${id}-effort-hint` : undefined}
+                                    className={`shrink-0 justify-between border border-input px-2.5 text-foreground hover:bg-transparent focus-visible:border-ring ${effortIsDefault ? 'text-muted-foreground' : ''} ${isInherited && !controlsLocked ? 'border-dashed' : ''}`}
+                                >
+                                    <span>{effortTriggerText}</span>
+                                    <ChevronDown aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground opacity-50" />
+                                </Button>
+                            </Popover.Trigger>
+                        </span>
                         <Popover.Portal>
                             <Popover.Content
                                 align="end"
@@ -787,7 +792,7 @@ export function ModelChooser({
                     </Popover.Root>
                 )}
             </div>
-            {controlsLocked && <span id={`${id}-effort-hint`} className="sr-only">{effortHint}</span>}
+            {controlsLocked && <p id={`${id}-effort-hint`} className="text-xs text-muted-foreground">{effortHint}</p>}
             {invalidModel && <p id={`${id}-error`} role="alert">Choose a compatible model for this provider or profile.</p>}
             {unlisted && (
                 <p id={`${id}-unlisted`} className="text-xs text-warning">

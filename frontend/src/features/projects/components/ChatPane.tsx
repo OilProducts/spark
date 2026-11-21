@@ -16,6 +16,8 @@ export interface ChatComposer {
     onSubmit: () => void
     inputDisabled: boolean
     sendDisabled: boolean
+    /** Allows submitting local commands (such as `/model` or `/effort`) even while an attachment upload blocks sending a turn. */
+    allowSubmitWhileUploadBlocking?: boolean
     sendLabel: string
     attachments?: {
         items: ComposerAttachment[]
@@ -171,7 +173,7 @@ export function ChatPane({ follow, scrolls, hasContent, children, notice, compos
                                         size="icon-sm"
                                         aria-label={composer.sendLabel}
                                         title={composer.sendLabel}
-                                        disabled={!hasMessage || Boolean(attachments?.isUploadBlocking) || composer.sendDisabled}
+                                        disabled={!hasMessage || (!composer.allowSubmitWhileUploadBlocking && Boolean(attachments?.isUploadBlocking)) || composer.sendDisabled}
                                     >
                                         <ArrowUp />
                                     </Button>

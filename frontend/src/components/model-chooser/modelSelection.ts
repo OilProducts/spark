@@ -175,7 +175,9 @@ export function resolveModelSettings(
     const efforts = settings.llm_profile
         ? profile?.reasoning_efforts ?? []
         : meta?.supported_reasoning_efforts ?? fallback ?? []
-    const displayModel = meta?.display || model || meta?.id || undefined
+    const displayModel = settings.llm_profile
+        ? (model || meta?.id || meta?.display || undefined)
+        : (meta?.display || model || meta?.id || undefined)
     const providerDisplay = settings.llm_profile
         ? (profile?.label || settings.llm_profile)
         : provider
