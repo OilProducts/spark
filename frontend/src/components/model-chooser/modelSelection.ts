@@ -82,7 +82,57 @@ export function effectiveModelSettings(value: ModelSettings, inherited?: ModelSe
         llm_profile: value.llm_profile || (!value.provider ? inherited?.llm_profile : null) || null,
         model: value.model || (inherits ? inherited?.model : null) || null,
         reasoning_effort: value.reasoning_effort || (inherits ? inherited?.reasoning_effort : null) || null,
+        ...(inherits && inherited?.thinking !== undefined && value.thinking == null ? { thinking: inherited.thinking } : {}),
+        ...(inherits && inherited?.thinking_budget_tokens !== undefined && value.thinking_budget_tokens == null
+            ? { thinking_budget_tokens: inherited.thinking_budget_tokens }
+            : {}),
+        ...(inherits && inherited?.reasoning_mode !== undefined && value.reasoning_mode == null
+            ? { reasoning_mode: inherited.reasoning_mode }
+            : {}),
+        ...(inherits && inherited?.reasoning_summary !== undefined && value.reasoning_summary == null
+            ? { reasoning_summary: inherited.reasoning_summary }
+            : {}),
+        ...(inherits && inherited?.session_config !== undefined && value.session_config === undefined
+            ? { session_config: inherited.session_config }
+            : {}),
     }
+}
+
+/**
+ * Pins the same inherited effective model without discarding its inherited Thinking, Mode,
+ * Summary, or ACP session controls. Actual provider/model switches use `selectModelSettings`.
+ */
+export function pinInheritedModelSettings(
+    value: ModelSettings,
+    inherited: ModelSettings | undefined,
+    pinTarget: { provider: string | null; llm_profile: string | null; model: string | null },
+): ModelSettings {
+    return {
+        ...value,
+        ...(inherited?.thinking !== undefined ? { thinking: inherited.thinking } : {}),
+        ...(inherited?.thinking_budget_tokens !== undefined ? { thinking_budget_tokens: inherited.thinking_budget_tokens } : {}),
+        ...(inherited?.reasoning_mode !== undefined ? { reasoning_mode: inherited.reasoning_mode } : {}),
+        ...(inherited?.reasoning_summary !== undefined ? { reasoning_summary: inherited.reasoning_summary } : {}),
+        ...(inherited?.session_config !== undefined ? { session_config: { ...inherited.session_config } } : {}),
+        provider: pinTarget.provider,
+        llm_profile: pinTarget.llm_profile,
+        model: pinTarget.model || null,
+    }
+}
+
+export function isChoiceAvailable(
+    choice: ModelChoiceRef,
+    profiles: LlmProfileMetadata[],
+    discovery: ModelDiscoveryState | null,
+): boolean {
+    if (choice.llm_profile) {
+        const profile = profiles.find((entry) => entry.id === choice.llm_profile)
+        return Boolean(profile && profile.configured)
+    }
+    if (choice.provider) {
+        return !isProviderUnavailable(discovery, choice.provider) && !isProviderChecking(discovery, choice.provider)
+    }
+    return false
 }
 
 export function resolveModelSettings(
@@ -251,6 +301,7 @@ export function matchAvailableModel(
     query: string,
     rows: ModelChoiceOption[],
     discovery: ModelDiscoveryState | null,
+    profiles: LlmProfileMetadata[] = [],
 ): ModelMatchResult {
     const trimmed = query.trim()
     const normalized = trimmed.toLowerCase()
@@ -261,7 +312,17 @@ export function matchAvailableModel(
         return { ok: false, error: 'Models are still loading. Try again in a moment.' }
     }
     const statuses = discovery?.payload?.providers
-    const exact = rows.filter((choice) => candidateKeys(choice, statuses).includes(normalized))
+    const availableRows = rows.filter((choice) => isChoiceAvailable(choice, profiles, discovery))
+    const unconfiguredRows = rows.filter(
+        (choice) => Boolean(choice.llm_profile) && !isChoiceAvailable(choice, profiles, discovery),
+    )
+    const missingCredentialsError = (choice: ModelChoiceOption) => {
+        const profile = profiles.find((entry) => entry.id === choice.llm_profile)
+        const name = profile?.label || choice.llm_profile || choice.groupLabel
+        return `Profile "${name}" is missing required credentials. Configure it in Settings › Models & accounts before selecting it.`
+    }
+
+    const exact = availableRows.filter((choice) => candidateKeys(choice, statuses).includes(normalized))
     if (exact.length === 1) {
         return { ok: true, choice: exact[0] }
     }
@@ -270,7 +331,12 @@ export function matchAvailableModel(
         const more = exact.length > 5 ? ` (+${exact.length - 5} more)` : ''
         return { ok: false, error: `Multiple models match "${trimmed}": ${list}${more}. Specify provider/model.` }
     }
-    const partial = rows.filter((choice) => candidateKeys(choice, statuses).some((key) => key.includes(normalized)))
+    const exactUnconfigured = unconfiguredRows.filter((choice) => candidateKeys(choice, statuses).includes(normalized))
+    if (exactUnconfigured.length > 0) {
+        return { ok: false, error: missingCredentialsError(exactUnconfigured[0]) }
+    }
+
+    const partial = availableRows.filter((choice) => candidateKeys(choice, statuses).some((key) => key.includes(normalized)))
     if (partial.length === 1) {
         return { ok: true, choice: partial[0] }
     }
@@ -278,6 +344,10 @@ export function matchAvailableModel(
         const list = partial.slice(0, 5).map(choiceSelectorLabel).join(', ')
         const more = partial.length > 5 ? ` (+${partial.length - 5} more)` : ''
         return { ok: false, error: `Multiple models match "${trimmed}": ${list}${more}. Be more specific.` }
+    }
+    const partialUnconfigured = unconfiguredRows.filter((choice) => candidateKeys(choice, statuses).some((key) => key.includes(normalized)))
+    if (partialUnconfigured.length > 0) {
+        return { ok: false, error: missingCredentialsError(partialUnconfigured[0]) }
     }
     return { ok: false, error: `No available model matches "${trimmed}".` }
 }
@@ -320,7 +390,7 @@ export function resolveEffortCommand(
 
     const normalized = trimmed.toLowerCase()
     const base = isInherited
-        ? selectModelSettings(value, resolved.pinTarget!, profiles, discovery)
+        ? pinInheritedModelSettings(value, inherited, resolved.pinTarget!)
         : value
 
     if (normalized === 'default') {

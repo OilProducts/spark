@@ -1,4 +1,4 @@
-import { useInheritedModelSettings } from '@/components/model-chooser/useInheritedModelSettings'
+import { useInheritedModelSettingsView } from '@/components/model-chooser/useInheritedModelSettings'
 import { useModelOptions } from '@/components/model-chooser/useModelOptions'
 import { useLlmProfiles } from '@/lib/useLlmProfiles'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -59,7 +59,7 @@ export function useProjectsHomeController() {
     const isNarrowViewport = useNarrowViewport()
     const activeProjectScope = activeProjectPath ? projectSessionsByPath[activeProjectPath] : null
     const activeConversationId = activeProjectScope?.conversationId ?? null
-    const inheritedModelSettings = useInheritedModelSettings(activeProjectPath)
+    const inheritedModelView = useInheritedModelSettingsView(activeProjectPath)
     const llmProfiles = useLlmProfiles()
     const [modelPickerOpen, setModelPickerOpen] = useState(false)
     const {
@@ -110,7 +110,7 @@ export function useProjectsHomeController() {
     // provider shown under a freshly picked provider).
     const [chatSettingsDrafts, setChatSettingsDrafts] = useState<Record<string, ModelSettings>>({})
     const pendingChatSettings = activeConversationId ? chatSettingsDrafts[activeConversationId] ?? null : null
-    const chatSettingsSaves = useRef(new Map<string, { values: ModelSettings | null }>())
+    const chatSettingsSaves = useRef(new Map<string, { values: ModelSettings | null; promise: Promise<boolean> }>())
     const projectsHomeViewModel = useMemo(() => buildProjectsHomeViewModel({
         activeConversationId,
         activeConversationRecord,
@@ -147,7 +147,10 @@ export function useProjectsHomeController() {
         latestFlowRunRequestId,
     } = projectsHomeViewModel
     const effectiveModelSettings = activeConversationRecord?.model_settings_view?.effective
-    const activeProjectChatProvider = pendingChatSettings ? pendingChatSettings.llm_profile || pendingChatSettings.provider || 'codex' : effectiveModelSettings?.llm_profile || effectiveModelSettings?.provider || storedChatProvider
+        ?? (inheritedModelView.status === 'loaded' ? inheritedModelView.effective : undefined)
+    const activeProjectChatProvider = pendingChatSettings
+        ? pendingChatSettings.llm_profile || pendingChatSettings.provider || 'codex'
+        : effectiveModelSettings?.llm_profile || effectiveModelSettings?.provider || storedChatProvider
     const currentModelSettings = useMemo<ModelSettings>(() => pendingChatSettings ?? effectiveModelSettings ?? {
         provider: !activeConversationRecord && uiDefaults.llm_profile ? null : storedChatProvider || 'codex',
         llm_profile: !activeConversationRecord ? uiDefaults.llm_profile || null : null,
@@ -205,8 +208,11 @@ export function useProjectsHomeController() {
         if (!activeProjectPath) {
             return null
         }
-        if (activeConversationId) {
-            return activeConversationId
+        const existing = activeConversationId
+            ?? useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId
+            ?? null
+        if (existing) {
+            return existing
         }
         const conversationId = buildProjectConversationId(activeProjectPath)
         activateConversationThread(activeProjectPath, conversationId, 'ensure-conversation')
@@ -257,49 +263,77 @@ export function useProjectsHomeController() {
     })
 
     const isModelSettingsLocked = isConversationHydrating || isConversationTurnStarting || isConversationUnavailable
-    const resolvedInheritedModelSettings = editableModelSettings === INHERITED_MODEL_SETTINGS
-        ? currentModelSettings
-        : inheritedModelSettings
+    // On a fresh chat, wait until the actual project/workspace default loads before resolving inherited settings.
+    const isFreshInheritedChat = !activeConversationRecord && !pendingChatSettings
+    const resolvedInheritedModelSettings = isFreshInheritedChat
+        ? (inheritedModelView.status === 'loaded' ? inheritedModelView.effective : undefined)
+        : (editableModelSettings === INHERITED_MODEL_SETTINGS
+            ? (activeConversationRecord?.model_settings_view?.effective ?? currentModelSettings)
+            : inheritedModelView.effective)
+    const resolvedModelSettingsSource = pendingChatSettings
+        ? ((!pendingChatSettings.provider && !pendingChatSettings.llm_profile) ? inheritedModelView.source : 'conversation')
+        : activeConversationRecord?.model_settings_view?.source
+            ?? (inheritedModelView.status === 'loaded' ? inheritedModelView.source : undefined)
 
-    const persistChatSettings = useCallback(async (values: ModelSettings | null) => {
-        if (!activeProjectPath) return
+    const persistChatSettings = useCallback((values: ModelSettings | null): Promise<boolean> => {
+        if (!activeProjectPath) return Promise.resolve(false)
         const conversationId = ensureConversationId()
-        if (!conversationId) return
+        if (!conversationId) return Promise.resolve(false)
         setPanelError(null)
         setChatSettingsDrafts((drafts) => ({ ...drafts, [conversationId]: values ?? currentModelSettings }))
         const running = chatSettingsSaves.current.get(conversationId)
         if (running) {
             running.values = values
-            return
+            return running.promise
         }
-        const save = { values }
-        chatSettingsSaves.current.set(conversationId, save)
-        let revision = getConversationRecord(conversationId)?.settingsRevision ?? '0'
-        try {
-            // Coalesce edits while a save is in flight, then use its acknowledged revision.
-            // A conflict stops the queue and retains the draft; never retry over another writer.
-            while (true) {
-                const saving = save.values
-                const ack = await updateConversationSettingsValidated(conversationId, {
-                    project_path: activeProjectPath,
-                    expected_revision: revision,
-                    model_settings: saving,
+        const save: { values: ModelSettings | null; promise: Promise<boolean> } = {
+            values,
+            promise: Promise.resolve(true),
+        }
+        const run = (async (): Promise<boolean> => {
+            let revision = getConversationRecord(conversationId)?.settingsRevision ?? '0'
+            try {
+                // Coalesce edits while a save is in flight, then use its acknowledged revision.
+                // A conflict stops the queue and retains the draft; never retry over another writer.
+                while (true) {
+                    const saving = save.values
+                    const ack = await updateConversationSettingsValidated(conversationId, {
+                        project_path: activeProjectPath,
+                        expected_revision: revision,
+                        model_settings: saving,
+                    })
+                    revision = ack.revision
+                    applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'chat-settings-response')
+                    if (save.values === saving) break
+                }
+                setChatSettingsDrafts((drafts) => {
+                    const next = { ...drafts }
+                    delete next[conversationId]
+                    return next
                 })
-                revision = ack.revision
-                applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'chat-settings-response')
-                if (save.values === saving) break
+                return true
+            } catch (error) {
+                setPanelError(extractApiErrorMessage(error, 'Unable to update the project chat settings.'))
+                return false
+            } finally {
+                if (chatSettingsSaves.current.get(conversationId) === save) {
+                    chatSettingsSaves.current.delete(conversationId)
+                }
             }
-            setChatSettingsDrafts((drafts) => {
-                const next = { ...drafts }
-                delete next[conversationId]
-                return next
-            })
-        } catch (error) {
-            setPanelError(extractApiErrorMessage(error, 'Unable to update the project chat settings.'))
-        } finally {
-            chatSettingsSaves.current.delete(conversationId)
-        }
+        })()
+        save.promise = run
+        chatSettingsSaves.current.set(conversationId, save)
+        return run
     }, [activeProjectPath, applyConversationBatch, ensureConversationId, setPanelError, currentModelSettings])
+
+    const waitForPendingSettingsSave = useCallback(async (conversationId: string): Promise<boolean> => {
+        while (true) {
+            const running = chatSettingsSaves.current.get(conversationId)
+            if (!running) return true
+            const ok = await running.promise
+            if (!ok) return false
+        }
+    }, [])
 
     const {
         onChatComposerSubmit,
@@ -318,6 +352,7 @@ export function useProjectsHomeController() {
         llmProfiles,
         onModelSettingsChange: (value: ModelSettings) => { void persistChatSettings(value) },
         onOpenModelPicker: () => setModelPickerOpen(true),
+        waitForPendingSettingsSave,
         planModeUnsupportedReason,
         ensureConversationId,
         getCurrentConversationId: (projectPath) => (
@@ -514,7 +549,9 @@ export function useProjectsHomeController() {
             modelSettings: editableModelSettings,
             // While nothing is stored, the conversation's effective settings are what it inherits.
             inheritedModelSettings: resolvedInheritedModelSettings,
-            defaultModel: isCodexProvider && !currentModelSettings.model ? activeProjectChatModel : undefined,
+            defaultModel: (!isFreshInheritedChat || inheritedModelView.status === 'loaded') && isCodexProvider && !currentModelSettings.model
+                ? activeProjectChatModel
+                : undefined,
             onModelSettingsChange: (value: ModelSettings) => { void persistChatSettings(value) },
             isModelSettingsLocked,
             modelPickerOpen,
@@ -538,7 +575,7 @@ export function useProjectsHomeController() {
             onStopTurn: projectsHomeViewModel.hasActiveAssistantTurn ? onStopTurn : undefined,
             onChatComposerSubmit,
             onChatDraftChange: setChatDraft,
-            modelSettingsSource: activeConversationRecord?.model_settings_view?.source,
+            modelSettingsSource: resolvedModelSettingsSource,
         },
     }
 }

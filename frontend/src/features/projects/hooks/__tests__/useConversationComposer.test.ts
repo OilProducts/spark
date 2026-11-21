@@ -481,4 +481,82 @@ describe('/model and /effort slash commands', () => {
         }))
         expect(sendConversationTurnValidated).not.toHaveBeenCalled()
     })
+
+    it('rejects unconfigured profiles in /model <query> with inline credentials feedback and no settings write', async () => {
+        const unconfigured = createComposer({
+            chatDraft: '/model missing-team/secret-model',
+            llmProfiles: [
+                { id: 'missing-team', label: 'Missing Team', provider: 'openai_compatible', configured: false, models: ['secret-model'] },
+            ],
+        })
+        unconfigured.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(unconfigured.onModelSettingsChange).not.toHaveBeenCalled()
+        expect(unconfigured.setChatDraft).not.toHaveBeenCalled()
+        expect(unconfigured.setPanelError).toHaveBeenCalledWith(expect.stringMatching(/Missing Team.*missing required credentials/i))
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+    })
+
+    it('preserves inherited Thinking, Mode, Summary, and ACP session controls when /effort pins the inherited model', async () => {
+        const inherited = {
+            provider: 'codex',
+            llm_profile: null,
+            model: 'gpt-5.4',
+            reasoning_effort: 'low',
+            thinking: 'budget',
+            thinking_budget_tokens: 4096,
+            reasoning_mode: 'pro',
+            reasoning_summary: 'detailed',
+            session_config: { Approval: 'auto' },
+        }
+        const c = createComposer({
+            chatDraft: '/effort high',
+            inheritedModelSettings: inherited,
+        })
+        c.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(c.onModelSettingsChange).toHaveBeenCalledWith({
+            ...inherited,
+            reasoning_effort: 'high',
+        })
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+    })
+
+    it('waits for pending settings saves before sending a turn and aborts without sending if the save fails', async () => {
+        let resolveSave!: (ok: boolean) => void
+        const waitForPendingSettingsSave = vi.fn(() => new Promise<boolean>((resolve) => { resolveSave = resolve }))
+        vi.mocked(sendConversationTurnValidated).mockReturnValue(new Promise(() => {}))
+
+        const c = createComposer({
+            chatDraft: 'Run with updated effort',
+            waitForPendingSettingsSave,
+        })
+        c.onChatComposerSubmit()
+        await Promise.resolve()
+        // Competing send does not fire while settings save is still in flight.
+        expect(waitForPendingSettingsSave).toHaveBeenCalledWith('conversation-1')
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+
+        // Duplicate submit while waiting is ignored.
+        c.onChatComposerSubmit()
+        await Promise.resolve()
+        expect(waitForPendingSettingsSave).toHaveBeenCalledTimes(1)
+
+        // Once the settings save commits, the turn sends.
+        resolveSave(true)
+        await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalledTimes(1))
+        expect(vi.mocked(sendConversationTurnValidated).mock.calls[0][1].message).toBe('Run with updated effort')
+
+        // If a pending settings save fails, abort the send without clearing the settings error.
+        vi.mocked(sendConversationTurnValidated).mockClear()
+        const failing = createComposer({
+            chatDraft: 'Should not send',
+            waitForPendingSettingsSave: vi.fn().mockResolvedValue(false),
+        })
+        failing.onChatComposerSubmit()
+        await Promise.resolve()
+        await Promise.resolve()
+        expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+        expect(failing.setPanelError).not.toHaveBeenCalledWith(null)
+    })
 })

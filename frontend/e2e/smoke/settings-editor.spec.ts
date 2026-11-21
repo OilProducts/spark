@@ -691,14 +691,13 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     await page.getByRole('combobox', { name: 'Search models' }).fill('my-model')
     expect(requests).toHaveLength(0)
     await page.getByRole('option', { name: 'Use "my-model" as a custom model' }).click()
-    await page.keyboard.press('Escape')
     await expect(model).toContainText('my-model')
     await release()
     expect(requests[0].expected_revision).toBe(settingsRevisionOf(createdRow))
     expect(statuses).toEqual([200])
     await expect.poll(async () => (await read())?.settings?.models.stored?.model).toBe('my-model')
     // The chat now has its own model, which the picker's Use default would drop.
-    await expect(model).toHaveAttribute('title', 'Chosen for this chat with the model picker.')
+    await expect(model).toHaveAttribute('title', 'Chosen for this chat with the model picker. (Ctrl+/ or ⌘/)')
     await expect(model).toBeEnabled()
 
     await chooseModel(page, 'anthropic', 'claude-opus-4-6')
@@ -708,14 +707,15 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     await release()
     await expect.poll(() => requests.length).toBe(3)
     await release()
-    await expect(model).toHaveAttribute('title', 'Chosen for this chat with the model picker.')
+    await expect(model).toHaveAttribute('title', 'Chosen for this chat with the model picker. (Ctrl+/ or ⌘/)')
     await expect(model).toBeEnabled()
     const final = { provider: 'anthropic', llm_profile: null, model: 'final-model', reasoning_effort: 'high' }
     await expect.poll(async () => (await read())?.settings?.models.stored).toMatchObject(final)
     expect(statuses).toEqual([200, 200, 200])
     expect(requests.map((request) => request.expected_revision)).toEqual([settingsRevisionOf(createdRow), ...acked.slice(0, 2)])
     await page.reload()
-    await expect(model).toContainText('final-model · High')
+    await expect(model).toContainText('final-model')
+    await expect(page.getByRole('button', { name: /^Reasoning effort:/ })).toContainText('High')
 })
 
 test('picker default persists workspace and project resets', async ({ page }, testInfo) => {

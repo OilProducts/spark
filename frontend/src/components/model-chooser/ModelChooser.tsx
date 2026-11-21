@@ -12,9 +12,11 @@ import {
     effectiveModelSettings,
     effortLabel,
     findModelMetadata,
+    isChoiceAvailable,
     isProviderChecking,
     isProviderUnavailable,
     isSameModelRef,
+    pinInheritedModelSettings,
     recordRecentModel,
     resolveModelSettings,
     selectModelSettings,
@@ -146,14 +148,15 @@ export function ModelChooser({
         && Boolean(query)
         && !filteredRows.some((row) => row.model.toLowerCase() === query || row.label.toLowerCase() === query)
 
-    // Build flat ordered choices list: Pinned -> Recent -> Provider groups (when search is empty), or matches (+ custom) when searching.
+    // Keep known-unavailable entries (including unconfigured profiles) out of Pinned and Recent sections.
+    const availableQuickRows = allRows.filter((row) => isChoiceAvailable(row, profiles, discovery))
     const pinnedRows = !query
-        ? pinned.map((ref) => allRows.find((row) => isSameModelRef(row, ref))).filter((row): row is ModelChoiceOption => Boolean(row))
+        ? pinned.map((ref) => availableQuickRows.find((row) => isSameModelRef(row, ref))).filter((row): row is ModelChoiceOption => Boolean(row))
         : []
     const recentRows = !query
         ? recent
             .filter((ref) => !pinnedRows.some((row) => isSameModelRef(row, ref)))
-            .map((ref) => allRows.find((row) => isSameModelRef(row, ref)))
+            .map((ref) => availableQuickRows.find((row) => isSameModelRef(row, ref)))
             .filter((row): row is ModelChoiceOption => Boolean(row))
         : []
 
@@ -178,12 +181,13 @@ export function ModelChooser({
 
     const choices: RenderChoice[] = [...pinnedChoices, ...recentChoices, ...groupChoices, ...(customChoice ? [customChoice] : [])]
 
-    // Pre-highlight the first match whenever search is non-empty so open -> type -> Enter commits immediately.
+    // Pre-highlight discovered/profile matches only; never auto-highlight a synthetic custom model on mistyped search.
+    const hasCatalogMatch = groupChoices.length > 0
     const effectiveActive = choices.length === 0
         ? -1
         : active >= 0 && active < choices.length
             ? active
-            : query
+            : query && hasCatalogMatch
                 ? 0
                 : -1
     const highlighted = effectiveActive >= 0 ? choices[effectiveActive] : undefined
@@ -226,15 +230,16 @@ export function ModelChooser({
     const select = (selection: { provider: string | null; llm_profile: string | null; model: string | null }) =>
         selectModelSettings(value, selection, profiles, discovery)
 
-    const resolveEditableBase = () => {
+    const resolveEditableBase = (preserveEffort = false) => {
         if (!isInherited) return value
         if (!resolved.pinTarget) return null
-        return select(resolved.pinTarget)
+        const pinnedBase = pinInheritedModelSettings(value, inherited, resolved.pinTarget)
+        return preserveEffort ? { ...pinnedBase, reasoning_effort: effective.reasoning_effort } : pinnedBase
     }
 
     const commitModel = (choice: RenderChoice) => {
         setBudgetInput(null)
-        if (choice.section !== 'custom') {
+        if (choice.section !== 'custom' && isChoiceAvailable(choice, profiles, discovery)) {
             recordRecentModel({ provider: choice.provider, llm_profile: choice.llm_profile, model: choice.model })
         }
         onChange({ ...select(choice), reasoning_effort: value.reasoning_effort })
@@ -242,7 +247,7 @@ export function ModelChooser({
     }
 
     const commitEffort = (effort: string | null) => {
-        const base = resolveEditableBase()
+        const base = resolveEditableBase(false)
         if (!base) return
         onChange({ ...base, reasoning_effort: effort })
         setEffortOpen(false)
@@ -254,19 +259,22 @@ export function ModelChooser({
     const isPinned = (choice: ModelChoiceOption) => pinned.some((entry) => isSameModelRef(entry, choice))
 
     // ACP session controls & native secondary controls tucked behind "More options".
+    // Keep saved secondary settings discoverable even when capability metadata or the harness is missing from discovery.
     const activeProvider = value.provider || (isInherited ? effective.provider : null)
     const harness = withControls && activeProvider ? statuses?.[activeProvider] : undefined
     const offered = sessionControls(harness)
-    // A saved control the harness no longer offers stays visible: its turn fails until it is cleared.
+    const effectiveSessionConfig = withControls ? (effective.session_config ?? {}) : {}
+    const savedSessionEntries = Object.entries(effectiveSessionConfig)
+    // A saved control the harness no longer offers (or from a harness missing from discovery) stays visible until cleared.
     const controls = [
         ...offered,
-        ...Object.keys(harness ? value.session_config ?? {} : {})
-            .filter((control) => !offered.some((entry) => entry.id === control))
-            .map((control) => ({ id: control, name: control, description: undefined, values: [] })),
+        ...savedSessionEntries
+            .filter(([control]) => !offered.some((entry) => entry.id === control))
+            .map(([control]) => ({ id: control, name: control, description: undefined, values: [] })),
     ]
     const modes = harness && !harness.config_options?.length ? harness.modes?.availableModes ?? [] : []
     const setControl = (controlId: string, selected: string) => {
-        const base = resolveEditableBase()
+        const base = resolveEditableBase(true)
         if (!base) return
         const { [controlId]: _, ...rest } = base.session_config ?? {}
         onChange({ ...base, session_config: selected ? { ...rest, [controlId]: selected } : rest })
@@ -279,41 +287,55 @@ export function ModelChooser({
     })
 
     const nativeSecondaryGroups = ([
-        ['thinking', 'Thinking', resolved.meta?.supported_thinking],
-        ['reasoning_mode', 'Mode', resolved.meta?.supported_reasoning_modes],
-        ['reasoning_summary', 'Summary', resolved.meta?.supported_reasoning_summaries],
-    ] as const).filter(([, , options]) => Boolean(options?.length))
+        ['thinking', 'Thinking', resolved.meta?.supported_thinking ?? []],
+        ['reasoning_mode', 'Mode', resolved.meta?.supported_reasoning_modes ?? []],
+        ['reasoning_summary', 'Summary', resolved.meta?.supported_reasoning_summaries ?? []],
+    ] as const).map(([field, label, offeredOptions]) => {
+        const current = effective[field] ?? null
+        const hasNonDefaultSaved = field === 'reasoning_mode'
+            ? Boolean(current && current !== 'standard')
+            : Boolean(current)
+        const unofferedSaved = hasNonDefaultSaved && !offeredOptions.includes(current!)
+        const optionList: (string | null)[] = field === 'reasoning_mode'
+            ? [...new Set([...(offeredOptions.length ? offeredOptions : ['standard']), ...(unofferedSaved && current ? [current] : [])])]
+            : [null, ...offeredOptions, ...(unofferedSaved && current ? [current] : [])]
+        return { field, label, offeredOptions, current, hasNonDefaultSaved, unofferedSaved, optionList }
+    }).filter((entry) => entry.offeredOptions.length > 0 || entry.hasNonDefaultSaved)
 
     const hasSecondaryControls = nativeSecondaryGroups.length > 0 || controls.length > 0 || modes.length > 0
 
-    const staleSessionControlCount = harness && !checking(activeProvider ?? '')
-        ? Object.entries(value.session_config ?? {}).filter(([controlId, savedVal]) => {
+    const staleSessionControlCount = Boolean(discovery) && !checking(activeProvider ?? '')
+        ? savedSessionEntries.filter(([controlId, savedVal]) => {
             const offeredControl = offered.find((entry) => entry.id === controlId)
             return !offeredControl || !offeredControl.values.some((entry) => entry.value === savedVal)
         }).length
         : 0
+    const unofferedNativeCount = Boolean(discovery) && !checking(activeProvider ?? '')
+        ? nativeSecondaryGroups.filter((entry) => entry.unofferedSaved).length
+        : 0
+    const unavailableSecondaryCount = staleSessionControlCount + unofferedNativeCount
 
     const activeSecondaryLabels: string[] = []
-    if (value.thinking) {
+    if (effective.thinking) {
         activeSecondaryLabels.push(
-            value.thinking === 'budget'
-                ? `Budget (${value.thinking_budget_tokens ?? 1024})`
-                : effortLabel(value.thinking),
+            effective.thinking === 'budget'
+                ? `Budget (${effective.thinking_budget_tokens ?? 1024})`
+                : effortLabel(effective.thinking),
         )
     }
-    if (value.reasoning_mode && value.reasoning_mode !== 'standard') {
-        activeSecondaryLabels.push(effortLabel(value.reasoning_mode))
+    if (effective.reasoning_mode && effective.reasoning_mode !== 'standard') {
+        activeSecondaryLabels.push(effortLabel(effective.reasoning_mode))
     }
-    if (value.reasoning_summary) {
-        activeSecondaryLabels.push(`Summary: ${effortLabel(value.reasoning_summary)}`)
+    if (effective.reasoning_summary) {
+        activeSecondaryLabels.push(`Summary: ${effortLabel(effective.reasoning_summary)}`)
     }
-    for (const [controlId, savedVal] of Object.entries(value.session_config ?? {})) {
+    for (const [controlId, savedVal] of savedSessionEntries) {
         const control = controls.find((entry) => entry.id === controlId)
         const valName = control?.values.find((entry) => entry.value === savedVal)?.name ?? savedVal
         activeSecondaryLabels.push(`${control?.name ?? controlId}: ${valName}`)
     }
 
-    const moreOptionsOpen = moreOptionsOverride ?? (staleSessionControlCount > 0)
+    const moreOptionsOpen = moreOptionsOverride ?? (unavailableSecondaryCount > 0)
 
     // Labels, tooltips, and accessible names.
     const modelText = resolved.model ?? inheritLabel
@@ -437,10 +459,10 @@ export function ModelChooser({
                                 {layout === 'fields' && isUsingDefault && resolved.model && (
                                     <span className="shrink-0 text-xs font-normal text-muted-foreground">Default</span>
                                 )}
-                                {(activeSecondaryLabels.length > 0 || staleSessionControlCount > 0) && (
+                                {(activeSecondaryLabels.length > 0 || unavailableSecondaryCount > 0) && (
                                     <span
                                         aria-hidden="true"
-                                        className={`size-1.5 shrink-0 rounded-full ${staleSessionControlCount > 0 ? 'bg-warning' : 'bg-primary'}`}
+                                        className={`size-1.5 shrink-0 rounded-full ${unavailableSecondaryCount > 0 ? 'bg-warning' : 'bg-primary'}`}
                                     />
                                 )}
                             </span>
@@ -471,9 +493,8 @@ export function ModelChooser({
                                 placeholder="Search models…"
                                 value={search}
                                 onChange={(event) => {
-                                    const nextSearch = event.target.value
-                                    setSearch(nextSearch)
-                                    setActive(nextSearch.trim() ? 0 : -1)
+                                    setSearch(event.target.value)
+                                    setActive(-1)
                                 }}
                                 onKeyDown={(event) => {
                                     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -550,10 +571,10 @@ export function ModelChooser({
                                                 : <ChevronRight aria-hidden="true" className="size-3.5 shrink-0" />}
                                             <span className="font-medium">More options</span>
                                         </span>
-                                        {(staleSessionControlCount > 0 || activeSecondaryLabels.length > 0) && (
-                                            <span className={`truncate text-xs ${staleSessionControlCount > 0 ? 'text-warning' : 'text-foreground'}`}>
-                                                {staleSessionControlCount > 0
-                                                    ? `${staleSessionControlCount} unavailable`
+                                        {(unavailableSecondaryCount > 0 || activeSecondaryLabels.length > 0) && (
+                                            <span className={`truncate text-xs ${unavailableSecondaryCount > 0 ? 'text-warning' : 'text-foreground'}`}>
+                                                {unavailableSecondaryCount > 0
+                                                    ? `${unavailableSecondaryCount} unavailable`
                                                     : activeSecondaryLabels.join(' · ')}
                                             </span>
                                         )}
@@ -563,48 +584,57 @@ export function ModelChooser({
                                             {controlsLocked && (
                                                 <p className="text-xs text-muted-foreground">{effortHint}</p>
                                             )}
-                                            {nativeSecondaryGroups.map(([field, label, options]) => (
+                                            {nativeSecondaryGroups.map(({ field, label, offeredOptions, current, optionList }) => (
                                                 <div key={field} role="group" aria-label={label} className="flex flex-wrap gap-1 border-t border-border/60 pt-2 first:border-t-0 first:pt-0">
                                                     <span className="w-full text-xs text-muted-foreground">{label}</span>
-                                                    {(field === 'reasoning_mode' ? options! : [null, ...options!]).map((optionValue) => (
-                                                        <Button
-                                                            key={optionValue ?? 'default'}
-                                                            type="button"
-                                                            size="sm"
-                                                            variant="ghost"
-                                                            disabled={controlsLocked}
-                                                            className="aria-pressed:bg-accent aria-pressed:text-accent-foreground"
-                                                            aria-pressed={(value[field] ?? (field === 'reasoning_mode' ? 'standard' : null)) === optionValue}
-                                                            onClick={() => {
-                                                                const base = resolveEditableBase()
-                                                                if (!base) return
-                                                                setBudgetInput(null)
-                                                                onChange({
-                                                                    ...base,
-                                                                    [field]: optionValue,
-                                                                    ...(field === 'thinking'
-                                                                        ? { thinking_budget_tokens: optionValue === 'budget' ? base.thinking_budget_tokens ?? 1024 : null }
-                                                                        : {}),
-                                                                })
-                                                            }}
-                                                        >
-                                                            {optionValue ? effortLabel(optionValue) : 'Default'}
-                                                        </Button>
-                                                    ))}
-                                                    {field === 'thinking' && value.thinking === 'budget' && (
+                                                    {optionList.map((optionValue) => {
+                                                        const isUnoffered = Boolean(optionValue && !offeredOptions.includes(optionValue))
+                                                            && !(field === 'reasoning_mode' && optionValue === 'standard')
+                                                        const nextFieldValue = field === 'reasoning_mode' && optionValue === 'standard' && offeredOptions.length === 0
+                                                            ? null
+                                                            : optionValue
+                                                        return (
+                                                            <Button
+                                                                key={optionValue ?? 'default'}
+                                                                type="button"
+                                                                size="sm"
+                                                                variant="ghost"
+                                                                disabled={controlsLocked}
+                                                                className="aria-pressed:bg-accent aria-pressed:text-accent-foreground"
+                                                                aria-pressed={(current ?? (field === 'reasoning_mode' ? 'standard' : null)) === optionValue}
+                                                                onClick={() => {
+                                                                    const base = resolveEditableBase(true)
+                                                                    if (!base) return
+                                                                    setBudgetInput(null)
+                                                                    onChange({
+                                                                        ...base,
+                                                                        [field]: nextFieldValue,
+                                                                        ...(field === 'thinking'
+                                                                            ? { thinking_budget_tokens: nextFieldValue === 'budget' ? base.thinking_budget_tokens ?? 1024 : null }
+                                                                            : {}),
+                                                                    })
+                                                                }}
+                                                            >
+                                                                {optionValue
+                                                                    ? `${effortLabel(optionValue)}${isUnoffered ? ' (saved)' : ''}`
+                                                                    : 'Default'}
+                                                            </Button>
+                                                        )
+                                                    })}
+                                                    {field === 'thinking' && current === 'budget' && (
                                                         <Input
                                                             type="number"
                                                             aria-label="Thinking budget tokens"
                                                             min={1024}
                                                             step={1}
                                                             disabled={controlsLocked}
-                                                            value={budgetInput ?? value.thinking_budget_tokens ?? 1024}
+                                                            value={budgetInput ?? effective.thinking_budget_tokens ?? 1024}
                                                             onBlur={() => setBudgetInput(null)}
                                                             onChange={(event) => {
                                                                 setBudgetInput(event.target.value)
                                                                 const tokens = event.target.valueAsNumber
                                                                 if (Number.isInteger(tokens) && tokens >= 1024) {
-                                                                    const base = resolveEditableBase()
+                                                                    const base = resolveEditableBase(true)
                                                                     if (base) onChange({ ...base, thinking_budget_tokens: tokens })
                                                                 }
                                                             }}
@@ -622,7 +652,7 @@ export function ModelChooser({
                                                                 size="sm"
                                                                 aria-label={control.name}
                                                                 disabled={controlsLocked}
-                                                                value={value.session_config?.[control.id] ?? ''}
+                                                                value={effectiveSessionConfig[control.id] ?? ''}
                                                                 onChange={(event) => setControl(control.id, event.target.value)}
                                                             >
                                                                 <NativeSelectOption value="">Harness default</NativeSelectOption>
@@ -631,7 +661,7 @@ export function ModelChooser({
                                                                     <NativeSelectOption value={saved}>
                                                                         {saved}{checking(activeProvider ?? '') ? '' : ' (not offered now)'}
                                                                     </NativeSelectOption>
-                                                                ))(value.session_config?.[control.id])}
+                                                                ))(effectiveSessionConfig[control.id])}
                                                             </NativeSelect>
                                                         </label>
                                                     ))}

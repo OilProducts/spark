@@ -480,6 +480,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -581,6 +592,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.includes('/workspace/api/projects/conversations')) {
           return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
@@ -694,6 +716,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -825,6 +858,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.endsWith('/settings') && init?.method === 'PUT') {
           sendRequests.push(url)
           return new Response(JSON.stringify(conversationMutationAck(conversationFixture(activeSnapshot([])))), { status: 200 })
@@ -1482,6 +1526,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -2251,6 +2306,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -2502,6 +2568,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -2890,6 +2967,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -3147,6 +3235,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -3361,6 +3460,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -3906,6 +4016,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -4672,6 +4793,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -4994,6 +5126,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -5060,6 +5203,17 @@ describe('ProjectsPanel', () => {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
+        }
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'openai', llm_profile: null, model: 'gpt-5.4-mini', reasoning_effort: 'high' },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         if (conversationId && !url.includes('/turns')) {
           return new Response(JSON.stringify({ detail: 'Unknown conversation' }), { status: 404 })
@@ -5179,6 +5333,17 @@ describe('ProjectsPanel', () => {
             headers: { 'Content-Type': 'application/json' },
           })
         }
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'openai', llm_profile: null, model: 'gpt-5.4-mini', reasoning_effort: 'high' },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         if (conversationId && !url.includes('/turns')) {
           return new Response(JSON.stringify({ detail: 'Unknown conversation' }), { status: 404 })
         }
@@ -5231,6 +5396,17 @@ describe('ProjectsPanel', () => {
       vi.fn(async (input: RequestInfo | URL) => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        if (url.includes('/workspace/api/settings')) {
+          return new Response(JSON.stringify({
+            models: {
+              scope: 'project',
+              source: 'workspace',
+              revision: '1',
+              stored: null,
+              effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
         return new Response(JSON.stringify(url.includes('/workspace/api/projects/conversations') ? summarySnapshot([], { project_path: projectPathParam(url) }) : {}), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -5251,9 +5427,9 @@ describe('ProjectsPanel', () => {
 
     await waitFor(() => {
       // Compact model button shows the resolved model without verbose Default: prefix, naming inheritance in aria-label.
-      const modelButton = screen.getByRole('button', { name: /^Model: GPT-5\.4.*Default/ })
+      const modelButton = screen.getByRole('button', { name: /^Model: GPT-5\.4.*Workspace default/ })
       expect(modelButton).toHaveTextContent(/GPT-5\.4/i)
-      expect(modelButton).not.toHaveTextContent(/^Default:/i)
+      expect(modelButton).not.toHaveTextContent(/^Default:|^Workspace default:/i)
     })
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Hello')
     expect(screen.queryByText('The saved Codex model is no longer available. Select another model.')).toBeNull()
@@ -5857,6 +6033,17 @@ describe('ProjectsPanel', () => {
       if (url.includes('/workspace/api/projects/metadata')) {
         return new Response(JSON.stringify({ branch: 'main', commit: 'abc123' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
+      if (url.includes('/workspace/api/settings')) {
+        return new Response(JSON.stringify({
+          models: {
+            scope: 'project',
+            source: 'workspace',
+            revision: '1',
+            stored: null,
+            effective: { provider: 'codex', llm_profile: null, model: 'gpt-5.4', reasoning_effort: null },
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
       if (url.includes('/workspace/api/projects/conversations')) {
         return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
@@ -5919,6 +6106,164 @@ describe('ProjectsPanel', () => {
     await user.type(input, '/effort xhigh{Enter}')
     expect(await screen.findByTestId('project-panel-error')).toHaveTextContent(/not supported/i)
     expect(turnRequests).toHaveLength(0)
+  })
+
+  it('resolves fresh project defaults before enabling effort, pins the project default with secondary settings, and serializes an immediate turn after /effort', async () => {
+    const user = userEvent.setup()
+    let resolveProjectSettings!: () => void
+    const projectSettingsGate = new Promise<void>((resolve) => { resolveProjectSettings = resolve })
+    let releaseSettingsSave!: () => void
+    const settingsSaveGate = new Promise<void>((resolve) => { releaseSettingsSave = resolve })
+    const callOrder: string[] = []
+    const settingsRequests: Array<Record<string, unknown>> = []
+    const turnRequests: Array<Record<string, unknown>> = []
+    const projectDefault = {
+      provider: 'anthropic',
+      llm_profile: null,
+      model: 'claude-opus-4-6',
+      reasoning_effort: 'low',
+      thinking: 'budget',
+      thinking_budget_tokens: 2048,
+      reasoning_mode: null,
+      reasoning_summary: null,
+    }
+    let stored: Record<string, unknown> | null = null
+    let revision = 1
+
+    const snapshot = (conversationId: string) => conversationFixture({
+      conversation_id: conversationId,
+      project_path: '/tmp/project-default-chat',
+      chat_mode: 'chat',
+      provider: (stored?.provider as string) ?? projectDefault.provider,
+      model: (stored?.model as string) ?? projectDefault.model,
+      reasoning_effort: (stored?.reasoning_effort as string) ?? projectDefault.reasoning_effort,
+      title: 'Project default thread',
+      created_at: '2026-04-16T18:00:00Z',
+      updated_at: '2026-04-16T18:01:00Z',
+      revision_override: revision,
+      turns: [],
+      segments: [],
+      flow_run_requests: [],
+      flow_launches: [],
+      settings: {
+        models: {
+          scope: 'conversation',
+          revision: String(revision),
+          stored,
+          effective: stored ?? projectDefault,
+          source: stored ? 'conversation' : 'project',
+        },
+      },
+    })
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      if (url.includes('/workspace/api/settings')) {
+        await projectSettingsGate
+        return new Response(JSON.stringify({
+          models: {
+            scope: 'project',
+            source: 'project',
+            revision: '1',
+            stored: projectDefault,
+            effective: projectDefault,
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/workspace/api/projects/chat-models')) {
+        return new Response(JSON.stringify({
+          providers: {
+            codex: { status: 'available', error: null, label: 'Codex' },
+            anthropic: { status: 'available', error: null, label: 'Anthropic' },
+          },
+          models: [
+            { provider: 'codex', id: 'gpt-5.4', display: 'GPT-5.4', is_default: true, supported_reasoning_efforts: ['low', 'high'], default_reasoning_effort: 'low' },
+            {
+              provider: 'anthropic',
+              id: 'claude-opus-4-6',
+              display: 'Claude Opus 4.6',
+              is_default: true,
+              supported_reasoning_efforts: ['low', 'high'],
+              supported_thinking: ['adaptive', 'budget'],
+            },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/workspace/api/projects/metadata')) {
+        return new Response(JSON.stringify({ branch: 'main', commit: 'abc123' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.includes('/workspace/api/projects/conversations')) {
+        return new Response(JSON.stringify(summarySnapshot([], { project_path: projectPathParam(url) })), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      const match = url.match(/\/api\/conversations\/([^/?]+)\/(settings|turns)/)
+      if (match) {
+        const [, conversationId, action] = match
+        const body = JSON.parse(String(init?.body || '{}')) as Record<string, unknown>
+        if (action === 'settings') {
+          callOrder.push('settings:start')
+          settingsRequests.push(body)
+          await settingsSaveGate
+          stored = (body.model_settings as Record<string, unknown> | null) ?? null
+          revision += 1
+          callOrder.push('settings:done')
+          return new Response(JSON.stringify(conversationMutationAck(snapshot(conversationId))), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        callOrder.push('turn:start')
+        turnRequests.push(body)
+        return new Response(JSON.stringify(conversationAcceptance(snapshot(conversationId), clientTurnIdOf(init))), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+
+    act(() => {
+      useStore.setState((state) => ({
+        ...state,
+        uiDefaults: { llm_provider: 'codex', llm_model: 'gpt-5.4', reasoning_effort: 'low' },
+      }))
+      useStore.getState().registerProject('/tmp/project-default-chat')
+      useStore.getState().setActiveProjectPath('/tmp/project-default-chat')
+    })
+
+    renderProjectsPanel()
+
+    // Before /workspace/api/settings resolves, Effort stays disabled and /effort refuses to pin Codex.
+    const effortBeforeLoad = await screen.findByRole('button', { name: 'Reasoning effort: unavailable' })
+    expect(effortBeforeLoad).toBeDisabled()
+    const input = screen.getByTestId('project-ai-conversation-input')
+    await user.type(input, '/effort high{Enter}')
+    expect(await screen.findByTestId('project-panel-error')).toHaveTextContent(/No active model is resolved/i)
+    expect(settingsRequests).toHaveLength(0)
+
+    // Once project defaults resolve, the trigger names Project default and Effort unlocks.
+    await act(async () => { resolveProjectSettings() })
+    const modelBtn = await screen.findByRole('button', { name: 'Model: Claude Opus 4.6, Anthropic, Project default' })
+    expect(modelBtn).toHaveAttribute('title', expect.stringContaining('Project default: Claude Opus 4.6 (Anthropic)'))
+    expect(screen.getByRole('button', { name: 'Reasoning effort: Low (default)' })).toBeEnabled()
+
+    // /effort high pins the project default (preserving thinking + budget) and an immediate turn waits for settings ack.
+    await user.clear(input)
+    await user.type(input, '/effort high{Enter}')
+    await waitFor(() => expect(settingsRequests).toHaveLength(1))
+    expect(settingsRequests[0]).toMatchObject({
+      model_settings: {
+        provider: 'anthropic',
+        llm_profile: null,
+        model: 'claude-opus-4-6',
+        reasoning_effort: 'high',
+        thinking: 'budget',
+        thinking_budget_tokens: 2048,
+      },
+    })
+
+    // Immediately send a message while PUT /settings is still held in flight.
+    await user.type(input, 'Run with pinned project default{Enter}')
+    await Promise.resolve()
+    expect(turnRequests).toHaveLength(0)
+
+    await act(async () => { releaseSettingsSave() })
+    await waitFor(() => expect(turnRequests).toHaveLength(1))
+    expect(callOrder).toEqual(['settings:start', 'settings:done', 'turn:start'])
+    expect(turnRequests[0]).toMatchObject({ message: 'Run with pinned project default' })
   })
 
 })

@@ -589,3 +589,141 @@ it('refetches quietly on open, so values a harness acknowledged since can be cho
     await user.selectOptions(within(screen.getByRole('group', { name: 'Session controls' })).getByRole('combobox', { name: 'Approval' }), 'auto')
     expect(onChange.mock.lastCall?.[0].session_config).toEqual({ Approval: 'auto' })
 })
+
+it('preserves inherited Thinking, Mode, Summary, and ACP session controls when pinning the same effective model on Effort change', async () => {
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({
+        providers: {
+            ...catalog.providers,
+            'acp:fake': {
+                status: 'available',
+                error: null,
+                label: 'Fake ACP',
+                setup_status: 'ready',
+                config_options: [
+                    { id: 'effort', name: 'Effort', category: 'thought_level', type: 'select', currentValue: 'Lo', options: [{ value: 'Lo', name: 'Low' }, { value: 'Hi', name: 'High' }] },
+                    { id: 'Approval', name: 'Approval', type: 'select', currentValue: 'ask', options: [{ value: 'ask', name: 'Ask' }, { value: 'auto', name: 'Auto' }] },
+                ],
+            },
+        },
+        models: [
+            { ...catalog.models[0], supported_thinking: ['adaptive', 'budget'], supported_reasoning_modes: ['standard', 'pro'], supported_reasoning_summaries: ['auto', 'detailed'] },
+            { provider: 'acp:fake', id: 'deep', display: 'Deep', is_default: true, supported_reasoning_efforts: ['Lo', 'Hi'], default_reasoning_effort: 'Lo' },
+        ],
+    })
+    const user = userEvent.setup(), onChange = vi.fn()
+    const inheritedNative: ModelSettings = {
+        provider: 'codex',
+        llm_profile: null,
+        model: 'discovered',
+        reasoning_effort: 'low',
+        thinking: 'budget',
+        thinking_budget_tokens: 2048,
+        reasoning_mode: 'pro',
+        reasoning_summary: 'detailed',
+    }
+    const view = render(<Editor value={cleared} inherited={inheritedNative} onChange={onChange} />)
+    await user.click(await screen.findByRole('button', { name: /^Reasoning effort:/ }))
+    await user.click(screen.getByRole('button', { name: 'Ultra', exact: true }))
+    expect(onChange).toHaveBeenLastCalledWith({
+        ...inheritedNative,
+        reasoning_effort: 'ultra',
+    })
+
+    // Also preserve ACP session_config when pinning an inherited ACP model for effort.
+    const inheritedAcp: ModelSettings = {
+        provider: 'acp:fake',
+        llm_profile: null,
+        model: 'deep',
+        reasoning_effort: 'Lo',
+        session_config: { Approval: 'auto' },
+    }
+    view.rerender(<Editor key="acp-inherit" value={cleared} inherited={inheritedAcp} onChange={onChange} />)
+    await user.click(await screen.findByRole('button', { name: /^Reasoning effort:/ }))
+    await user.click(screen.getByRole('button', { name: 'High', exact: true }))
+    expect(onChange).toHaveBeenLastCalledWith({
+        ...inheritedAcp,
+        reasoning_effort: 'Hi',
+    })
+})
+
+it('does not pre-highlight custom model on mistyped search + Enter, requiring explicit selection', async () => {
+    const user = userEvent.setup(), onChange = vi.fn()
+    render(<Editor onChange={onChange} />)
+    await user.click(await screen.findByRole('button', { name: /Model: Discovered/ }))
+    const search = screen.getByRole('combobox', { name: 'Search models' })
+    await user.type(search, 'typo-model')
+    expect(search).not.toHaveAttribute('aria-activedescendant')
+    await user.keyboard('{Enter}')
+    expect(onChange).not.toHaveBeenCalled()
+    expect(screen.getByRole('listbox')).toBeVisible()
+
+    // Deliberately pressing ArrowDown highlights the custom option, then Enter commits it.
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ ...initial, model: 'typo-model' })
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+})
+
+it('omits unconfigured profiles from Pinned and Recent quick sections', async () => {
+    vi.mocked(useLlmProfiles).mockReturnValue([
+        { id: 'ready', label: 'Ready', provider: 'openai', configured: true, models: ['ready-one'] },
+        { id: 'missing-creds', label: 'Missing Creds', provider: 'openai', configured: false, models: ['secret-one'] },
+    ])
+    localStorage.setItem('spark.model_chooser.pinned', JSON.stringify([
+        { provider: null, llm_profile: 'missing-creds', model: 'secret-one' },
+        { provider: null, llm_profile: 'ready', model: 'ready-one' },
+    ]))
+    localStorage.setItem('spark.model_chooser.recents', JSON.stringify([
+        { provider: null, llm_profile: 'missing-creds', model: 'secret-one' },
+    ]))
+    const user = userEvent.setup()
+    render(<Editor />)
+    await user.click(await screen.findByRole('button', { name: /Model: Discovered/ }))
+    const pinnedGroup = screen.getByRole('group', { name: 'Pinned' })
+    expect(within(pinnedGroup).getByRole('option', { name: /ready-one/ })).toBeInTheDocument()
+    expect(within(pinnedGroup).queryByRole('option', { name: /secret-one/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Recent' })).not.toBeInTheDocument()
+})
+
+it('keeps saved ACP session controls and saved native secondary settings inspectable and clearable when discovery metadata is missing', async () => {
+    const user = userEvent.setup(), onChange = vi.fn()
+    // Harness 'acp:removed' is completely absent from discovery.providers.
+    const view = render(
+        <Editor
+            value={{ provider: 'acp:removed', llm_profile: null, model: 'gone-model', reasoning_effort: null, session_config: { Approval: 'auto' } }}
+            onChange={onChange}
+        />,
+    )
+    await user.click(await screen.findByRole('button', { name: /Model: gone-model/ }))
+    const controls = screen.getByRole('group', { name: 'Session controls' })
+    expect(within(controls).getByRole('combobox', { name: 'Approval' })).toHaveDisplayValue('auto (not offered now)')
+    await user.selectOptions(within(controls).getByRole('combobox', { name: 'Approval' }), 'Harness default')
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'acp:removed', session_config: {} }))
+    await user.keyboard('{Escape}')
+
+    // Saved native secondary settings on an unlisted model with missing capability metadata stay inspectable & clearable.
+    view.rerender(
+        <Editor
+            key="missing-meta"
+            value={{
+                provider: 'codex',
+                llm_profile: null,
+                model: 'unlisted-model',
+                reasoning_effort: null,
+                thinking: 'budget',
+                thinking_budget_tokens: 2048,
+                reasoning_mode: 'pro',
+                reasoning_summary: 'detailed',
+            }}
+            onChange={onChange}
+        />,
+    )
+    await user.click(screen.getByRole('button', { name: /Model: unlisted-model/ }))
+    expect(screen.getByRole('group', { name: 'Thinking' })).toBeVisible()
+    expect(screen.getByRole('spinbutton', { name: 'Thinking budget tokens' })).toHaveValue(2048)
+    await user.click(within(screen.getByRole('group', { name: 'Thinking' })).getByRole('button', { name: 'Default', exact: true }))
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ thinking: null, thinking_budget_tokens: null }))
+    await user.click(within(screen.getByRole('group', { name: 'Mode' })).getByRole('button', { name: 'Standard', exact: true }))
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ reasoning_mode: null }))
+    await user.click(within(screen.getByRole('group', { name: 'Summary' })).getByRole('button', { name: 'Default', exact: true }))
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ reasoning_summary: null }))
+})

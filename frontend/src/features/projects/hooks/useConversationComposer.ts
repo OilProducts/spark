@@ -25,6 +25,9 @@ import type { NormalizedConversationRecord } from '../model/projectsHomeState'
 import type { ComposerAttachment } from '../model/types'
 import { clearSentAttachments } from './useComposerAttachments'
 
+// Prevents duplicate turn submits while a turn waits for an in-flight settings save to commit.
+const awaitingSettingsTurn = new Set<string>()
+
 export type ConversationComposerCommand =
     | {
         kind: 'switch_mode'
@@ -89,6 +92,8 @@ type UseConversationComposerArgs = {
     llmProfiles?: LlmProfileMetadata[]
     onModelSettingsChange?: (value: ModelSettings) => void
     onOpenModelPicker?: () => void
+    /** Awaits any in-flight model settings save so a competing send uses acknowledged settings without 409 conflicts. */
+    waitForPendingSettingsSave?: (conversationId: string) => Promise<boolean>
     /** Set when the active harness does not support Plan mode; blocks `/plan` before switching. */
     planModeUnsupportedReason?: string | null
     ensureConversationId: () => string | null
@@ -122,6 +127,7 @@ export function useConversationComposer({
     llmProfiles = [],
     onModelSettingsChange,
     onOpenModelPicker,
+    waitForPendingSettingsSave,
     planModeUnsupportedReason = null,
     ensureConversationId,
     getCurrentConversationId,
@@ -132,9 +138,23 @@ export function useConversationComposer({
     setPanelError,
     setPendingConversationTurn,
 }: UseConversationComposerArgs) {
+    const awaitSettingsReady = async (conversationId: string): Promise<boolean> => {
+        if (!waitForPendingSettingsSave) return true
+        if (awaitingSettingsTurn.has(conversationId)) return false
+        awaitingSettingsTurn.add(conversationId)
+        try {
+            return await waitForPendingSettingsSave(conversationId)
+        } finally {
+            awaitingSettingsTurn.delete(conversationId)
+        }
+    }
+
     // The `/plan` and `/chat` commands and the header's mode control take the same path.
     const switchChatMode = async (conversationId: string, chatMode: ConversationChatMode) => {
         if (!activeProjectPath) {
+            return
+        }
+        if (!(await awaitSettingsReady(conversationId))) {
             return
         }
         setPanelError(null)
@@ -192,7 +212,7 @@ export function useConversationComposer({
             }
             if (parsedCommand.kind === 'set_model') {
                 const { rows } = buildModelCatalog(llmProfiles, modelDiscovery, false)
-                const matched = matchAvailableModel(parsedCommand.query, rows, modelDiscovery)
+                const matched = matchAvailableModel(parsedCommand.query, rows, modelDiscovery, llmProfiles)
                 if (!matched.ok) {
                     setPanelError(matched.error)
                     return
@@ -235,7 +255,6 @@ export function useConversationComposer({
             return
         }
 
-        setPanelError(null)
         if (parsedCommand?.chatMode === 'plan' && planModeUnsupportedReason) {
             setPanelError(planModeUnsupportedReason)
             return
@@ -245,6 +264,10 @@ export function useConversationComposer({
             await switchChatMode(conversationId, parsedCommand.chatMode)
             return
         }
+        if (!(await awaitSettingsReady(conversationId))) {
+            return
+        }
+        setPanelError(null)
         const messageToSend = parsedCommand?.kind === 'switch_and_send'
             ? parsedCommand.message
             : parsedCommand?.kind === 'switch_mode' ? '' : trimmed
@@ -296,6 +319,9 @@ export function useConversationComposer({
     const onRetryTurn = async (turnId: string) => {
         const conversationId = activeProjectPath ? getCurrentConversationId(activeProjectPath) : null
         if (!activeProjectPath || !conversationId || isChatInputDisabled) {
+            return
+        }
+        if (!(await awaitSettingsReady(conversationId))) {
             return
         }
         setPanelError(null)

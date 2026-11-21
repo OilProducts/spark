@@ -129,7 +129,7 @@ for (const theme of ['light', 'dark']) test(`missions conversation view ${theme}
   await expect(page.getByRole('menuitem')).toHaveText(['Edit', 'Model', 'Budget', 'Archive'])
   await page.getByRole('menuitem', { name: 'Model', exact: true }).click()
   const modelForm = rail.getByRole('form', { name: 'Model', exact: true })
-  await expect(modelForm.getByRole('button', { name: /^Model:/ })).toContainText('Default')
+  await expect(modelForm.getByRole('button', { name: /^Model:/ })).toContainText('Project default')
   await customModel(page, 'mission-custom-model', modelForm)
   await modelForm.getByRole('button', { name: 'Cancel', exact: true }).click()
   await rail.getByRole('button', { name: 'Edit budget' }).click()
