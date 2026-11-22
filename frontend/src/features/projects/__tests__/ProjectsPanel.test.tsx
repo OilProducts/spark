@@ -962,7 +962,11 @@ describe('ProjectsPanel', () => {
     // The model stays editable during work; the running turn keeps what it started with.
     await chooseModel(user, 'Codex', 'GPT-5.4')
     await waitFor(() => expect(sendRequests).toContain('/workspace/api/conversations/conversation-active-turn/settings'))
-    await user.click(screen.getByTestId('project-chat-stop'))
+    const stopButton = screen.getByTestId('project-chat-stop')
+    expect(stopButton).toHaveAccessibleName('Stop')
+    expect(stopButton).toHaveAttribute('title', 'Stop')
+    expect(stopButton.parentElement).toBe(sendButton.parentElement)
+    await user.click(stopButton)
     await waitFor(() => expect(sendRequests).toContain('/workspace/api/conversations/conversation-active-turn/interrupt'))
   })
 
@@ -4939,7 +4943,7 @@ describe('ProjectsPanel', () => {
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan')
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveAttribute('data-mode', 'plan')
     })
     expect(settingsRequests).toHaveLength(1)
     expect(settingsRequests[0]?.body).toMatchObject({
@@ -5078,7 +5082,7 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan')
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveAttribute('data-mode', 'plan')
     })
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Switched to Plan mode')
@@ -5088,7 +5092,7 @@ describe('ProjectsPanel', () => {
     await user.click(await screen.findByRole('button', { name: 'Chat thread' }))
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('chat')
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveAttribute('data-mode', 'chat')
     })
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Answer directly.')
@@ -5099,7 +5103,7 @@ describe('ProjectsPanel', () => {
     await waitFor(() => {
       expect(threadAFetchCount).toBe(2)
       expect(resolveThreadARestore).not.toBeNull()
-      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan')
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveAttribute('data-mode', 'plan')
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Switched to Plan mode')
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Draft the implementation plan.')
     })
@@ -5112,7 +5116,7 @@ describe('ProjectsPanel', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan')
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveAttribute('data-mode', 'plan')
     })
   })
 
@@ -5236,7 +5240,7 @@ describe('ProjectsPanel', () => {
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan')
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveAttribute('data-mode', 'plan')
     })
     expect(settingsRequests).toEqual([])
     expect(turnRequests).toHaveLength(1)
@@ -5562,9 +5566,10 @@ describe('ProjectsPanel', () => {
     await waitFor(() => expect(settingsRequests).toHaveLength(1))
     expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('GPT-5.4 Mini')
     await openEffortPicker(user)
-    expect(screen.getByRole('button', { name: 'Medium', exact: true })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'High', exact: true })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Medium', exact: true }))
+    const effortMenu = screen.getByRole('menu', { name: 'Reasoning effort' })
+    expect(within(effortMenu).getByRole('menuitemradio', { name: 'Medium', exact: true })).toBeInTheDocument()
+    expect(within(effortMenu).queryByRole('menuitemradio', { name: 'High', exact: true })).not.toBeInTheDocument()
+    await user.click(within(effortMenu).getByRole('menuitemradio', { name: 'Medium', exact: true }))
     await waitFor(() => expect(settingsRequests).toHaveLength(2))
     expect(screen.getByRole('button', { name: /^Reasoning effort:/ })).toHaveTextContent('Medium')
 
@@ -5653,7 +5658,7 @@ describe('ProjectsPanel', () => {
     await customModel(user, 'final-model')
     // Unknown Claude Code models have no advertised effort; the stored High remains unchanged.
     await openEffortPicker(user)
-    expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button')).toHaveLength(1)
+    expect(within(screen.getByRole('menu', { name: 'Reasoning effort' })).getAllByRole('menuitemradio')).toHaveLength(1)
     await user.keyboard('{Escape}')
     expect(requests).toHaveLength(3)
     if (conflict) revision += 1 // Another client wins while our request is in flight.
@@ -6230,18 +6235,20 @@ describe('ProjectsPanel', () => {
 
     renderProjectsPanel()
 
-    // Before /workspace/api/settings resolves, Effort stays disabled and /effort refuses to pin Codex.
+    // Before /workspace/api/settings resolves, Mode and Effort stay disabled and /effort refuses to pin Codex.
     const effortBeforeLoad = await screen.findByRole('button', { name: 'Reasoning effort: unavailable' })
     expect(effortBeforeLoad).toBeDisabled()
+    expect(screen.getByTestId('project-active-chat-mode-badge')).toBeDisabled()
     const input = screen.getByTestId('project-ai-conversation-input')
     await user.type(input, '/effort high{Enter}')
     expect(await screen.findByTestId('project-panel-error')).toHaveTextContent(/No active model is resolved/i)
     expect(settingsRequests).toHaveLength(0)
 
-    // Once project defaults resolve, the trigger names Project default and Effort unlocks.
+    // Once project defaults resolve, the trigger names Project default and active secondary options, and Mode/Effort unlock.
     await act(async () => { resolveProjectSettings() })
-    const modelBtn = await screen.findByRole('button', { name: 'Model: Claude Opus 4.6, Anthropic, Project default' })
+    const modelBtn = await screen.findByRole('button', { name: 'Model: Claude Opus 4.6, Anthropic, Project default, Budget (2048)' })
     expect(modelBtn).toHaveAttribute('title', expect.stringContaining('Project default: Claude Opus 4.6 (Anthropic)'))
+    expect(screen.getByTestId('project-active-chat-mode-badge')).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Reasoning effort: Low (default)' })).toBeEnabled()
 
     // /effort high pins the project default (preserving thinking + budget) and an immediate turn waits for settings ack.

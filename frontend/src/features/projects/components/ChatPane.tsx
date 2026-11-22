@@ -1,4 +1,4 @@
-import { useRef, useState, type ClipboardEvent, type DragEvent, type ReactNode } from 'react'
+import { useRef, useState, type ClipboardEvent, type DragEvent, type MouseEvent, type ReactNode } from 'react'
 import { ArrowUp, Paperclip } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -29,11 +29,17 @@ export interface ChatComposer {
         isUploadBlocking: boolean
         disabled: boolean
     }
-    /** Left of the composer's footer row. */
+    /** Below the composer card, right-aligned. */
     footer?: ReactNode
-    /** Before Send in the footer row. */
+    /** In the wrapping left toolbar zone, after Attach. */
     controls?: ReactNode
+    /** Right-side execution control placed directly before Send. */
+    action?: ReactNode
+    /** Visual tone for the composer card. */
+    tone?: 'default' | 'accent'
 }
+
+const INTERACTIVE_COMPOSER_DESCENDANT = 'button, input, textarea, select, a, label, [role="button"], [role="menu"], [role="listbox"], [role="combobox"], [role="option"], [role="menuitemradio"]'
 
 /** A conversation's scrolling body, Jump to bottom and composer, shared by project chats and missions. */
 export function ChatPane({ follow, scrolls, hasContent, children, notice, composer }: {
@@ -49,6 +55,7 @@ export function ChatPane({ follow, scrolls, hasContent, children, notice, compos
     composer?: ChatComposer
 }) {
     const fileInputRef = useRef<HTMLInputElement>(null)
+    const textareaRef = useRef<HTMLTextAreaElement>(null)
     const [isDraggingFiles, setIsDraggingFiles] = useState(false)
     const attachments = composer?.attachments
     const canAttach = Boolean(attachments) && !attachments?.disabled
@@ -68,11 +75,24 @@ export function ChatPane({ follow, scrolls, hasContent, children, notice, compos
         event.dataTransfer.dropEffect = 'copy'
         setIsDraggingFiles(true)
     }
+    const onComposerDragLeave = (event: DragEvent<HTMLFormElement>) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+        setIsDraggingFiles(false)
+    }
     const onComposerDrop = (event: DragEvent<HTMLFormElement>) => {
         setIsDraggingFiles(false)
         if (!canAttach || !dragHasFiles(event)) return
         event.preventDefault()
         attachments?.onAdd(Array.from(event.dataTransfer.files))
+    }
+    const onComposerClick = (event: MouseEvent<HTMLFormElement>) => {
+        if (!composer || composer.inputDisabled) return
+        const target = event.target
+        if (!(target instanceof Node) || !event.currentTarget.contains(target)) return
+        if (window.getSelection()?.toString()) return
+        const element = target instanceof Element ? target : target.parentElement
+        if (element?.closest(INTERACTIVE_COMPOSER_DESCENDANT)) return
+        textareaRef.current?.focus()
     }
     return (
         <>
@@ -101,85 +121,95 @@ export function ChatPane({ follow, scrolls, hasContent, children, notice, compos
                     ) : null}
                     {notice}
                     {composer ? (
-                        <form
-                            data-testid="project-ai-conversation-composer"
-                            onSubmit={(event) => {
-                                event.preventDefault()
-                                composer.onSubmit()
-                            }}
-                            onDragOver={onComposerDragOver}
-                            onDragLeave={() => setIsDraggingFiles(false)}
-                            onDrop={onComposerDrop}
-                            className={cn(
-                                'flex flex-col rounded-xl border border-input bg-background transition-[color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30',
-                                isDraggingFiles && 'border-ring ring-2 ring-ring/30',
-                            )}
-                        >
-                            {attachments ? (
-                                <ComposerAttachments attachments={attachments.items} onRetry={attachments.onRetry} onRemove={attachments.onRemove} isSending={attachments.isSending} />
-                            ) : null}
-                            <Textarea
-                                id="project-ai-conversation-input"
-                                data-testid="project-ai-conversation-input"
-                                value={composer.draft}
-                                onChange={(event) => composer.onDraftChange(event.target.value)}
-                                onKeyDown={(event) => {
-                                    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-                                        event.preventDefault()
-                                        event.currentTarget.form?.requestSubmit()
-                                    }
+                        <>
+                            <form
+                                data-testid="project-ai-conversation-composer"
+                                onSubmit={(event) => {
+                                    event.preventDefault()
+                                    composer.onSubmit()
                                 }}
-                                onPaste={onComposerPaste}
-                                aria-label={composer.label ?? 'Message'}
-                                placeholder={composer.placeholder}
-                                disabled={composer.inputDisabled}
-                                className="max-h-[40vh] min-h-0 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-3.5 pb-1 pt-3 focus-visible:border-0 focus-visible:ring-0"
-                                rows={2}
-                            />
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2 pl-3.5 pr-2">
-                                {composer.footer}
-                                <div className="ml-auto flex min-w-0 items-center justify-end gap-2">
-                                    {attachments ? (
-                                        <>
-                                            <input
-                                                ref={fileInputRef}
-                                                data-testid="project-ai-conversation-file-input"
-                                                type="file"
-                                                multiple
-                                                hidden
-                                                onChange={(event) => {
-                                                    attachments.onAdd(Array.from(event.target.files ?? []))
-                                                    event.target.value = ''
-                                                }}
-                                            />
-                                            <Button
-                                                type="button"
-                                                data-testid="project-ai-conversation-attach-button"
-                                                variant="ghost"
-                                                size="icon-sm"
-                                                aria-label="Attach files"
-                                                title="Attach files (up to 10, 20 MB each, 50 MB per message)"
-                                                disabled={!canAttach}
-                                                onClick={() => fileInputRef.current?.click()}
-                                            >
-                                                <Paperclip />
-                                            </Button>
-                                        </>
-                                    ) : null}
-                                    {composer.controls}
-                                    <Button
-                                        data-testid="project-ai-conversation-send-button"
-                                        type="submit"
-                                        size="icon-sm"
-                                        aria-label={composer.sendLabel}
-                                        title={composer.sendLabel}
-                                        disabled={!hasMessage || (!composer.allowSubmitWhileUploadBlocking && Boolean(attachments?.isUploadBlocking)) || composer.sendDisabled}
-                                    >
-                                        <ArrowUp />
-                                    </Button>
+                                onClick={onComposerClick}
+                                onDragOver={onComposerDragOver}
+                                onDragLeave={onComposerDragLeave}
+                                onDrop={onComposerDrop}
+                                className={cn(
+                                    'flex flex-col rounded-xl border bg-muted/35 transition-[color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30',
+                                    composer.tone === 'accent' ? 'border-primary/40' : 'border-input',
+                                    isDraggingFiles && 'border-ring ring-2 ring-ring/30',
+                                )}
+                            >
+                                {attachments ? (
+                                    <ComposerAttachments attachments={attachments.items} onRetry={attachments.onRetry} onRemove={attachments.onRemove} isSending={attachments.isSending} />
+                                ) : null}
+                                <Textarea
+                                    ref={textareaRef}
+                                    id="project-ai-conversation-input"
+                                    data-testid="project-ai-conversation-input"
+                                    value={composer.draft}
+                                    onChange={(event) => composer.onDraftChange(event.target.value)}
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                                            event.preventDefault()
+                                            event.currentTarget.form?.requestSubmit()
+                                        }
+                                    }}
+                                    onPaste={onComposerPaste}
+                                    aria-label={composer.label ?? 'Message'}
+                                    placeholder={composer.placeholder}
+                                    disabled={composer.inputDisabled}
+                                    className="max-h-[40vh] min-h-14 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-3.5 pb-1 pt-3 focus-visible:border-0 focus-visible:ring-0"
+                                    rows={2}
+                                />
+                                <div className="flex items-end gap-2 px-2 py-2">
+                                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+                                        {attachments ? (
+                                            <>
+                                                <input
+                                                    ref={fileInputRef}
+                                                    data-testid="project-ai-conversation-file-input"
+                                                    type="file"
+                                                    multiple
+                                                    hidden
+                                                    onChange={(event) => {
+                                                        attachments.onAdd(Array.from(event.target.files ?? []))
+                                                        event.target.value = ''
+                                                    }}
+                                                />
+                                                <Button
+                                                    type="button"
+                                                    data-testid="project-ai-conversation-attach-button"
+                                                    variant="ghost"
+                                                    size="icon-sm"
+                                                    aria-label="Attach files"
+                                                    title="Attach files (up to 10, 20 MB each, 50 MB per message)"
+                                                    disabled={!canAttach}
+                                                    onClick={() => fileInputRef.current?.click()}
+                                                >
+                                                    <Paperclip />
+                                                </Button>
+                                            </>
+                                        ) : null}
+                                        {composer.controls}
+                                    </div>
+                                    <div className="flex shrink-0 items-center gap-1.5 self-end">
+                                        {composer.action}
+                                        <Button
+                                            data-testid="project-ai-conversation-send-button"
+                                            type="submit"
+                                            size="icon-sm"
+                                            aria-label={composer.sendLabel}
+                                            title={composer.sendLabel}
+                                            disabled={!hasMessage || (!composer.allowSubmitWhileUploadBlocking && Boolean(attachments?.isUploadBlocking)) || composer.sendDisabled}
+                                        >
+                                            <ArrowUp />
+                                        </Button>
+                                    </div>
                                 </div>
+                            </form>
+                            <div className="flex items-center justify-end gap-2 px-1 empty:hidden">
+                                {composer.footer}
                             </div>
-                        </form>
+                        </>
                     ) : null}
                 </div>
             </div>

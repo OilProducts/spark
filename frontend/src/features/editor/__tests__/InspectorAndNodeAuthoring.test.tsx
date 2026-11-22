@@ -366,8 +366,8 @@ describe('Accessible node inspector fields', () => {
       expect(props.onPropertyChange).toHaveBeenCalledWith('llm_model', 'gpt-5.5')
       // Effort has its own adjacent control and applies to the selected model.
       view.rerender(<NodeInspectorPanel {...props} selectedNode={{ ...props.selectedNode!, data: { ...props.selectedNode!.data, llm_provider: 'openai', llm_model: 'gpt-5.5' } }} />)
-      fireEvent.click(screen.getByRole('button', { name: /^Reasoning effort:/ }))
-      fireEvent.click(screen.getByRole('button', { name: 'High', exact: true }))
+      fireEvent.keyDown(screen.getByRole('button', { name: /^Reasoning effort:/ }), { key: 'Enter' })
+      fireEvent.click(screen.getByRole('menuitemradio', { name: 'High', exact: true }))
       expect(props.onPropertyChange).toHaveBeenCalledWith('reasoning_effort', 'high')
       for (const name of ['Goal Gate', 'Auto Status', 'Allow Partial', 'Retry Target', 'Fallback Retry Target']) {
         expect(screen.queryByLabelText(name)).not.toBeInTheDocument()

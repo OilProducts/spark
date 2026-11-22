@@ -221,10 +221,58 @@ it('names the open thread in the header and switches its mode from the compact c
     await waitFor(() => expect(screen.getByTestId('chat-title')).toHaveTextContent('New thread'))
     const mode = await screen.findByTestId('project-active-chat-mode-badge')
     await waitFor(() => expect(mode).toBeEnabled())
-    expect(mode).toHaveValue('chat')
-    await user.selectOptions(mode, 'plan')
+    expect(mode).toHaveAttribute('data-mode', 'chat')
+    expect(mode).toHaveAccessibleName('Mode: Chat')
+    await user.click(mode)
+    const modeMenu = await screen.findByRole('menu', { name: 'Mode' })
+    expect(within(modeMenu).getByRole('menuitemradio', { name: 'Chat' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(modeMenu).getByRole('menuitemradio', { name: 'Chat' })).toHaveAttribute('aria-description', 'Discuss and make changes directly')
+    const planItem = within(modeMenu).getByRole('menuitemradio', { name: 'Plan' })
+    expect(planItem).toHaveAttribute('aria-description', 'Read-only planning before editing')
+    await user.click(planItem)
     await waitFor(() => expect(settingsWrites.at(-1)?.body).toMatchObject({ project_path: HOME, chat_mode: 'plan' }))
-    await waitFor(() => expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan'))
+    await waitFor(() => expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveAttribute('data-mode', 'plan'))
+})
+
+it('shows Mode on a new chat, ignores re-selecting active Chat, and renders ContextMeter outside the form only when usage exists', async () => {
+    const user = userEvent.setup()
+    useStore.setState({ activeProjectPath: HOME, projectSessionsByPath: { [HOME]: { conversationId: 'home-1' } as never } })
+    renderChats()
+    await user.click(within(group('/work/busy')).getByRole('button', { name: 'New chat in busy' }))
+    expect(screen.getByTestId('chat-title')).toHaveTextContent('New chat')
+    expect(screen.queryByTestId('chat-context-meter')).not.toBeInTheDocument()
+
+    const mode = await screen.findByTestId('project-active-chat-mode-badge')
+    await waitFor(() => expect(mode).toBeEnabled())
+    expect(mode).toHaveAttribute('data-mode', 'chat')
+    await user.click(mode)
+    const modeMenu = await screen.findByRole('menu', { name: 'Mode' })
+    await user.click(within(modeMenu).getByRole('menuitemradio', { name: 'Chat' }))
+    expect(settingsWrites).toEqual([])
+    expect(screen.getByTestId('chat-title')).toHaveTextContent('New chat')
+    expect(useStore.getState().projectSessionsByPath['/work/busy']?.conversationId ?? null).toBeNull()
+
+    // Open a chat with context usage and verify ContextMeter renders outside the composer <form>.
+    const original = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const requestUrl = String(input)
+        if (requestUrl.includes('/api/conversations/home-1') && !init?.method) {
+            return json(conversationPage({
+                ...snapshot(HOME, 'home-1'),
+                turns: [{
+                    id: 'turn-1', role: 'assistant', kind: 'message', status: 'complete', content: 'Done.',
+                    timestamp: '2026-09-30T00:00:01Z',
+                    token_usage: { context: { used_tokens: 24000, window_tokens: 1000000 } },
+                }],
+            }))
+        }
+        return original(input, init)
+    })
+    await user.click(await within(group(HOME)).findByTestId('chats-chat-row'))
+    const meter = await screen.findByTestId('chat-context-meter')
+    expect(meter).toHaveTextContent('Context 24k / 1M · 2%')
+    const composerForm = screen.getByTestId('project-ai-conversation-composer')
+    expect(composerForm.contains(meter)).toBe(false)
 })
 
 it('hides Plan mode for an ACP harness without plan_mode support, blocks /plan, and still allows leaving Plan mode', async () => {
@@ -285,9 +333,11 @@ it('hides Plan mode for an ACP harness without plan_mode support, blocks /plan, 
     renderChats()
     await user.click(await within(group(HOME)).findByRole('button', { name: 'Chat home-1' }))
     const mode = await screen.findByTestId('project-active-chat-mode-badge')
-    expect(mode).toHaveValue('plan')
-    expect(within(mode).getByRole('option', { name: 'Plan (unsupported)' })).toBeDisabled()
-    await user.selectOptions(mode, 'chat')
+    expect(mode).toHaveAttribute('data-mode', 'plan')
+    await user.click(mode)
+    const modeMenu = await screen.findByRole('menu', { name: 'Mode' })
+    expect(within(modeMenu).getByRole('menuitemradio', { name: 'Plan (unsupported)' })).toHaveAttribute('aria-disabled', 'true')
+    await user.click(within(modeMenu).getByRole('menuitemradio', { name: 'Chat' }))
     await waitFor(() => expect(settingsWrites.at(-1)?.body).toMatchObject({ project_path: HOME, chat_mode: 'chat' }))
     await waitFor(() => expect(screen.queryByTestId('project-active-chat-mode-badge')).not.toBeInTheDocument())
 })

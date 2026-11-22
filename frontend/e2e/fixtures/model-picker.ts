@@ -4,7 +4,7 @@ export async function openPicker(page: Page, scope: Page | Locator = page) {
     if (!await page.getByRole('listbox', { name: 'Models' }).isVisible()) await scope.getByRole('button', { name: /^Model:/ }).click()
 }
 export async function openEffortPicker(page: Page, scope: Page | Locator = page) {
-    if (!await page.getByRole('group', { name: 'Reasoning effort' }).isVisible()) await scope.getByRole('button', { name: /^Reasoning effort:/ }).click()
+    if (!await page.getByRole('menu', { name: 'Reasoning effort' }).isVisible()) await scope.getByRole('button', { name: /^Reasoning effort:/ }).click()
 }
 export async function chooseModel(page: Page, group: string, model: string, scope: Page | Locator = page) {
     await openPicker(page, scope)
@@ -18,5 +18,9 @@ export async function customModel(page: Page, model: string, scope: Page | Locat
 }
 export async function chooseEffort(page: Page, effort: string, scope: Page | Locator = page) {
     await openEffortPicker(page, scope)
-    await page.getByRole('group', { name: 'Reasoning effort' }).getByRole('button', { name: effort, exact: true }).click()
+    const menu = page.getByRole('menu', { name: 'Reasoning effort' })
+    await (effort === 'Default'
+        ? menu.getByRole('menuitemradio', { name: /^Default(?: · .+)?$/ })
+        : menu.getByRole('menuitemradio', { name: effort, exact: true })
+    ).click()
 }

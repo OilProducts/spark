@@ -564,7 +564,9 @@ export function useProjectsHomeController() {
             activeChatMode,
             planModeSupported: !planModeUnsupportedReason,
             contextUsage: latestContextUsage((activeConversationRecord?.orderedTurnIds ?? []).map((turnId) => activeConversationRecord?.turnsById[turnId])),
-            onChatModeChange: (mode: ConversationChatMode) => { void onSwitchChatMode(mode) },
+            onChatModeChange: isFreshInheritedChat && inheritedModelView.status === 'loading'
+                ? undefined
+                : (mode: ConversationChatMode) => { void onSwitchChatMode(mode) },
             hasThinking: activeConversationHistory.some((entry) => isThinkingEntry(entry) && entry.content.trim().length > 0),
             showThinking,
             onShowThinkingChange: setShowThinking,

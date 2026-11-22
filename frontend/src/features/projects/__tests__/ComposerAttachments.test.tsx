@@ -1,7 +1,7 @@
 import { HomeSessionController } from '@/app/AppSessionControllers'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
 import { useStore } from '@/store'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { conversationAcceptance, conversationPage, summarySnapshot } from '@/test/conversationWire'
@@ -347,5 +347,41 @@ describe('composer attachments', () => {
     await user.click(screen.getByRole('button', { name: 'Chat A' }))
     await waitForUploads(1)
     expect(server.uploads[0]!.conversationId).toBe('chat-a')
+  })
+
+  it('keeps drag highlight across child nodes, focuses textarea on empty chrome click, and ignores clicks inside portaled menus', async () => {
+    const user = userEvent.setup()
+    stubServer()
+    renderChat()
+
+    const form = screen.getByTestId('project-ai-conversation-composer')
+    const textarea = input()
+
+    // Drag highlight stays active when moving across child elements inside the form, and clears on leaving.
+    fireEvent.dragOver(form, { dataTransfer: { types: ['Files'] } })
+    expect(form).toHaveClass('border-ring')
+    const leaveChild = createEvent.dragLeave(form)
+    Object.defineProperty(leaveChild, 'relatedTarget', { value: textarea })
+    fireEvent(form, leaveChild)
+    expect(form).toHaveClass('border-ring')
+    const leaveOutside = createEvent.dragLeave(form)
+    Object.defineProperty(leaveOutside, 'relatedTarget', { value: document.body })
+    fireEvent(form, leaveOutside)
+    expect(form).not.toHaveClass('border-ring')
+
+    // Clicking empty composer chrome focuses the textarea.
+    expect(textarea).not.toHaveFocus()
+    await user.click(form)
+    expect(textarea).toHaveFocus()
+
+    // Clicking non-interactive content inside an open portaled menu neither steals focus to textarea nor dismisses it.
+    const modeTrigger = await screen.findByTestId('project-active-chat-mode-badge')
+    await waitFor(() => expect(modeTrigger).toBeEnabled())
+    await user.click(modeTrigger)
+    const modeMenu = await screen.findByRole('menu', { name: 'Mode' })
+    const modeHeading = within(modeMenu).getByText('Mode')
+    await user.click(modeHeading)
+    expect(modeMenu).toBeVisible()
+    expect(textarea).not.toHaveFocus()
   })
 })

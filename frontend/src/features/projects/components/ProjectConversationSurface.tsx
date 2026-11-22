@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Check, ChevronDown, Hash } from 'lucide-react'
+import { DropdownMenu } from 'radix-ui'
+import { Check, ChevronDown, Hash, ListTodo, MessageSquare, Square } from 'lucide-react'
 import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { ClaudeCodeReconnect } from '@/features/settings/ClaudeCodeConnectionSettings'
@@ -14,7 +15,6 @@ import {
 import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import { ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
 import type { ModelSettings } from '@/lib/api/settingsApi'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import type { ConversationChatMode } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { CHAT_HEADING_ID } from '@/app/useAttention'
@@ -27,6 +27,8 @@ import { ChatPane } from './ChatPane'
 import { ProjectPicker } from './ProjectPicker'
 import { ContextMeter, type ContextUsage } from './ContextMeter'
 
+const modeMenuItem = 'relative flex cursor-default select-none items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-sm outline-none focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50'
+
 interface ProjectConversationSurfaceProps {
     activeProjectLabel: string | null
     activeProjectPath: string | null
@@ -35,7 +37,7 @@ interface ProjectConversationSurfaceProps {
     activeConversationTitle?: string | null
     activeConversationHandle?: string | null
     activeConversationUpdatedAt?: string | null
-    activeChatMode: ConversationChatMode | null
+    activeChatMode: ConversationChatMode
     /** False when the active harness reports `plan_mode` unsupported; hides Plan unless the chat is already in it. */
     planModeSupported?: boolean
     /** The latest assistant turn's context occupancy, for the meter. */
@@ -295,29 +297,106 @@ export function ProjectConversationSurface({
                                 isUploadBlocking,
                                 disabled: controlsDisabled,
                             } : undefined,
+                            tone: activeChatMode === 'plan' ? 'accent' : 'default',
                             footer: <ContextMeter usage={contextUsage} />,
+                            action: onStopTurn ? (
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="icon-sm"
+                                    onClick={onStopTurn}
+                                    data-testid="project-chat-stop"
+                                    aria-label="Stop"
+                                    title="Stop"
+                                >
+                                    <Square aria-hidden="true" className="size-3.5 fill-current" />
+                                </Button>
+                            ) : undefined,
                             controls: (
                                 <>
-                                    {onStopTurn ? <Button type="button" variant="outline" size="sm" onClick={onStopTurn} data-testid="project-chat-stop">Stop</Button> : null}
-                                    {activeChatMode && (planModeSupported || activeChatMode === 'plan') ? (
-                                        // Full width on a phone: the model name shortens instead.
-                                        <div className="shrink-0">
-                                            <NativeSelect
-                                                data-testid="project-active-chat-mode-badge"
-                                                aria-label="Mode"
-                                                size="sm"
-                                                value={activeChatMode}
-                                                // Same guard as the /plan command: no switching mid-turn or before the model list is ready.
-                                                disabled={controlsDisabled || isChatSendDisabled || !onChatModeChange}
-                                                onChange={(event) => onChatModeChange?.(event.target.value === 'plan' ? 'plan' : 'chat')}
-                                                className="rounded-lg"
-                                            >
-                                                <NativeSelectOption value="chat">Chat</NativeSelectOption>
-                                                <NativeSelectOption value="plan" disabled={!planModeSupported}>
-                                                    {planModeSupported ? 'Plan' : 'Plan (unsupported)'}
-                                                </NativeSelectOption>
-                                            </NativeSelect>
-                                        </div>
+                                    {(planModeSupported || activeChatMode === 'plan') ? (
+                                        <DropdownMenu.Root>
+                                            <DropdownMenu.Trigger asChild>
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    data-testid="project-active-chat-mode-badge"
+                                                    data-mode={activeChatMode}
+                                                    aria-label={`Mode: ${activeChatMode === 'plan' ? 'Plan' : 'Chat'}`}
+                                                    // Same guard as the /plan command: no switching mid-turn or before the model list is ready.
+                                                    disabled={controlsDisabled || isChatSendDisabled || !onChatModeChange}
+                                                    className={cn(
+                                                        'h-7 px-2 text-xs font-medium has-[>svg]:px-2',
+                                                        activeChatMode === 'plan'
+                                                            ? 'bg-accent text-accent-foreground hover:bg-accent/80'
+                                                            : 'text-foreground hover:bg-muted',
+                                                    )}
+                                                >
+                                                    {activeChatMode === 'plan'
+                                                        ? <ListTodo aria-hidden="true" className="size-3.5" />
+                                                        : <MessageSquare aria-hidden="true" className="size-3.5" />}
+                                                    <span>{activeChatMode === 'plan' ? 'Plan' : 'Chat'}</span>
+                                                    <ChevronDown aria-hidden="true" className="size-3.5 text-muted-foreground opacity-60" />
+                                                </Button>
+                                            </DropdownMenu.Trigger>
+                                            <DropdownMenu.Portal>
+                                                <DropdownMenu.Content
+                                                    side="top"
+                                                    align="start"
+                                                    sideOffset={6}
+                                                    collisionPadding={8}
+                                                    aria-label="Mode"
+                                                    aria-labelledby={undefined}
+                                                    className="z-50 w-64 max-w-[calc(100vw-1rem)] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+                                                >
+                                                    <DropdownMenu.Label className="px-2 pb-1 pt-1.5 text-xs font-semibold text-muted-foreground">
+                                                        Mode
+                                                    </DropdownMenu.Label>
+                                                    <DropdownMenu.RadioGroup
+                                                        value={activeChatMode}
+                                                        onValueChange={(next) => {
+                                                            const nextMode: ConversationChatMode = next === 'plan' ? 'plan' : 'chat'
+                                                            if (nextMode !== activeChatMode) {
+                                                                onChatModeChange?.(nextMode)
+                                                            }
+                                                        }}
+                                                    >
+                                                        <DropdownMenu.RadioItem
+                                                            value="chat"
+                                                            aria-label="Chat"
+                                                            aria-description="Discuss and make changes directly"
+                                                            className={modeMenuItem}
+                                                        >
+                                                            <span className="flex min-w-0 flex-1 flex-col">
+                                                                <span className="font-medium text-foreground">Chat</span>
+                                                                <span className="text-xs text-muted-foreground">Discuss and make changes directly</span>
+                                                            </span>
+                                                            <DropdownMenu.ItemIndicator className="shrink-0 text-foreground">
+                                                                <Check aria-hidden="true" className="size-3.5" />
+                                                            </DropdownMenu.ItemIndicator>
+                                                        </DropdownMenu.RadioItem>
+                                                        <DropdownMenu.RadioItem
+                                                            value="plan"
+                                                            disabled={!planModeSupported}
+                                                            aria-label={planModeSupported ? 'Plan' : 'Plan (unsupported)'}
+                                                            aria-description={planModeSupported ? 'Read-only planning before editing' : 'Not supported by this harness'}
+                                                            className={modeMenuItem}
+                                                        >
+                                                            <span className="flex min-w-0 flex-1 flex-col">
+                                                                <span className="font-medium text-foreground">{planModeSupported ? 'Plan' : 'Plan (unsupported)'}</span>
+                                                                <span className="text-xs text-muted-foreground">
+                                                                    {planModeSupported ? 'Read-only planning before editing' : 'Not supported by this harness'}
+                                                                </span>
+                                                            </span>
+                                                            <DropdownMenu.ItemIndicator className="shrink-0 text-foreground">
+                                                                <Check aria-hidden="true" className="size-3.5" />
+                                                            </DropdownMenu.ItemIndicator>
+                                                        </DropdownMenu.RadioItem>
+                                                    </DropdownMenu.RadioGroup>
+                                                </DropdownMenu.Content>
+                                            </DropdownMenu.Portal>
+                                        </DropdownMenu.Root>
                                     ) : null}
                                     {/* Compact model + effort controls; tooltips and aria-labels name the inheritance source. */}
                                     <ModelChooser inherited={inheritedModelSettings} value={modelSettings} onChange={onModelSettingsChange}

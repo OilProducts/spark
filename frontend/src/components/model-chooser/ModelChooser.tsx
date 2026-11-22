@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Popover } from 'radix-ui'
-import { ChevronDown, ChevronRight, Star } from 'lucide-react'
+import { DropdownMenu, Popover } from 'radix-ui'
+import { Check, ChevronDown, ChevronRight, Gauge, Star } from 'lucide-react'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { NativeSelect, NativeSelectOptGroup, NativeSelectOption } from '@/components/ui/native-select'
+import { cn } from '@/lib/utils'
 import { refreshModelOptions, useModelOptions } from './useModelOptions'
 import {
     EMPTY_MODEL_SETTINGS,
@@ -348,17 +349,26 @@ export function ModelChooser({
     const moreOptionsOpen = moreOptionsOverride ?? (unavailableSecondaryCount > 0)
 
     // Labels, tooltips, and accessible names.
+    const secondarySummary = unavailableSecondaryCount > 0
+        ? `${unavailableSecondaryCount} unavailable ${unavailableSecondaryCount === 1 ? 'option' : 'options'}`
+        : activeSecondaryLabels.length > 0
+            ? activeSecondaryLabels.join(', ')
+            : null
     const modelText = resolved.model ?? inheritLabel
     const modelSourceSummary = resolved.model
         ? `${defaultPrefix}: ${resolved.model}${resolved.providerDisplay ? ` (${resolved.providerDisplay})` : ''}`
         : `${defaultPrefix}: ${inheritLabel}`
-    const modelTooltip = isUsingDefault
+    const modelTooltipBase = isUsingDefault
         ? (title ? `${modelSourceSummary}. ${title}` : modelSourceSummary)
         : title
+    const modelTooltip = secondarySummary
+        ? (modelTooltipBase ? `${modelTooltipBase}. ${secondarySummary}` : secondarySummary)
+        : modelTooltipBase
     const modelAriaLabel = [
         `Model: ${modelText}`,
         resolved.model && resolved.providerDisplay ? resolved.providerDisplay : null,
         isUsingDefault ? defaultPrefix : null,
+        secondarySummary,
     ].filter(Boolean).join(', ')
 
     const activeEffortValue = savedEffort ?? resolved.effort ?? null
@@ -378,7 +388,10 @@ export function ModelChooser({
             ? `Reasoning effort (${defaultPrefix}; selecting pins ${modelText})`
             : 'Reasoning effort'
 
-    const triggerSize = layout === 'compact' ? 'sm' : 'default'
+    const isCompact = layout === 'compact'
+    const triggerSize = isCompact ? 'sm' : 'default'
+    const selectedEffort = isInherited ? effective.reasoning_effort : value.reasoning_effort
+    const modelDefaultEffort = resolved.meta?.default_reasoning_effort ?? null
 
     const renderOption = (choice: RenderChoice, showGroupTag: boolean) => {
         const pinnedState = choice.section !== 'custom' && isPinned(choice)
@@ -440,57 +453,72 @@ export function ModelChooser({
 
     const hasListContent = pinnedChoices.length > 0 || recentChoices.length > 0 || visibleGroups.length > 0 || Boolean(customChoice)
 
-    return (
-        <Field className={layout === 'compact' ? 'min-w-0 w-auto max-w-full' : 'w-full'}>
-            {layout === 'fields' && <FieldLabel htmlFor={id}>Model</FieldLabel>}
-            <div className={layout === 'compact' ? 'flex min-w-0 max-w-full items-center gap-1.5' : 'flex min-w-0 w-full items-center gap-2'}>
-                <Popover.Root open={isOpen} onOpenChange={setOpen}>
-                    <Popover.Trigger asChild>
-                        <Button
-                            id={id}
-                            type="button"
-                            variant="outline"
-                            size={triggerSize}
-                            disabled={disabled}
-                            title={modelTooltip}
-                            aria-label={modelAriaLabel}
-                            aria-invalid={invalidModel}
-                            aria-describedby={note}
-                            data-inherited={isInherited ? 'true' : undefined}
-                            className={`min-w-0 max-w-full justify-between border border-input text-foreground hover:bg-transparent focus-visible:border-ring ${layout === 'fields' ? 'flex-1' : 'px-2.5'} ${isUsingDefault ? 'text-muted-foreground' : ''} ${isInherited ? 'border-dashed' : ''}`}
-                        >
-                            <span className="flex min-w-0 items-center gap-1.5">
-                                <span className="truncate">{modelText}</span>
-                                {resolved.model && resolved.providerDisplay && (
-                                    <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-xs font-normal leading-none text-muted-foreground">
-                                        {resolved.providerDisplay}
-                                    </span>
-                                )}
-                                {layout === 'fields' && isUsingDefault && resolved.model && (
-                                    <span className="shrink-0 text-xs font-normal text-muted-foreground">Default</span>
-                                )}
-                                {(activeSecondaryLabels.length > 0 || unavailableSecondaryCount > 0) && (
-                                    <span
-                                        aria-hidden="true"
-                                        className={`size-1.5 shrink-0 rounded-full ${unavailableSecondaryCount > 0 ? 'bg-warning' : 'bg-primary'}`}
-                                    />
-                                )}
+    const modelControl = (
+        <Popover.Root open={isOpen} onOpenChange={setOpen}>
+            <Popover.Trigger asChild>
+                <Button
+                    id={id}
+                    type="button"
+                    variant={isCompact ? 'ghost' : 'outline'}
+                    size={triggerSize}
+                    disabled={disabled}
+                    title={modelTooltip}
+                    aria-label={modelAriaLabel}
+                    aria-invalid={invalidModel}
+                    aria-describedby={note}
+                    data-inherited={isInherited ? 'true' : undefined}
+                    className={cn(
+                        'min-w-0 max-w-full justify-between',
+                        isCompact
+                            ? 'h-7 px-2 text-xs font-medium text-foreground hover:bg-muted has-[>svg]:px-2'
+                            : cn(
+                                'flex-1 border border-input text-foreground hover:bg-transparent focus-visible:border-ring',
+                                isUsingDefault && 'text-muted-foreground',
+                                isInherited && 'border-dashed',
+                            ),
+                    )}
+                >
+                    <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate">{modelText}</span>
+                        {resolved.model && resolved.providerDisplay && (
+                            <span className={isCompact
+                                ? 'shrink-0 font-normal text-muted-foreground'
+                                : 'shrink-0 rounded bg-muted px-1 py-0.5 text-xs font-normal leading-none text-muted-foreground'}
+                            >
+                                {resolved.providerDisplay}
                             </span>
-                            <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground opacity-50" />
-                        </Button>
-                    </Popover.Trigger>
-                    <Popover.Portal>
-                        <Popover.Content
-                            align="start"
-                            sideOffset={6}
-                            collisionPadding={8}
-                            aria-label="Choose model"
-                            className="z-50 flex max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-1rem)] flex-col rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md"
-                            onOpenAutoFocus={(event) => {
-                                event.preventDefault()
-                                input.current?.focus({ preventScroll: true })
-                            }}
-                        >
+                        )}
+                        {layout === 'fields' && isUsingDefault && resolved.model && (
+                            <span className="shrink-0 text-xs font-normal text-muted-foreground">Default</span>
+                        )}
+                        {(activeSecondaryLabels.length > 0 || unavailableSecondaryCount > 0) && (
+                            <span
+                                aria-hidden="true"
+                                className={`size-1.5 shrink-0 rounded-full ${unavailableSecondaryCount > 0 ? 'bg-warning' : 'bg-primary'}`}
+                            />
+                        )}
+                    </span>
+                    <ChevronDown
+                        aria-hidden="true"
+                        className={isCompact
+                            ? 'size-3.5 shrink-0 text-muted-foreground opacity-60'
+                            : 'size-4 shrink-0 text-muted-foreground opacity-50'}
+                    />
+                </Button>
+            </Popover.Trigger>
+            <Popover.Portal>
+                <Popover.Content
+                    side={isCompact ? 'top' : undefined}
+                    align="start"
+                    sideOffset={6}
+                    collisionPadding={8}
+                    aria-label="Choose model"
+                    className="z-50 flex max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-1rem)] flex-col rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md"
+                    onOpenAutoFocus={(event) => {
+                        event.preventDefault()
+                        input.current?.focus({ preventScroll: true })
+                    }}
+                >
                             <Input
                                 className="shrink-0"
                                 ref={input}
@@ -727,70 +755,124 @@ export function ModelChooser({
                                     )}
                                 </div>
                             )}
-                        </Popover.Content>
-                    </Popover.Portal>
-                </Popover.Root>
+                </Popover.Content>
+            </Popover.Portal>
+        </Popover.Root>
+    )
 
-                {showEffortTrigger && (
-                    <Popover.Root
-                        open={effortOpen && !disabled && !controlsLocked}
-                        onOpenChange={(next) => {
-                            const target = next && !disabled && !controlsLocked
-                            setEffortOpen(target)
-                            if (target) refreshModelOptions(projectPath)
-                        }}
+    const effortControl = showEffortTrigger ? (
+        <DropdownMenu.Root
+            open={effortOpen && !disabled && !controlsLocked}
+            onOpenChange={(next) => {
+                const target = next && !disabled && !controlsLocked
+                setEffortOpen(target)
+                if (target) refreshModelOptions(projectPath)
+            }}
+        >
+            <span
+                className={controlsLocked ? 'inline-flex shrink-0 cursor-not-allowed' : 'contents'}
+                title={controlsLocked ? effortHint : undefined}
+            >
+                <DropdownMenu.Trigger asChild>
+                    <Button
+                        type="button"
+                        variant={isCompact ? 'ghost' : 'outline'}
+                        size={triggerSize}
+                        disabled={disabled || controlsLocked}
+                        title={effortTooltip}
+                        aria-label={effortAriaLabel}
+                        aria-describedby={controlsLocked ? `${id}-effort-hint` : undefined}
+                        className={cn(
+                            'shrink-0 justify-between',
+                            isCompact
+                                ? cn(
+                                    'h-7 px-2 text-xs font-medium hover:bg-muted has-[>svg]:px-2',
+                                    controlsLocked ? 'text-muted-foreground' : 'text-foreground',
+                                )
+                                : cn(
+                                    'border border-input px-2.5 text-foreground hover:bg-transparent focus-visible:border-ring',
+                                    effortIsDefault && 'text-muted-foreground',
+                                    isInherited && !controlsLocked && 'border-dashed',
+                                ),
+                        )}
                     >
-                        <span
-                            className={controlsLocked ? 'inline-flex shrink-0 cursor-not-allowed' : 'contents'}
-                            title={controlsLocked ? effortHint : undefined}
-                        >
-                            <Popover.Trigger asChild>
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    size={triggerSize}
-                                    disabled={disabled || controlsLocked}
-                                    title={effortTooltip}
-                                    aria-label={effortAriaLabel}
-                                    aria-describedby={controlsLocked ? `${id}-effort-hint` : undefined}
-                                    className={`shrink-0 justify-between border border-input px-2.5 text-foreground hover:bg-transparent focus-visible:border-ring ${effortIsDefault ? 'text-muted-foreground' : ''} ${isInherited && !controlsLocked ? 'border-dashed' : ''}`}
-                                >
-                                    <span>{effortTriggerText}</span>
-                                    <ChevronDown aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground opacity-50" />
-                                </Button>
-                            </Popover.Trigger>
-                        </span>
-                        <Popover.Portal>
-                            <Popover.Content
-                                align="end"
-                                sideOffset={6}
-                                collisionPadding={8}
-                                aria-label="Choose reasoning effort"
-                                className="z-50 w-56 max-w-[calc(100vw-1rem)] rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md"
+                        {isCompact && <Gauge aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />}
+                        <span>{effortTriggerText}</span>
+                        <ChevronDown
+                            aria-hidden="true"
+                            className={isCompact
+                                ? 'size-3.5 shrink-0 text-muted-foreground opacity-60'
+                                : 'size-3.5 shrink-0 text-muted-foreground opacity-50'}
+                        />
+                    </Button>
+                </DropdownMenu.Trigger>
+            </span>
+            <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                    side={isCompact ? 'top' : undefined}
+                    align={isCompact ? 'start' : 'end'}
+                    sideOffset={6}
+                    collisionPadding={8}
+                    aria-label="Reasoning effort"
+                    aria-labelledby={undefined}
+                    className="z-50 min-w-44 max-w-[calc(100vw-1rem)] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+                >
+                    <DropdownMenu.Label className="px-2 pb-1 pt-1.5 text-xs font-semibold text-muted-foreground">
+                        Reasoning effort
+                    </DropdownMenu.Label>
+                    {resolved.unverified && (
+                        <p className="px-2 pb-1 text-xs text-muted-foreground">Provider levels; unverified for this model.</p>
+                    )}
+                    <DropdownMenu.RadioGroup
+                        value={selectedEffort ?? ''}
+                        onValueChange={(next) => commitEffort(next || null)}
+                    >
+                        {[null, ...allEfforts].map((effort) => (
+                            <DropdownMenu.RadioItem
+                                key={effort ?? 'default'}
+                                value={effort ?? ''}
+                                className="relative flex cursor-default select-none items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-sm outline-none focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
                             >
-                                <div role="group" aria-label="Reasoning effort" className="flex flex-wrap gap-1">
-                                    <span className="w-full text-xs text-muted-foreground">Reasoning effort</span>
-                                    {resolved.unverified && (
-                                        <span className="w-full text-xs text-muted-foreground">Provider levels; unverified for this model.</span>
+                                <span className="truncate">
+                                    {effort ? (
+                                        `${effortName(effort)}${supported.includes(effort) ? '' : ' (custom)'}`
+                                    ) : modelDefaultEffort ? (
+                                        <>
+                                            Default{' '}
+                                            <span className="text-muted-foreground">{`· ${effortName(modelDefaultEffort)}`}</span>
+                                        </>
+                                    ) : (
+                                        'Default'
                                     )}
-                                    {[null, ...allEfforts].map((effort) => (
-                                        <Button
-                                            key={effort ?? 'default'}
-                                            type="button"
-                                            size="sm"
-                                            variant="ghost"
-                                            className="aria-pressed:bg-accent aria-pressed:text-accent-foreground"
-                                            aria-pressed={(isInherited ? effective.reasoning_effort : value.reasoning_effort) === effort}
-                                            onClick={() => commitEffort(effort)}
-                                        >
-                                            {effort ? `${effortName(effort)}${supported.includes(effort) ? '' : ' (custom)'}` : 'Default'}
-                                        </Button>
-                                    ))}
-                                </div>
-                            </Popover.Content>
-                        </Popover.Portal>
-                    </Popover.Root>
-                )}
+                                </span>
+                                <DropdownMenu.ItemIndicator className="shrink-0 text-foreground">
+                                    <Check aria-hidden="true" className="size-3.5" />
+                                </DropdownMenu.ItemIndicator>
+                            </DropdownMenu.RadioItem>
+                        ))}
+                    </DropdownMenu.RadioGroup>
+                </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+    ) : null
+
+    if (isCompact) {
+        return (
+            <>
+                {modelControl}
+                {effortControl}
+                {controlsLocked && <p id={`${id}-effort-hint`} className="basis-full text-xs text-muted-foreground">{effortHint}</p>}
+                {invalidModel && <p id={`${id}-error`} role="alert" className="basis-full">Choose a compatible model for this provider or profile.</p>}
+            </>
+        )
+    }
+
+    return (
+        <Field className="w-full">
+            <FieldLabel htmlFor={id}>Model</FieldLabel>
+            <div className="flex min-w-0 w-full items-center gap-2">
+                {modelControl}
+                {effortControl}
             </div>
             {controlsLocked && <p id={`${id}-effort-hint`} className="text-xs text-muted-foreground">{effortHint}</p>}
             {invalidModel && <p id={`${id}-error`} role="alert">Choose a compatible model for this provider or profile.</p>}

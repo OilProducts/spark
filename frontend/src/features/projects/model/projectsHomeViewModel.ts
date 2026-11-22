@@ -30,7 +30,7 @@ type BuildProjectsHomeViewModelArgs = {
 }
 
 export type ProjectsHomeViewModel = {
-    activeChatMode: ConversationChatMode | null
+    activeChatMode: ConversationChatMode
     activeProjectChatProvider: string
     activeProjectChatModel: string
     activeProjectChatReasoningEffort: string
@@ -108,9 +108,7 @@ export function buildProjectsHomeViewModel({
     )
 
     return {
-        activeChatMode: activeConversationId
-            ? (activeConversationRecord?.chat_mode ?? 'chat')
-            : null,
+        activeChatMode: activeConversationRecord?.chat_mode ?? 'chat',
         activeProjectChatModel: (
             activeConversationRecord?.model
             ?? uiDefaults.llm_model

@@ -79,9 +79,9 @@ it('filters across provider, display, id and profile without emitting and commit
 
     // Effort has its own adjacent trigger and closes immediately on selection.
     await user.click(screen.getByRole('button', { name: /^Reasoning effort:/ }))
-    await user.click(screen.getByRole('button', { name: 'High', exact: true }))
+    await user.click(screen.getByRole('menuitemradio', { name: 'High', exact: true }))
     expect(onChange).toHaveBeenLastCalledWith({ ...initial, provider: null, llm_profile: 'team', model: 'team-two', reasoning_effort: 'high' })
-    expect(screen.queryByRole('group', { name: 'Reasoning effort' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menu', { name: 'Reasoning effort' })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /^Model:/ }))
     await user.click(screen.getByRole('button', { name: /Use default/ }))
@@ -92,8 +92,8 @@ it('commits a custom model only on selection and retains unsupported saved effor
     const user = userEvent.setup(), onChange = vi.fn()
     render(<Editor layout="compact" value={{ ...initial, model: 'discovered', reasoning_effort: 'future' }} onChange={onChange} />)
     await user.click(await screen.findByRole('button', { name: 'Reasoning effort: Future' }))
-    expect(screen.getByRole('button', { name: 'Future (custom)' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.queryByRole('button', { name: 'High', exact: true })).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitemradio', { name: 'Future (custom)' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByRole('menuitemradio', { name: 'High', exact: true })).not.toBeInTheDocument()
     await user.keyboard('{Escape}')
 
     await user.click(screen.getByRole('button', { name: 'Model: Discovered, Codex' }))
@@ -104,7 +104,9 @@ it('commits a custom model only on selection and retains unsupported saved effor
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Model: my-model, Codex' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Reasoning effort: Future' }))
-    expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button')).toHaveLength(1)
+    const items = within(screen.getByRole('menu', { name: 'Reasoning effort' })).getAllByRole('menuitemradio')
+    expect(items).toHaveLength(1)
+    expect(items[0]).toHaveAttribute('aria-checked', 'false')
 })
 
 it('pre-highlights first search match so open -> type -> Enter commits and closes, and preserves Arrow wrap and Escape focus', async () => {
@@ -123,8 +125,8 @@ it('pre-highlights first search match so open -> type -> Enter commits and close
 
     // Effort trigger now reflects the newly selected model's supported efforts.
     await user.click(screen.getByRole('button', { name: /^Reasoning effort:/ }))
-    expect(screen.getByRole('button', { name: 'Medium' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Ultra' })).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitemradio', { name: 'Medium' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitemradio', { name: 'Ultra' })).not.toBeInTheDocument()
     await user.keyboard('{Escape}')
 
     // ArrowUp wraps to the last item and Escape restores focus to the Model trigger without emitting.
@@ -144,8 +146,8 @@ it('uses declared profile efforts and hides Effort trigger when a known model su
     vi.mocked(useLlmProfiles).mockReturnValue([{ id: 'team', provider: 'codex', configured: true, models: ['discovered'], default_model: 'discovered', reasoning_efforts: ['ultra'] }])
     render(<Editor value={{ ...initial, provider: null, llm_profile: 'team' }} />)
     await user.click(await screen.findByRole('button', { name: /^Reasoning effort:/ }))
-    expect(screen.getByRole('button', { name: 'Ultra' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'High' })).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitemradio', { name: 'Ultra' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitemradio', { name: 'High' })).not.toBeInTheDocument()
     await user.keyboard('{Escape}')
 
     await user.click(screen.getByRole('button', { name: /^Model:/ }))
@@ -220,7 +222,7 @@ it('clears saved effort to the explicit provider default even with inherited set
     const saved = { ...initial, model: 'discovered', reasoning_effort: 'high' }
     render(<Editor value={saved} inherited={saved} onChange={onChange} />)
     await user.click(await screen.findByRole('button', { name: 'Reasoning effort: High' }))
-    await user.click(screen.getByRole('button', { name: 'Default', exact: true }))
+    await user.click(screen.getByRole('menuitemradio', { name: 'Default · Low' }))
     expect(onChange).toHaveBeenLastCalledWith({ ...saved, reasoning_effort: null })
     expect(screen.getByRole('button', { name: 'Reasoning effort: Low (default)' })).toBeInTheDocument()
 
@@ -237,11 +239,11 @@ it('unlocks effort while inheriting when effective model is resolved and atomica
     const effortTrigger = await screen.findByRole('button', { name: 'Reasoning effort: Low (default)' })
     expect(effortTrigger).toBeEnabled()
     await user.click(effortTrigger)
-    await user.click(screen.getByRole('button', { name: 'Ultra', exact: true }))
+    await user.click(screen.getByRole('menuitemradio', { name: 'Ultra', exact: true }))
     expect(onChange).toHaveBeenCalledExactlyOnceWith({
         provider: 'codex', llm_profile: null, model: 'discovered', reasoning_effort: 'ultra',
     })
-    expect(screen.queryByRole('group', { name: 'Reasoning effort' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menu', { name: 'Reasoning effort' })).not.toBeInTheDocument()
 })
 
 it('keeps effort disabled with a clear hint when no effective model is known', async () => {
@@ -269,23 +271,25 @@ it('keeps a saved effort on a model with no levels and uses fallbacks only for u
     })
     render(<Editor value={{ ...initial, provider: 'openai', model: 'empty', reasoning_effort: 'high' }} />)
     await user.click(await screen.findByRole('button', { name: 'Reasoning effort: High' }))
-    const buttons = () => within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button').map(button => button.textContent)
-    expect(buttons()).toEqual(['Default'])
+    const items = () => within(screen.getByRole('menu', { name: 'Reasoning effort' })).getAllByRole('menuitemradio').map(item => item.textContent)
+    expect(items()).toEqual(['Default'])
+    expect(screen.getByRole('menuitemradio', { name: 'Default', exact: true })).toHaveAttribute('aria-checked', 'false')
     expect(screen.queryByText(/unverified/)).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Default', exact: true }))
+    await user.click(screen.getByRole('menuitemradio', { name: 'Default', exact: true }))
     expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Model: Empty, openai' }))
     await user.click(screen.getByRole('option', { name: 'Known', exact: true }))
     await user.click(screen.getByRole('button', { name: 'Reasoning effort: None (default)' }))
-    expect(buttons()).toEqual(['Default', 'None', 'Minimal'])
+    expect(items()).toEqual(['Default · None', 'None', 'Minimal'])
+    expect(screen.getByRole('menuitemradio', { name: 'Default · None' })).toHaveAttribute('aria-checked', 'true')
     await user.keyboard('{Escape}')
 
     await user.click(screen.getByRole('button', { name: 'Model: Known, openai' }))
     await user.type(screen.getByRole('combobox'), 'unlisted')
     await user.click(screen.getByRole('option', { name: 'Use "unlisted" as a custom model' }))
     await user.click(screen.getByRole('button', { name: /^Reasoning effort:/ }))
-    expect(buttons()).toEqual(['Default', 'None', 'Minimal', 'High'])
+    expect(items()).toEqual(['Default', 'None', 'Minimal', 'High'])
     expect(screen.getByText('Provider levels; unverified for this model.')).toBeInTheDocument()
 })
 
@@ -297,7 +301,7 @@ it('keeps declarations separate for profiles sharing a provider and model', asyn
     ])
     render(<Editor value={{ ...initial, provider: null, llm_profile: 'first', model: 'shared' }} />)
     await user.click(screen.getByRole('button', { name: /^Reasoning effort:/ }))
-    expect(screen.getByRole('button', { name: 'Minimal', exact: true })).toBeInTheDocument()
+    expect(screen.getByRole('menuitemradio', { name: 'Minimal', exact: true })).toBeInTheDocument()
     await user.keyboard('{Escape}')
 
     await user.click(screen.getByRole('button', { name: /^Model:/ }))
@@ -533,7 +537,7 @@ it('offers an ACP harness by its label, with a null-model harness default, exact
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /^Reasoning effort:/ }))
-    await user.click(screen.getByRole('button', { name: 'Very high' }))
+    await user.click(screen.getByRole('menuitemradio', { name: 'Very high' }))
     expect(onChange).toHaveBeenLastCalledWith({ ...initial, provider: 'acp:fake', model: null, reasoning_effort: 'Hi/2' })
 
     await user.click(screen.getByRole('button', { name: /^Model:/ }))
@@ -575,13 +579,13 @@ it('refetches quietly on open, so values a harness acknowledged since can be cho
     render(<Editor value={{ ...initial, provider: 'acp:fake', model: 'deep' }} onChange={onChange} />)
     const effortTrigger = await screen.findByRole('button', { name: /^Reasoning effort:/ })
     await user.click(effortTrigger)
-    expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).queryByRole('button', { name: 'High' })).not.toBeInTheDocument()
+    expect(within(screen.getByRole('menu', { name: 'Reasoning effort' })).queryByRole('menuitemradio', { name: 'High' })).not.toBeInTheDocument()
     await user.keyboard('{Escape}')
 
     vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue(offering(['Low', 'High'], ['ask', 'auto']))
     await user.click(effortTrigger)
     expect(screen.queryByText('Loading models…')).not.toBeInTheDocument()
-    await user.click(await within(screen.getByRole('group', { name: 'Reasoning effort' })).findByRole('button', { name: 'High' }))
+    await user.click(await within(screen.getByRole('menu', { name: 'Reasoning effort' })).findByRole('menuitemradio', { name: 'High' }))
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'acp:fake', model: 'deep', reasoning_effort: 'High' }))
 
     await user.click(screen.getByRole('button', { name: /Model: Deep/ }))
@@ -623,7 +627,7 @@ it('preserves inherited Thinking, Mode, Summary, and ACP session controls when p
     }
     const view = render(<Editor value={cleared} inherited={inheritedNative} onChange={onChange} />)
     await user.click(await screen.findByRole('button', { name: /^Reasoning effort:/ }))
-    await user.click(screen.getByRole('button', { name: 'Ultra', exact: true }))
+    await user.click(screen.getByRole('menuitemradio', { name: 'Ultra', exact: true }))
     expect(onChange).toHaveBeenLastCalledWith({
         ...inheritedNative,
         reasoning_effort: 'ultra',
@@ -639,7 +643,7 @@ it('preserves inherited Thinking, Mode, Summary, and ACP session controls when p
     }
     view.rerender(<Editor key="acp-inherit" value={cleared} inherited={inheritedAcp} onChange={onChange} />)
     await user.click(await screen.findByRole('button', { name: /^Reasoning effort:/ }))
-    await user.click(screen.getByRole('button', { name: 'High', exact: true }))
+    await user.click(screen.getByRole('menuitemradio', { name: 'High', exact: true }))
     expect(onChange).toHaveBeenLastCalledWith({
         ...inheritedAcp,
         reasoning_effort: 'Hi',
@@ -766,7 +770,7 @@ it('preserves explicitly authored secondary settings when pinning an inherited m
     }
     render(<Editor value={currentScope} inherited={inheritedWithSecondary} onChange={onChange} />)
     await user.click(await screen.findByRole('button', { name: /^Reasoning effort:/ }))
-    await user.click(screen.getByRole('button', { name: 'Ultra', exact: true }))
+    await user.click(screen.getByRole('menuitemradio', { name: 'Ultra', exact: true }))
     expect(onChange).toHaveBeenCalledExactlyOnceWith({
         provider: 'codex',
         llm_profile: null,
@@ -837,14 +841,97 @@ it('renders a visible hint and hoverable tooltip wrapper for disabled Effort, an
 
     const view = render(<Editor layout="compact" value={cleared} inherited={{ ...initial, model: null }} />)
     await waitFor(() => expect(fetchProjectChatModelsValidated).toHaveBeenCalled())
+    expect(view.container.querySelector('[data-slot="field"]')).toBeNull()
     const effortTrigger = screen.getByRole('button', { name: 'Reasoning effort: unavailable' })
     expect(effortTrigger).toBeDisabled()
     expect(effortTrigger.parentElement).toHaveAttribute('title', 'Choose a model to set reasoning effort.')
     const hint = screen.getByText('Choose a model to set reasoning effort.')
     expect(hint).toBeVisible()
     expect(hint).not.toHaveClass('sr-only')
+    expect(hint).toHaveClass('basis-full')
 
     view.rerender(<Editor key="profile" layout="compact" value={{ ...initial, provider: null, llm_profile: 'local', model: 'review-profile-model' }} />)
     const modelTrigger = screen.getByRole('button', { name: 'Model: review-profile-model, Reviewer Local' })
     expect(modelTrigger.textContent).toBe('review-profile-modelReviewer Local')
+})
+
+it('uses flat borderless ghost triggers in compact layout, supports keyboard navigation in Effort menu, and announces secondary options', async () => {
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({
+        ...catalog,
+        models: [
+            {
+                ...catalog.models[0],
+                supported_thinking: ['adaptive', 'budget'],
+                supported_reasoning_modes: ['standard', 'pro'],
+            },
+            catalog.models[1],
+        ],
+    })
+    const user = userEvent.setup(), onChange = vi.fn()
+    const view = render(
+        <Editor
+            layout="compact"
+            value={cleared}
+            inherited={{
+                ...initial,
+                model: 'discovered',
+                reasoning_effort: null,
+                thinking: 'budget',
+                thinking_budget_tokens: 2048,
+                reasoning_mode: 'pro',
+            }}
+            defaultPrefix="Project default"
+            title="Change in project settings."
+            onChange={onChange}
+        />,
+    )
+
+    const modelTrigger = await screen.findByRole('button', {
+        name: 'Model: Discovered, Codex, Project default, Budget (2048), Pro',
+    })
+    expect(view.container.querySelector('[data-slot="field"]')).toBeNull()
+    expect(modelTrigger).toHaveAttribute('data-inherited', 'true')
+    expect(modelTrigger).toHaveAttribute('data-variant', 'ghost')
+    expect(modelTrigger).toHaveClass('text-foreground')
+    expect(modelTrigger).not.toHaveClass('border-dashed')
+    expect(modelTrigger).not.toHaveClass('text-muted-foreground')
+    expect(modelTrigger).toHaveAttribute(
+        'title',
+        'Project default: Discovered (Codex). Change in project settings.. Budget (2048), Pro',
+    )
+
+    // Keyboard navigation inside the Radix DropdownMenu Effort radio group.
+    const effortTrigger = screen.getByRole('button', { name: 'Reasoning effort: Low (default)' })
+    expect(effortTrigger).toHaveAttribute('data-variant', 'ghost')
+    effortTrigger.focus()
+    await user.keyboard('{Enter}')
+    const effortMenu = await screen.findByRole('menu', { name: 'Reasoning effort' })
+    expect(within(effortMenu).getByRole('menuitemradio', { name: 'Default · Low' })).toHaveAttribute('aria-checked', 'true')
+    await user.keyboard('{ArrowDown}{ArrowDown}{Enter}')
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+        provider: 'codex',
+        model: 'discovered',
+        reasoning_effort: 'ultra',
+    }))
+
+    // Unavailable secondary options take precedence in aria-label and tooltip (singular & plural).
+    view.rerender(
+        <Editor
+            key="unavail-1"
+            layout="compact"
+            value={{ ...initial, model: 'other', thinking: 'adaptive' }}
+        />,
+    )
+    const singleUnavail = screen.getByRole('button', { name: 'Model: Other, Codex, 1 unavailable option' })
+    expect(singleUnavail).toHaveAttribute('title', '1 unavailable option')
+
+    view.rerender(
+        <Editor
+            key="unavail-2"
+            layout="compact"
+            value={{ ...initial, model: 'other', thinking: 'adaptive', reasoning_mode: 'pro' }}
+        />,
+    )
+    const pluralUnavail = screen.getByRole('button', { name: 'Model: Other, Codex, 2 unavailable options' })
+    expect(pluralUnavail).toHaveAttribute('title', '2 unavailable options')
 })

@@ -6,7 +6,7 @@ export async function openPicker(user: User, scope = screen) {
     if (!screen.queryByRole('listbox', { name: 'Models' })) await user.click(scope.getByRole('button', { name: /^Model:/ }))
 }
 export async function openEffortPicker(user: User, scope = screen) {
-    if (!screen.queryByRole('group', { name: 'Reasoning effort' })) await user.click(scope.getByRole('button', { name: /^Reasoning effort:/ }))
+    if (!screen.queryByRole('menu', { name: 'Reasoning effort' })) await user.click(scope.getByRole('button', { name: /^Reasoning effort:/ }))
 }
 export async function chooseModel(user: User, group: string, model: string, scope = screen) {
     await openPicker(user, scope)
@@ -21,5 +21,8 @@ export async function customModel(user: User, model: string, scope = screen) {
 }
 export async function chooseEffort(user: User, effort: string, scope = screen) {
     await openEffortPicker(user, scope)
-    await user.click(within(screen.getByRole('group', { name: 'Reasoning effort' })).getByRole('button', { name: effort, exact: true }))
+    await user.click(within(screen.getByRole('menu', { name: 'Reasoning effort' })).getByRole('menuitemradio', {
+        name: effort === 'Default' ? /^Default(?: · .+)?$/ : effort,
+        exact: effort !== 'Default',
+    }))
 }

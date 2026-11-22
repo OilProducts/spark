@@ -21,7 +21,7 @@ export function ComposerAttachments({
     }
     const totalBytes = attachments.reduce((sum, entry) => sum + entry.file.size, 0)
     return (
-        <div data-testid="composer-attachments" className="flex flex-col gap-1.5 px-3.5 pt-3">
+        <div data-testid="composer-attachments" className="flex flex-col gap-1.5 border-b border-border/60 px-3.5 pb-2.5 pt-3">
             <ul aria-label="Attachments" className="flex flex-wrap gap-2">
                 {attachments.map((entry) => {
                     const name = entry.file.name

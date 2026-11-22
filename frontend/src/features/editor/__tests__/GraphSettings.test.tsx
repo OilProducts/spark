@@ -252,7 +252,7 @@ describe('Graph and settings behavior', () => {
     expect(screen.getByRole('button', { name: 'Apply to agent steps' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Apply to agent steps' })).toHaveAccessibleDescription('This flow has no agent steps, the only steps that run a model.')
     await openEffortPicker(user)
-    expect(screen.getByRole('button', { name: 'XHigh' })).toBeVisible()
+    expect(screen.getByRole('menuitemradio', { name: 'XHigh' })).toBeVisible()
     await user.keyboard('{Escape}')
 
     await user.clear(screen.getByLabelText('Default max retries'))
