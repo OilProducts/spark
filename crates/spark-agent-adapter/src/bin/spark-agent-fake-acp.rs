@@ -357,6 +357,10 @@ impl Agent {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
                 for update in updates {
+                    if let Some(delay_ms) = update["sleep_ms"].as_u64() {
+                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                        continue;
+                    }
                     let message = json!({
                         "jsonrpc": "2.0",
                         "method": "session/update",

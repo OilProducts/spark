@@ -65,11 +65,18 @@ const CANCEL_GRACE: Duration = Duration::from_secs(5);
 /// How long a deferred end-of-turn waits for the harness to start its
 /// post-tool wakeup once the last background tool call completes.
 const POST_TOOL_WAKEUP_WAIT: Duration = Duration::from_secs(30);
-/// How long a post-tool wakeup may go quiet before settling when no
-/// `usage_update` ends the step.
+/// How long a post-tool wakeup may go quiet after streaming an assistant
+/// message before settling when no `usage_update` ends the step.
 const POST_WAKEUP_STREAM_IDLE: Duration = Duration::from_secs(15);
-/// Brief settle window after a post-tool `usage_update` so an immediately
-/// following tool call can still arrive before the turn closes.
+/// How long a post-tool wakeup or continuation may go quiet while still
+/// mid-step with no open assistant message (e.g. after thoughts or completed
+/// tools while the model generates tool-call arguments).
+// ponytail: ACP has no explicit end-of-wakeup signal; bound stuck harnesses
+// without cutting off long tool-call generation after a thought summary.
+const POST_WAKEUP_IN_PROGRESS_IDLE: Duration = Duration::from_secs(180);
+/// Brief settle window after a post-tool `usage_update` once an assistant
+/// message is open, so an immediately following tool call can still arrive
+/// before the turn closes.
 const POST_WAKEUP_USAGE_SETTLE: Duration = Duration::from_secs(2);
 /// How long an idle pooled chat ACP process lives before being reaped.
 const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -2187,6 +2194,7 @@ struct Ready {
 
 /// State after `PromptResponse(EndTurn)` arrived while background tool calls
 /// were still `in_progress`.
+#[derive(Debug, PartialEq, Eq)]
 enum DeferredEnd {
     /// At least one non-daemon tool call is still `in_progress`.
     WaitingForTools,
@@ -2205,11 +2213,12 @@ impl DeferredEnd {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UpdateKind {
     Tool,
     Usage,
-    Output,
+    AssistantMessage,
+    Progress,
     Other,
 }
 
@@ -2217,10 +2226,39 @@ fn update_kind(update: &SessionUpdate) -> UpdateKind {
     match update {
         SessionUpdate::ToolCall(_) | SessionUpdate::ToolCallUpdate(_) => UpdateKind::Tool,
         SessionUpdate::UsageUpdate(_) => UpdateKind::Usage,
-        SessionUpdate::AgentMessageChunk(_)
-        | SessionUpdate::AgentThoughtChunk(_)
-        | SessionUpdate::Plan(_) => UpdateKind::Output,
+        SessionUpdate::AgentMessageChunk(_) => UpdateKind::AssistantMessage,
+        SessionUpdate::AgentThoughtChunk(_) | SessionUpdate::Plan(_) => UpdateKind::Progress,
         _ => UpdateKind::Other,
+    }
+}
+
+fn advance_deferred_at(
+    current: DeferredEnd,
+    seen_kind: Option<UpdateKind>,
+    has_open_background_tools: bool,
+    has_open_assistant: bool,
+    now: Instant,
+) -> DeferredEnd {
+    if has_open_background_tools {
+        return DeferredEnd::WaitingForTools;
+    }
+    match (current, seen_kind) {
+        (DeferredEnd::WaitingForTools, _) => {
+            DeferredEnd::AwaitingWakeup(now + POST_TOOL_WAKEUP_WAIT)
+        }
+        (_, Some(UpdateKind::Usage)) if has_open_assistant => {
+            DeferredEnd::StreamingWakeup(now + POST_WAKEUP_USAGE_SETTLE)
+        }
+        (DeferredEnd::StreamingWakeup(_), Some(UpdateKind::Usage)) => {
+            DeferredEnd::StreamingWakeup(now + POST_WAKEUP_IN_PROGRESS_IDLE)
+        }
+        (_, Some(UpdateKind::AssistantMessage)) => {
+            DeferredEnd::StreamingWakeup(now + POST_WAKEUP_STREAM_IDLE)
+        }
+        (_, Some(UpdateKind::Progress | UpdateKind::Tool)) => {
+            DeferredEnd::StreamingWakeup(now + POST_WAKEUP_IN_PROGRESS_IDLE)
+        }
+        (state, _) => state,
     }
 }
 
@@ -2435,7 +2473,7 @@ impl Turn {
             },
         ));
         let initial_deferred = Some(DeferredEnd::StreamingWakeup(
-            Instant::now() + POST_WAKEUP_STREAM_IDLE,
+            Instant::now() + POST_WAKEUP_IN_PROGRESS_IDLE,
         ));
         let result = self
             .prompt_with_initial(
@@ -2832,22 +2870,13 @@ impl Turn {
     }
 
     fn advance_deferred(&self, current: DeferredEnd, seen_kind: Option<UpdateKind>) -> DeferredEnd {
-        if self.has_open_background_tools() {
-            return DeferredEnd::WaitingForTools;
-        }
-        let now = Instant::now();
-        match (current, seen_kind) {
-            (DeferredEnd::WaitingForTools, _) => {
-                DeferredEnd::AwaitingWakeup(now + POST_TOOL_WAKEUP_WAIT)
-            }
-            (_, Some(UpdateKind::Usage)) => {
-                DeferredEnd::StreamingWakeup(now + POST_WAKEUP_USAGE_SETTLE)
-            }
-            (_, Some(UpdateKind::Output | UpdateKind::Tool)) => {
-                DeferredEnd::StreamingWakeup(now + POST_WAKEUP_STREAM_IDLE)
-            }
-            (state, _) => state,
-        }
+        advance_deferred_at(
+            current,
+            seen_kind,
+            self.has_open_background_tools(),
+            self.translate.has_open_assistant(),
+            Instant::now(),
+        )
     }
 
     async fn prompt_with_initial(
@@ -3366,6 +3395,13 @@ impl Translate {
         })
     }
 
+    /// Whether an assistant answer message is currently open and uninterrupted.
+    fn has_open_assistant(&self) -> bool {
+        self.open
+            .as_ref()
+            .is_some_and(|open| open.channel == TurnStreamChannel::Assistant)
+    }
+
     fn event(
         &self,
         kind: TurnStreamEventKind,
@@ -3799,4 +3835,80 @@ fn parse_antigravity_usage(
         }
     }
     Ok(windows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deferred_end_uses_in_progress_idle_until_an_assistant_message_is_open() {
+        let now = Instant::now();
+        let streaming = DeferredEnd::StreamingWakeup(now);
+
+        // Thoughts, plans, and completed tools keep the long in-progress bound.
+        for kind in [UpdateKind::Progress, UpdateKind::Tool] {
+            assert_eq!(
+                advance_deferred_at(
+                    DeferredEnd::StreamingWakeup(now),
+                    Some(kind),
+                    false,
+                    false,
+                    now
+                ),
+                DeferredEnd::StreamingWakeup(now + POST_WAKEUP_IN_PROGRESS_IDLE),
+            );
+        }
+
+        // Usage updates without an open assistant answer do not shrink to the 2s settle window.
+        assert_eq!(
+            advance_deferred_at(streaming, Some(UpdateKind::Usage), false, false, now),
+            DeferredEnd::StreamingWakeup(now + POST_WAKEUP_IN_PROGRESS_IDLE),
+        );
+        let awaiting = DeferredEnd::AwaitingWakeup(now + POST_TOOL_WAKEUP_WAIT);
+        assert_eq!(
+            advance_deferred_at(
+                DeferredEnd::AwaitingWakeup(now + POST_TOOL_WAKEUP_WAIT),
+                Some(UpdateKind::Usage),
+                false,
+                false,
+                now
+            ),
+            awaiting,
+        );
+
+        // Once an assistant message is streaming, idle uses 15s and usage_update settles in 2s.
+        assert_eq!(
+            advance_deferred_at(
+                DeferredEnd::StreamingWakeup(now),
+                Some(UpdateKind::AssistantMessage),
+                false,
+                true,
+                now
+            ),
+            DeferredEnd::StreamingWakeup(now + POST_WAKEUP_STREAM_IDLE),
+        );
+        assert_eq!(
+            advance_deferred_at(
+                DeferredEnd::StreamingWakeup(now),
+                Some(UpdateKind::Usage),
+                false,
+                true,
+                now
+            ),
+            DeferredEnd::StreamingWakeup(now + POST_WAKEUP_USAGE_SETTLE),
+        );
+
+        // Any open background tool always takes precedence.
+        assert_eq!(
+            advance_deferred_at(
+                DeferredEnd::StreamingWakeup(now),
+                Some(UpdateKind::Usage),
+                true,
+                true,
+                now
+            ),
+            DeferredEnd::WaitingForTools,
+        );
+    }
 }

@@ -1923,6 +1923,76 @@ fn acp_delivers_live_message_during_deferred_background_wait() {
     assert!(acp::close_session(&req.project_path, &req.conversation_id));
 }
 
+#[test]
+fn acp_post_tool_wakeup_does_not_settle_after_thought_before_delayed_tools_and_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = dir.path().join("bg-done");
+    let script = json!({
+        "updates": [
+            {"sessionUpdate": "tool_call", "toolCallId": "bg-1", "title": "bench",
+             "kind": "execute", "status": "in_progress",
+             "rawInput": {"CommandLine": "bench"}},
+            chunk("agent_message_chunk", "Running bench."),
+        ],
+        "post_prompt_gate": gate,
+        "post_prompt_updates": [
+            {"sessionUpdate": "tool_call_update", "toolCallId": "bg-1", "status": "completed",
+             "rawOutput": {"output": "ok", "exit_code": 0}},
+            chunk("agent_thought_chunk", "Planning four file edits."),
+            // Usage arriving with only thoughts open must not shrink the deadline to 2s.
+            {"sessionUpdate": "usage_update", "used": 1200, "size": 200000},
+            {"sleep_ms": 2500},
+            {"sessionUpdate": "tool_call", "toolCallId": "edit-1", "title": "edit_file",
+             "kind": "edit", "status": "in_progress"},
+            {"sessionUpdate": "tool_call_update", "toolCallId": "edit-1", "status": "completed",
+             "rawOutput": {"output": "edited"}},
+            chunk("agent_message_chunk", "Applied edits."),
+            {"sessionUpdate": "usage_update", "used": 1500, "size": 200000},
+        ],
+    });
+    let req = request(dir.path(), script, json!({}));
+    let saw_commentary = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let handle = std::thread::spawn({
+        let req = req.clone();
+        let saw_commentary = Arc::clone(&saw_commentary);
+        move || {
+            run(&req, move |event| {
+                if event.kind == TurnStreamEventKind::ContentCompleted
+                    && event.message.as_deref() == Some("Running bench.")
+                {
+                    saw_commentary.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            })
+        }
+    });
+
+    let started = std::time::Instant::now();
+    while !saw_commentary.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "commentary closes when deferred end_turn arrives"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::fs::write(&gate, "").unwrap();
+
+    let (result, seen) = handle.join().unwrap();
+    let turn = result.expect("turn waits through post-thought gap for delayed tool and answer");
+    assert_eq!(turn.stop_reason, StopReason::EndTurn);
+    assert_eq!(
+        turn.output.final_assistant_text.as_deref(),
+        Some("Applied edits.")
+    );
+    assert!(
+        seen.iter().any(|event| {
+            event.kind == TurnStreamEventKind::ToolCallCompleted
+                && event.source.item_id.as_deref() == Some("edit-1")
+        }),
+        "delayed tool call must be captured in the same turn"
+    );
+    assert!(acp::close_session(&req.project_path, &req.conversation_id));
+}
+
 #[cfg(unix)]
 #[test]
 fn antigravity_usage_reads_windows_from_headless_slash_usage_and_reports_errors() {

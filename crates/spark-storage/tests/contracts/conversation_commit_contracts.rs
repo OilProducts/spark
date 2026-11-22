@@ -639,6 +639,10 @@ fn a_question_only_return_waits_for_its_continuation_which_settles() {
         .find(|turn| turn["id"] == "turn-assistant")
         .unwrap();
     assert_eq!(assistant["status"], "failed", "{assistant}");
+    assert_eq!(
+        assistant["error"], "The agent completed the turn without a final answer.",
+        "{assistant}"
+    );
     // Settled once: a late return changes nothing.
     assert!(!returned(Some(answered.segment_id)));
 }

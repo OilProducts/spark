@@ -33,8 +33,7 @@ use super::runtime_session::{RuntimeSession, RUNTIME_SESSION_SCHEMA_VERSION};
 
 const REQUEST_USER_INPUT_EXPIRED_ERROR: &str =
     "The requested input expired before the answer could be used.";
-const MISSING_FINAL_ANSWER_ERROR: &str =
-    "codex app-server completed the turn without a final answer item.";
+const MISSING_FINAL_ANSWER_ERROR: &str = "The agent completed the turn without a final answer.";
 const RESTARTED_TURN_ERROR: &str = "Spark restarted before this turn finished.";
 const RESTARTED_DELIVERY_ERROR: &str =
     "Spark restarted while delivering this message; it may not have reached the agent.";
