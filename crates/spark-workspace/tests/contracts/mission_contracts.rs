@@ -1656,8 +1656,10 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
         serde_json::from_value(json!({"selected_value":"proceed"})).unwrap(),
     );
     assert_eq!(response.status_code, 200);
-    crate::deliver_run_events(&harness.settings, child);
-    assert_ne!(harness.get(&mission.id).inbox.runs[0].status, "waiting");
+    wait_for("the child to leave waiting", || {
+        crate::deliver_run_events(&harness.settings, child);
+        harness.get(&mission.id).inbox.runs[0].status != "waiting"
+    });
     assert_eq!(wait_terminal(&harness.settings, child), "completed");
     assert_eq!(wait_terminal(&harness.settings, &root), "completed");
     crate::deliver_run_events(&harness.settings, &root);

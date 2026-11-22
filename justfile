@@ -27,7 +27,7 @@ install-linux-desktop-entry:
 # Repository validation gate: fmt check, all Rust tests, frontend unit tests, frontend build.
 test: frontend-deps
   cargo fmt --all -- --check
-  cargo test --workspace --all-features
+  ulimit -Sn 4096 && cargo test --workspace --all-features
   npm --prefix frontend run test:unit
   npm --prefix frontend run build
 
