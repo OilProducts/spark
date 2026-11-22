@@ -1724,47 +1724,54 @@ fn model_listing_never_waits_on_a_harness_check() {
         "one check for overlapping Check agains"
     );
 
-    // Check again in one work area leaves another's kept checks alone.
+    // Check again in one work area drops other work areas' cached ACP checks
+    // so their next listing probes fresh, without probing them eagerly.
     let other = temp.path().join("other");
     std::fs::create_dir_all(&other).unwrap();
     let other = other.canonicalize().unwrap();
     let list_other =
         || spark_workspace::models::chat_models(&settings, &other, false, &finished).unwrap();
+    std::fs::remove_file(&fixed).unwrap();
     assert_eq!(slow(&list_other()), checking);
     announced();
-    assert_eq!(slow(&list_other()), ready);
+    assert_eq!(slow(&list_other()), failed);
     assert_eq!(count(&launches), 3);
+    std::fs::write(&fixed, "").unwrap();
+    assert_eq!(slow(&list_other()), failed);
     assert_eq!(slow(&list(true)), ready);
     announced();
-    assert_eq!(slow(&list_other()), ready);
-    assert!(!announced_since());
     assert_eq!(
         count(&launches),
         4,
-        "only the listed work area is checked again"
+        "other work areas are not probed until listed"
     );
+    assert_eq!(slow(&list_other()), checking);
+    announced();
+    assert_eq!(slow(&list_other()), ready);
+    assert!(!announced_since());
+    assert_eq!(count(&launches), 5);
 
     // Saving agents settings checks again from nothing.
     spark_workspace::models::invalidate_model_discovery("agents");
     assert_eq!(slow(&list(false)), checking);
     announced();
     assert_eq!(slow(&list(false)), ready);
-    assert_eq!(count(&launches), 5);
+    assert_eq!(count(&launches), 6);
 
     // A check that a save cleared while it ran is discarded; the next
     // listing checks again.
     std::fs::remove_file(&release).unwrap();
     spark_workspace::models::invalidate_model_discovery("agents");
     assert_eq!(slow(&list(false)), checking);
-    wait_for("the check started", &|| count(&launches) == 6);
+    wait_for("the check started", &|| count(&launches) == 7);
     spark_workspace::models::invalidate_model_discovery("agents");
     std::fs::write(&release, "").unwrap();
-    wait_for("the check ended", &|| count(&ended) == 6);
+    wait_for("the check ended", &|| count(&ended) == 7);
     assert!(!announced_since());
     assert_eq!(slow(&list(false)), checking, "its result was not kept");
     announced();
     assert_eq!(slow(&list(false)), ready);
-    assert_eq!(count(&launches), 7);
+    assert_eq!(count(&launches), 8);
 }
 
 #[test]

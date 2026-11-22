@@ -119,6 +119,11 @@ where
     fn clear(&self) {
         self.lock().clear();
     }
+
+    /// Drops entries that fail `keep`; any running checks among them are discarded.
+    fn retain(&self, keep: impl FnMut(&Check<H, R, V>) -> bool) {
+        self.lock().retain(keep);
+    }
 }
 
 pub fn invalidate_model_discovery(section: &str) {
@@ -186,7 +191,8 @@ pub struct ChatModelProviderStatus {
 /// `work_area`, where their work would run. Each harness shows its last
 /// check, or `checking` while its first runs in the background; `finished`
 /// hears when one ends. `refresh` checks the listed harnesses again, each
-/// showing its last result until the new one is in.
+/// showing its last result until the new one is in, and drops cached ACP
+/// results for other work areas so they check again on their next listing.
 pub fn chat_models(
     settings: &SparkSettings,
     work_area: &Path,
@@ -395,6 +401,11 @@ fn acp_discoveries<'a>(
     // One check per directory however it is named, such as Home through a
     // symlinked HOME, as sessions' acknowledged options are kept.
     let work_area = std::fs::canonicalize(work_area).unwrap_or_else(|_| work_area.to_path_buf());
+    if refresh {
+        // Check again runs from Settings (Home), so drop other work areas'
+        // cached results; each re-probes on its next listing.
+        ACP_DISCOVERY_CACHE.retain(|check| check.harness.0 == work_area);
+    }
     agents
         .acp_harnesses
         .iter()
