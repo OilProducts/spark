@@ -267,6 +267,62 @@ export function buildModelCatalog(
     return { groups, rows, unavailableProviders }
 }
 
+const MODEL_GENERATION_RE = /^(.+?)[\s-]+(\d{1,2})(?:[.-](\d{1,2}))?(?=$|[\s\-/)])/
+
+function parseGenerationText(text: string): { family: string; version: [number, number] } | null {
+    const match = MODEL_GENERATION_RE.exec(text.trim())
+    if (!match) return null
+    const family = match[1].toLowerCase().replace(/[-_\s]+/g, ' ').trim()
+    if (!/[a-z]/.test(family)) return null
+    return {
+        family,
+        version: [Number(match[2]), match[3] ? Number(match[3]) : 0],
+    }
+}
+
+export function parseModelGeneration(
+    choice: Pick<ModelChoiceOption, 'label' | 'model'>,
+): { family: string; version: [number, number] } | null {
+    return parseGenerationText(choice.label) ?? parseGenerationText(choice.model)
+}
+
+function compareVersions(a: [number, number], b: [number, number]): number {
+    return a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1]
+}
+
+/**
+ * Splits a provider group's models into current-generation (`primary`) and strictly older (`older`)
+ * entries within each named family. Unversioned models, defaults, and `isAlwaysVisible` entries
+ * stay in `primary`.
+ */
+export function partitionGroupGenerations<T extends Pick<ModelChoiceOption, 'label' | 'model' | 'isDefault'>>(
+    entries: T[],
+    isAlwaysVisible?: (entry: T) => boolean,
+): { primary: T[]; older: T[] } {
+    // ponytail: name-based version heuristic; replace if providers start returning generation metadata.
+    const parsed = entries.map((entry) => parseModelGeneration(entry))
+    const latestByFamily = new Map<string, [number, number]>()
+    for (const gen of parsed) {
+        if (!gen) continue
+        const current = latestByFamily.get(gen.family)
+        if (!current || compareVersions(gen.version, current) > 0) {
+            latestByFamily.set(gen.family, gen.version)
+        }
+    }
+    const primary: T[] = []
+    const older: T[] = []
+    entries.forEach((entry, index) => {
+        const gen = parsed[index]
+        const latest = gen ? latestByFamily.get(gen.family) : undefined
+        if (!gen || !latest || entry.isDefault || isAlwaysVisible?.(entry) || compareVersions(gen.version, latest) >= 0) {
+            primary.push(entry)
+        } else {
+            older.push(entry)
+        }
+    })
+    return { primary, older }
+}
+
 /**
  * Applies a model selection while preserving cross-provider clearing and capability gating rules.
  * Session controls belong to a harness so switching provider clears them; switching model keeps only

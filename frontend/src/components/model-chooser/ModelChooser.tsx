@@ -17,6 +17,7 @@ import {
     isProviderChecking,
     isProviderUnavailable,
     isSameModelRef,
+    partitionGroupGenerations,
     pinInheritedModelSettings,
     recordRecentModel,
     resolveModelSettings,
@@ -85,6 +86,7 @@ export function ModelChooser({
     const [active, setActive] = useState(-1)
     const [unavailableOpen, setUnavailableOpen] = useState(false)
     const [moreOptionsOverride, setMoreOptionsOverride] = useState<boolean | null>(null)
+    const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
     const input = useRef<HTMLInputElement>(null)
 
     const isOpen = (controlledOpen ?? internalOpen) && !disabled
@@ -98,6 +100,7 @@ export function ModelChooser({
             setActive(-1)
             setUnavailableOpen(false)
             setMoreOptionsOverride(null)
+            setExpandedGroups({})
             setBudgetInput(null)
         }
         wasOpen.current = isOpen
@@ -161,15 +164,42 @@ export function ModelChooser({
             .filter((row): row is ModelChoiceOption => Boolean(row))
         : []
 
-    // Give each model one Arrow stop when search is empty, with Pinned and Recent taking precedence over regular groups.
+    const chosen = (choice: ModelChoiceOption) =>
+        (value.model ?? '') === choice.model && value.provider === choice.provider && value.llm_profile === choice.llm_profile
+
+    // Give each visible model one Arrow stop when search is empty, with Pinned and Recent taking precedence over regular groups.
     const quickRefs = [...pinnedRows, ...recentRows]
     let nextChoiceIndex = 0
     const pinnedChoices: RenderChoice[] = pinnedRows.map((row) => ({ ...row, section: 'pinned', choiceIndex: nextChoiceIndex++ }))
     const recentChoices: RenderChoice[] = recentRows.map((row) => ({ ...row, section: 'recent', choiceIndex: nextChoiceIndex++ }))
-    const groupChoices: RenderChoice[] = filteredRows.map((row) => {
+    const toGroupChoice = (row: ModelChoiceOption, assignIndex: boolean): RenderChoice => {
         const coveredByQuickSection = !query && quickRefs.some((ref) => isSameModelRef(ref, row))
-        return { ...row, section: 'group', choiceIndex: coveredByQuickSection ? -1 : nextChoiceIndex++ }
-    })
+        return {
+            ...row,
+            section: 'group',
+            choiceIndex: assignIndex && !coveredByQuickSection ? nextChoiceIndex++ : -1,
+        }
+    }
+    const visibleGroups = groups.map((group, index) => {
+        const groupKey = `${group.provider}:${group.profile ?? ''}`
+        const groupDisplayName = `${providerLabel(group.provider)}${group.profile ? ` / ${group.label}` : ''}`
+        const groupRows = filteredRows.filter((row) => row.groupIndex === index)
+        const { primary, older } = query
+            ? { primary: groupRows, older: [] as ModelChoiceOption[] }
+            : partitionGroupGenerations(groupRows, chosen)
+        const olderExpanded = Boolean(expandedGroups[groupKey])
+        const primaryEntries = primary.map((row) => toGroupChoice(row, true))
+        const olderEntries = older.map((row) => toGroupChoice(row, olderExpanded))
+        return {
+            group,
+            groupKey,
+            groupDisplayName,
+            primaryEntries,
+            olderEntries,
+            olderExpanded,
+            isChecking: !group.profile && checking(group.provider),
+        }
+    }).filter(({ primaryEntries, olderEntries, isChecking }) => primaryEntries.length > 0 || olderEntries.length > 0 || isChecking)
     const customChoice: RenderChoice | null = custom && context
         ? {
             groupIndex: -1,
@@ -185,15 +215,18 @@ export function ModelChooser({
         }
         : null
 
+    const visibleGroupChoices: RenderChoice[] = visibleGroups.flatMap(({ primaryEntries, olderEntries, olderExpanded }) =>
+        olderExpanded ? [...primaryEntries, ...olderEntries] : primaryEntries,
+    )
     const choices: RenderChoice[] = [
         ...pinnedChoices,
         ...recentChoices,
-        ...groupChoices.filter((choice) => choice.choiceIndex >= 0),
+        ...visibleGroupChoices.filter((choice) => choice.choiceIndex >= 0),
         ...(customChoice ? [customChoice] : []),
     ]
 
     // Pre-highlight discovered/profile matches only; never auto-highlight a synthetic custom model on mistyped search.
-    const hasCatalogMatch = groupChoices.length > 0
+    const hasCatalogMatch = filteredRows.length > 0
     const effectiveActive = choices.length === 0
         ? -1
         : active >= 0 && active < choices.length
@@ -263,9 +296,6 @@ export function ModelChooser({
         onChange({ ...base, reasoning_effort: effort })
         setEffortOpen(false)
     }
-
-    const chosen = (choice: ModelChoiceOption) =>
-        (value.model ?? '') === choice.model && value.provider === choice.provider && value.llm_profile === choice.llm_profile
 
     const isPinned = (choice: ModelChoiceOption) => pinned.some((entry) => isSameModelRef(entry, choice))
 
@@ -444,13 +474,6 @@ export function ModelChooser({
         )
     }
 
-    const visibleGroups = groups.map((group, index) => ({
-        group,
-        index,
-        entries: groupChoices.filter((choice) => choice.groupIndex === index),
-        isChecking: !group.profile && checking(group.provider),
-    })).filter(({ entries, isChecking }) => entries.length > 0 || isChecking)
-
     const hasListContent = pinnedChoices.length > 0 || recentChoices.length > 0 || visibleGroups.length > 0 || Boolean(customChoice)
 
     const modelControl = (
@@ -561,7 +584,7 @@ export function ModelChooser({
                                 Use default · {describeDefault(defaults)}
                             </Button>
                             {!discovery && <p role="status" className="px-2 py-1 text-xs text-muted-foreground">Loading models…</p>}
-                            <div id={`${id}-list`} role="listbox" aria-label="Models" className="min-h-0 max-h-[min(45vh,20rem)] overflow-y-auto">
+                            <div id={`${id}-list`} role="listbox" aria-label="Models" className="min-h-0 max-h-[min(60vh,28rem)] overflow-y-auto">
                                 {pinnedChoices.length > 0 && (
                                     <div role="group" aria-label="Pinned">
                                         <div className="px-2 pt-2 pb-1 text-xs font-medium text-muted-foreground">Pinned</div>
@@ -574,17 +597,41 @@ export function ModelChooser({
                                         {recentChoices.map((choice) => renderOption(choice, true))}
                                     </div>
                                 )}
-                                {visibleGroups.map(({ group, entries, isChecking }) => (
+                                {visibleGroups.map(({ groupKey, groupDisplayName, primaryEntries, olderEntries, olderExpanded, isChecking }) => (
                                     <div
-                                        key={`${group.provider}:${group.profile}`}
+                                        key={groupKey}
                                         role="group"
-                                        aria-label={`${providerLabel(group.provider)}${group.profile ? ` / ${group.label}` : ''}`}
+                                        aria-label={groupDisplayName}
                                     >
                                         <div className="px-2 pt-3 pb-1 text-xs font-medium text-muted-foreground">
-                                            {providerLabel(group.provider)}{group.profile ? ` / ${group.label}` : ''}
+                                            {groupDisplayName}
                                             {isChecking && <span role="status" className="block font-normal">Checking…</span>}
                                         </div>
-                                        {entries.map((choice) => renderOption(choice, false))}
+                                        {primaryEntries.map((choice) => renderOption(choice, false))}
+                                        {olderEntries.length > 0 && (
+                                            <button
+                                                type="button"
+                                                aria-expanded={olderExpanded}
+                                                aria-label={olderExpanded
+                                                    ? `Hide older ${groupDisplayName} models`
+                                                    : `Show ${olderEntries.length} older ${groupDisplayName} ${olderEntries.length === 1 ? 'model' : 'models'}`}
+                                                onClick={() => {
+                                                    setActive(-1)
+                                                    setExpandedGroups((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }))
+                                                }}
+                                                className="flex w-full items-center gap-1 rounded px-2 py-1 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                                            >
+                                                {olderExpanded
+                                                    ? <ChevronDown aria-hidden="true" className="size-3.5 shrink-0" />
+                                                    : <ChevronRight aria-hidden="true" className="size-3.5 shrink-0" />}
+                                                <span>
+                                                    {olderExpanded
+                                                        ? `Hide older ${olderEntries.length === 1 ? 'model' : 'models'}`
+                                                        : `${olderEntries.length} older ${olderEntries.length === 1 ? 'model' : 'models'}`}
+                                                </span>
+                                            </button>
+                                        )}
+                                        {olderExpanded && olderEntries.map((choice) => renderOption(choice, false))}
                                     </div>
                                 ))}
                                 {customChoice && renderOption(customChoice, false)}

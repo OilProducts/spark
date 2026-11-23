@@ -935,3 +935,74 @@ it('uses flat borderless ghost triggers in compact layout, supports keyboard nav
     const pluralUnavail = screen.getByRole('button', { name: 'Model: Other, Codex, 2 unavailable options' })
     expect(pluralUnavail).toHaveAttribute('title', '2 unavailable options')
 })
+
+it('shows only the latest generation per family by default, expands older models per provider, and keeps selected or searched older models visible', async () => {
+    vi.mocked(useLlmProfiles).mockReturnValue([])
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({
+        providers: {
+            codex: { status: 'available', error: null, label: 'Codex' },
+            'claude-code': { status: 'available', error: null, label: 'Claude Code' },
+            'acp:agy': { status: 'available', error: null, label: 'Antigravity', setup_status: 'ready' },
+        },
+        models: [
+            { provider: 'codex', id: 'gpt-6.2-sol', display: 'GPT-6.2-Sol', is_default: true, supported_reasoning_efforts: ['low'] },
+            { provider: 'codex', id: 'gpt-6.2-astra', display: 'GPT-6.2-Astra', is_default: false, supported_reasoning_efforts: ['low'] },
+            { provider: 'codex', id: 'gpt-6.1-sol', display: 'GPT-6.1-Sol', is_default: false, supported_reasoning_efforts: ['low'] },
+            { provider: 'codex', id: 'gpt-6-luna', display: 'GPT-6-Luna', is_default: false, supported_reasoning_efforts: ['low'] },
+            { provider: 'codex', id: 'gpt-daybreak-blue-latest', display: 'Daybreak Blue', is_default: false, supported_reasoning_efforts: ['low'] },
+            { provider: 'claude-code', id: '', display: 'Default (recommended)', is_default: true, supported_reasoning_efforts: [] },
+            { provider: 'claude-code', id: 'opus', display: 'Opus 5.5', is_default: false, supported_reasoning_efforts: [] },
+            { provider: 'claude-code', id: 'claude-fable-5-2', display: 'Fable 5.2', is_default: false, supported_reasoning_efforts: [] },
+            { provider: 'claude-code', id: 'fable', display: 'Fable 5.1', is_default: false, supported_reasoning_efforts: [] },
+            { provider: 'claude-code', id: 'claude-opus-5', display: 'Opus 5', is_default: false, supported_reasoning_efforts: [] },
+            { provider: 'acp:agy', id: 'gemini-4-neon', display: 'Gemini 4 Neon', is_default: true, supported_reasoning_efforts: [] },
+            { provider: 'acp:agy', id: 'gemini-3.8-flash', display: 'Gemini 3.8 Flash', is_default: false, supported_reasoning_efforts: [] },
+            { provider: 'acp:agy', id: 'gpt-oss-120b-medium', display: 'GPT-OSS 120B (Medium)', is_default: false, supported_reasoning_efforts: [] },
+        ],
+    })
+    const user = userEvent.setup(), onChange = vi.fn()
+    render(<Editor value={{ ...initial, model: 'gpt-6.2-sol' }} onChange={onChange} />)
+    await user.click(await screen.findByRole('button', { name: 'Model: GPT-6.2-Sol, Codex' }))
+
+    const codexGroup = screen.getByRole('group', { name: 'Codex' })
+    expect(within(codexGroup).getByRole('option', { name: 'GPT-6.2-Sol' })).toBeInTheDocument()
+    expect(within(codexGroup).getByRole('option', { name: 'GPT-6.2-Astra' })).toBeInTheDocument()
+    expect(within(codexGroup).getByRole('option', { name: 'Daybreak Blue' })).toBeInTheDocument()
+    expect(within(codexGroup).queryByRole('option', { name: 'GPT-6.1-Sol' })).not.toBeInTheDocument()
+    expect(within(codexGroup).queryByRole('option', { name: 'GPT-6-Luna' })).not.toBeInTheDocument()
+
+    const claudeGroup = screen.getByRole('group', { name: 'Claude Code' })
+    expect(within(claudeGroup).getByRole('option', { name: 'Default (recommended)' })).toBeInTheDocument()
+    expect(within(claudeGroup).getByRole('option', { name: 'Opus 5.5' })).toBeInTheDocument()
+    expect(within(claudeGroup).getByRole('option', { name: 'Fable 5.2' })).toBeInTheDocument()
+    expect(within(claudeGroup).queryByRole('option', { name: 'Opus 5' })).not.toBeInTheDocument()
+    expect(within(claudeGroup).queryByRole('option', { name: 'Fable 5.1' })).not.toBeInTheDocument()
+
+    const agyGroup = screen.getByRole('group', { name: 'Antigravity' })
+    expect(within(agyGroup).getByRole('option', { name: 'Gemini 4 Neon' })).toBeInTheDocument()
+    expect(within(agyGroup).getByRole('option', { name: 'GPT-OSS 120B (Medium)' })).toBeInTheDocument()
+    expect(within(agyGroup).queryByRole('option', { name: 'Gemini 3.8 Flash' })).not.toBeInTheDocument()
+
+    // Expanding Codex reveals only Codex's older models.
+    const codexToggle = within(codexGroup).getByRole('button', { name: 'Show 2 older Codex models' })
+    expect(codexToggle).toHaveAttribute('aria-expanded', 'false')
+    await user.click(codexToggle)
+    expect(within(codexGroup).getByRole('button', { name: 'Hide older Codex models' })).toHaveAttribute('aria-expanded', 'true')
+    expect(within(codexGroup).getByRole('option', { name: 'GPT-6.1-Sol' })).toBeInTheDocument()
+    expect(within(codexGroup).getByRole('option', { name: 'GPT-6-Luna' })).toBeInTheDocument()
+    expect(within(claudeGroup).queryByRole('option', { name: 'Opus 5' })).not.toBeInTheDocument()
+
+    // Search surfaces collapsed older models immediately without expanding first.
+    const search = screen.getByRole('combobox', { name: 'Search models' })
+    await user.type(search, '3.8')
+    expect(screen.getByRole('option', { name: 'Gemini 3.8 Flash' })).toBeInTheDocument()
+    await user.keyboard('{Enter}')
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'acp:agy', model: 'gemini-3.8-flash' }))
+
+    // Reopening starts collapsed again, while keeping the currently selected older model visible.
+    await user.click(screen.getByRole('button', { name: 'Model: Gemini 3.8 Flash, Antigravity' }))
+    expect(within(screen.getByRole('group', { name: 'Codex' })).queryByRole('option', { name: 'GPT-6.1-Sol' })).not.toBeInTheDocument()
+    const agyReopened = screen.getByRole('group', { name: 'Antigravity' })
+    expect(within(agyReopened).getByRole('option', { name: 'Gemini 3.8 Flash' })).toHaveAttribute('aria-selected', 'true')
+    expect(within(agyReopened).queryByRole('button', { name: /older Antigravity/ })).not.toBeInTheDocument()
+})
