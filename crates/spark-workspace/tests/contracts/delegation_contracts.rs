@@ -18,7 +18,7 @@ use spark_workspace::delegations::{
 };
 use spark_workspace::inbox::{install_runtime, InboxRuntime};
 use spark_workspace::{ConversationTurnRequest, WorkspaceConversationService, WorkspaceError};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// The linked environment A delegates to, and the origin B records.
@@ -414,6 +414,22 @@ fn b_seals_what_it_cannot_launch_and_tombstones_what_was_canceled_first() {
         assert_eq!(state["result"]["status"], "validation_error", "{state}");
     }
 
+    // A cancel names a delegation by UUID, as admission does; another ID
+    // leaves nothing behind.
+    for invalid in ["not-a-uuid", "../x", ""] {
+        let refused = delegations::cancel_incoming(
+            &home.service(),
+            invalid,
+            IncomingCancel {
+                origin_environment_id: ORIGIN.into(),
+            },
+        );
+        assert!(
+            matches!(&refused, Err(WorkspaceError::Validation(e)) if e.contains("UUID")),
+            "{invalid}: {refused:?}"
+        );
+        assert!(home.environments().in_(invalid).unwrap().is_none());
+    }
     let tombstone = delegations::cancel_incoming(
         &home.service(),
         &id(3),
@@ -1117,36 +1133,127 @@ fn follower_polls_distinct_environments_in_parallel() {
 }
 
 #[test]
-fn b_matches_conversation_question_by_question_id_when_request_id_is_absent() {
+fn requests_without_an_adapter_id_are_named_by_their_segment_end_to_end() {
     let home = Home::new();
-    home.seed_chat(
-        "chat-no-req-id",
-        "amber-no-req-id",
-        "chat",
-        "complete",
-        json!([{
-            "id": "segment-only", "turn_id": "turn-assistant", "order": 1,
+    // Two requests with no adapter request_id that ask the same question.
+    let asked = |segment_id: &str, order: u32| {
+        json!({
+            "id": segment_id, "turn_id": "turn-assistant", "order": order,
             "kind": "request_user_input", "role": "assistant", "status": "pending",
             "timestamp": "2026-01-01T00:00:01Z", "updated_at": "2026-01-01T00:00:01Z", "content": "",
             "request_user_input": {"status": "pending", "questions": [
                 {"id": "decision", "header": "Approve", "question": "Approve?", "isOther": false,
-                 "isSecret": false, "options": [{"label": "Approve", "description": "Go"}]}]}
-        }]),
+                 "isSecret": false, "options": [{"label": "Approve", "description": "Go"},
+                                                {"label": "Reject", "description": "Stop"}]}]}
+        })
+    };
+    home.seed_chat(
+        "chat-twice",
+        "amber-twice",
+        "chat",
+        "complete",
+        json!([asked("segment-1", 1), asked("segment-2", 2)]),
     );
-    home.launched(&id(1), "conversation", "chat-no-req-id");
-    let view = home.state(&id(1));
-    assert_eq!(view["questions"][0]["question_id"], "decision");
+    home.launched(&id(1), "conversation", "chat-twice");
+    let open = |home: &Home| {
+        home.state(&id(1))["questions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|question| question["question_id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(open(&home), ["segment-1", "segment-2"]);
 
+    // A, following B's real view, notifies its owner of each once however
+    // often it polls.
+    home.seed_chat("chat-owner", "amber-owner", "chat", "complete", json!([]));
+    let b = home.service();
+    let peer = Peer::serve(move |_, _| {
+        (
+            200,
+            delegations::incoming_state(&b, &id(1)).expect("B's view"),
+        )
+    });
+    home.link_to(LINKED, &peer);
+    let out = home.start_on(LINKED, "ask", Some("amber-owner"));
+    for _ in 0..3 {
+        assert_eq!(
+            home.tick(&mut delegations::Follower::default()),
+            Vec::<String>::new()
+        );
+    }
+    let notified: Vec<_> = home
+        .repository()
+        .inbox_events("chat-owner")
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "delegation.question")
+        .map(|event| (event.id, event.payload["question"]["question_id"].clone()))
+        .collect();
+    assert_eq!(
+        notified,
+        [
+            (
+                format!("delegation:{out}:question:segment-1"),
+                json!("segment-1")
+            ),
+            (
+                format!("delegation:{out}:question:segment-2"),
+                json!("segment-2")
+            ),
+        ]
+    );
+
+    // Answering the second, once the first is answered, answers only it; the
+    // agent still gets each under the question's own ID.
     let agent = Arc::new(FormTaker::default());
-    let service = crate::conversations_with_backend(home.settings.clone(), agent);
+    let service = crate::conversations_with_backend(home.settings.clone(), agent.clone());
     answer_with(
         &service,
         &id(1),
-        "decision",
+        "segment-1",
         json!({"selected_value": "Approve"}),
     )
     .unwrap();
-    assert_eq!(home.state(&id(1))["questions"], json!([]));
+    assert_eq!(open(&home), ["segment-2"]);
+    answer_with(
+        &service,
+        &id(1),
+        "segment-2",
+        json!({"selected_value": "Reject"}),
+    )
+    .unwrap();
+    assert_eq!(open(&home), Vec::<String>::new());
+    let snapshot = home
+        .repository()
+        .read_snapshot("chat-twice", None)
+        .unwrap()
+        .unwrap();
+    let answers: Vec<_> = snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|segment| {
+            (
+                segment["id"].clone(),
+                segment["request_user_input"]["answers"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        answers,
+        [
+            (json!("segment-1"), json!({"decision": "Approve"})),
+            (json!("segment-2"), json!({"decision": "Reject"})),
+        ]
+    );
+    let reached = agent.0.lock().unwrap();
+    let routed: Vec<_> = reached
+        .iter()
+        .map(|request| request.request_id.as_str())
+        .collect();
+    assert_eq!(routed, ["decision", "decision"]);
 }
 
 #[test]
@@ -1268,19 +1375,43 @@ fn a_proxies_project_and_flow_discovery_to_a_linked_environment() {
         )
         .unwrap();
 
+    // A flow name that would name another route is refused before any
+    // request; the server sees only the three below.
+    for bad in [
+        ".",
+        "..",
+        "/../",
+        "a/../b",
+        "ops/./run",
+        "ops//run",
+        "a\\b",
+        "a\u{7}b",
+    ] {
+        let refused = delegations::link_flow_files(&home.settings, "env-b", bad, None);
+        assert!(
+            matches!(&refused, Err(WorkspaceError::Validation(_))),
+            "{bad:?}: {refused:?}"
+        );
+    }
     let projects = delegations::link_projects(&home.settings, "env-b").unwrap();
     assert_eq!(projects["projects"][0]["project_path"], "/b/repo");
     let flows = delegations::link_flows(&home.settings, "env-b", Some("/b/repo")).unwrap();
     assert_eq!(flows[0]["name"], "ops/run");
-    let files =
-        delegations::link_flow_files(&home.settings, "env-b", "ops/run", Some("/b/repo")).unwrap();
+    let files = delegations::link_flow_files(
+        &home.settings,
+        "env-b",
+        "software-development/implement-change",
+        Some("/b/repo"),
+    )
+    .unwrap();
     assert_eq!(files["files"][0]["name"], "flow.md");
 
     let seen = server.join().unwrap();
     assert!(seen[0].starts_with("GET /workspace/api/projects HTTP/"));
     assert!(seen[1].starts_with("GET /workspace/api/flows?project_path=%2Fb%2Frepo HTTP/"));
-    assert!(seen[2]
-        .starts_with("GET /workspace/api/flows/ops%2Frun/files?project_path=%2Fb%2Frepo HTTP/"));
+    assert!(seen[2].starts_with(
+        "GET /workspace/api/flows/software-development%2Fimplement-change/files?project_path=%2Fb%2Frepo HTTP/"
+    ));
     for request in &seen {
         let lower = request.to_ascii_lowercase();
         assert!(
@@ -1303,8 +1434,26 @@ struct Peer {
     requests: Arc<Mutex<Vec<String>>>,
 }
 
+/// A whole HTTP answer of `status` with the JSON body `reply`.
+fn json_answer(status: u16, reply: &Value) -> Vec<u8> {
+    let reply = reply.to_string();
+    format!(
+        "HTTP/1.1 {status} Answer\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+        reply.len()
+    )
+    .into_bytes()
+}
+
 impl Peer {
     fn serve(respond: impl Fn(&str, &str) -> (u16, Value) + Send + Sync + 'static) -> Self {
+        Self::serve_raw(move |what, id| {
+            let (status, reply) = respond(what, id);
+            json_answer(status, &reply)
+        })
+    }
+    /// As `serve`, answering with `respond`'s whole HTTP answer.
+    fn serve_raw(respond: impl Fn(&str, &str) -> Vec<u8> + Send + Sync + 'static) -> Self {
         use std::io::{BufRead, BufReader, Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -1346,14 +1495,7 @@ impl Peer {
                         None => (body["delegation_id"].as_str().unwrap_or_default(), "submit"),
                     };
                     seen.lock().unwrap().push(format!("{what} {id}"));
-                    let (status, reply) = respond(what, id);
-                    let reply = reply.to_string();
-                    let _ = write!(
-                        stream,
-                        "HTTP/1.1 {status} Answer\r\nContent-Type: application/json\r\n\
-                         Content-Length: {}\r\nConnection: close\r\n\r\n{reply}",
-                        reply.len()
-                    );
+                    let _ = stream.write_all(&respond(what, id));
                 });
             }
         });
@@ -1457,7 +1599,12 @@ fn follower_backs_off_only_the_record_that_fails() {
     *failing.lock().unwrap() = oldest.clone();
 
     let mut follower = delegations::Follower::default();
-    assert_eq!(home.tick(&mut follower), Vec::<String>::new());
+    let diagnostics = home.tick(&mut follower);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(
+        diagnostics[0].contains(&oldest) && diagnostics[0].ends_with("down"),
+        "{diagnostics:?}"
+    );
     for id in [&sibling, &other] {
         assert_eq!(home.out(id).phase, "sealed", "{id}");
     }
@@ -1859,4 +2006,199 @@ fn concurrent_results_for_one_owner_are_each_delivered_once() {
         2
     );
     assert_eq!(one.requests().len() + two.requests().len(), 2);
+}
+
+/// An answer one byte over the limit, its length declared or, when
+/// `chunked`, streamed in chunks without one.
+fn oversized_answer(chunked: bool) -> Vec<u8> {
+    let limit = delegations::MAX_RESPONSE_BYTES as usize;
+    let body = format!("{{\"pad\":\"{}\"}}", "x".repeat(limit - 9));
+    assert_eq!(body.len(), limit + 1);
+    let mut answer =
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n".to_vec();
+    if chunked {
+        answer.extend(b"Transfer-Encoding: chunked\r\n\r\n");
+        for chunk in body.as_bytes().chunks(64 * 1024) {
+            answer.extend(format!("{:x}\r\n", chunk.len()).as_bytes());
+            answer.extend(chunk);
+            answer.extend(b"\r\n");
+        }
+        answer.extend(b"0\r\n\r\n");
+    } else {
+        answer.extend(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+    }
+    answer
+}
+
+#[test]
+fn a_follower_refuses_an_oversized_answer_and_keeps_the_last_state() {
+    let home = Home::new();
+    // 0: B's ordinary view; 1: an oversized one with its length; 2: one
+    // streamed without a length.
+    let mode = Arc::new(AtomicUsize::new(0));
+    let answering = mode.clone();
+    let b = Peer::serve_raw(move |_, id| match answering.load(Ordering::SeqCst) {
+        0 => json_answer(200, &b_state(id, "launched", "running")),
+        n => oversized_answer(n == 2),
+    });
+    home.link_to(LINKED, &b);
+    let id = home.start_on(LINKED, "build", None);
+    assert_eq!(
+        home.tick(&mut delegations::Follower::default()),
+        Vec::<String>::new()
+    );
+    let valid = home.out(&id);
+    assert_eq!(valid.phase, "accepted");
+    assert!(valid.last_state.is_some());
+
+    for n in [1, 2] {
+        mode.store(n, Ordering::SeqCst);
+        let diagnostics = home.tick(&mut delegations::Follower::default());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        let too_large = format!("more than {} bytes", delegations::MAX_RESPONSE_BYTES);
+        assert!(
+            diagnostics[0].contains(&id) && diagnostics[0].contains(&too_large),
+            "{diagnostics:?}"
+        );
+        let kept = home.out(&id);
+        assert_eq!(
+            (&kept.phase, &kept.last_state, &kept.paused),
+            (&valid.phase, &valid.last_state, &None),
+            "answer {n}"
+        );
+    }
+    assert_eq!(
+        b.requests(),
+        [
+            format!("submit {id}"),
+            format!("poll {id}"),
+            format!("poll {id}")
+        ]
+    );
+}
+
+#[test]
+fn a_follower_caps_outstanding_question_notifications_per_delegation() {
+    let home = Home::new();
+    let store = crate::shared_store(&home.settings.data_dir);
+    home.seed_chat("chat-owner", "amber-owner", "chat", "complete", json!([]));
+    // B reports these questions open.
+    let open = Arc::new(Mutex::new(Vec::<String>::new()));
+    let asked = open.clone();
+    let b = Peer::serve(move |_, id| {
+        let mut state = b_state(id, "launched", "waiting");
+        state["questions"] = asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|question| json!({"question_id": question}))
+            .collect();
+        (200, state)
+    });
+    home.link_to(LINKED, &b);
+    let id = home.start_on(LINKED, "ask", Some("amber-owner"));
+    let ask = |questions: &[String]| {
+        *open.lock().unwrap() = questions.to_vec();
+        home.tick(&mut delegations::Follower::default())
+    };
+    let notified = || {
+        home.repository()
+            .inbox_events("chat-owner")
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == "delegation.question")
+            .count()
+    };
+    let refused = |diagnostics: Vec<String>| {
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(
+            diagnostics[0].contains(&id) && diagnostics[0].contains("outstanding"),
+            "{diagnostics:?}"
+        );
+    };
+    let cap = delegations::MAX_OUTSTANDING_QUESTIONS;
+    let fresh = |n: usize| vec![format!("q-{n}")];
+
+    // B asks a fresh question on each poll and closes the last, while the
+    // owner takes none of them: they stay outstanding up to the cap.
+    for n in 0..cap {
+        assert_eq!(ask(&fresh(n)), Vec::<String>::new(), "question {n}");
+    }
+    assert_eq!(notified(), cap);
+    let held = home.out(&id).last_state;
+    refused(ask(&fresh(cap)));
+    assert_eq!(notified(), cap);
+    assert_eq!(home.out(&id).last_state, held);
+    assert!(home.out(&id).paused.is_none());
+
+    // Once the owner has taken them, closed questions no longer count.
+    home.agent.release(100);
+    install_runtime(
+        &home.settings,
+        InboxRuntime {
+            agent_turn_backend: home.agent.clone(),
+            runtime_handler_runner_factory: attractor_api::default_runtime_handler_runner_factory(),
+            publish: Arc::new(|_| {}),
+        },
+    );
+    let taken = || {
+        home.repository()
+            .pending_inbox_events("chat-owner")
+            .unwrap()
+            .is_empty()
+    };
+    spark_workspace::inbox::process_conversation(&home.settings, &store, "chat-owner").unwrap();
+    wait_for("the owner to take its questions", taken);
+    assert_eq!(ask(&fresh(cap)), Vec::<String>::new());
+    assert_eq!(notified(), cap + 1);
+    wait_for("the owner to take its question", taken);
+
+    // Open questions count however soon the owner takes them.
+    let many: Vec<_> = (0..=cap).map(|n| format!("open-{n}")).collect();
+    refused(ask(&many));
+    assert_eq!(notified(), cap + 1);
+    assert_eq!(ask(&many[..cap]), Vec::<String>::new());
+    assert_eq!(notified(), 2 * cap + 1);
+    let idle = || {
+        let head = home.repository().read_head("chat-owner", None).unwrap();
+        !head.unwrap()["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|turn| {
+                matches!(
+                    turn["status"].as_str(),
+                    Some("pending" | "streaming" | "queued")
+                )
+            })
+    };
+    wait_for("the owner's turns to end", idle);
+}
+
+#[test]
+fn a_refuses_answer_ids_that_would_leave_their_route() {
+    let home = Home::new();
+    let b = Peer::serve(|_, _| (200, json!({"answered": true})));
+    home.link_to(LINKED, &b);
+    let id = home.start_on(LINKED, "ask", None);
+    assert!(home.environments().accept_out(&id, "run-1").unwrap());
+    let answer = |delegation_id: &str, question_id: &str| {
+        delegations::answer(
+            &home.settings,
+            delegation_id,
+            question_id,
+            serde_json::from_value(json!({"selected_value": "yes"})).unwrap(),
+        )
+    };
+    for bad in ["", ".", "..", "a/../b", "a\\b", "a\nb"] {
+        for refused in [answer(&id, bad), answer(bad, "q-1")] {
+            assert!(
+                matches!(&refused, Err(WorkspaceError::Validation(_))),
+                "{bad:?}: {refused:?}"
+            );
+        }
+    }
+    assert!(b.requests().is_empty(), "{:?}", b.requests());
+    assert_eq!(answer(&id, "q.1").unwrap(), json!({"answered": true}));
+    assert_eq!(b.requests(), [format!("questions/q.1/answer {id}")]);
 }
