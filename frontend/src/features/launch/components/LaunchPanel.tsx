@@ -206,7 +206,7 @@ export function LaunchPanel({
                 },
                 { onGitPolicyWarning: setGitPolicyWarning },
             )
-            if (result.status === 'cancelled') {
+            if (result.status !== 'launched') {
                 return
             }
             setLastLaunchFailure(null)

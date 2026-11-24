@@ -297,6 +297,27 @@ describe('Editor sidebar manual refresh', () => {
         expect(screen.getByRole('button', { name: 'alpha.dot' })).toBeVisible()
     })
 
+    it('leaves the flow open after a switch to another environment when a delete started before it finishes', async () => {
+        const user = userEvent.setup()
+        const deleted = createDeferred<undefined>()
+        deleteFlowMock.mockReturnValueOnce(deleted.promise)
+        fetchFlowListMock.mockResolvedValue(['alpha.dot', 'beta.dot'])
+        await switchEnvironment('env-r')
+        resetSidebarState('beta.dot')
+        renderWithFlowProvider(<FlowsPanelHarness />)
+        await waitFor(() => expect(fetchFlowListMock).toHaveBeenCalledTimes(1))
+
+        await user.click(screen.getByTitle('Delete beta.dot'))
+        await user.click(await screen.findByTestId('shared-dialog-confirm'))
+        await waitFor(() => expect(deleteFlowMock).toHaveBeenCalledOnce())
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+        act(() => useStore.setState({ activeFlow: 'beta.dot' }))
+        await act(async () => deleted.resolve(undefined))
+
+        expect(useStore.getState().activeFlow).toBe('beta.dot')
+    })
+
     it('lists a flow opened from elsewhere that was made since the list loaded', async () => {
         fetchFlowListMock.mockResolvedValueOnce(['alpha.dot']).mockResolvedValueOnce(['alpha.dot', 'lint-only.dot'])
 

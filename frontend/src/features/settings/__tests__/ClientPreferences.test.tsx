@@ -2,14 +2,38 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { applyTheme, cachedAppearance, type Appearance } from '@/lib/theme'
-import { switchEnvironment } from '@/test/environments'
+import { deferred, switchEnvironment } from '@/test/environments'
 import { ClientPreferencesController } from '../ClientPreferencesController'
 import { ClientPreferencesEditor } from '../ClientPreferencesEditor'
 import { fetchClientPreferences, parseClientPreferences, saveClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
 
 vi.mock('../services/clientPreferences', async (original) => ({ ...await original<typeof import('../services/clientPreferences')>(), fetchClientPreferences: vi.fn(), saveClientPreferences: vi.fn() }))
 afterEach(() => { cleanup(); vi.resetAllMocks() })
+
+const prefs = (revision: string, appearance: Appearance): ClientPreferencesView => ({ client_id: 'browser-one', revision,
+    stored: { editor_mode: null, editor_sidebar_width: null, appearance },
+    effective: { editor_mode: 'structured', editor_sidebar_width: 288, appearance } })
+
+type Server = 'local' | 'remote'
+// Each environment's preferences server, picked as the requests do; `wait` can hold an answer.
+function servePreferences(servers: Record<Server, ClientPreferencesView>, wait: (server: Server, request: 'fetch' | 'save') => Promise<void> | void = () => {}) {
+    const serverOf = (environmentId: string | null | undefined): Server =>
+        ((environmentId === undefined ? getActiveEnvironmentId() : environmentId) === null ? 'local' : 'remote')
+    vi.mocked(fetchClientPreferences).mockImplementation(async (environmentId) => {
+        const server = serverOf(environmentId)
+        await wait(server, 'fetch')
+        return servers[server]
+    })
+    vi.mocked(saveClientPreferences).mockImplementation(async (base, preferences, environmentId) => {
+        const server = serverOf(environmentId)
+        const value: ClientPreferencesView = servers[server] = { ...base, revision: `${base.revision}+`, stored: preferences,
+            effective: { ...base.effective, ...preferences } as ClientPreferencesView['effective'] }
+        await wait(server, 'save')
+        return value
+    })
+}
 
 it('reads an unknown stored editor mode, such as the retired raw mode, as structured', () => {
     const parse = (mode: unknown) => parseClientPreferences({ preferences: { scope: 'client', client_id: 'c', revision: 'r',
@@ -35,7 +59,7 @@ it('retains the draft and original revision after live conflicts, and reloads on
     await user.click(screen.getByRole('button', { name: /^Save/ }))
     await screen.findByText('Conflict: reload before saving.')
     expect(mode).toHaveValue('files')
-    expect(saveClientPreferences).toHaveBeenCalledWith(view, { ...view.stored, editor_mode: 'files' })
+    expect(saveClientPreferences).toHaveBeenCalledWith(view, { ...view.stored, editor_mode: 'files' }, null)
     await user.click(screen.getByRole('button', { name: /^Discard/ }))
     expect(mode).toHaveValue('structured')
     expect(screen.getByLabelText('Show advanced controls')).toBeChecked()
@@ -56,7 +80,7 @@ it('Reset layout clears dragged sizes in the draft, and Save applies it', async 
     expect(saveClientPreferences).not.toHaveBeenCalled()
     await user.click(screen.getByRole('button', { name: /^Save/ }))
     await screen.findByText('Saved.')
-    expect(saveClientPreferences).toHaveBeenCalledWith(view, { ...view.stored, editor_sidebar_width: null, home_sidebar_primary_split_ratio: null, run_presentation: { sort: 'oldest', graph_height: null } })
+    expect(saveClientPreferences).toHaveBeenCalledWith(view, { ...view.stored, editor_sidebar_width: null, home_sidebar_primary_split_ratio: null, run_presentation: { sort: 'oldest', graph_height: null } }, null)
 })
 
 it('defaults Show thinking on and toggles it as a switch in the settings editor', async () => {
@@ -77,15 +101,8 @@ it('defaults Show thinking on and toggles it as a switch in the settings editor'
 })
 
 it('changes this browser\'s theme from another environment\'s Settings, and keeps it across switches', async () => {
-    const view = (revision: string, appearance: Appearance): ClientPreferencesView => ({ client_id: 'browser-one', revision,
-        stored: { editor_mode: null, editor_sidebar_width: null, appearance },
-        effective: { editor_mode: 'structured', editor_sidebar_width: 288, appearance } })
-    // Each environment's server, keyed by environment.
-    const servers: Record<string, ClientPreferencesView> = { local: view('local-1', 'light'), remote: view('remote-1', 'dark') }
-    const server = (environmentId: string | null | undefined) => (environmentId === null ? 'local' : 'remote')
-    vi.mocked(fetchClientPreferences).mockImplementation(async (environmentId) => servers[server(environmentId)])
-    vi.mocked(saveClientPreferences).mockImplementation(async (base, preferences, environmentId) => (servers[server(environmentId)] = {
-        ...base, revision: `${base.revision}+`, stored: preferences, effective: { ...base.effective, ...preferences } }))
+    const servers = { local: prefs('local-1', 'light'), remote: prefs('remote-1', 'dark') }
+    servePreferences(servers)
     applyTheme('light')
     await switchEnvironment('env-r')
     const settings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
@@ -108,4 +125,63 @@ it('changes this browser\'s theme from another environment\'s Settings, and keep
     await act(async () => {})
     expect(cachedAppearance()).toBe('dark')
     expect(document.documentElement).toHaveClass('dark')
+})
+
+it('saves another preference from another environment\'s Settings, leaving both themes as they were', async () => {
+    const servers = { local: prefs('local-1', 'light'), remote: prefs('remote-1', 'dark') }
+    servePreferences(servers)
+    applyTheme('light')
+    await switchEnvironment('env-r')
+    render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    const user = userEvent.setup()
+    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('light'))
+    await user.click(screen.getByLabelText('Show advanced controls'))
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await screen.findByText('Saved.')
+
+    expect(servers.remote.stored).toMatchObject({ appearance: 'dark', show_advanced_controls: true })
+    expect(servers.local.revision).toBe('local-1')
+    expect(cachedAppearance()).toBe('light')
+})
+
+it.each([
+    ['its environment\'s answer', 'remote', 'save'],
+    ['this machine\'s answer', 'local', 'fetch'],
+] as const)('keeps the theme chosen last when %s to a theme chosen before it comes late', async (_, heldServer, heldRequest) => {
+    const servers = { local: prefs('local-1', 'light'), remote: prefs('remote-1', 'light') }
+    const held = deferred<void>()
+    let holding = true
+    let reached = false
+    servePreferences(servers, (server, request) => {
+        if (!holding || server !== heldServer || request !== heldRequest) return
+        reached = true
+        return held.promise
+    })
+    applyTheme('light')
+    await switchEnvironment('env-r')
+    const remoteSettings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    const user = userEvent.setup()
+    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('light'))
+    await user.selectOptions(screen.getByLabelText('Theme'), 'dark')
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await waitFor(() => expect(reached).toBe(true))
+    remoteSettings.unmount()
+    holding = false
+
+    // Back here, System is chosen after.
+    await switchEnvironment(null)
+    const localSettings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue(servers.local.stored.appearance))
+    await user.selectOptions(screen.getByLabelText('Theme'), 'system')
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await screen.findByText('Saved.')
+    localSettings.unmount()
+    render(<ClientPreferencesController />)
+    await waitFor(() => expect(cachedAppearance()).toBe('system'))
+
+    await act(async () => held.resolve())
+    await act(async () => {})
+    expect(servers.local.stored.appearance).toBe('system')
+    expect(cachedAppearance()).toBe('system')
+    expect(document.documentElement).not.toHaveClass('dark')
 })

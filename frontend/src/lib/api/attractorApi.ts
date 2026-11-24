@@ -1025,9 +1025,12 @@ export async function fetchPreviewValidated(
     )
 }
 
-export async function fetchPipelineStartValidated(payload: PipelineStartPayload): Promise<PipelineStartResponse> {
+export async function fetchPipelineStartValidated(
+    payload: PipelineStartPayload,
+    environmentId: string | null = getActiveEnvironmentId(),
+): Promise<PipelineStartResponse> {
     return fetchJsonWithValidation(
-        attractorUrl('/pipelines'),
+        attractorUrl('/pipelines', environmentId),
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1041,8 +1044,9 @@ export async function fetchPipelineStartValidated(payload: PipelineStartPayload)
 export async function fetchPipelineContinueValidated(
     pipelineId: string,
     payload: PipelineContinuePayload,
+    environmentId: string | null = getActiveEnvironmentId(),
 ): Promise<PipelineStartResponse> {
-    const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/continue`)
+    const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/continue`, environmentId)
     return fetchJsonWithValidation(
         url,
         {

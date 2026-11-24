@@ -70,11 +70,13 @@ export function resetFlowSaveBaselines(): void {
     lastSaveRequest = null
 }
 
-const inFlightSaves = new Set<Promise<boolean>>()
+// Saves in flight, with the environment each goes to.
+const inFlightSaves = new Map<Promise<boolean>, string | null>()
 
-/** Waits for every save in flight to settle. */
+/** Waits for the active environment's saves in flight to settle; another environment's never hold it up. */
 export async function waitForFlowSaves(): Promise<void> {
-    await Promise.all([...inFlightSaves])
+    const environmentId = getActiveEnvironmentId()
+    await Promise.all([...inFlightSaves].filter(([, id]) => id === environmentId).map(([save]) => save))
 }
 
 // Debounced saves not sent yet, one sender per scheduler.
@@ -86,10 +88,10 @@ export function registerPendingFlowSave(send: () => void): () => void {
     return () => { pendingSaveSenders.delete(send) }
 }
 
-/** Sends every debounced save now; true while any save is still in flight. */
-export function sendPendingFlowSaves(): boolean {
+/** Sends every debounced save now; true while a save is still in flight, to `environmentId` when given. */
+export function sendPendingFlowSaves(environmentId?: string | null): boolean {
     pendingSaveSenders.forEach((send) => send())
-    return inFlightSaves.size > 0
+    return [...inFlightSaves.values()].some((id) => environmentId === undefined || id === environmentId)
 }
 
 // Editor fields whose text cannot be applied yet; saving in their environment waits for them.
@@ -121,7 +123,7 @@ export function saveFlowContent(
         ? previous.catch(() => false).then(() => persistFlowContent(name, content, projectPath, environmentId))
         : persistFlowContent(name, content, projectPath, environmentId)
     lastSaveByScope.set(scopeKey, save)
-    inFlightSaves.add(save)
+    inFlightSaves.set(save, environmentId)
     void save.finally(() => {
         inFlightSaves.delete(save)
         if (lastSaveByScope.get(scopeKey) === save) lastSaveByScope.delete(scopeKey)

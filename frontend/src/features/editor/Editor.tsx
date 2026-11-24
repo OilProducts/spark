@@ -493,12 +493,13 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         if (saveState === 'error' || saveState === 'conflict') resetSaveState();
     }, [editorMode, fileChangesPending]);
     useSettingsNavigationProtection(hasUnsavedEdits, false, 'flow edits');
-    // Leaving first sends edits still waiting to save and waits for saves in flight: a save refused
-    // after the click still asks before its edits are dropped, and never lands on the next flow.
+    // Leaving first sends edits still waiting to save and waits for this environment's saves in
+    // flight: a save refused after the click still asks before its edits are dropped, and never
+    // lands on the next flow. Another environment's saves only hold up closing the browser.
     const { confirm } = useDialogController();
     useEffect(() => {
         const waitForSaves = (event: Event) => {
-            if (event.defaultPrevented || !sendPendingFlowSaves()) return;
+            if (event.defaultPrevented || !sendPendingFlowSaves(environmentId)) return;
             event.preventDefault();
             const { proceed } = (event as CustomEvent<{ proceed: () => void }>).detail;
             void waitForFlowSaves().then(async () => {
@@ -519,7 +520,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         };
         window.addEventListener('spark:before-navigation', waitForSaves, { capture: true });
         return () => window.removeEventListener('spark:before-navigation', waitForSaves, { capture: true });
-    }, [confirm]);
+    }, [confirm, environmentId]);
 
     useEffect(() => {
         expandChildFlowsRef.current = expandChildFlows;

@@ -1,4 +1,5 @@
-import { render, renderHook, waitFor, act } from '@testing-library/react'
+import { render, renderHook, screen, waitFor, act } from '@testing-library/react'
+import { DialogProvider } from '@/components/app/dialog-controller'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ClientPreferencesController } from '@/features/settings/ClientPreferencesController'
 import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
@@ -10,7 +11,7 @@ import type { NormalizedConversationRecord } from '@/features/projects/model/pro
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { cachedAppearance, applyTheme } from '@/lib/theme'
 import { requestNavigation } from '@/state/workspaceSlice'
-import { primeFlowSaveBaseline, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent, setInvalidDraft } from '@/lib/flowPersistence'
+import { primeFlowSaveBaseline, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, waitForFlowSaves } from '@/lib/flowPersistence'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { conversationMutationAck } from '@/test/conversationWire'
@@ -124,6 +125,29 @@ describe('flow saves', () => {
             await expect(saveFlowContent('demo', flow('Local'), PROJECT)).resolves.toBe(false)
             expect(useStore.getState().saveErrorMessage).toContain('Routes: a line without a target.')
         } finally { setInvalidDraft('local-field', null) }
+    })
+
+    it('lets this environment go on while another environment\'s save is in flight, and still guards closing the browser', async () => {
+        await switchEnvironment('env-r')
+        const remoteSaved = deferred<unknown>()
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : remoteSaved.promise)
+        const remote = saveFlowContent('demo', flow('Remote'), PROJECT)
+        await waitFor(() => expect(sent).toContain(`POST ${REMOTE}/attractor/api/flows`))
+        await switchEnvironment(null)
+        const { unmount } = renderHook(() => useFlowSaveScheduler({ flowName: 'demo', debounceMs: 60_000, buildContent: () => flow('Local') }))
+        try {
+            // Opening another flow, switching editor mode or launching here waits for nothing.
+            expect(sendPendingFlowSaves(null)).toBe(false)
+            const held = new Promise((resolve) => setTimeout(resolve, 0, 'held'))
+            await expect(Promise.race([waitForFlowSaves().then(() => 'done'), held])).resolves.toBe('done')
+            const unload = new Event('beforeunload', { cancelable: true })
+            window.dispatchEvent(unload)
+            expect(unload.defaultPrevented).toBe(true)
+        } finally {
+            remoteSaved.resolve({ status: 'saved' })
+            await remote
+            unmount()
+        }
     })
 
     it('retries the save whose failure is shown, after a switch away and back', async () => {
@@ -363,4 +387,40 @@ it('switches a new chat\'s mode at the revision a model save before it acknowled
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(useStore.getState().projectRegistry).toEqual(local.projectRegistry)
     expect(useStore.getState().projectSessionsByPath).toEqual(local.projectSessionsByPath)
+})
+
+it('leaves this environment\'s chats and selection as they are when a chat delete\'s refresh finishes after a switch', async () => {
+    const listed = deferred<unknown>()
+    answer = (url, method) => {
+        if (method === 'DELETE') return { status: 'deleted', conversation_id: 'conversation-1', project_path: PROJECT }
+        if (url.includes('/projects/conversations') && sent.some((request) => request.startsWith('DELETE'))) return listed.promise
+        return {}
+    }
+    await switchEnvironment('env-r')
+    act(() => {
+        useStore.getState().registerProject(PROJECT)
+        useStore.getState().setActiveProjectPath(PROJECT)
+        useStore.getState().updateProjectSessionState(PROJECT, { conversationId: 'conversation-1' })
+    })
+    const { result, unmount } = renderHook(() => useProjectsHomeController(), { wrapper: DialogProvider })
+    let deleting!: Promise<void>
+    act(() => { deleting = result.current.sidebarProps.onDeleteConversationThread(PROJECT, 'conversation-1', 'Thread') })
+    await act(async () => screen.getByTestId('shared-dialog-confirm').click())
+    await waitFor(() => expect(sent.filter((request) => request.startsWith(`GET ${REMOTE}/workspace/api/projects/conversations`)).length).toBeGreaterThan(0))
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    // This machine has a chat with the same ID open.
+    act(() => {
+        useStore.getState().registerProject(PROJECT)
+        useStore.getState().updateProjectSessionState(PROJECT, { conversationId: 'conversation-1' })
+    })
+    const local = useStore.getState()
+    sent = []
+
+    listed.resolve(json({ detail: 'unavailable' }, 503))
+    await act(async () => deleting)
+    unmount()
+    expect(sent).toEqual([])
+    expect(useStore.getState().projectSessionsByPath).toEqual(local.projectSessionsByPath)
+    expect(useStore.getState().homeConversationCache).toBe(local.homeConversationCache)
 })

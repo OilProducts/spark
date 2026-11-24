@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { useStore } from '@/store'
 import { LaunchPanel, useExecutionPlacement, type LaunchPanelProps } from '@/features/launch'
+import { deferred, switchEnvironment } from '@/test/environments'
 
 const TEST_FLOW = 'test-linear.yaml'
 const TEST_PROJECT = '/tmp/project'
@@ -314,6 +315,35 @@ useStore.getState().setRunsSelectedRunId(null);
     })
     expect(startedPipelinePayload(fetchMock)).toBeNull()
     expect(onLaunched).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['the Git check', '/workspace/api/projects/metadata'],
+    ['the launch request', '/attractor/pipelines'],
+  ])('launches in the environment it started in, and follows it nowhere, after a switch during %s', async (_, heldPath) => {
+    const fetchMock = installLaunchFetchMock()
+    const answer = fetchMock.getMockImplementation()!
+    const held = deferred<void>()
+    const requested = () => fetchMock.mock.calls.map(([input]) => String(input))
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input).includes(heldPath)) await held.promise
+      return answer(input, init)
+    })
+    await switchEnvironment('env-r')
+    const user = userEvent.setup()
+    const { onLaunched } = renderLaunchPanel()
+    const startButton = screen.getByTestId('launch-panel-start-button')
+    await waitFor(() => expect(startButton).toBeEnabled())
+    await user.click(startButton)
+    await waitFor(() => expect(requested().some((url) => url.includes(heldPath))).toBe(true))
+
+    await switchEnvironment(null)
+    held.resolve()
+    await waitFor(() => expect(startButton).toBeEnabled())
+    expect(requested().filter((url) => url.endsWith('/attractor/pipelines')))
+      .toEqual(['/workspace/api/environments/links/env-r/proxy/attractor/pipelines'])
+    expect(onLaunched).not.toHaveBeenCalled()
+    expect(selectSelectedRunId(useStore.getState())).toBeNull()
   })
 
   it('prefills launch inputs from initial values', async () => {

@@ -216,6 +216,8 @@ function useFlowCatalogPanel() {
         })
         if (!confirmed) return;
 
+        // Deleted after a switch of environment or project, the flow isn't the one shown: nothing here changes.
+        const shown = captureShownWorkspace()
         try {
             await deleteFlowCatalogEntry(fileName, activeProjectPath);
         } catch (error) {
@@ -225,6 +227,7 @@ function useFlowCatalogPanel() {
             })
             return;
         }
+        if (!shown()) return;
 
         if (activeFlow === fileName) {
             // Deleting it already discarded its edits: close it without asking again.

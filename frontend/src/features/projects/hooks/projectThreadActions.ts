@@ -103,7 +103,7 @@ export function useProjectThreadActions({
         const environmentId = getActiveEnvironmentId()
         try {
             await deleteConversationValidated(conversationId, projectPath)
-            // Deleted after a switch: the chats shown are another environment's, and stay as they are.
+            // Deleted, or refreshed, after a switch: the chats shown are another environment's, and stay as they are.
             if (getActiveEnvironmentId() !== environmentId) return
             commitConversationCache((current) => removeConversationFromCache({
                 ...current,
@@ -113,12 +113,10 @@ export function useProjectThreadActions({
                 },
             }, conversationId))
             clearHomeConversationSession(conversationId)
-            try {
-                const snapshot = await fetchProjectConversationListValidated(projectPath)
-                commitConversationCache((current) => applySummarySnapshotToCache(current, snapshot, 'http', projectPath))
-            } catch {
-                // Keep the local optimistic removal if the follow-up refresh fails.
-            }
+            // Keep the local optimistic removal if the follow-up refresh fails.
+            const snapshot = await fetchProjectConversationListValidated(projectPath).catch(() => null)
+            if (getActiveEnvironmentId() !== environmentId) return
+            if (snapshot) commitConversationCache((current) => applySummarySnapshotToCache(current, snapshot, 'http', projectPath))
             const remainingSummaries = useStore.getState().homeConversationCache.summariesByProjectPath[projectPath] ?? []
 
             if (useStore.getState().projectSessionsByPath[projectPath]?.conversationId === conversationId) {
