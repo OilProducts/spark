@@ -44,8 +44,8 @@ const sameLink = (a: EnvironmentLink, b: EnvironmentLink) =>
 
 const firstEnabledIn = (scope: Element | null) => scope?.querySelector<HTMLElement>('button:enabled, input:enabled') ?? null
 
-/** A mutation the server confirmed: a revoked token ID, a created link, or a removed link's environment ID. */
-type Mutation = { revoked: string } | { linked: EnvironmentLink } | { unlinked: string }
+/** A mutation the server confirmed: a revoked token, a created link, or the removed link as the user confirmed it. */
+type Mutation = { revoked: PeerToken } | { linked: EnvironmentLink } | { unlinked: EnvironmentLink }
 
 // Leaving Settings unmounts the card and switching environments remounts it, so a request can settle after its card
 // is gone. It then reaches the cards mounted now: those for its environment show a mutation and refresh, and a failure
@@ -142,20 +142,26 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     }, [showListedLinks])
 
     // Shows a confirmed mutation at once, even if the follow-up listing fails, and retires refreshes started before it.
+    // A card that has not listed the revoked token yet adds it; a removal keeps a replacement listed for the same ID.
     const applyMutation = useCallback((mutation: Mutation) => {
         refreshSeqRef.current += 1
         if ('revoked' in mutation) {
-            setTokens((prev) => prev.map((row) => row.token_id === mutation.revoked ? { ...row, revoked: true } : row))
-            return
+            const id = mutation.revoked.token_id
+            setTokens((prev) => prev.some((row) => row.token_id === id)
+                ? prev.map((row) => row.token_id === id ? { ...row, revoked: true } : row)
+                : [...prev, { ...mutation.revoked, revoked: true }])
+        } else if ('linked' in mutation) {
+            const created = mutation.linked
+            forgetProjects(created.environment_id)
+            setLinks((prev) => [...prev.filter((row) => row.environment_id !== created.environment_id), created])
+        } else {
+            const removed = mutation.unlinked
+            const lookup = lookupsRef.current.get(removed.environment_id)
+            if (lookup && sameLink(lookup, removed)) forgetProjects(removed.environment_id)
+            setLinks((prev) => prev.filter((row) => !sameLink(row, removed)))
+            // Only a listing can say no links remain.
+            setLinksLoaded(false)
         }
-        const environmentId = 'linked' in mutation ? mutation.linked.environment_id : mutation.unlinked
-        forgetProjects(environmentId)
-        setLinks((prev) => [
-            ...prev.filter((row) => row.environment_id !== environmentId),
-            ...('linked' in mutation ? [mutation.linked] : []),
-        ])
-        // Only a listing can say no links remain.
-        if ('unlinked' in mutation) setLinksLoaded(false)
     }, [forgetProjects])
 
     useEffect(() => {
@@ -291,7 +297,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         confirmVariant: 'destructive',
     }, 'Could not revoke token.', async () => {
         await revokePeerToken(token.token_id)
-        await settleMutation(`Revoked token ${token.label || token.token_id}.`, { revoked: token.token_id })
+        await settleMutation(`Revoked token ${token.label || token.token_id}.`, { revoked: token })
     })
 
     const handleAddLink = async (event: FormEvent<HTMLFormElement>) => {
@@ -353,7 +359,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             }
             await removeEnvironmentLink(link.environment_id)
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
-            await settleMutation(`Removed link to ${name}.`, { unlinked: link.environment_id })
+            await settleMutation(`Removed link to ${name}.`, { unlinked: link })
         })
     }
 

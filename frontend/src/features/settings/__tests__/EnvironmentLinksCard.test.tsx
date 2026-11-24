@@ -223,6 +223,65 @@ it.each(mutations.flatMap(([name, mutate]) => (['succeeds', 'fails'] as const).m
     }
 })
 
+it('shows a revoke that succeeds before a reopened card first lists its tokens, beside a failed follow-up listing', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')] })
+    let finishRevoke = () => {}
+    backend.replies[`POST ${TOKENS}/tok-ci/revoke`] = () => new Promise<undefined>((resolve) => { finishRevoke = () => resolve(undefined) })
+    const settings = render(card())
+    await user.click(await screen.findByRole('button', { name: 'Revoke CI runner' }))
+    await user.click(await screen.findByRole('button', { name: 'Revoke token' }))
+    await waitFor(() => expect(backend.mutations).toEqual([`POST ${TOKENS}/tok-ci/revoke`]))
+
+    // The reopened card's first token listing is held; token listings after it fail.
+    settings.unmount()
+    const held: Array<() => void> = []
+    backend.replies[TOKENS] = () => {
+        const stale = json({ tokens: backend.tokens })
+        backend.replies[TOKENS] = () => json({ detail: 'token listing failed' }, 500)
+        return new Promise<Response>((resolve) => held.push(() => resolve(stale)))
+    }
+    render(card())
+    await waitFor(() => expect(held).toHaveLength(1))
+    expect(screen.queryByText('CI runner')).not.toBeInTheDocument()
+
+    await act(async () => finishRevoke())
+    expect(await screen.findByText('Revoked')).toBeInTheDocument()
+    expect(screen.getByText('CI runner')).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load peer tokens: Token listing failed')
+
+    await act(async () => held[0]())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    expect(screen.getByText('Revoked')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Revoke CI runner' })).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load peer tokens: Token listing failed')
+})
+
+it('keeps a replacement a reopened card listed when the removal of the old link succeeds late, beside a failed follow-up listing', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box')] })
+    let finishDelete = () => {}
+    backend.replies[`DELETE ${LINKS}/env-build`] = () => new Promise<Response>((resolve) => { finishDelete = () => resolve(json({ ok: true })) })
+    const settings = render(card())
+    await user.click(await screen.findByRole('button', { name: 'Remove link Build box' }))
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`]))
+
+    // The server removes the old link and another tab relinks env-build; the reopened card lists the replacement before
+    // the removal's response arrives.
+    settings.unmount()
+    backend.links = [relinked]
+    render(card())
+    expect(await screen.findByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+
+    backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
+    await act(async () => finishDelete())
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
+    expect(screen.getByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove link Build box' })).toBeInTheDocument()
+})
+
 it('shows a failure that lands while Settings is closed in the next card to open', async () => {
     const user = userEvent.setup()
     const backend = stubBackend({ links: [link('env-build', 'Build box')] })
