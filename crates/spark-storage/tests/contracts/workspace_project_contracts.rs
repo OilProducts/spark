@@ -1124,15 +1124,17 @@ fn registration_and_deletion_of_one_project_never_interleave() {
     registry.register_project(path).unwrap();
     let store = ConversationStore::open(&home).unwrap();
     let deleted = registry.deletable_project(path).unwrap();
+    // Callers key the gate on the normalized path, as deletion does.
+    let gate_path = deleted.project_path.clone();
     let (inside_tx, inside_rx) = std::sync::mpsc::channel();
     let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
     let registering = {
         let (store, home) = (store.clone(), home.clone());
         std::thread::spawn(move || {
-            store.register_project(path, || {
+            store.register_project(&gate_path, || {
                 inside_tx.send(()).unwrap();
                 finish_rx.recv().unwrap();
-                ProjectRegistry::new(&home).register_project(path)
+                ProjectRegistry::new(&home).register_project(&gate_path)
             })
         })
     };
@@ -1274,16 +1276,18 @@ fn project_state_updates_and_deletion_never_interleave() {
     registry.register_project(path).unwrap();
     let store = ConversationStore::open(&home).unwrap();
     let deleted = registry.deletable_project(path).unwrap();
+    // Callers key the gate on the normalized path, as deletion does.
+    let gate_path = deleted.project_path.clone();
     let (inside_tx, inside_rx) = std::sync::mpsc::channel();
     let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
     let updating = {
         let (store, home) = (store.clone(), home.clone());
         std::thread::spawn(move || {
-            store.update_project(path, || {
+            store.update_project(&gate_path, || {
                 inside_tx.send(()).unwrap();
                 finish_rx.recv().unwrap();
                 ProjectRegistry::new(&home).update_project_record(
-                    path,
+                    &gate_path,
                     ProjectRecordUpdate {
                         is_favorite: Some(true),
                         ..ProjectRecordUpdate::default()
