@@ -52,10 +52,12 @@ const editDraft = (env: string, key: string, patch: Partial<AnswerDraft>) => upd
 const activeEnv = () => getActiveEnvironmentId() ?? ''
 // List requests still out, by environment, superseded ones and those of a card since closed included:
 // a live refresh waits for those of the environment shown, never for another environment's, so one
-// stalled in an environment left behind doesn't stop live updates in the one shown now.
+// stalled in an environment left behind doesn't stop live updates in the one shown now. Per environment
+// by the owner's decision, after reviews asked both for this and for waiting on every environment's.
 const inFlightCounts: Record<string, number> = {}
-// The card showing each environment, so a reply sent from a card since closed reports and reloads where it is seen.
-const shownCards = new Map<string, (done: string) => Promise<void>>()
+// The card showing each environment, so a change sent from a card since closed reports, shows its
+// updated row and reloads where it is seen.
+const shownCards = new Map<string, (done: string, updated?: DelegationOut) => Promise<void>>()
 const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
 // Delegations still in flight are re-read this often, so new questions and phases show up.
 const LIVE_REFRESH_MS = 4000
@@ -332,7 +334,18 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     }), [load])
 
     useEffect(() => {
-        const report = async (done: string) => {
+        const report = async (done: string, updated?: DelegationOut) => {
+            // The row shows the server's answer now, whether or not the reload below succeeds.
+            if (updated) {
+                seenRef.current = { ...seenRef.current, [updated.delegation_id]: updated }
+                setSeen(seenRef.current)
+                setLoaded((current) => current && {
+                    ...current,
+                    records: current.records.flatMap((row) => (
+                        row.delegation_id !== updated.delegation_id ? [row] : inFilter(updated, current.filter) ? [updated] : []
+                    )),
+                })
+            }
             setStatus(done)
             await reloadAfterChange(done)
         }
@@ -407,25 +420,16 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             setBusy(false)
             return
         }
-        // The row shows the server's answer now, whether or not the reload below succeeds.
-        seenRef.current = { ...seenRef.current, [updated.delegation_id]: updated }
-        setSeen(seenRef.current)
         forgetUnasked(env, [updated], false)
-        setLoaded((current) => current && {
-            ...current,
-            records: current.records.flatMap((row) => (
-                row.delegation_id !== updated.delegation_id ? [row] : inFilter(updated, current.filter) ? [updated] : []
-            )),
-        })
         const outcome = delegationStatus(updated, acknowledged).label
         const done = updated.phase !== 'sealed'
             ? `Cancellation requested for ${record.request_key}.`
             : outcome === 'canceled'
                 ? `Canceled delegation ${record.request_key}.`
                 : `Delegation ${record.request_key} had already ended: ${outcome}.`
-        // The card showing this environment, if any, reports it and reloads: one Settings left meanwhile
-        // never sends a list request to the environment shown now.
-        await shownCards.get(env)?.(done)
+        // The card showing this environment, which Settings may have reopened meanwhile, shows the result
+        // and reloads; a card since closed never touches the environment shown now.
+        await shownCards.get(env)?.(done, updated)
         setBusy(false)
     }
 

@@ -995,6 +995,30 @@ it('refreshes a cancel started under All with the filter selected when it comple
     expect(screen.getByText('paused-task')).toBeInTheDocument()
 })
 
+it('shows a cancel that completes after Settings was reopened on the reopened row, even when the reload after it fails', async () => {
+    const cancel = later()
+    serve({
+        [LIST]: [ok(list(nightly)), ok(list(nightly)), fail(500, 'database is locked')],
+        [cancelRoute('del-1')]: [cancel.reply],
+    })
+    const first = renderCard()
+    await confirmCancel(first.user, 'nightly-checks')
+    await waitFor(() => expect(sent(cancelRoute('del-1'))).toHaveLength(1))
+    first.unmount()
+
+    renderCard()
+    const name = asked('nightly-checks', 'Ship this build?', 'del-1')
+    expect(within(await screen.findByRole('group', { name })).getByRole('button', { name: 'Approve' })).toBeEnabled()
+    await settled()
+    await cancel.resolve({ ...nightly, ...requested })
+    expect(await screen.findByText('Cancellation requested for nightly-checks. Could not refresh delegations: Database is locked')).toBeInTheDocument()
+    expect(screen.getByText('flow · canceling')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancel delegation nightly-checks' })).toBeDisabled()
+    expect(within(screen.getByRole('group', { name })).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    expect(sent(LIST)).toHaveLength(3)
+    expect(sent(cancelRoute('del-1'))).toHaveLength(1)
+})
+
 it('leaves a linked environment\'s list requests and live refreshes alone when a cancel sent from Local completes there', async () => {
     const cancel = later()
     const remoteList = `GET ${REMOTE}/workspace/api/delegations`
