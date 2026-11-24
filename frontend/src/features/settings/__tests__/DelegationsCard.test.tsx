@@ -365,6 +365,33 @@ it('releases an accepted form draft as soon as the reply is in, while the reload
     await reload.resolve(list(delegation('del-f', 'deploy-task', [form])))
 })
 
+it('reports a failed reload after a sent form once Paused is selected, beside Paused\'s rows, with the draft released', async () => {
+    const form = deployForm('form-done', 'Done details')
+    const reload = later()
+    serve({
+        [LIST]: [ok(list(delegation('del-f', 'deploy-task', [form]))), reload.reply],
+        [`${LIST}?paused=true`]: [ok(list(pausedTask))],
+        [answerRoute('del-f', 'form-done')]: [ok({})],
+    })
+    const { user } = renderCard()
+    const before = await screen.findByRole('group', { name: asked('deploy-task', 'Done details', 'del-f') })
+    await user.type(within(before).getByRole('textbox', { name: 'Region' }), 'eu-west')
+    await user.type(within(before).getByRole('textbox', { name: 'Replicas' }), '3')
+    await user.click(within(before).getByRole('button', { name: 'Submit' }))
+    expect(await screen.findByText('Sent answer for deploy-task.')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Paused' }))
+    expect(await screen.findByText('paused-task')).toBeInTheDocument()
+    await reload.resolve({ detail: 'database is locked' }, 500)
+    expect(await screen.findByText('Sent answer for deploy-task. Could not refresh delegations: Database is locked')).toBeInTheDocument()
+    expect(screen.queryByText('Sent answer for deploy-task.')).not.toBeInTheDocument()
+    expect(screen.getByText('paused-task')).toBeInTheDocument()
+    expect(screen.queryByText('deploy-task')).not.toBeInTheDocument()
+    expect(localAnswers().drafts).toEqual({})
+    expect(localAnswers().acknowledged).toEqual(new Set(['del-f:form-done']))
+    expect(sent(answerRoute('del-f', 'form-done'))).toHaveLength(1)
+})
+
 it('keeps an unsent draft for a newer question when a refresh from before Settings was left returns late', async () => {
     const late = later()
     const newer = delegation('del-1', 'nightly-checks', [approveGate(), freeText('q-next', 'Anything else?')])
@@ -1017,6 +1044,28 @@ it('shows a cancel that completes after Settings was reopened on the reopened ro
     expect(within(screen.getByRole('group', { name })).getByRole('button', { name: 'Approve' })).toBeDisabled()
     expect(sent(LIST)).toHaveLength(3)
     expect(sent(cancelRoute('del-1'))).toHaveLength(1)
+})
+
+it('keeps a row the reopened list shows sealed when an older cancel response arrives, even when the reload after it fails', async () => {
+    const cancel = later()
+    serve({
+        [LIST]: [ok(list(nightly)), ok(list({ ...nightly, phase: 'sealed', result: { status: 'canceled' } })), fail(500, 'database is locked')],
+        [cancelRoute('del-1')]: [cancel.reply],
+    })
+    const first = renderCard()
+    await confirmCancel(first.user, 'nightly-checks')
+    await waitFor(() => expect(sent(cancelRoute('del-1'))).toHaveLength(1))
+    first.unmount()
+
+    renderCard()
+    expect(await screen.findByText('flow · canceled')).toBeInTheDocument()
+    await settled()
+    await cancel.resolve({ ...nightly, ...requested })
+    expect(await screen.findByText('Cancellation requested for nightly-checks. Could not refresh delegations: Database is locked')).toBeInTheDocument()
+    expect(screen.getByText('flow · canceled')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancel delegation nightly-checks' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    expect(sent(LIST)).toHaveLength(3)
 })
 
 it('leaves a linked environment\'s list requests and live refreshes alone when a cancel sent from Local completes there', async () => {

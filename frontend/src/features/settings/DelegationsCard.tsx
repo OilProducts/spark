@@ -286,8 +286,9 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const [status, setStatus] = useState('')
 
     // Loads the selected filter. A response to an older request, or for a filter no longer
-    // selected, is dropped; a current failure is thrown for the caller to report.
-    const load = useCallback(async (polling = false) => {
+    // selected, is dropped; a current failure, or any failure of a reload after a change, is thrown
+    // for the caller to report.
+    const load = useCallback(async (polling = false, afterChange = false) => {
         const requested = filterRef.current
         // Sealing clears a pause (spark-storage seal_out_on), so the Open list holds every paused
         // delegation: Paused's live refresh reads it alone, for its rows and to see one pause or seal.
@@ -315,7 +316,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             })))
             forgetUnasked(env, records, coversOpen)
         } catch (err) {
-            if (current()) throw err
+            if (current() || afterChange) throw err
         } finally {
             inFlightCounts[env] -= 1
             if (seq === requestSeqRef.current) setLoading(false)
@@ -327,16 +328,18 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         setStatus('')
     }), [load])
 
-    // After a change went through, a failed reload is reported in place of the change's status.
-    const reloadAfterChange = useCallback((done: string) => load().catch((err: unknown) => {
+    // After a change went through, a failed reload is reported in place of the change's status, beside
+    // the rows of whichever filter is selected by then.
+    const reloadAfterChange = useCallback((done: string) => load(false, true).catch((err: unknown) => {
         setLoadError(`${done} Could not refresh delegations: ${errorText(err, 'the request failed.')}`)
         setStatus('')
     }), [load])
 
     useEffect(() => {
         const report = async (done: string, updated?: DelegationOut) => {
-            // The row shows the server's answer now, whether or not the reload below succeeds.
-            if (updated) {
+            // The row shows the server's answer now, whether or not the reload below succeeds. One already
+            // seen sealed is final: an older answer never reopens it.
+            if (updated && seenRef.current[updated.delegation_id]?.phase !== 'sealed') {
                 seenRef.current = { ...seenRef.current, [updated.delegation_id]: updated }
                 setSeen(seenRef.current)
                 setLoaded((current) => current && {
