@@ -501,10 +501,10 @@ describe('routing across environments', () => {
         expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
         expect(window.location.hash).toBe(buildRunsHash('local-run'))
 
-        // Forward reaches the remote run's entry: nothing here changes, and the entry says where it is.
+        // Forward reaches the remote run's entry: nothing here changes, nor the entry.
         act(() => window.history.forward())
-        await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run')))
-        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, runId: 'local-run' })
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
         expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
         expect(savedRoute()).toMatchObject({ selectedRunId: 'local-run' })
 
@@ -512,6 +512,53 @@ describe('routing across environments', () => {
         act(() => window.history.go(-2))
         await waitFor(() => expect(useStore.getState().viewMode).toBe('home'))
         expect(savedRoute()).toMatchObject({ selectedRunId: 'local-run' })
+    })
+
+    it('keeps a remote environment\'s entries for Back and Forward to reach once it shows again', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        for (const view of ['runs', 'triggers', 'settings'] as const) {
+            act(() => useStore.getState().setViewMode(view))
+            await waitFor(() => expect(window.location.hash).toBe(`#/${view}?env=env-r`))
+        }
+        await showEnvironment(null)
+        const local = { hash: window.location.hash, route: savedRoute(), view: window.sessionStorage.getItem(`${VIEW_MODE_SESSION_KEY}:local`) }
+
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe('#/triggers?env=env-r'))
+        expect(useStore.getState().viewMode).toBe('home')
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe(local.hash))
+        expect(useStore.getState().viewMode).toBe('home')
+        expect(savedRoute()).toEqual(local.route)
+        expect(window.sessionStorage.getItem(`${VIEW_MODE_SESSION_KEY}:local`)).toBe(local.view)
+
+        await showEnvironment('env-r')
+        expect(useStore.getState().viewMode).toBe('settings')
+        act(() => window.history.back())
+        await waitFor(() => expect(useStore.getState().viewMode).toBe('triggers'))
+        expect(window.location.hash).toBe('#/triggers?env=env-r')
+    })
+
+    it('adds an entry after a remote environment\'s entry for a move made here while it shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        selectRun('local-run')
+        await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run')))
+        await showEnvironment('env-r')
+        for (const view of ['runs', 'triggers'] as const) {
+            act(() => useStore.getState().setViewMode(view))
+            await waitFor(() => expect(window.location.hash).toBe(`#/${view}?env=env-r`))
+        }
+        await showEnvironment(null)
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe('#/runs?env=env-r'))
+
+        // A node change, which only rewrites its own entry, leaves the remote one as it is.
+        act(() => useStore.getState().updateRunDetailSession('local-run', { selectedNodeId: 'build' }))
+        await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run', 'build')))
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe('#/runs?env=env-r'))
+        expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
     })
 
     it('opens nothing from a remote environment\'s link reloaded on this machine', async () => {

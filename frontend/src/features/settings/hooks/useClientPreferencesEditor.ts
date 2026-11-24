@@ -1,33 +1,21 @@
 import { useEffect, useState } from 'react'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
-import { applyTheme, cachedAppearance, type Appearance } from '@/lib/theme'
+import { applyTheme, cachedAppearance } from '@/lib/theme'
 import { fetchClientPreferences, saveClientPreferences, type ClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
 import { useSettingsNavigationProtection } from './useSettingsNavigationProtection'
 
-// The appearance is this browser's, kept by this machine's preferences: another environment's
-// Settings shows the one in use, keeps a change to it here, and saves its own environment's as it was.
-const shownIn = (remote: boolean, view: ClientPreferencesView): ClientPreferencesView =>
-    (remote ? { ...view, stored: { ...view.stored, appearance: cachedAppearance() } } : view)
-
-// Counts appearance choices made in any Settings: the latest wins, so an earlier one still saving is dropped.
-let appearanceChoice = 0
-
-/** Keeps an appearance chosen in another environment's Settings in this machine's preferences, and applies it. */
-async function keepAppearance(appearance: Appearance) {
-    const choice = ++appearanceChoice
-    const here = await fetchClientPreferences(null)
-    if (choice !== appearanceChoice) return
-    await saveClientPreferences(here, { ...here.stored, appearance }, null)
-    if (choice === appearanceChoice) applyTheme(appearance)
-}
+// The appearance is this browser's, in every environment: Settings shows the one in use and applies a
+// change to it when saved, and the environment's stored preferences keep their own as they were.
+// ponytail: other open tabs take a theme change on reload; follow `storage` events if live sync matters.
+const shownIn = (view: ClientPreferencesView): ClientPreferencesView =>
+    ({ ...view, stored: { ...view.stored, appearance: cachedAppearance() } })
 
 export function useClientPreferencesEditor() {
     // Saves go to the environment this Settings is, even after a switch.
     const [environmentId] = useState(getActiveEnvironmentId)
-    const remote = environmentId !== null
     // As the server has it; `shown` puts this browser's appearance in it.
     const [saved, setSaved] = useState<ClientPreferencesView | null>(null)
-    const shown = saved && shownIn(remote, saved)
+    const shown = saved && shownIn(saved)
     const [draft, setDraft] = useState<ClientPreferences | null>(null)
     const [pending, setPending] = useState(false)
     const [error, setError] = useState('')
@@ -42,14 +30,14 @@ export function useClientPreferencesEditor() {
                 if (cancelled || value.revision === saved?.revision) return
                 if (dirty || pending) {
                     setMessage('Settings changed elsewhere. Your draft is retained; Discard reloads the latest values.')
-                } else { setSaved(value); setDraft(shownIn(remote, value).stored) }
+                } else { setSaved(value); setDraft(shownIn(value).stored) }
             }).catch(() => { if (!cancelled) setError('Unable to refresh client preferences.') })
         }
         if (!saved?.revision) refresh()
         window.addEventListener('spark:settings-live-event', refresh)
         window.addEventListener('focus', refresh)
         return () => { cancelled = true; window.removeEventListener('spark:settings-live-event', refresh); window.removeEventListener('focus', refresh) }
-    }, [saved?.revision, dirty, pending, remote])
+    }, [saved?.revision, dirty, pending])
     const invalidWidth = draft?.editor_sidebar_width != null && (!Number.isInteger(draft.editor_sidebar_width) || draft.editor_sidebar_width < 256 || draft.editor_sidebar_width > 560)
     const graphHeight = draft?.run_presentation?.graph_height
     const invalidGraphHeight = graphHeight != null && (!Number.isInteger(graphHeight) || graphHeight < 280 || graphHeight > 960)
@@ -57,12 +45,10 @@ export function useClientPreferencesEditor() {
         if (!saved || !shown || !draft || pending || invalidWidth || invalidGraphHeight) return
         setPending(true); setError(''); setMessage('')
         try {
-            if (draft.appearance !== shown.stored.appearance) {
-                if (remote) await keepAppearance(draft.appearance ?? 'system')
-                else appearanceChoice += 1
-            }
-            const value = await saveClientPreferences(saved, remote ? { ...draft, appearance: saved.stored.appearance } : draft, environmentId)
-            setSaved(value); setDraft(shownIn(remote, value).stored)
+            // Applied at once, so the latest choice made in any Settings is the one in use.
+            if (draft.appearance !== shown.stored.appearance) applyTheme(draft.appearance ?? 'system')
+            const value = await saveClientPreferences(saved, { ...draft, appearance: saved.stored.appearance }, environmentId)
+            setSaved(value); setDraft(shownIn(value).stored)
             setMessage('Saved.')
         } catch (error) {
             setError(error instanceof Error ? error.message : 'Unable to save client preferences.')
@@ -72,7 +58,7 @@ export function useClientPreferencesEditor() {
         setPending(true)
         try {
             const value = await fetchClientPreferences()
-            setSaved(value); setDraft(shownIn(remote, value).stored); setError(''); setMessage('')
+            setSaved(value); setDraft(shownIn(value).stored); setError(''); setMessage('')
         } catch (error) { setError(error instanceof Error ? error.message : 'Unable to reload settings.') }
         finally { setPending(false) }
     }

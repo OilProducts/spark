@@ -68,7 +68,7 @@ const deriveNextFlowMetadataState = (
 
 /**
  * The editor's state in a fresh environment, open on `route`'s project: what that environment's
- * flows and stored layouts put here. App-wide preferences (sidebar width, modes) stay out of it.
+ * flows, stored layouts and preferences put here, at their defaults until its preferences load.
  */
 export const initialEditorSessionState = (route: RouteState = DEFAULT_ROUTE_STATE) => ({
     clientPreferencesLoaded: false,
@@ -76,6 +76,13 @@ export const initialEditorSessionState = (route: RouteState = DEFAULT_ROUTE_STAT
     clientFlowEdgePorts: {},
     chatProjectOrder: [],
     clientRunPresentation: {},
+    editorSidebarWidth: DEFAULT_EDITOR_SIDEBAR_WIDTH,
+    preferredEditorMode: 'structured',
+    preferredShowThinking: true,
+    preferredAdvancedControls: false,
+    preferredExpandChildFlows: false,
+    preferredGraphSettingsOpen: false,
+    preferredHomeSidebarPrimarySplitRatio: null,
     editorMode: 'structured',
     selectedNodeId: null,
     selectedEdgeId: null,
@@ -108,7 +115,6 @@ export const initialEditorSessionState = (route: RouteState = DEFAULT_ROUTE_STAT
 
 export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (set, get) => ({
     ...initialEditorSessionState(loadRouteState()),
-    editorSidebarWidth: DEFAULT_EDITOR_SIDEBAR_WIDTH,
     setEditorSidebarWidth: (width) =>
         set((state) => {
             const nextWidth = Math.min(
@@ -127,8 +133,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
         set({ clientRunPresentation: run_presentation })
         completePreferenceInteraction({ run_presentation })
     },
-    preferredEditorMode: 'structured',
-    preferredShowThinking: true,
     setPreferredShowThinking: (show) => {
         set({ preferredShowThinking: show })
         completePreferenceInteraction({ show_thinking: show })
@@ -157,10 +161,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
         }),
     model: '',
     setModel: (value) => set({ model: value }),
-    preferredAdvancedControls: false,
-    preferredExpandChildFlows: false,
-    preferredGraphSettingsOpen: false,
-    preferredHomeSidebarPrimarySplitRatio: null,
     setEditorGraphSettingsPanelOpen: (flowName, isOpen) => {
         completePreferenceInteraction({ graph_settings_open: isOpen })
         set((state) => ({

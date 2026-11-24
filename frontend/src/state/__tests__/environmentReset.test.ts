@@ -20,7 +20,7 @@ beforeEach(() => {
     useStore.setState(useStore.getInitialState(), true)
 })
 
-it('starts a switched-to environment from fresh state, keeping the app-wide preferences', async () => {
+it('starts a switched-to environment from fresh state, its preferences included, keeping the appearance', async () => {
     const store = useStore.getState()
     applyTheme('dark')
     useStore.setState({
@@ -56,10 +56,14 @@ it('starts a switched-to environment from fresh state, keeping the app-wide pref
     const fresh = freshEnvironmentState()
     expect(Object.fromEntries(Object.keys(fresh).map((key) => [key, state[key as keyof typeof state]]))).toEqual(fresh)
     expect(state).toMatchObject({ editorMode: 'structured', flowMetadataUserEditVersion: 0, graphAttrsUserEditVersion: 0, saveStateVersion: 0 })
-    expect(state).toMatchObject({ editorSidebarWidth: 400, preferredEditorMode: 'files', preferredShowThinking: false })
+    expect(state).toMatchObject({ editorSidebarWidth: 336, preferredEditorMode: 'structured', preferredShowThinking: true })
     expect(cachedAppearance()).toBe('dark')
 
-    // Back on this machine, its own route and view come back.
+    // The remote environment's preferences load.
+    useStore.setState({ clientPreferencesLoaded: true, editorSidebarWidth: 500, preferredEditorMode: 'files', preferredAdvancedControls: true })
+
+    // Back on this machine, its own route and view come back, and its preferences start from the
+    // defaults until its own load, not from the remote environment's.
     await switchEnvironment(null)
     resetStoreForEnvironmentSwitch(true)
     expect(useStore.getState()).toMatchObject({
@@ -69,5 +73,10 @@ it('starts a switched-to environment from fresh state, keeping the app-wide pref
         settingsCategory: 'execution',
         runsListSession: { selectedRunId: 'run-1' },
         triggersSession: { selectedTriggerId: 'trigger-1' },
+        clientPreferencesLoaded: false,
+        editorSidebarWidth: 336,
+        preferredEditorMode: 'structured',
+        preferredAdvancedControls: false,
     })
+    expect(cachedAppearance()).toBe('dark')
 })

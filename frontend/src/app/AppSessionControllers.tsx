@@ -660,7 +660,11 @@ export function HistoryRoutingController() {
             scheduled = false
             if (retired()) return
             const next = placeOf(useStore.getState())
-            if (addsEntry(useStore.getState(), current, next)) {
+            const shown = parsePlaceHash(window.location.hash)
+            if (shown && isForeignPlace(shown)) {
+                // Back or Forward left another environment's entry showing: a move here follows it, never rewrites it.
+                if (placeHash(next) !== placeHash(current)) window.history.pushState({ sparkPlace: next }, '', placeHash(next))
+            } else if (addsEntry(useStore.getState(), current, next)) {
                 window.history.pushState({ sparkPlace: next }, '', placeHash(next))
             } else if (placeHash(next) !== window.location.hash) {
                 window.history.replaceState({ sparkPlace: next }, '', placeHash(next))
@@ -674,13 +678,15 @@ export function HistoryRoutingController() {
         })
 
         // Back, Forward, or a followed link: the entry's place, or else the one its hash names.
-        // A link that names no place, one in another environment, or one it can't reach now, leaves
-        // the app where it is, and the link's entry then says where.
+        // A link that names no place, or one it can't reach now, leaves the app where it is, and the
+        // link's entry then says where. Another environment's entry is left as it is, app and entry
+        // both, so Back and Forward still reach it once that environment shows again.
         const onNavigate = () => {
             if (retired()) return
             const entry = window.history.state?.sparkPlace as Place | undefined
             const place = entry ?? parsePlaceHash(window.location.hash, projectInView())
-            const held = place !== null && !isForeignPlace(place) && !applyPlace(place)
+            if (place !== null && isForeignPlace(place)) return
+            const held = place !== null && !applyPlace(place)
             current = placeOf(useStore.getState())
             // Back or Forward held is still where it was: put that entry back, so the URL and Back stay true.
             window.history[held && entry ? 'pushState' : 'replaceState']({ sparkPlace: current }, '', placeHash(current))

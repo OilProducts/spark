@@ -3,7 +3,6 @@ import { useStore } from '@/store'
 import { AppNotice } from '@/components/app/app-notice'
 import { Button } from '@/components/ui/button'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
-import { applyTheme } from '@/lib/theme'
 import { fetchClientPreferences, saveClientPreferences, type ClientPreferences, type ClientPreferencesView } from './services/clientPreferences'
 
 export function ClientPreferencesController() {
@@ -20,9 +19,7 @@ export function ClientPreferencesController() {
         const current = () => !cancelled && getActiveEnvironmentId() === environmentId
         const apply = (value: ClientPreferencesView) => {
             saved.current = value
-            // The appearance is this browser's, kept by this machine's preferences; a remote
-            // environment's never replaces it.
-            if (environmentId === null) applyTheme(value.effective.appearance ?? 'system')
+            // The appearance is this browser's, kept in it (lib/theme), not an environment's: none replaces it.
             useStore.setState(() => ({
                 clientPreferencesLoaded: true,
                 clientFlowNodePositions: value.effective.flow_node_positions ?? {},
