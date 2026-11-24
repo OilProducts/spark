@@ -25,8 +25,8 @@ export function ClientPreferencesEditor() {
             <fieldset disabled={!editor.draft || editor.pending} className="space-y-3">
                 <h2 className={groupHeading}>Appearance</h2>
                 <Field><FieldLabel htmlFor="preference-appearance">Theme</FieldLabel>
-                    <NativeSelect id="preference-appearance" value={editor.draft?.appearance ?? 'system'}
-                        onChange={(event) => { const appearance = event.target.value as Appearance; editor.setDraft((draft) => draft && ({ ...draft, appearance })) }}>
+                    <NativeSelect id="preference-appearance" value={editor.theme}
+                        onChange={(event) => editor.setTheme(event.target.value as Appearance)}>
                         <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
                     </NativeSelect>
                 </Field>

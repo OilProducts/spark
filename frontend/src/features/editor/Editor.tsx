@@ -508,7 +508,11 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             if (event.defaultPrevented || !sendPendingFlowSaves(environmentId)) return;
             event.preventDefault();
             const { proceed } = (event as CustomEvent<{ proceed: () => void }>).detail;
+            const shown = captureShownWorkspace();
             void waitForFlowSaves().then(async () => {
+                // A switch away ended the navigation: the save's result stays with its own workspace,
+                // and nothing asks or moves in the one shown now.
+                if (!shown()) return;
                 const { saveState, saveErrorMessage, saveErrorProblems } = useStore.getState();
                 if (saveState !== 'error' && saveState !== 'conflict') {
                     // Saved: anything else that guards leaving (file drafts) still gets its say.

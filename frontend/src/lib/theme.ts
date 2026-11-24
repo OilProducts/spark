@@ -10,6 +10,8 @@ export function resolveTheme(preference: Appearance, systemPrefersDark: boolean)
 
 export function applyTheme(preference: Appearance) {
     stopFollowingSystem()
+    // Stored first, so what follows the change reads the new preference.
+    try { localStorage.setItem(STORAGE_KEY, preference) } catch { /* storage unavailable; server value still applies */ }
     const media = window.matchMedia?.('(prefers-color-scheme: dark)')
     const update = () => {
         const theme = resolveTheme(preference, media?.matches ?? false)
@@ -22,7 +24,6 @@ export function applyTheme(preference: Appearance) {
         media.addEventListener('change', update)
         stopFollowingSystem = () => media.removeEventListener('change', update)
     } else stopFollowingSystem = () => {}
-    try { localStorage.setItem(STORAGE_KEY, preference) } catch { /* storage unavailable; server value still applies */ }
 }
 
 /** Last applied preference, used before the server value arrives to avoid a flash of the wrong theme. */

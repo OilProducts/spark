@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EditorPreviewResponse } from '@/features/editor/services/editorPreview'
 import { resetFlowSaveBaselines, unsavedFlowEdits } from '@/lib/flowPersistence'
 import { requestNavigation } from '@/state/workspaceSlice'
+import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
 import { ApiHttpError } from '@/lib/attractorClient'
 import { switchEnvironment } from '@/test/environments'
 import {
@@ -538,6 +539,45 @@ describe('Editor structured metadata', () => {
     await waitFor(() => expect(open).toHaveBeenCalledOnce())
     expect(discard).toHaveBeenCalledOnce()
     expect(unsavedFlowEdits('bundled-flow', '/tmp/project')).toBeNull()
+  })
+
+  it.each([
+    ['saved', new Response(JSON.stringify({ status: 'saved', name: 'bundled-flow' }), { status: 200 })],
+    ['refused', new Response(JSON.stringify({ detail: 'unavailable' }), { status: 503 })],
+  ])('ends a navigation held on a remote save that is %s after a switch to local Settings with unsaved edits, asking nothing there', async (_, answer) => {
+    const user = userEvent.setup()
+    const save = createDeferred<Response>()
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => (String(url).endsWith('/api/flows') && init?.method === 'POST'
+      ? save.promise
+      : Promise.resolve(new Response(JSON.stringify({ status: 'ok' }), { status: 200 }))))
+    vi.stubGlobal('fetch', fetchMock)
+    const ask = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await switchEnvironment('env-r')
+    const remote = renderEditor()
+    const filesButton = screen.getByRole('button', { name: 'Files' })
+    await waitFor(() => expect(filesButton).toBeEnabled())
+    await user.click(filesButton)
+    await user.click(await screen.findByRole('button', { name: 'Structured' }))
+    await waitFor(() => expect(useStore.getState().editorMode).toBe('structured'))
+    act(() => useStore.getState().updateFlowMetadata('title', 'Remote title'))
+    await user.click(filesButton)
+    await waitFor(() => expect(flowSaveRequests(fetchMock)).toHaveLength(1))
+    // Opening another flow waits on the remote save; the user switches to local Settings and edits them.
+    act(() => useStore.getState().setActiveFlow('other-flow'))
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    remote.unmount()
+    act(() => useStore.setState({ viewMode: 'settings', activeFlow: 'local-flow' }))
+    const LocalSettingsDraft = () => { useSettingsNavigationProtection(true); return null }
+    render(<LocalSettingsDraft />)
+
+    await act(async () => save.resolve(answer))
+    await act(async () => {})
+    expect(ask).not.toHaveBeenCalled()
+    expect(useStore.getState()).toMatchObject({ viewMode: 'settings', activeFlow: 'local-flow', saveState: 'idle' })
+    expect(flowSaveRequests(fetchMock).map(([url]) => String(url))).toEqual([
+      '/workspace/api/environments/links/env-r/proxy/attractor/api/flows',
+    ])
   })
 })
 

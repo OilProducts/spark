@@ -5,6 +5,7 @@ import { DialogProvider } from '@/components/app/dialog-controller'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { applyTheme, cachedAppearance, type Appearance } from '@/lib/theme'
 import { deferred, switchEnvironment } from '@/test/environments'
+import { requestNavigation } from '@/state/workspaceSlice'
 import { ClientPreferencesController } from '../ClientPreferencesController'
 import { ClientPreferencesEditor } from '../ClientPreferencesEditor'
 import { fetchClientPreferences, parseClientPreferences, saveClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
@@ -245,4 +246,122 @@ it('keeps the theme chosen last when the save of a theme chosen before it answer
     // Each environment keeps the theme saved in its own Settings.
     expect(servers.local.stored.appearance).toBe('system')
     expect(servers.remote.stored.appearance).toBe('dark')
+})
+
+it('follows the browser theme in an open Settings when a theme saved elsewhere applies, and saves another preference without changing it', async () => {
+    const servers = { local: prefs('local-1', 'light'), remote: prefs('remote-1', 'light') }
+    const held = deferred<void>()
+    servePreferences(servers, (server, request) => server === 'remote' && request === 'save' ? held.promise : undefined)
+    applyTheme('light')
+    await switchEnvironment('env-r')
+    const remoteSettings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    const user = userEvent.setup()
+    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('light'))
+    await user.selectOptions(screen.getByLabelText('Theme'), 'dark')
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await waitFor(() => expect(saveClientPreferences).toHaveBeenCalledOnce())
+    remoteSettings.unmount()
+
+    await switchEnvironment(null)
+    render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    const theme = await screen.findByLabelText('Theme')
+    await waitFor(() => expect(theme).toHaveValue('light'))
+    await act(async () => held.resolve())
+    // The remote save applied Dark; the open local Settings shows it, with nothing to save.
+    expect(cachedAppearance()).toBe('dark')
+    expect(theme).toHaveValue('dark')
+    expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
+
+    await user.selectOptions(screen.getByLabelText('Editor mode'), 'files')
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await screen.findByText('Saved.')
+    expect(saveClientPreferences).toHaveBeenLastCalledWith(prefs('local-1', 'light'), expect.objectContaining({ editor_mode: 'files', appearance: 'light' }), null)
+    expect(cachedAppearance()).toBe('dark')
+    expect(document.documentElement).toHaveClass('dark')
+    expect(theme).toHaveValue('dark')
+})
+
+it('keeps a remote save refused after a switch for that environment\'s Settings, with its error, to retry against the same revision', async () => {
+    const servers = { local: prefs('local-1', 'light'), remote: prefs('remote-1', 'light') }
+    servePreferences(servers)
+    const refused = deferred<ClientPreferencesView>()
+    vi.mocked(saveClientPreferences).mockImplementationOnce(() => refused.promise)
+    applyTheme('light')
+    await switchEnvironment('env-r')
+    const remoteSettings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    const user = userEvent.setup()
+    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('light'))
+    await user.selectOptions(screen.getByLabelText('Theme'), 'dark')
+    await user.click(screen.getByLabelText('Show advanced controls'))
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await waitFor(() => expect(saveClientPreferences).toHaveBeenCalledOnce())
+    remoteSettings.unmount()
+
+    // Refused while this machine's Settings shows: nothing of it here.
+    await switchEnvironment(null)
+    const localSettings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('light'))
+    await act(async () => refused.reject(new Error('Conflict: reload before saving.')))
+    expect(screen.queryByText('Conflict: reload before saving.')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Show advanced controls')).not.toBeChecked()
+    expect(cachedAppearance()).toBe('light')
+    localSettings.unmount()
+
+    // Back there, Settings opens with the refused change and why, and Save retries it against the revision it was based on.
+    await switchEnvironment('env-r')
+    const reopened = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    expect(await screen.findByText('Conflict: reload before saving.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Show advanced controls')).toBeChecked()
+    expect(screen.getByLabelText('Theme')).toHaveValue('dark')
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await screen.findByText('Saved.')
+    expect(saveClientPreferences).toHaveBeenLastCalledWith(prefs('remote-1', 'light'), expect.objectContaining({ appearance: 'dark', show_advanced_controls: true }), 'env-r')
+    expect(document.documentElement).toHaveClass('dark')
+    expect(servers.local.revision).toBe('local-1')
+
+    // Saved, it is not offered again.
+    reopened.unmount()
+    render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    await waitFor(() => expect(screen.getByLabelText('Show advanced controls')).toBeChecked())
+    expect(screen.queryByText('Conflict: reload before saving.')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
+})
+
+it('drops a refused save once Discard reloads the settings, or leaving them discards it', async () => {
+    const servers = { local: prefs('local-1', 'light'), remote: prefs('remote-1', 'light') }
+    servePreferences(servers)
+    vi.mocked(saveClientPreferences).mockRejectedValueOnce(new Error('Conflict: reload before saving.'))
+    applyTheme('light')
+    const settings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    const user = userEvent.setup()
+    await user.click(await screen.findByLabelText('Show advanced controls'))
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await screen.findByText('Conflict: reload before saving.')
+    settings.unmount()
+
+    const reopened = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    await screen.findByText('Conflict: reload before saving.')
+    await user.click(screen.getByRole('button', { name: /^Discard/ }))
+    await waitFor(() => expect(screen.getByLabelText('Show advanced controls')).not.toBeChecked())
+    reopened.unmount()
+
+    const again = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    await waitFor(() => expect(screen.getByLabelText('Show advanced controls')).toBeEnabled())
+    expect(screen.queryByText('Conflict: reload before saving.')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Show advanced controls')).not.toBeChecked()
+
+    vi.mocked(saveClientPreferences).mockRejectedValueOnce(new Error('Conflict: reload before saving.'))
+    await user.click(screen.getByLabelText('Show advanced controls'))
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await screen.findByText('Conflict: reload before saving.')
+    const leave = vi.fn()
+    act(() => requestNavigation(leave))
+    await user.click(await screen.findByRole('button', { name: 'Discard and leave' }))
+    expect(leave).toHaveBeenCalledOnce()
+    again.unmount()
+
+    render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    await waitFor(() => expect(screen.getByLabelText('Show advanced controls')).toBeEnabled())
+    expect(screen.queryByText('Conflict: reload before saving.')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Show advanced controls')).not.toBeChecked()
 })
