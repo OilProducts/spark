@@ -100,9 +100,11 @@ pub(crate) async fn require_trust(
     mut request: Request,
     next: Next,
 ) -> Response {
-    if is_exempt(request.method(), request.uri().path()) || is_local(&request, &settings) {
+    if is_exempt(request.method(), request.uri().path()) {
         return next.run(request).await;
     }
+    // Resolved before the local check: a peer paired over loopback or the
+    // bound host still presents its token and must not revoke it.
     let token_id = bearer(request.headers()).and_then(|secret| {
         EnvironmentRepository::new(&settings.data_dir)
             .token_for_secret(secret)
@@ -113,6 +115,9 @@ pub(crate) async fn require_trust(
         request
             .extensions_mut()
             .insert(AuthenticatedPeerToken(token_id));
+        return next.run(request).await;
+    }
+    if is_local(&request, &settings) {
         return next.run(request).await;
     }
     (

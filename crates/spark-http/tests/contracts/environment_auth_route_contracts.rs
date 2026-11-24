@@ -356,11 +356,8 @@ async fn bearer_peer_sees_its_current_token_and_cannot_revoke_it() {
     let bearer = format!("Bearer {self_secret}");
     let auth = [("authorization", bearer.as_str())];
     let tokens_uri = "/workspace/api/environment/tokens";
-
-    let listed = send(&app, "GET", tokens_uri, Some(REMOTE), &auth, None).await;
-    assert_eq!(listed.status(), StatusCode::OK);
-    let listed = text(listed).await;
-    assert!(!listed.contains(&self_secret) && !listed.contains(&other_secret));
+    let self_revoke = format!("/workspace/api/environment/tokens/{self_id}/revoke");
+    let loopback = "127.0.0.1:40000";
     // Token ID to the listed field, whatever order tokens come in.
     let field = |listed: &Value, name: &str| {
         listed["tokens"]
@@ -371,15 +368,40 @@ async fn bearer_peer_sees_its_current_token_and_cannot_revoke_it() {
             .collect::<BTreeMap<_, _>>()
     };
     let ids = [json!(self_id).to_string(), json!(other_id).to_string()];
-    assert_eq!(
-        field(&serde_json::from_str(&listed).expect("json"), "is_current"),
-        BTreeMap::from([
-            (ids[0].clone(), json!(true)),
-            (ids[1].clone(), json!(false))
-        ])
-    );
-    // The owner's own requests use no token.
-    let local = json(send(&app, "GET", tokens_uri, None, &[], None).await).await;
+
+    // A peer paired over loopback or the bound host arrives from a local
+    // address, still presenting its token.
+    for peer in [REMOTE, loopback] {
+        let listed = send(&app, "GET", tokens_uri, Some(peer), &auth, None).await;
+        assert_eq!(listed.status(), StatusCode::OK, "{peer}");
+        let listed = text(listed).await;
+        assert!(!listed.contains(&self_secret) && !listed.contains(&other_secret));
+        assert_eq!(
+            field(&serde_json::from_str(&listed).expect("json"), "is_current"),
+            BTreeMap::from([
+                (ids[0].clone(), json!(true)),
+                (ids[1].clone(), json!(false))
+            ]),
+            "{peer}"
+        );
+
+        let refused = send(&app, "POST", &self_revoke, Some(peer), &auth, None).await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT, "{peer}");
+        assert_eq!(
+            json(refused).await,
+            json!({"detail": "Cannot revoke the peer token authenticating this connection."})
+        );
+        let still = send(&app, "GET", tokens_uri, Some(peer), &auth, None).await;
+        assert_eq!(still.status(), StatusCode::OK, "{peer}");
+        assert_eq!(
+            field(&json(still).await, "revoked_at")[&ids[0]],
+            Value::Null,
+            "{peer}"
+        );
+    }
+
+    // The owner's own requests use no token, so the owner may revoke it.
+    let local = json(send(&app, "GET", tokens_uri, Some(loopback), &[], None).await).await;
     assert_eq!(
         field(&local, "is_current"),
         BTreeMap::from([
@@ -387,20 +409,8 @@ async fn bearer_peer_sees_its_current_token_and_cannot_revoke_it() {
             (ids[1].clone(), json!(false))
         ])
     );
-
-    let self_revoke = format!("/workspace/api/environment/tokens/{self_id}/revoke");
-    let refused = send(&app, "POST", &self_revoke, Some(REMOTE), &auth, None).await;
-    assert_eq!(refused.status(), StatusCode::CONFLICT);
-    assert_eq!(
-        json(refused).await,
-        json!({"detail": "Cannot revoke the peer token authenticating this connection."})
-    );
-    let still = send(&app, "GET", tokens_uri, Some(REMOTE), &auth, None).await;
-    assert_eq!(still.status(), StatusCode::OK);
-    assert_eq!(
-        field(&json(still).await, "revoked_at")[&ids[0]],
-        Value::Null
-    );
+    let revoked = send(&app, "POST", &self_revoke, Some(loopback), &[], None).await;
+    assert_eq!(revoked.status(), StatusCode::OK);
 }
 
 #[tokio::test]
