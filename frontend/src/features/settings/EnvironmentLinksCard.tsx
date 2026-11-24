@@ -33,9 +33,11 @@ const formField = (data: FormData, name: string) => String(data.get(name) ?? '')
 
 const errorText = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback)
 
+const msLeft = (receipt: PairingCodeReceipt) => Date.parse(receipt.expires_at) - Date.now()
+
 /** Drops the code once the receipt expires; the expiry stays for the notice. An unreadable expiry counts as expired. */
 const expireReceipt = (receipt: PairingCodeReceipt | null) =>
-    receipt?.code && !(Date.parse(receipt.expires_at) > Date.now()) ? { ...receipt, code: '' } : receipt
+    receipt?.code && !(msLeft(receipt) > 0) ? { ...receipt, code: '' } : receipt
 
 export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const { activeEnvironmentId } = useActiveEnvironment()
@@ -60,7 +62,6 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     }
 
     const refresh = useCallback(async () => {
-        // Mutations call refresh() as soon as they succeed, so this also retires refreshes started before them.
         const seq = ++refreshSeqRef.current
         setPairingCode(expireReceipt)
         setLoading(true)
@@ -90,9 +91,17 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     }, [active, refresh])
 
     // Expire the receipt on time while mounted; refresh() re-checks it whenever the card becomes active.
+    // A timer can fire before expires_at if the wall clock moves back, so it re-arms until the receipt has expired.
     useEffect(() => {
         if (!pairingCode?.code) return
-        const timer = window.setTimeout(() => setPairingCode(expireReceipt), Date.parse(pairingCode.expires_at) - Date.now())
+        let timer = 0
+        const check = () => {
+            const left = msLeft(pairingCode)
+            // setTimeout fires at once for delays past 2^31-1 ms.
+            if (left > 0) timer = window.setTimeout(check, Math.min(left, 2 ** 31 - 1))
+            else setPairingCode(expireReceipt)
+        }
+        check()
         return () => window.clearTimeout(timer)
     }, [pairingCode])
 
@@ -122,6 +131,21 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         return next
     })
 
+    // The shared dialog has no trigger of its own to refocus on close, so a dismissed one hands focus back here.
+    const confirmFrom = async (trigger: HTMLElement, options: Parameters<typeof confirm>[0]) => {
+        if (await confirm(options)) return true
+        window.setTimeout(() => trigger.focus(), 0)
+        return false
+    }
+
+    // Shows a successful mutation at once, even if the follow-up listing fails, and retires refreshes started before it.
+    const settleMutation = async (message: string, apply: () => void) => {
+        refreshSeqRef.current += 1
+        apply()
+        setStatus(message)
+        await refresh()
+    }
+
     const handleCreateCode = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault()
         const form = event.currentTarget
@@ -140,8 +164,8 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         }
     }
 
-    const handleRevoke = async (token: PeerToken) => {
-        const confirmed = await confirm({
+    const handleRevoke = async (token: PeerToken, trigger: HTMLElement) => {
+        const confirmed = await confirmFrom(trigger, {
             title: 'Revoke peer token?',
             description: `${token.label ? `${token.label} (${token.token_id})` : token.token_id} will stop authenticating requests to this environment.`,
             confirmLabel: 'Revoke token',
@@ -153,8 +177,8 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         setError(null)
         try {
             await revokePeerToken(token.token_id)
-            setStatus(`Revoked token ${token.label || token.token_id}.`)
-            await refresh()
+            await settleMutation(`Revoked token ${token.label || token.token_id}.`, () => setTokens((prev) => prev.map((row) =>
+                row.token_id === token.token_id ? { ...row, revoked_at: row.revoked_at ?? new Date().toISOString() } : row)))
         } catch (err) {
             showError(errorText(err, 'Could not revoke token.'))
         } finally {
@@ -179,9 +203,9 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         try {
             const created = await addEnvironmentLink({ origin, expected_id, code, label })
             form.reset()
-            setStatus(`Linked ${created.label || created.environment_id}.`)
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
-            await refresh()
+            await settleMutation(`Linked ${created.label || created.environment_id}.`, () => setLinks((prev) =>
+                [...prev.filter((row) => row.environment_id !== created.environment_id), created]))
         } catch (err) {
             showError(errorText(err, 'Could not add environment link.'))
         } finally {
@@ -189,8 +213,8 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         }
     }
 
-    const handleRemoveLink = async (link: EnvironmentLink) => {
-        const confirmed = await confirm({
+    const handleRemoveLink = async (link: EnvironmentLink, trigger: HTMLElement) => {
+        const confirmed = await confirmFrom(trigger, {
             title: 'Remove environment link?',
             description: `${link.label || link.environment_id} (${link.origin}) will be unlinked. Its open delegations pause until you link it again.`,
             confirmLabel: 'Remove link',
@@ -202,10 +226,11 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         setError(null)
         try {
             await removeEnvironmentLink(link.environment_id)
-            forgetProjects(link.environment_id)
-            setStatus(`Removed link to ${link.label || link.environment_id}.`)
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
-            await refresh()
+            await settleMutation(`Removed link to ${link.label || link.environment_id}.`, () => {
+                forgetProjects(link.environment_id)
+                setLinks((prev) => prev.filter((row) => row.environment_id !== link.environment_id))
+            })
         } catch (err) {
             showError(errorText(err, 'Could not remove link.'))
         } finally {
@@ -224,6 +249,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             const projects = await fetchLinkProjects(link.environment_id)
             setProjectsByEnv((prev) => ({ ...prev, [link.environment_id]: { projects } }))
         } catch (err) {
+            setStatus('')
             setProjectsByEnv((prev) => ({
                 ...prev,
                 [link.environment_id]: { error: errorText(err, 'Could not list projects.') },
@@ -319,7 +345,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                                                     </Button>
                                                 </div>
                                             ) : (
-                                                <Button size="sm" variant="ghost" aria-label={`Revoke ${name}`} disabled={busy} onClick={() => void handleRevoke(token)}>
+                                                <Button size="sm" variant="ghost" aria-label={`Revoke ${name}`} disabled={busy} onClick={(event) => void handleRevoke(token, event.currentTarget)}>
                                                     Revoke
                                                 </Button>
                                             )}
@@ -365,7 +391,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                                                     <Button size="sm" variant="outline" aria-label={`Projects on ${name}`} disabled={lookup?.loading || busy} onClick={() => void handleInspectProjects(link)}>
                                                         {lookup?.projects ? 'Hide projects' : lookup?.loading ? 'Loading…' : 'Projects'}
                                                     </Button>
-                                                    <Button size="sm" variant="ghost" aria-label={`Remove link ${name}`} disabled={busy} onClick={() => void handleRemoveLink(link)}>
+                                                    <Button size="sm" variant="ghost" aria-label={`Remove link ${name}`} disabled={busy} onClick={(event) => void handleRemoveLink(link, event.currentTarget)}>
                                                         Remove
                                                     </Button>
                                                 </div>

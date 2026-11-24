@@ -29,7 +29,7 @@ function stubBackend(seed: { tokens?: Token[]; links?: Link[]; replies?: Record<
     const backend = {
         tokens: seed.tokens ?? [],
         links: seed.links ?? [],
-        /** Per-URL overrides: a JSON body, or a function returning the response. */
+        /** Per-URL overrides for GETs: a JSON body, or a function returning the response. */
         replies: seed.replies ?? {},
         /** Every non-GET request, as "METHOD url". */
         mutations: [] as string[],
@@ -41,7 +41,7 @@ function stubBackend(seed: { tokens?: Token[]; links?: Link[]; replies?: Record<
             backend.mutations.push(`${method} ${url}`)
             backend.bodies.push(init?.body ? JSON.parse(String(init.body)) : null)
         }
-        const reply = backend.replies[url]
+        const reply = method === 'GET' ? backend.replies[url] : undefined
         if (typeof reply === 'function') return reply()
         if (reply !== undefined) return json(reply)
         const revoked = method === 'POST' && url.match(/^\/workspace\/api\/environment\/tokens\/([^/]+)\/revoke$/)
@@ -114,11 +114,15 @@ it('keeps the token authenticating this connection from being revoked', async ()
     expect(screen.getByRole('button', { name: 'Revoke CI runner' })).toBeEnabled()
 })
 
-it.each([
+/** Each performs a mutation and returns a check that its result is on screen. */
+const mutations = [
     ['revoke', async (user: User) => {
         await user.click(screen.getByRole('button', { name: 'Revoke CI runner' }))
         await user.click(await screen.findByRole('button', { name: 'Revoke token' }))
-        return () => expect(screen.getByText('Revoked')).toBeInTheDocument()
+        return () => {
+            expect(screen.getByText('Revoked')).toBeInTheDocument()
+            expect(screen.queryByRole('button', { name: 'Revoke CI runner' })).not.toBeInTheDocument()
+        }
     }],
     ['add', async (user: User) => {
         await user.type(screen.getByLabelText('Remote origin'), 'https://env-gpu.example:8000')
@@ -131,9 +135,14 @@ it.each([
     ['remove', async (user: User) => {
         await user.click(screen.getByRole('button', { name: 'Remove link Build box' }))
         await user.click(await screen.findByRole('button', { name: 'Remove link' }))
-        return () => expect(screen.queryByRole('button', { name: 'Remove link Build box' })).not.toBeInTheDocument()
+        return () => {
+            expect(screen.queryByRole('button', { name: 'Remove link Build box' })).not.toBeInTheDocument()
+            expect(screen.queryByRole('button', { name: 'Projects on Build box' })).not.toBeInTheDocument()
+        }
     }],
-])('keeps the rows after a %s when a refresh started before it resolves last', async (_name, mutate) => {
+] as const
+
+it.each(mutations)('keeps the rows after a %s when a refresh started before it resolves last', async (_name, mutate) => {
     const user = userEvent.setup()
     const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')], links: [link('env-build', 'Build box')] })
     render(card())
@@ -158,6 +167,22 @@ it.each([
     expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled()
 })
 
+it.each(mutations)('shows a successful %s even when the follow-up listing fails', async (_name, mutate) => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')], links: [link('env-build', 'Build box')] })
+    render(card())
+    await screen.findByRole('button', { name: 'Revoke CI runner' })
+
+    backend.replies[TOKENS] = () => json({ detail: 'token listing failed' }, 500)
+    backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
+    const postMutationRows = await mutate(user)
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Could not load peer tokens: Token listing failed')
+    expect(alert).toHaveTextContent('Could not load linked environments: Link listing failed')
+    postMutationRows()
+    expect(backend.mutations).toHaveLength(1)
+})
+
 it('confirms revoking a token and removing a link, naming each, and sends nothing on cancel', async () => {
     const user = userEvent.setup()
     const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')], links: [link('env-build', 'Build box')] })
@@ -171,6 +196,7 @@ it('confirms revoking a token and removing a link, naming each, and sends nothin
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(backend.mutations).toEqual([])
     expect(screen.queryByText('Revoked')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Revoke CI runner' })).toHaveFocus())
 
     await user.click(screen.getByRole('button', { name: 'Revoke CI runner' }))
     await user.click(await screen.findByRole('button', { name: 'Revoke token' }))
@@ -183,10 +209,10 @@ it('confirms revoking a token and removing a link, naming each, and sends nothin
     expect(removeDialog).toHaveTextContent('Remove environment link?')
     expect(removeDialog).toHaveTextContent('Build box (https://env-build.example:8000)')
     expect(removeDialog).toHaveTextContent('open delegations pause')
-    await user.click(within(removeDialog).getByRole('button', { name: 'Cancel' }))
+    await user.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(backend.mutations).toEqual([])
-    expect(screen.getByRole('button', { name: 'Remove link Build box' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove link Build box' })).toHaveFocus())
 
     await user.click(screen.getByRole('button', { name: 'Remove link Build box' }))
     await user.click(await screen.findByRole('button', { name: 'Remove link' }))
@@ -246,6 +272,18 @@ it('shows empty states only after a section loads, and errors instead when it fa
     expect(screen.getByText('env-local-1')).toBeInTheDocument()
     expect(screen.queryByText('No peer tokens issued yet.')).not.toBeInTheDocument()
     expect(screen.queryByText('No linked environments configured.')).not.toBeInTheDocument()
+})
+
+it('clears an earlier success status when Projects discovery fails', async () => {
+    const user = userEvent.setup()
+    stubBackend({ links: [link('env-build', 'Build box')], replies: { [`${LINKS}/env-build/projects`]: () => json({ detail: 'peer unreachable' }, 502) } })
+    render(card())
+
+    await user.click(await screen.findByRole('button', { name: 'Create pairing code' }))
+    await waitFor(() => expect(statusText()).toBe('Created a single-use pairing code.'))
+    await user.click(screen.getByRole('button', { name: 'Projects on Build box' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Peer unreachable')
+    expect(statusText()).toBe('')
 })
 
 it('clears an earlier success status when a later refresh fails', async () => {
@@ -341,6 +379,14 @@ it('stops offering an expired pairing code: on time, at copy time, on returning 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Refresh' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    expectExpired()
+
+    // A clock set back after the timer was armed makes it fire early; it re-arms rather than leaving the code live.
+    await createCode()
+    vi.setSystemTime(Date.now() - 5 * 60_000)
+    act(() => vi.advanceTimersByTime(10 * 60_000))
+    expect(screen.getByRole('button', { name: 'Copy code' })).toBeInTheDocument()
+    act(() => vi.advanceTimersByTime(5 * 60_000))
     expectExpired()
 
     // Copying re-checks the expiry first.
