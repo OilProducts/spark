@@ -134,7 +134,8 @@ fn project_roots_parse_absolute_entries_and_skip_empty_or_relative_entries() {
         secondary.clone(),
     ])
     .expect("join paths");
-    let roots = parse_project_roots(roots.to_str()).expect("project roots");
+    let roots = parse_project_roots(roots.to_str(), &spark_common::paths::ProcessEnvironment)
+        .expect("project roots");
 
     assert_eq!(roots, vec![primary, secondary]);
 }
@@ -153,7 +154,8 @@ fn project_roots_resolve_existing_symlink_prefixes_without_requiring_missing_tai
     let roots = std::env::join_paths([requested_project_root, PathBuf::from("relative")])
         .expect("join paths");
 
-    let parsed = parse_project_roots(roots.to_str()).expect("project roots");
+    let parsed = parse_project_roots(roots.to_str(), &spark_common::paths::ProcessEnvironment)
+        .expect("project roots");
 
     assert_eq!(parsed, vec![expected_project_root]);
 }
@@ -768,6 +770,9 @@ fn verbatim_prefixes_are_kept_wherever_win32_would_name_another_target() {
         r"\\?\C:\repo\lpt9.txt".into(),
         r"\\?\C:\repo\COM¹".into(),
         r"\\?\UNC\fileserver\share\CON".into(),
+        r"\\?\C:\Temp\CONIN$".into(),
+        r"\\?\C:\Temp\CONOUT$".into(),
+        r"\\?\C:\Temp\conout$.log".into(),
         r"\\?\C:\repo\.\file".into(),
         r"\\?\C:\repo\..\file".into(),
         r"\\?\C:\repo/file".into(),
@@ -778,6 +783,11 @@ fn verbatim_prefixes_are_kept_wherever_win32_would_name_another_target() {
         r"\\?\C:".into(),
         r"\\?\C:relative".into(),
         r"\\?\UNC\fileserver".into(),
+        // A UNC server of `?` or `.` would strip to a device path.
+        r"\\?\UNC\?\C:\repo".into(),
+        r"\\?\UNC\.\C:\repo".into(),
+        r"\\?\UNC\\share\repo".into(),
+        r"\\?\UNC\fileserver\\repo".into(),
         r"\\?\Volume{0b1c}\repo".into(),
         r"\\?\GLOBALROOT\Device\HarddiskVolume1".into(),
     ] {
@@ -835,11 +845,62 @@ fn home_resolution_skips_empty_values_before_each_fallback() {
     );
 }
 
+#[test]
+fn settings_expand_tilde_with_the_environment_they_resolve_from() {
+    use spark_common::settings::{resolve_data_dir, ENV_PROJECT_ROOTS, ENV_UI_DIR};
+
+    let (_temp, root) = canonical_tempdir();
+    let profile = root.join("profile");
+    let vars = env(&[
+        ("HOME", Path::new("")),
+        ("USERPROFILE", &profile),
+        (ENV_UI_DIR, Path::new("~/ui")),
+        (ENV_PROJECT_ROOTS, Path::new("~/projects")),
+    ]);
+    assert_eq!(resolve_data_dir(&vars).unwrap(), profile.join(".spark"));
+    let settings = resolve_settings_with_env(&SettingsOverrides::default(), &vars).unwrap();
+    assert_eq!(settings.data_dir, profile.join(".spark"));
+    assert_eq!(settings.ui_dir, Some(profile.join("ui")));
+    assert_eq!(settings.project_roots, vec![profile.join("projects")]);
+
+    let drive = env(&[
+        ("HOME", Path::new("")),
+        ("HOMEDRIVE", &root),
+        (
+            "HOMEPATH",
+            Path::new(&format!("{}drive", std::path::MAIN_SEPARATOR)),
+        ),
+    ]);
+    assert_eq!(
+        resolve_data_dir(&drive).unwrap(),
+        root.join("drive").join(".spark")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_backslash_tilde_expands_a_non_utf8_rest_like_a_slash() {
+    use spark_common::paths::expand_tilde_with_env;
+    use std::os::unix::ffi::OsStrExt;
+
+    let home = BTreeMap::from([("HOME".to_string(), "/home/chris".to_string())]);
+    for prefix in [&b"~/"[..], b"~\\"] {
+        let path = std::ffi::OsStr::from_bytes(&[prefix, &b"data-\xff"[..]].concat()).to_owned();
+        assert_eq!(
+            expand_tilde_with_env(Path::new(&path), &home),
+            Path::new("/home/chris").join(std::ffi::OsStr::from_bytes(b"data-\xff")),
+            "{path:?}"
+        );
+    }
+}
+
 /// Runs in a child process: HOME is process-wide.
 #[cfg(unix)]
 #[test]
 fn a_non_utf8_home_survives_tilde_expansion_and_settings() {
-    use spark_common::paths::{expand_tilde, normalize_path, user_home_dir, ProcessEnvironment};
+    use spark_common::paths::{
+        expand_tilde, normalize_path, user_home_dir, utf8_env_vars, ProcessEnvironment,
+    };
     use spark_common::settings::resolve_data_dir;
     use std::os::unix::ffi::OsStrExt;
 
@@ -870,6 +931,10 @@ fn a_non_utf8_home_survives_tilde_expansion_and_settings() {
     };
     let home = PathBuf::from(home);
     assert!(home.to_str().is_none());
+    // Collecting the env skips the non-UTF-8 HOME instead of panicking.
+    let vars = utf8_env_vars();
+    assert!(!vars.contains_key("HOME"));
+    assert_eq!(vars["SPARK_TEST_ENV_ISOLATED"], "1");
     assert_eq!(user_home_dir(), Some(home.clone()));
     assert_eq!(expand_tilde(Path::new("~")), home);
     assert_eq!(expand_tilde(Path::new("~/.spark")), home.join(".spark"));

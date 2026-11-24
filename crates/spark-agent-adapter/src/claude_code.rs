@@ -1653,7 +1653,7 @@ pub(crate) fn claude_config_dir(native: Option<&NativeAgentSettings>) -> PathBuf
             .and_then(|value| non_empty(&value).map(str::to_string)),
     };
     configured.map(PathBuf::from).unwrap_or_else(|| {
-        let mut env_map = env::vars().collect::<BTreeMap<_, _>>();
+        let mut env_map = spark_common::paths::utf8_env_vars();
         env_map.extend(crate::codex_app_server::spark_agent_environment(None));
         let dir = crate::codex_app_server::spark_runtime_dir(&env_map, "claude");
         let _ = std::fs::create_dir_all(&dir);

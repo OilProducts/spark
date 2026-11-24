@@ -53,7 +53,12 @@ impl<const N: usize> Environment for [(String, String); N] {
 }
 
 pub fn normalize_path(value: impl AsRef<Path>) -> Result<PathBuf> {
-    let expanded = expand_tilde(value.as_ref());
+    normalize_path_with_env(value, &ProcessEnvironment)
+}
+
+/// [`normalize_path`], expanding `~` with `env`'s home.
+pub fn normalize_path_with_env(value: impl AsRef<Path>, env: &impl Environment) -> Result<PathBuf> {
+    let expanded = expand_tilde_with_env(value.as_ref(), env);
     let absolute = if expanded.is_absolute() {
         expanded
     } else {
@@ -73,10 +78,11 @@ pub fn normalize_path(value: impl AsRef<Path>) -> Result<PathBuf> {
 /// equal to user-facing paths and work in `PATH` and child shells.
 ///
 /// The prefix stays wherever the conventional Win32 form could name another
-/// target or be unusable: a non-UTF-8 path or one of another shape; a
-/// component that ends in a space or `.` (including `.` and `..`) or holds a
-/// `/`; a component whose stem (before the first `.` or `:`, trailing spaces
-/// trimmed) is a reserved device name such as `NUL` or `COM1`; or a result of
+/// target or be unusable: a non-UTF-8 path or one of another shape, including
+/// a UNC server of `?` or `.` (a device path once stripped); a component that
+/// ends in a space or `.` (including `.` and `..`) or holds a `/`; a component
+/// whose stem (before the first `.` or `:`, trailing spaces trimmed) is a
+/// reserved device name such as `NUL`, `COM1` or `CONIN$`; or a result of
 /// 248 or more UTF-16 code units. 248 is the Win32 directory limit and keeps
 /// every file under `MAX_PATH` (260) without the long-path opt-in.
 pub fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
@@ -85,7 +91,7 @@ pub fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     };
     let (conventional, names) = if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
         let mut parts = unc.split('\\');
-        if parts.next().unwrap_or_default().is_empty()
+        if matches!(parts.next().unwrap_or_default(), "" | "?" | ".")
             || parts.next().unwrap_or_default().is_empty()
         {
             return path;
@@ -119,6 +125,7 @@ fn is_reserved_device_name(name: &str) -> bool {
         .trim_end_matches(' ')
         .to_ascii_uppercase();
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || matches!(stem.as_str(), "CONIN$" | "CONOUT$")
         || ["COM", "LPT"].into_iter().any(|device| {
             stem.strip_prefix(device).is_some_and(|number| {
                 matches!(
@@ -156,13 +163,16 @@ pub fn user_home_dir() -> Option<PathBuf> {
 /// Expands `~`, `~/...`, and `~\...` using `env`, keeping both the home and
 /// the rest of the path byte for byte.
 pub fn expand_tilde_with_env(path: &Path, env: &impl Environment) -> PathBuf {
-    // `~\` only separates on Windows; elsewhere it is split off as text.
-    // ponytail: a non-UTF-8 rest after `~\` off Windows stays unexpanded.
-    let Some(rest) = path
-        .strip_prefix("~")
-        .ok()
-        .or_else(|| path.to_str()?.strip_prefix(r"~\").map(Path::new))
-    else {
+    // `~\` only separates on Windows; elsewhere it is split off as bytes.
+    #[cfg(unix)]
+    let backslash_rest = || {
+        use std::os::unix::ffi::OsStrExt;
+        let rest = path.as_os_str().as_bytes().strip_prefix(br"~\")?;
+        Some(Path::new(std::ffi::OsStr::from_bytes(rest)))
+    };
+    #[cfg(not(unix))]
+    let backslash_rest = || path.to_str()?.strip_prefix(r"~\").map(Path::new);
+    let Some(rest) = path.strip_prefix("~").ok().or_else(backslash_rest) else {
         return path.to_path_buf();
     };
     match user_home_dir_with_env(env) {
@@ -170,6 +180,14 @@ pub fn expand_tilde_with_env(path: &Path, env: &impl Environment) -> PathBuf {
         Some(home) => home.join(rest),
         None => path.to_path_buf(),
     }
+}
+
+/// The process environment's variables whose name and value are UTF-8;
+/// [`std::env::vars`] panics on any other, such as a non-UTF-8 `HOME`.
+pub fn utf8_env_vars() -> BTreeMap<String, String> {
+    std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect()
 }
 
 /// [`expand_tilde_with_env`] with the process environment.
