@@ -1,7 +1,7 @@
 //! Routes under `/workspace/api` for links to other environments, the
 //! delegations this environment sends, and the ones it admits.
 use std::sync::OnceLock;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
@@ -189,6 +189,8 @@ fn proxy_client() -> Result<&'static reqwest::Client, WorkspaceError> {
     CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
+                // No ambient `HTTP_PROXY`/`ALL_PROXY` may relay a peer's token.
+                .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(10))
                 .build()
@@ -282,19 +284,41 @@ fn header_bytes(value: Option<&HeaderValue>) -> &[u8] {
     value.map_or(b"", HeaderValue::as_bytes)
 }
 
-/// The part before any `;` parameters, trimmed and lowercased. Read from
-/// bytes, since a parameter may hold non-ASCII bytes.
+/// The part before any `;` parameters, lowercased, with only HTTP
+/// whitespace (space and tab) trimmed, as a browser trims. Read from bytes,
+/// since a parameter may hold non-ASCII bytes.
 fn essence(value: &[u8]) -> String {
     let essence = value.split(|&byte| byte == b';').next().unwrap_or_default();
-    String::from_utf8_lossy(essence).trim().to_ascii_lowercase()
+    String::from_utf8_lossy(essence)
+        .trim_matches([' ', '\t'])
+        .to_ascii_lowercase()
+}
+
+/// A header's comma-separated items, split only at commas outside quoted
+/// strings, as a browser splits them (Fetch "get, decode, and split").
+fn list_items(value: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let (mut quoted, mut escaped) = (false, false);
+    value.split(move |&byte| {
+        match (quoted, escaped, byte) {
+            (_, true, _) => escaped = false,
+            (true, _, b'\\') => escaped = true,
+            (_, _, b'"') => quoted = !quoted,
+            (false, _, b',') => return true,
+            _ => {}
+        }
+        false
+    })
 }
 
 /// Types a browser renders as a document that can run script: HTML, XML,
-/// SVG and every `+html` or `+xml` type. A browser uses the last valid type
-/// of a comma-separated list, so any listed one counts.
-fn renders_as_markup(content_type: Option<&HeaderValue>) -> bool {
-    header_bytes(content_type)
-        .split(|&byte| byte == b',')
+/// SVG, every `+html` or `+xml` type, and every `multipart/*` type, whose
+/// parts (`x-mixed-replace`) it renders by their own types. A browser uses
+/// the last valid type of a comma-separated list, so any listed one in any
+/// of the values counts.
+fn renders_as_markup<'a>(content_types: impl IntoIterator<Item = &'a HeaderValue>) -> bool {
+    content_types
+        .into_iter()
+        .flat_map(|value| list_items(value.as_bytes()))
         .map(essence)
         .any(|essence| {
             matches!(
@@ -302,11 +326,18 @@ fn renders_as_markup(content_type: Option<&HeaderValue>) -> bool {
                 "text/html" | "text/xml" | "application/xml"
             ) || essence.ends_with("+html")
                 || essence.ends_with("+xml")
+                || essence.starts_with("multipart/")
         })
 }
 
+/// A disposition every browser reads as an attachment: visible ASCII only,
+/// with `attachment` as its type (RFC 6266 allows space around it).
 fn is_attachment(disposition: Option<&HeaderValue>) -> bool {
-    essence(header_bytes(disposition)) == "attachment"
+    let value = header_bytes(disposition);
+    value
+        .iter()
+        .all(|byte| byte.is_ascii() && !byte.is_ascii_control())
+        && essence(value) == "attachment"
 }
 
 /// Everything the proxy answers, the peer's content and the proxy's own
@@ -455,7 +486,7 @@ async fn proxy_linked_environment(
             headers.insert(name, value.clone());
         }
     }
-    if renders_as_markup(headers.get(header::CONTENT_TYPE))
+    if renders_as_markup(response.headers().get_all(header::CONTENT_TYPE))
         && !is_attachment(headers.get(header::CONTENT_DISPOSITION))
     {
         headers.insert(
@@ -504,23 +535,25 @@ async fn environment(State(state): State<HttpAppState>) -> ApiResult<Value> {
 }
 
 /// Tells apart two builds that share `CARGO_PKG_VERSION`: a hash of the
-/// running executable's bytes, read once when the routes are built.
-// ponytail: reads the whole executable once at startup; stamp an id at build
-// time instead if that ever shows up in startup time.
+/// running executable's bytes, read once when the routes are built. An
+/// executable it cannot read announces `STAMPED_BUILD_ID` instead.
+// ponytail: reads the whole executable once at startup; use STAMPED_BUILD_ID
+// alone if that ever shows up in startup time.
 fn build_id() -> &'static str {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| match executable_hash() {
         Ok(hash) => format!("{}+{hash:016x}", env!("CARGO_PKG_VERSION")),
-        // Still unique to this build, since a new build needs a new process.
         Err(error) => {
             eprintln!("Unable to hash the executable for the build id: {error}");
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |since| since.as_nanos());
-            format!("{}+process.{now:x}", env!("CARGO_PKG_VERSION"))
+            STAMPED_BUILD_ID.to_string()
         }
     })
 }
+
+/// Fixed when this crate compiles (see build.rs), so the same on every start
+/// of one binary.
+const STAMPED_BUILD_ID: &str =
+    concat!(env!("CARGO_PKG_VERSION"), "+build.", env!("SPARK_BUILD_ID"));
 
 /// `DefaultHasher` (fixed keys) may change between Rust releases, but then so
 /// does every executable built with them.
@@ -652,4 +685,17 @@ async fn answer_incoming(
         )
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fallback_build_id_is_a_nonempty_compile_time_stamp() {
+        // A `const`, so the same on every start of this binary.
+        const ID: &str = super::STAMPED_BUILD_ID;
+        let stamp = ID
+            .strip_prefix(concat!(env!("CARGO_PKG_VERSION"), "+build."))
+            .expect("version prefix");
+        assert!(!stamp.is_empty(), "{ID}");
+    }
 }

@@ -656,6 +656,24 @@ async fn fake_peer_route(State(peer): State<FakePeer>, request: Request<Body>) -
             (header::SET_COOKIE, "session=peer"),
         ]
     };
+    let typed = |content_types: &[&'static [u8]], disposition: &'static [u8]| {
+        let mut response = "typed".into_response();
+        let headers = response.headers_mut();
+        headers.remove(header::CONTENT_TYPE);
+        for value in content_types {
+            headers.append(
+                header::CONTENT_TYPE,
+                HeaderValue::from_bytes(value).expect("type"),
+            );
+        }
+        if !disposition.is_empty() {
+            headers.insert(
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_bytes(disposition).expect("disposition"),
+            );
+        }
+        response
+    };
     let chunk = |text: String| Ok::<_, std::io::Error>(Bytes::from(text));
     let mut response = match path.as_str() {
         "/environment" | "/workspace/api/anonymous" => {
@@ -676,6 +694,17 @@ async fn fake_peer_route(State(peer): State<FakePeer>, request: Request<Body>) -
             );
             response
         }
+        "/workspace/api/nbsp.html" => typed(&[b"text/html"], b"\xc2\xa0attachment"),
+        "/workspace/api/named.html" => {
+            typed(&[b"text/html"], br#"Attachment; filename="page.html""#)
+        }
+        "/workspace/api/frames" => typed(&[b"multipart/x-mixed-replace; boundary=frame"], b""),
+        "/workspace/api/quoted.png" => typed(&[br#"image/png; note="a, text/html""#], b""),
+        "/workspace/api/escaped.png" => {
+            typed(&[br#"image/png; note="a\", text/html; b=\"c""#], b"")
+        }
+        "/workspace/api/listed.png" => typed(&[b"image/png, text/html"], b""),
+        "/workspace/api/doubled.png" => typed(&[b"image/png", b"text/html"], b""),
         "/workspace/api/pixel.png" => (
             [(header::CONTENT_TYPE, "image/png")],
             b"\x89PNG\r\n\x1a\n".to_vec(),
@@ -1034,6 +1063,53 @@ async fn linked_environment_proxy_sandboxes_what_the_peer_serves() {
             Some("attachment"),
             b"<svg/>",
         ),
+        // Only a plain ASCII `attachment` survives on markup; whitespace a
+        // browser does not trim makes the proxy's own replace it.
+        (
+            "workspace/api/nbsp.html",
+            b"text/html",
+            Some("attachment"),
+            b"typed",
+        ),
+        (
+            "workspace/api/named.html",
+            b"text/html",
+            Some(r#"Attachment; filename="page.html""#),
+            b"typed",
+        ),
+        // A browser renders each part of a multipart stream by its own type.
+        (
+            "workspace/api/frames",
+            b"multipart/x-mixed-replace; boundary=frame",
+            Some("attachment"),
+            b"typed",
+        ),
+        // A comma in a quoted parameter does not start another type; a
+        // listed or repeated markup type counts.
+        (
+            "workspace/api/quoted.png",
+            br#"image/png; note="a, text/html""#,
+            None,
+            b"typed",
+        ),
+        (
+            "workspace/api/escaped.png",
+            br#"image/png; note="a\", text/html; b=\"c""#,
+            None,
+            b"typed",
+        ),
+        (
+            "workspace/api/listed.png",
+            b"image/png, text/html",
+            Some("attachment"),
+            b"typed",
+        ),
+        (
+            "workspace/api/doubled.png",
+            b"image/png",
+            Some("attachment"),
+            b"typed",
+        ),
         (
             "workspace/api/pixel.png",
             b"image/png",
@@ -1066,6 +1142,67 @@ async fn linked_environment_proxy_sandboxes_what_the_peer_serves() {
         assert_eq!(header(&response, "set-cookie"), None);
         assert_eq!(bytes(response).await, body, "{target}");
     }
+}
+
+/// A forward proxy set in the environment never sees a linked peer's token:
+/// a child test process runs the proxy with every proxy variable pointing at
+/// a listener that must stay undialed.
+#[tokio::test]
+async fn linked_environment_proxy_ignores_ambient_forward_proxies() {
+    const CHILD: &str = "SPARK_AMBIENT_PROXY_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let forward = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        forward.set_nonblocking(true).expect("nonblocking");
+        let url = format!("http://{}", forward.local_addr().expect("address"));
+        let names = [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ];
+        let output = std::process::Command::new(std::env::current_exe().expect("executable"))
+            .args([
+                "--exact",
+                "environment_auth_route_contracts::linked_environment_proxy_ignores_ambient_forward_proxies",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(CHILD, "1")
+            .envs(names.map(|name| (name, &url)))
+            .output()
+            .expect("child test");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            forward.accept().err().map(|error| error.kind()),
+            Some(std::io::ErrorKind::WouldBlock),
+            "the forward proxy was dialed"
+        );
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cfg = settings(temp.path());
+    let app = crate::store_app_default(cfg.clone());
+    let (peer, _) = fake_peer(&cfg).await;
+    let quick = ProxyTimeouts {
+        headers: Duration::from_secs(5),
+        idle: Duration::from_secs(5),
+    };
+    let response = proxy_with(&app, "GET", "workspace/api/projects", Vec::new(), quick).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        peer.seen()
+            .iter()
+            .map(|seen| seen.authorization.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("Bearer stored-peer-token")]
+    );
 }
 
 #[tokio::test]
