@@ -56,13 +56,16 @@ const whereText = (record: DelegationOut) => [
 const answerOf = (answers: Record<string, string>, id: string) => (Object.hasOwn(answers, id) ? answers[id] : '')
 
 // Drops the drafts (secrets included) and acknowledgements of questions the records no longer ask:
-// a listed delegation that sealed, though its last snapshot may still list them, or that dropped them.
-// A delegation not listed keeps its keys, still open to a retry.
-const forgetUnasked = (records: DelegationOut[]) => {
+// a listed delegation that sealed, though its last snapshot may still list them, or that dropped them,
+// and, when the records cover every open delegation (All, Open), one they leave out. A delegation
+// that only a Paused list or a single record leaves out keeps its keys, still open to a retry.
+// ponytail: keys aren't per environment, so another environment's are dropped too; key them by environment if that matters.
+const forgetUnasked = (records: DelegationOut[], coversOpen: boolean) => {
     const asked = (key: string) => {
         const record = records.find((row) => key.startsWith(`${row.delegation_id}:`))
-        return !record || (record.phase !== 'sealed'
-            && (record.last_state?.questions ?? []).some((question) => ackKey(record.delegation_id, question.question_id) === key))
+        if (!record) return !coversOpen
+        return record.phase !== 'sealed'
+            && (record.last_state?.questions ?? []).some((question) => ackKey(record.delegation_id, question.question_id) === key)
     }
     useDelegationAnswers.setState(({ drafts, acknowledged }) => ({
         drafts: Object.fromEntries(Object.entries(drafts).filter(([key]) => asked(key))),
@@ -237,8 +240,10 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     // The last rows loaded and the filter they answer: another filter's rows are never shown.
     const [loaded, setLoaded] = useState<{ filter: Filter; records: DelegationOut[] } | null>(null)
     const { drafts, acknowledged } = useDelegationAnswers()
-    // Every delegation's latest record, so a cancel confirmation acts on what is true when it closes.
-    const seenRef = useRef<Record<string, DelegationOut>>({})
+    // Every delegation's latest record: live refresh falls back on it while a filter hasn't loaded, and
+    // the ref lets a cancel confirmation act on what is true when it closes.
+    const [seen, setSeen] = useState<Record<string, DelegationOut>>({})
+    const seenRef = useRef(seen)
     // A card left behind when Settings closes neither shows nor prunes with what its requests return.
     const mountedRef = useRef(false)
     useEffect(() => {
@@ -265,12 +270,13 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             if (!current()) return
             setLoaded({ filter: requested, records })
             seenRef.current = { ...seenRef.current, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }
+            setSeen(seenRef.current)
             setLoadError(null)
             setCancelErrors((errors) => Object.fromEntries(Object.entries(errors).filter(([id]) => {
                 const record = records.find((row) => row.delegation_id === id)
                 return !record || (!record.cancel_requested_at && record.phase !== 'sealed')
             })))
-            forgetUnasked(records)
+            forgetUnasked(records, requested !== 'paused')
         } catch (err) {
             if (current()) throw err
         } finally {
@@ -298,8 +304,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
 
     const rows = loaded?.filter === filter ? loaded.records : null
     // The Paused view can't see the open delegations that may pause, so it keeps polling. Until a
-    // filter's first load succeeds, the last rows loaded under another filter decide.
-    const live = filter === 'paused' || (loaded?.records ?? []).some((record) => record.phase !== 'sealed')
+    // filter's first load succeeds, every delegation seen under any filter decides.
+    const live = filter === 'paused' || (rows ?? Object.values(seen)).some((record) => record.phase !== 'sealed')
     useEffect(() => {
         if (!active || !live) return
         const timer = window.setInterval(() => {
@@ -353,7 +359,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         }
         // The row shows the server's answer now, whether or not the reload below succeeds.
         seenRef.current = { ...seenRef.current, [updated.delegation_id]: updated }
-        forgetUnasked([updated])
+        setSeen(seenRef.current)
+        forgetUnasked([updated], false)
         setLoaded((current) => current && {
             ...current,
             records: current.records.flatMap((row) => (

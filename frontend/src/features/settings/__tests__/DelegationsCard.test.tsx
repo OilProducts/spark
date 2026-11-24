@@ -94,6 +94,11 @@ const deployForm = (questionId: string, message: string) => ({
         },
     },
 })
+// A conversation request for one secret answer.
+const tokenRequest = (questionId: string) => ({
+    question_id: questionId,
+    questions: [{ id: 'token', question: 'Deploy token?', question_type: 'FREEFORM', isSecret: true }],
+})
 const nightly = delegation('del-1', 'nightly-checks', [approveGate()])
 const pausedTask = delegation('del-2', 'paused-task', [], { paused: 'The link to this environment was removed.', last_state: null })
 const requested = { cancel_requested_at: '2026-11-23T00:01:00Z' }
@@ -571,14 +576,17 @@ it('sends no second cancel when a refresh shows a remote cancel already pending,
     expect(sent(cancelRoute('del-1'))).toHaveLength(1)
 })
 
-it('keeps polling with the error shown when a filter\'s first load fails while a delegation is in flight', async () => {
+it('keeps polling with the error shown when Open\'s first load fails after an empty Paused list, while All showed a delegation in flight', async () => {
     const retry = later()
     serve({
         [LIST]: [ok(list(nightly))],
+        [`${LIST}?paused=true`]: [ok(list())],
         [`${LIST}?open=true`]: [fail(500, 'database is locked'), retry.reply],
     })
     const { user } = renderCard()
     expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Paused' }))
+    expect(await screen.findByText('No matching delegations.')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Open' }))
     expect(await screen.findByText('Database is locked')).toBeInTheDocument()
 
@@ -751,10 +759,6 @@ it('treats an unanswered sub-question with the ID "constructor" as missing', asy
 })
 
 it('releases unsent drafts, secrets included, once a delegation seals, keeping those still open to a retry', async () => {
-    const tokenRequest = (questionId: string) => ({
-        question_id: questionId,
-        questions: [{ id: 'token', question: 'Deploy token?', question_type: 'FREEFORM', isSecret: true }],
-    })
     const first = delegation('del-1', 'nightly-checks', [tokenRequest('req-1')], { kind: 'conversation' })
     const second = delegation('del-2', 'paused-task', [tokenRequest('req-2')], { kind: 'conversation' })
     const unlinked = { ...second, paused: 'No link to this environment; link it again to resume.' }
@@ -779,6 +783,39 @@ it('releases unsent drafts, secrets included, once a delegation seals, keeping t
     await confirmCancel(user, 'paused-task')
     expect(await screen.findByText('Canceled delegation paused-task. Could not refresh delegations: Database is locked')).toBeInTheDocument()
     expect(useDelegationAnswers.getState().drafts).toEqual({})
+})
+
+it('releases the drafts and acknowledgements of a delegation an Open refresh leaves out, and keeps those a Paused list leaves out', async () => {
+    const first = delegation('del-1', 'nightly-checks', [approveGate(), tokenRequest('req-1')])
+    const second = delegation('del-5', 'release-task', [tokenRequest('req-5')])
+    serve({
+        [LIST]: [ok(list(first, second))],
+        // The reload after the answer still lists the gate; then another tab seals del-1.
+        [`${LIST}?open=true`]: [ok(list(first, second)), ok(list(first, second)), ok(list(second))],
+        [`${LIST}?paused=true`]: [ok(list(pausedTask))],
+        [answerRoute('del-1', 'q-approve')]: [ok({})],
+    })
+    const { user } = renderCard()
+    await user.click(await screen.findByRole('button', { name: 'Open' }))
+    const token = async (requestKey: string, id: string) => within(await screen.findByRole('group', { name: asked(requestKey, 'Deploy token?', id) })).getByLabelText('Deploy token?')
+    await user.type(await token('nightly-checks', 'del-1'), 's3cret-1')
+    await user.type(await token('release-task', 'del-5'), 's3cret-5')
+    await user.click(within(screen.getByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' }))
+    expect(await screen.findByText('Sent answer for nightly-checks.')).toBeInTheDocument()
+    await settled()
+    expect([...useDelegationAnswers.getState().acknowledged]).toEqual(['del-1:q-approve'])
+
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    await waitFor(() => expect(screen.queryByText('nightly-checks')).not.toBeInTheDocument())
+    expect(Object.keys(useDelegationAnswers.getState().drafts)).toEqual(['del-5:req-5'])
+    expect(useDelegationAnswers.getState().acknowledged.size).toBe(0)
+
+    // Paused leaves del-5 out without saying it ended: its draft stays for when Open shows it again.
+    await user.click(screen.getByRole('button', { name: 'Paused' }))
+    expect(await screen.findByText('paused-task')).toBeInTheDocument()
+    expect(Object.keys(useDelegationAnswers.getState().drafts)).toEqual(['del-5:req-5'])
+    await user.click(screen.getByRole('button', { name: 'Open' }))
+    expect(await token('release-task', 'del-5')).toHaveValue('s3cret-5')
 })
 
 it('offers no free text on a restricted run gate but keeps it for an agent clarification', async () => {
