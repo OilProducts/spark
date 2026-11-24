@@ -16,6 +16,7 @@ import {
     type DelegationOut,
     type DelegationQuestion,
 } from '@/lib/api/environmentsApi'
+import { getActiveEnvironmentId, useActiveEnvironment } from '@/lib/activeEnvironment'
 
 type Filter = 'all' | 'open' | 'paused'
 
@@ -24,16 +25,26 @@ type AnswerDraft = { text: string; answers: Record<string, string>; sending: boo
 
 const EMPTY_DRAFT: AnswerDraft = { text: '', answers: {}, sending: false, error: null }
 
+/** An environment's drafts, the questions answered there, and a failed reply whose question a refresh had already dropped. */
+// ponytail: one error slot, cleared by the next answer sent; keep a list if several can fail at once.
+type Answers = { drafts: Record<string, AnswerDraft>; acknowledged: ReadonlySet<string>; error: string | null }
+
+const NO_ANSWERS: Answers = { drafts: {}, acknowledged: new Set(), error: null }
+
 // Answers outlive the card, so leaving Settings and coming back keeps unsent drafts, a reply still
 // in flight and its failure, and which questions were answered (hidden until a snapshot drops them).
+// They are kept by environment ('' is this machine): one environment's lists never prune another's.
 // ponytail: module-level like the other unsent answers; lost on reload.
-export const useDelegationAnswers = create<{ drafts: Record<string, AnswerDraft>; acknowledged: ReadonlySet<string> }>(() => ({
-    drafts: {},
-    acknowledged: new Set(),
-}))
-const editDraft = (key: string, patch: Partial<AnswerDraft>) => useDelegationAnswers.setState(({ drafts }) => ({
+export const useDelegationAnswers = create<Record<string, Answers>>(() => ({}))
+const updateAnswers = (env: string, update: (answers: Answers) => Partial<Answers>) => useDelegationAnswers.setState((all) => {
+    const answers = all[env] ?? NO_ANSWERS
+    return { [env]: { ...answers, ...update(answers) } }
+})
+const editDraft = (env: string, key: string, patch: Partial<AnswerDraft>) => updateAnswers(env, ({ drafts }) => ({
     drafts: { ...drafts, [key]: { ...(drafts[key] ?? EMPTY_DRAFT), ...patch } },
 }))
+// The environment a request goes to, read when it is sent.
+const activeEnv = () => getActiveEnvironmentId() ?? ''
 const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
 // Delegations still in flight are re-read this often, so new questions and phases show up.
 const LIVE_REFRESH_MS = 4000
@@ -55,25 +66,24 @@ const whereText = (record: DelegationOut) => [
 // A sub-question's answer so far; an agent's ID such as "constructor" is never read off the prototype.
 const answerOf = (answers: Record<string, string>, id: string) => (Object.hasOwn(answers, id) ? answers[id] : '')
 
-// Drops the drafts (secrets included) and acknowledgements of questions the records no longer ask:
-// a listed delegation that sealed, though its last snapshot may still list them, or that dropped them,
-// and, when the records cover every open delegation (All, Open), one they leave out. A delegation
-// that only a Paused list or a single record leaves out keeps its keys, still open to a retry.
-// ponytail: keys aren't per environment, so another environment's are dropped too; key them by environment if that matters.
-const forgetUnasked = (records: DelegationOut[], coversOpen: boolean) => {
+// Drops the drafts (secrets included) and acknowledgements of questions the environment's records no
+// longer ask: a listed delegation that sealed, though its last snapshot may still list them, or that
+// dropped them, and, when the records cover every open delegation (All, Open), one they leave out. A
+// delegation that only a Paused list or a single record leaves out keeps its keys, still open to a retry.
+const forgetUnasked = (env: string, records: DelegationOut[], coversOpen: boolean) => {
     const asked = (key: string) => {
         const record = records.find((row) => key.startsWith(`${row.delegation_id}:`))
         if (!record) return !coversOpen
         return record.phase !== 'sealed'
             && (record.last_state?.questions ?? []).some((question) => ackKey(record.delegation_id, question.question_id) === key)
     }
-    useDelegationAnswers.setState(({ drafts, acknowledged }) => ({
+    updateAnswers(env, ({ drafts, acknowledged }) => ({
         drafts: Object.fromEntries(Object.entries(drafts).filter(([key]) => asked(key))),
         acknowledged: [...acknowledged].every(asked) ? acknowledged : new Set([...acknowledged].filter(asked)),
     }))
 }
 
-function delegationStatus(record: DelegationOut): { label: string; tone: StatusTone } {
+function delegationStatus(record: DelegationOut, acknowledged: ReadonlySet<string>): { label: string; tone: StatusTone } {
     if (record.phase === 'sealed') {
         const resultStatus = typeof record.result?.status === 'string' ? record.result.status : 'sealed'
         if (resultStatus === 'completed' || resultStatus === 'complete') return { label: resultStatus, tone: 'success' }
@@ -83,7 +93,10 @@ function delegationStatus(record: DelegationOut): { label: string; tone: StatusT
     // A requested cancellation outranks a pause and questions the last snapshot still lists.
     if (record.cancel_requested_at) return { label: 'canceling', tone: 'neutral' }
     if (record.paused) return { label: 'paused', tone: 'warning' }
-    if ((record.last_state?.questions?.length ?? 0) > 0) return { label: 'waiting on answer', tone: 'warning' }
+    // A question answered here waits on nothing, though a snapshot may still list it.
+    if ((record.last_state?.questions ?? []).some((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))) {
+        return { label: 'waiting on answer', tone: 'warning' }
+    }
     if (record.last_state?.status) return { label: record.last_state.status, tone: 'info' }
     return { label: record.phase, tone: 'info' }
 }
@@ -236,10 +249,12 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const [filter, setFilter] = useState<Filter>('all')
     const filterRef = useRef<Filter>('all')
     const requestSeqRef = useRef(0)
-    const loadingRef = useRef(false)
+    // Every list request still out, superseded ones included: a live refresh waits for all of them.
+    const inFlightCountRef = useRef(0)
     // The last rows loaded and the filter they answer: another filter's rows are never shown.
     const [loaded, setLoaded] = useState<{ filter: Filter; records: DelegationOut[] } | null>(null)
-    const { drafts, acknowledged } = useDelegationAnswers()
+    const env = useActiveEnvironment().activeEnvironmentId ?? ''
+    const { drafts, acknowledged, error: answerError } = useDelegationAnswers((all) => all[env] ?? NO_ANSWERS)
     // Every delegation's latest record: live refresh falls back on it while a filter hasn't loaded, and
     // the ref lets a cancel confirmation act on what is true when it closes.
     const [seen, setSeen] = useState<Record<string, DelegationOut>>({})
@@ -261,9 +276,10 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     // selected, is dropped; a current failure is thrown for the caller to report.
     const load = useCallback(async () => {
         const requested = filterRef.current
+        const env = activeEnv()
         const seq = ++requestSeqRef.current
         const current = () => mountedRef.current && seq === requestSeqRef.current && requested === filterRef.current
-        loadingRef.current = true
+        inFlightCountRef.current += 1
         setLoading(true)
         try {
             const records = await fetchDelegations(FILTER_QUERY[requested])
@@ -276,14 +292,12 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                 const record = records.find((row) => row.delegation_id === id)
                 return !record || (!record.cancel_requested_at && record.phase !== 'sealed')
             })))
-            forgetUnasked(records, requested !== 'paused')
+            forgetUnasked(env, records, requested !== 'paused')
         } catch (err) {
             if (current()) throw err
         } finally {
-            if (seq === requestSeqRef.current) {
-                loadingRef.current = false
-                setLoading(false)
-            }
+            inFlightCountRef.current -= 1
+            if (seq === requestSeqRef.current) setLoading(false)
         }
     }, [])
 
@@ -303,13 +317,13 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     }, [active, filter, refresh])
 
     const rows = loaded?.filter === filter ? loaded.records : null
-    // The Paused view can't see the open delegations that may pause, so it keeps polling. Until a
-    // filter's first load succeeds, every delegation seen under any filter decides.
-    const live = filter === 'paused' || (rows ?? Object.values(seen)).some((record) => record.phase !== 'sealed')
+    // The Paused view can't see the open delegations that may pause, so every delegation seen under
+    // any filter decides there, as it does until a filter's first load succeeds.
+    const live = (filter === 'paused' || rows === null ? Object.values(seen) : rows).some((record) => record.phase !== 'sealed')
     useEffect(() => {
         if (!active || !live) return
         const timer = window.setInterval(() => {
-            if (!loadingRef.current) void refresh()
+            if (inFlightCountRef.current === 0) void refresh()
         }, LIVE_REFRESH_MS)
         return () => window.clearInterval(timer)
     }, [active, live, refresh])
@@ -348,6 +362,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         }
         setBusy(true)
         setCancelErrors(({ [record.delegation_id]: _retried, ...errors }) => errors)
+        const env = activeEnv()
         let updated: DelegationOut
         try {
             updated = await cancelDelegation(record.delegation_id)
@@ -360,14 +375,14 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         // The row shows the server's answer now, whether or not the reload below succeeds.
         seenRef.current = { ...seenRef.current, [updated.delegation_id]: updated }
         setSeen(seenRef.current)
-        forgetUnasked([updated], false)
+        forgetUnasked(env, [updated], false)
         setLoaded((current) => current && {
             ...current,
             records: current.records.flatMap((row) => (
                 row.delegation_id !== updated.delegation_id ? [row] : inFilter(updated, current.filter) ? [updated] : []
             )),
         })
-        const outcome = delegationStatus(updated).label
+        const outcome = delegationStatus(updated, acknowledged).label
         const done = updated.phase !== 'sealed'
             ? `Cancellation requested for ${record.request_key}.`
             : outcome === 'canceled'
@@ -379,26 +394,29 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     }
 
     const handleAnswer = async (record: DelegationOut, questionId: string, body: DelegationAnswerBody) => {
+        const env = activeEnv()
         const key = ackKey(record.delegation_id, questionId)
-        editDraft(key, { sending: true, error: null })
+        editDraft(env, key, { sending: true, error: null })
+        updateAnswers(env, () => ({ error: null }))
         setBusy(true)
         try {
             await answerDelegationQuestion(record.delegation_id, questionId, body)
         } catch (err) {
-            // The draft stays beside the error to fix and resend.
-            editDraft(key, { sending: false, error: errorText(err, 'Could not submit answer.') })
+            const message = errorText(err, 'Could not submit answer.')
+            // The draft stays beside the error to fix and resend. A refresh that dropped the question
+            // meanwhile (it closed or was replaced) took its draft: it stays closed and the card reports the failure.
+            updateAnswers(env, ({ drafts }) => (Object.hasOwn(drafts, key)
+                ? { drafts: { ...drafts, [key]: { ...drafts[key], sending: false, error: message } } }
+                : { error: `Could not answer ${record.request_key}: ${message}` }))
             setStatus('')
             setBusy(false)
             return false
         }
-        useDelegationAnswers.setState(({ drafts, acknowledged }) => {
-            const { [key]: _sent, ...rest } = drafts
-            return { drafts: rest, acknowledged: new Set(acknowledged).add(key) }
-        })
+        updateAnswers(env, ({ drafts: { [key]: _sent, ...drafts }, acknowledged }) => ({ drafts, acknowledged: new Set(acknowledged).add(key) }))
         const done = `Sent answer for ${record.request_key}.`
         setStatus(done)
-        await reloadAfterChange(done)
-        setBusy(false)
+        // The reply is in, so the caller releases its draft now; a failed reload is reported on its own.
+        void reloadAfterChange(done).then(() => setBusy(false))
         return true
     }
 
@@ -436,7 +454,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                 ) : (
                     <ul className="space-y-2">
                         {rows.map((record) => {
-                            const badge = delegationStatus(record)
+                            const badge = delegationStatus(record, acknowledged)
                             const where = whereText(record)
                             const questions = record.phase === 'accepted'
                                 ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))
@@ -508,7 +526,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                                     question={question}
                                                     disabled={busy || draft.sending || !answerable}
                                                     draft={draft}
-                                                    onDraft={(patch) => editDraft(key, patch)}
+                                                    onDraft={(patch) => editDraft(env, key, patch)}
                                                     onAnswer={(body) => handleAnswer(record, question.question_id, body)}
                                                 />
                                             )
@@ -520,6 +538,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                     </ul>
                 )}
                 {status ? <p role="status" className="text-xs text-muted-foreground">{status}</p> : null}
+                {answerError ? <InlineError>{answerError}</InlineError> : null}
                 {loadError ? <InlineError>{loadError}</InlineError> : null}
             </CardContent>
         </Card>

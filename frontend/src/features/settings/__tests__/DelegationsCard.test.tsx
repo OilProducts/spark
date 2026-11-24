@@ -2,6 +2,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
+import { resetActiveEnvironmentForTests, selectEnvironment } from '@/lib/activeEnvironment'
 import { DelegationsCard, useDelegationAnswers } from '../DelegationsCard'
 
 // Requests go through the real environmentsApi client and parser to a stubbed fetch.
@@ -32,10 +33,12 @@ let routes = new Map<string, Reply[]>()
 let requests: Array<{ key: string; body: unknown }> = []
 const serve = (table: Record<string, Reply[]>) => { routes = new Map(Object.entries(table)) }
 const sent = (key: string) => requests.filter((request) => request.key === key).map((request) => request.body)
+// This machine's answers ('' is the local environment).
+const localAnswers = () => useDelegationAnswers.getState()['']
 
 beforeEach(() => {
     requests = []
-    useDelegationAnswers.setState({ drafts: {}, acknowledged: new Set() })
+    useDelegationAnswers.setState({}, true)
     // Only the card's live refresh is faked; Testing Library's waits keep real timeouts.
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -49,8 +52,10 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+    vi.clearAllTimers()
     vi.useRealTimers()
     vi.unstubAllGlobals()
+    resetActiveEnvironmentForTests()
 })
 
 function delegation(id: string, requestKey: string, questions: unknown[], extra: Record<string, unknown> = {}) {
@@ -310,15 +315,40 @@ it('keeps the exact form draft beside a refused Submit, Decline or Cancel when S
     expect(submit).toMatchObject({ form: { action: 'accept', content: { region: 'eu-west' } } })
     expect([decline, cancel]).toEqual([{ form: { action: 'decline' } }, { form: { action: 'cancel' } }])
 
-    // Once a reply is accepted, the question asked again starts from an empty form.
+    // Once a reply is accepted, its draft is released though the reload after it fails, which is
+    // reported on its own, and the question asked again starts from an empty form.
+    routes.set(LIST, [fail(500, 'database is locked'), ok(list(delegation('del-f', 'deploy-task', []))), ok(list(delegation('del-f', 'deploy-task', [form])))])
     await view.user.click(within(responder).getByRole('button', { name: 'Submit' }))
-    expect(await screen.findByText('Sent answer for deploy-task.')).toBeInTheDocument()
+    expect(await screen.findByText('Sent answer for deploy-task. Could not refresh delegations: Database is locked')).toBeInTheDocument()
     await settled()
-    routes.set(LIST, [ok(list(delegation('del-f', 'deploy-task', []))), ok(list(delegation('del-f', 'deploy-task', [form])))])
     await act(async () => { vi.advanceTimersByTime(4000) })
     await waitFor(() => expect(sent(LIST)).toHaveLength(6))
     await act(async () => { vi.advanceTimersByTime(4000) })
     expect(within(await screen.findByRole('group', { name })).getByRole('textbox', { name: 'Region' })).toHaveValue('')
+})
+
+it('releases an accepted form draft as soon as the reply is in, while the reload after it is still out', async () => {
+    const form = deployForm('form-done', 'Done details')
+    const reload = later()
+    serve({
+        // Open shows the form answered; All then asks it again.
+        [LIST]: [ok(list(delegation('del-f', 'deploy-task', [form]))), reload.reply, ok(list(delegation('del-f', 'deploy-task', [form])))],
+        [`${LIST}?open=true`]: [ok(list(delegation('del-f', 'deploy-task', [])))],
+        [answerRoute('del-f', 'form-done')]: [ok({})],
+    })
+    const { user } = renderCard()
+    const name = asked('deploy-task', 'Done details', 'del-f')
+    const before = await screen.findByRole('group', { name })
+    await user.type(within(before).getByRole('textbox', { name: 'Region' }), 'eu-west')
+    await user.type(within(before).getByRole('textbox', { name: 'Replicas' }), '3')
+    await user.click(within(before).getByRole('button', { name: 'Submit' }))
+    expect(await screen.findByText('Sent answer for deploy-task.')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Open' }))
+    expect(await screen.findByText('flow · waiting')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'All' }))
+    expect(within(await screen.findByRole('group', { name })).getByRole('textbox', { name: 'Region' })).toHaveValue('')
+    await reload.resolve(list(delegation('del-f', 'deploy-task', [form])))
 })
 
 it('keeps an unsent draft for a newer question when a refresh from before Settings was left returns late', async () => {
@@ -440,6 +470,8 @@ it('hides an answered question across a stale snapshot and picks up a new one on
     await settled()
     expect(sent(LIST)).toHaveLength(2)
     expect(screen.queryByRole('group', { name: gate })).not.toBeInTheDocument()
+    // The stale snapshot still lists the answered gate, so the row shows the follower's status.
+    expect(screen.getByText('flow · waiting')).toBeInTheDocument()
 
     await act(async () => { vi.advanceTimersByTime(4000) })
     expect(await screen.findByRole('group', { name: asked('nightly-checks', 'Anything else?', 'del-1') })).toBeInTheDocument()
@@ -469,6 +501,78 @@ it('keeps an empty Paused view polling so a delegation that loses its link shows
     await act(async () => { vi.advanceTimersByTime(4000) })
     expect(await screen.findByText('No link to this environment; link it again to resume.')).toBeInTheDocument()
     expect(screen.getByText('nightly-checks')).toBeInTheDocument()
+})
+
+it('does not poll when every delegation it knows has sealed, even on an empty Paused view', async () => {
+    serve({
+        [LIST]: [ok(list({ ...nightly, phase: 'sealed', result: { status: 'completed' } }))],
+        [`${LIST}?paused=true`]: [ok(list())],
+    })
+    const { user } = renderCard()
+    expect(await screen.findByText('flow · completed')).toBeInTheDocument()
+    expect(vi.getTimerCount()).toBe(0)
+    await user.click(screen.getByRole('button', { name: 'Paused' }))
+    expect(await screen.findByText('No matching delegations.')).toBeInTheDocument()
+    expect(vi.getTimerCount()).toBe(0)
+})
+
+it('reports a reply that fails after a refresh replaced its question, and keeps that question closed', async () => {
+    const answer = later()
+    serve({
+        [LIST]: [ok(list(nightly)), ok(list(delegation('del-1', 'nightly-checks', [freeText('q-next', 'Anything else?')])))],
+        [answerRoute('del-1', 'q-approve')]: [answer.reply],
+    })
+    const { user } = renderCard()
+    const gate = asked('nightly-checks', 'Ship this build?', 'del-1')
+    await user.click(within(await screen.findByRole('group', { name: gate })).getByRole('button', { name: 'Approve' }))
+    // The live refresh finds the gate closed and a new question asked while the reply is out.
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    const next = await screen.findByRole('group', { name: asked('nightly-checks', 'Anything else?', 'del-1') })
+    expect(screen.queryByRole('group', { name: gate })).not.toBeInTheDocument()
+
+    await answer.resolve({ detail: 'Question q-approve is not open in delegation del-1.' }, 404)
+    expect(screen.getByText('Could not answer nightly-checks: Question q-approve is not open in delegation del-1.')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: gate })).not.toBeInTheDocument()
+    expect(within(next).getByRole('textbox', { name: 'Free-text answer' })).toBeEnabled()
+})
+
+it('keeps one environment\'s answered questions and failed draft while another environment\'s Settings is open', async () => {
+    const remote = '/workspace/api/environments/links/env-x/proxy'
+    const descriptor = (id: string) => ok({ environment_id: id, display_name: id, protocol_version: 1, ui_api_version: 1 })
+    serve({
+        // Every local snapshot still lists both questions.
+        [LIST]: [ok(list(delegation('del-1', 'nightly-checks', [approveGate(), freeText('q-note', 'Any release notes?')])))],
+        [answerRoute('del-1', 'q-approve')]: [ok({})],
+        [answerRoute('del-1', 'q-note')]: [fail(409, 'Question q-note is busy.')],
+        'GET /environment': [descriptor('env-local')],
+        [`GET ${remote}/environment`]: [descriptor('env-x')],
+        [`GET ${remote}/workspace/api/delegations`]: [ok(list(delegation('del-9', 'remote-task', [])))],
+    })
+    const gate = asked('nightly-checks', 'Ship this build?', 'del-1')
+    const note = asked('nightly-checks', 'Any release notes?', 'del-1')
+    const first = renderCard()
+    await first.user.click(within(await screen.findByRole('group', { name: gate })).getByRole('button', { name: 'Approve' }))
+    expect(await screen.findByText('Sent answer for nightly-checks.')).toBeInTheDocument()
+    await settled()
+    await first.user.type(within(screen.getByRole('group', { name: note })).getByRole('textbox', { name: 'Free-text answer' }), 'ship it')
+    await first.user.click(within(screen.getByRole('group', { name: note })).getByRole('button', { name: 'Answer' }))
+    expect(await screen.findByText('Question q-note is busy.')).toBeInTheDocument()
+    first.unmount()
+
+    // The other environment's System settings list only its own delegations.
+    await act(async () => { await selectEnvironment('env-x') })
+    const away = renderCard()
+    expect(await screen.findByText('remote-task')).toBeInTheDocument()
+    await settled()
+    away.unmount()
+
+    await act(async () => { await selectEnvironment(null) })
+    renderCard()
+    const back = await screen.findByRole('group', { name: note })
+    expect(within(back).getByText('Question q-note is busy.')).toBeInTheDocument()
+    expect(within(back).getByRole('textbox', { name: 'Free-text answer' })).toHaveValue('ship it')
+    expect(screen.queryByRole('group', { name: gate })).not.toBeInTheDocument()
+    expect(screen.getByText('flow · waiting on answer')).toBeInTheDocument()
 })
 
 it('disables answering on a delegation whose link is missing', async () => {
@@ -600,7 +704,7 @@ it('keeps polling with the error shown when Open\'s first load fails after an em
     expect(screen.queryByText('Database is locked')).not.toBeInTheDocument()
 })
 
-it('drops an Open response that resolves after Paused is selected', async () => {
+it('drops an Open response that resolves after Paused is selected, and polls only once it is in', async () => {
     const open = later()
     serve({
         [LIST]: [ok(list(nightly, pausedTask))],
@@ -613,10 +717,16 @@ it('drops an Open response that resolves after Paused is selected', async () => 
     expect(screen.queryByText('nightly-checks')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Paused' }))
     expect(await screen.findByText('paused-task')).toBeInTheDocument()
+    await settled()
+    // The superseded Open request is still out, so the live refresh skips its tick.
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(sent(`${LIST}?paused=true`)).toHaveLength(1)
 
     await open.resolve(list(nightly))
     expect(screen.queryByText('nightly-checks')).not.toBeInTheDocument()
     expect(screen.getByText('paused-task')).toBeInTheDocument()
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    await waitFor(() => expect(sent(`${LIST}?paused=true`)).toHaveLength(2))
 })
 
 it('shows a failed cancel on its row, only where the row is listed, until a refresh shows it canceling', async () => {
@@ -771,18 +881,18 @@ it('releases unsent drafts, secrets included, once a delegation seals, keeping t
     const token = async (requestKey: string, id: string) => within(await screen.findByRole('group', { name: asked(requestKey, 'Deploy token?', id) })).getByLabelText('Deploy token?')
     await user.type(await token('nightly-checks', 'del-1'), 's3cret-1')
     await user.type(await token('paused-task', 'del-2'), 's3cret-2')
-    expect(Object.keys(useDelegationAnswers.getState().drafts)).toEqual(['del-1:req-1', 'del-2:req-2'])
+    expect(Object.keys(localAnswers().drafts)).toEqual(['del-1:req-1', 'del-2:req-2'])
 
     // del-1 seals; del-2 only pauses, so its draft waits for the link to come back.
     await act(async () => { vi.advanceTimersByTime(4000) })
     expect(await screen.findByText('conversation · completed')).toBeInTheDocument()
-    expect(Object.keys(useDelegationAnswers.getState().drafts)).toEqual(['del-2:req-2'])
+    expect(Object.keys(localAnswers().drafts)).toEqual(['del-2:req-2'])
     expect(await token('paused-task', 'del-2')).toHaveValue('s3cret-2')
 
     // Sealing it locally releases its draft even though the reload after it fails.
     await confirmCancel(user, 'paused-task')
     expect(await screen.findByText('Canceled delegation paused-task. Could not refresh delegations: Database is locked')).toBeInTheDocument()
-    expect(useDelegationAnswers.getState().drafts).toEqual({})
+    expect(localAnswers().drafts).toEqual({})
 })
 
 it('releases the drafts and acknowledgements of a delegation an Open refresh leaves out, and keeps those a Paused list leaves out', async () => {
@@ -803,17 +913,17 @@ it('releases the drafts and acknowledgements of a delegation an Open refresh lea
     await user.click(within(screen.getByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' }))
     expect(await screen.findByText('Sent answer for nightly-checks.')).toBeInTheDocument()
     await settled()
-    expect([...useDelegationAnswers.getState().acknowledged]).toEqual(['del-1:q-approve'])
+    expect([...localAnswers().acknowledged]).toEqual(['del-1:q-approve'])
 
     await act(async () => { vi.advanceTimersByTime(4000) })
     await waitFor(() => expect(screen.queryByText('nightly-checks')).not.toBeInTheDocument())
-    expect(Object.keys(useDelegationAnswers.getState().drafts)).toEqual(['del-5:req-5'])
-    expect(useDelegationAnswers.getState().acknowledged.size).toBe(0)
+    expect(Object.keys(localAnswers().drafts)).toEqual(['del-5:req-5'])
+    expect(localAnswers().acknowledged.size).toBe(0)
 
     // Paused leaves del-5 out without saying it ended: its draft stays for when Open shows it again.
     await user.click(screen.getByRole('button', { name: 'Paused' }))
     expect(await screen.findByText('paused-task')).toBeInTheDocument()
-    expect(Object.keys(useDelegationAnswers.getState().drafts)).toEqual(['del-5:req-5'])
+    expect(Object.keys(localAnswers().drafts)).toEqual(['del-5:req-5'])
     await user.click(screen.getByRole('button', { name: 'Open' }))
     expect(await token('release-task', 'del-5')).toHaveValue('s3cret-5')
 })
