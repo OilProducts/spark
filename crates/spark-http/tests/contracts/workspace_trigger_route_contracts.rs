@@ -263,6 +263,28 @@ async fn webhook_route_authenticates_storage_backed_trigger_and_dispatches_run()
     assert_eq!(unknown_key.0, StatusCode::NOT_FOUND);
     assert_eq!(unknown_key.1, json!({"detail": "Unknown webhook key."}));
 
+    // Valid credentials do not make a non-JSON body acceptable.
+    let wrong_media = request_text_with_headers(
+        app.clone(),
+        "POST",
+        "/workspace/api/webhooks",
+        &[
+            ("X-Spark-Webhook-Key", &webhook_key),
+            ("X-Spark-Webhook-Secret", &webhook_secret),
+            ("content-type", "text/plain"),
+        ],
+        Some(r#"{"payload": "compat"}"#),
+    )
+    .await;
+    assert_eq!(wrong_media.0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&wrong_media.1).expect("json"),
+        json!({"detail": "Expected Content-Type: application/json."})
+    );
+    assert!(load_state(&settings, &project_dir, &trigger_id)
+        .recent_history
+        .is_empty());
+
     let malformed = request_text_with_headers(
         app.clone(),
         "POST",
@@ -929,7 +951,10 @@ async fn request_text_with_headers(
     body: Option<&str>,
 ) -> (StatusCode, String) {
     let mut builder = Request::builder().method(method).uri(uri);
-    if body.is_some() {
+    let typed = headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"));
+    if body.is_some() && !typed {
         builder = builder.header("content-type", "application/json");
     }
     for (name, value) in headers {
@@ -938,7 +963,7 @@ async fn request_text_with_headers(
     let request = builder
         .body(Body::from(body.unwrap_or_default().to_string()))
         .expect("request");
-    let response = app.oneshot(request).await.expect("response");
+    let response = app.oneshot(crate::local(request)).await.expect("response");
     let status = response.status();
     let body = to_bytes(response.into_body(), usize::MAX)
         .await

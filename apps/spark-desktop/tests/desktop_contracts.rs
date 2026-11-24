@@ -592,28 +592,34 @@ fn desktop_retains_environment_selected_startup_paths() {
 }
 
 #[test]
-fn desktop_server_runs_before_build_hook_with_bound_url_before_opening_home() {
+fn desktop_server_runs_before_build_hook_with_its_agent_api_under_the_home_lock() {
     let temp = tempfile::tempdir().unwrap();
     let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
     let bootstrap =
         bootstrap_desktop_runtime(&DesktopServerSettings::default(), &spark_home(&paths)).unwrap();
     let data_dir = bootstrap.settings.data_dir.clone();
-    let mut seen_url = String::new();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let record = seen.clone();
     let mut server = spark_desktop::desktop_core::start_desktop_server_with_before_build(
         bootstrap.settings,
         LOCAL_BIND_HOST,
-        |url| {
-            seen_url = url.to_string();
-            // The HTTP app has not opened the home lock yet, so startup
-            // recovery and admitted delegations cannot have spawned agents.
-            let store = spark_storage::ConversationStore::open(&data_dir)
-                .map_err(|error| error.to_string())?;
-            drop(store);
+        move |api| {
+            // The server holds the home lock, and has not yet run startup
+            // recovery or admitted delegations that could spawn agents.
+            let locked = matches!(
+                spark_storage::ConversationStore::open(&data_dir),
+                Err(spark_storage::StorageError::HomeLocked { .. })
+            );
+            *record.lock().unwrap() = Some((api, locked));
             Ok(())
         },
     )
     .unwrap();
-    assert_eq!(seen_url, server.url());
+    let (api, locked) = seen.lock().unwrap().take().expect("hook ran");
+    assert!(locked);
+    assert_eq!(format!("{}/", api.base_url), server.url());
+    // A loopback listener trusts its own agents without a token.
+    assert_eq!((api.token, api.loopback_url), (None, None));
     server.shutdown();
 
     let source = include_str!("../src/lib.rs");

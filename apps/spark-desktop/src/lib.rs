@@ -70,9 +70,7 @@ pub fn run() {
             let server = start_desktop_server_with_before_build(
                 bootstrap.settings,
                 &bootstrap.bind_host,
-                |server_url| {
-                    spark_agent_adapter::configure_codex_api_base_url(server_url.to_string())
-                },
+                spark_agent_adapter::configure_agent_api,
             )
             .map_err(boxed_error)?;
             let server_url = server.url().to_string();

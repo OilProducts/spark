@@ -225,7 +225,9 @@ fn run_start_requires_a_conversation_or_a_project() {
     assert_eq!(error["exit_code"], 2);
     let message = error["error"].as_str().unwrap();
     assert!(
-        message.contains("<--conversation <HANDLE>|--project <PATH>>"),
+        message.contains(
+            "requires --conversation <HANDLE> (or SPARK_CONVERSATION_HANDLE) or --project <PATH>"
+        ),
         "{message}"
     );
 }

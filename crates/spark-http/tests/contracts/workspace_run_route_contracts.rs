@@ -338,6 +338,87 @@ async fn public_run_launch_rejects_a_caller_chosen_run_id() {
         .is_none());
 }
 
+/// Routes that parse a raw JSON body refuse one without a single JSON media
+/// type before reading it. Bodyless actions and optional empty bodies need
+/// no media type.
+#[tokio::test]
+async fn raw_json_routes_need_one_json_media_type() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app = crate::store_app_default(settings(temp.path()));
+    let mission_close = "/workspace/api/missions/mission-1/close?project_path=/missing";
+    let routes = [
+        ("POST", "/workspace/api/runs/launch"),
+        ("POST", "/workspace/api/runs/run-1/retry"),
+        ("POST", "/workspace/api/runs/run-1/continue"),
+        ("POST", mission_close),
+        ("POST", "/attractor/pipelines"),
+        ("POST", "/attractor/preview"),
+        ("POST", "/attractor/api/flows"),
+        ("POST", "/attractor/pipelines/run-1/continue"),
+        ("POST", "/attractor/pipelines/run-1/steer"),
+        ("PATCH", "/attractor/pipelines/run-1/metadata"),
+        ("POST", "/attractor/pipelines/run-1/questions/q-1/answer"),
+    ];
+    let content_types: &[&[&str]] = &[
+        &[],
+        &["text/plain"],
+        &["application/x-www-form-urlencoded"],
+        &["application/json", "application/json"],
+        &["application/json, text/plain"],
+    ];
+    for (method, uri) in routes {
+        for types in content_types {
+            let mut builder = Request::builder().method(method).uri(uri);
+            for content_type in *types {
+                builder = builder.header("content-type", *content_type);
+            }
+            let request = builder.body(Body::from("{}")).expect("request");
+            let response = app
+                .clone()
+                .oneshot(crate::local(request))
+                .await
+                .expect("response");
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            assert_eq!(
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&bytes).expect("json")
+                ),
+                (
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    json!({"detail": "Expected Content-Type: application/json."})
+                ),
+                "{method} {uri} {types:?}"
+            );
+        }
+    }
+
+    // A JSON media type with a malformed body keeps the route's validation.
+    let malformed = request_raw(app.clone(), "POST", "/workspace/api/runs/launch", "{").await;
+    assert_eq!(malformed.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(malformed.1["detail"][0]["type"], "json_invalid");
+    for (method, uri) in [
+        ("POST", "/attractor/pipelines/run-1/cancel"),
+        ("POST", mission_close),
+    ] {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request");
+        let status = app
+            .clone()
+            .oneshot(crate::local(request))
+            .await
+            .expect("response")
+            .status();
+        assert_ne!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{method} {uri}");
+    }
+}
+
 async fn request_json(
     app: axum::Router,
     method: &str,
@@ -353,7 +434,7 @@ async fn request_json(
     } else {
         builder.body(Body::empty()).expect("request body")
     };
-    let response = app.oneshot(request).await.expect("response");
+    let response = app.oneshot(crate::local(request)).await.expect("response");
     let status = response.status();
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
@@ -374,7 +455,7 @@ async fn request_raw(
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .expect("request body");
-    let response = app.oneshot(request).await.expect("response");
+    let response = app.oneshot(crate::local(request)).await.expect("response");
     let status = response.status();
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await

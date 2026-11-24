@@ -110,6 +110,7 @@ impl LocalExecutionEnvironment {
 
     fn build_environment(&self, env_vars: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let mut environment = inherited_environment(self.environment_inheritance_policy);
+        crate::codex_app_server::drop_managed_key_aliases(&mut environment);
         environment.extend(env_vars.clone());
         environment
     }

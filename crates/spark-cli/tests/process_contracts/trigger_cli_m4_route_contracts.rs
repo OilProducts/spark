@@ -373,9 +373,9 @@ async fn serve(app: axum::Router) -> TestServer {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind server");
-    let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+    let base_url = spark_http::listener_url(listener.local_addr().expect("local addr"));
     let handle = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        let _ = spark_http::serve(listener, app, std::future::pending()).await;
     });
     TestServer { base_url, handle }
 }

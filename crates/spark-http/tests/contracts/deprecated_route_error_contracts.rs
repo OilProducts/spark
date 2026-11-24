@@ -139,13 +139,13 @@ impl TestResponse {
 
 async fn request(app: axum::Router, method: &str, uri: &str) -> TestResponse {
     let response = app
-        .oneshot(
+        .oneshot(crate::local(
             Request::builder()
                 .method(method)
                 .uri(uri)
                 .body(Body::empty())
                 .expect("request"),
-        )
+        ))
         .await
         .expect("response");
     let status = response.status();

@@ -779,9 +779,10 @@ async fn launch_workspace_run(
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, WorkspaceApiError> {
-    let request = match run_launch_payload(body) {
+    let request = match run_launch_payload(&headers, body) {
         Ok(request) => request,
         Err(response) => return Ok(response),
     };
@@ -805,9 +806,10 @@ async fn retry_workspace_run(
     State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(run_id): AxumPath<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, WorkspaceApiError> {
-    let request = match run_retry_payload(body) {
+    let request = match run_retry_payload(&headers, body) {
         Ok(request) => request,
         Err(response) => return Ok(response),
     };
@@ -833,9 +835,10 @@ async fn continue_workspace_run(
     State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(run_id): AxumPath<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, WorkspaceApiError> {
-    let request = match run_continue_payload(body) {
+    let request = match run_continue_payload(&headers, body) {
         Ok(request) => request,
         Err(response) => return Ok(response),
     };
@@ -1548,6 +1551,9 @@ async fn post_trigger_webhook(
             "Webhook key and secret headers are required.",
         ));
     }
+    if !crate::is_json_content_type(&headers) {
+        return Ok(crate::unsupported_media_type());
+    }
     let value = serde_json::from_slice::<Value>(&body).map_err(|_| {
         WorkspaceError::Validation("Webhook payload must be valid JSON.".to_string())
     })?;
@@ -1789,8 +1795,8 @@ pub(crate) fn json_payload<T>(
         .map_err(|rejection| WorkspaceError::Validation(rejection.to_string()).into())
 }
 
-fn run_launch_payload(body: Bytes) -> Result<RunLaunchRequest, Response> {
-    let value = run_body_value(body)?;
+fn run_launch_payload(headers: &HeaderMap, body: Bytes) -> Result<RunLaunchRequest, Response> {
+    let value = run_body_value(headers, body)?;
     let object = run_body_object(&value)?;
     let mut errors = required_field_errors(object, &["flow_name", "summary"], &value);
     // Only an admitted delegation fixes a run's ID.
@@ -1805,8 +1811,8 @@ fn run_launch_payload(body: Bytes) -> Result<RunLaunchRequest, Response> {
     deserialize_run_payload(value)
 }
 
-fn run_retry_payload(body: Bytes) -> Result<RunRetryRequest, Response> {
-    let value = run_body_value(body)?;
+fn run_retry_payload(headers: &HeaderMap, body: Bytes) -> Result<RunRetryRequest, Response> {
+    let value = run_body_value(headers, body)?;
     let object = run_body_object(&value)?;
     let errors = extra_field_errors(object, &["conversation_handle"]);
     if !errors.is_empty() {
@@ -1815,8 +1821,8 @@ fn run_retry_payload(body: Bytes) -> Result<RunRetryRequest, Response> {
     deserialize_run_payload(value)
 }
 
-fn run_continue_payload(body: Bytes) -> Result<RunContinueRequest, Response> {
-    let value = run_body_value(body)?;
+fn run_continue_payload(headers: &HeaderMap, body: Bytes) -> Result<RunContinueRequest, Response> {
+    let value = run_body_value(headers, body)?;
     let object = run_body_object(&value)?;
     let mut errors = required_field_errors(object, &["start_node", "flow_source_mode"], &value);
     errors.extend(extra_field_errors(
@@ -1839,7 +1845,10 @@ fn run_continue_payload(body: Bytes) -> Result<RunContinueRequest, Response> {
     deserialize_run_payload(value)
 }
 
-fn run_body_value(body: Bytes) -> Result<Value, Response> {
+fn run_body_value(headers: &HeaderMap, body: Bytes) -> Result<Value, Response> {
+    if !crate::is_json_content_type(headers) {
+        return Err(crate::unsupported_media_type());
+    }
     serde_json::from_slice::<Value>(&body).map_err(|error| {
         run_validation_response(vec![json!({
             "type": "json_invalid",
@@ -2133,9 +2142,13 @@ async fn control_mission(
     State(store): State<Arc<ConversationStore>>,
     AxumPath((id, control)): AxumPath<(String, String)>,
     query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
+    headers: HeaderMap,
     body: Bytes,
-) -> ApiResult<MissionRecord> {
+) -> Result<Response, WorkspaceApiError> {
     let query = query_payload(query)?;
+    if !body.is_empty() && !crate::is_json_content_type(&headers) {
+        return Ok(crate::unsupported_media_type());
+    }
     let body: &[u8] = if body.is_empty() { b"{}" } else { &body };
     let close: spark_workspace::missions::MissionCloseRequest = serde_json::from_slice(body)
         .map_err(|error| WorkspaceError::Validation(format!("Invalid close request: {error}")))?;
@@ -2151,6 +2164,7 @@ async fn control_mission(
         }
     })
     .await
+    .map(IntoResponse::into_response)
 }
 
 async fn list_roles(

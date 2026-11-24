@@ -62,10 +62,10 @@ pub use codergen::{
     SESSION_NAME_METADATA_KEY,
 };
 pub use codex_app_server::{
-    build_codex_runtime_environment, codex_models_from_list_result, configure_codex_api_base_url,
+    build_codex_runtime_environment, codex_models_from_list_result, configure_agent_api,
     configure_codex_spark_home, list_available_codex_models, parse_jsonrpc_line,
-    process_codex_app_server_message, CodexAppServerBackend, CodexAppServerClient,
-    CodexAppServerError, CodexAppServerTurnState, CodexModelMetadata,
+    process_codex_app_server_message, AgentApi, CodexAppServerBackend, CodexAppServerClient,
+    CodexAppServerError, CodexAppServerTurnState, CodexModelMetadata, MANAGED_AGENT_API_KEYS,
 };
 pub use config::SessionConfig;
 pub use context::{

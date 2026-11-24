@@ -1755,6 +1755,7 @@ fn launch_command(
     let mut env = crate::local_environment::inherited_environment(inheritance);
     env.extend(harness.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     env.extend(channel_env);
+    crate::codex_app_server::drop_managed_key_aliases(&mut env);
     let existing_path = env
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
