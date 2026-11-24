@@ -2303,24 +2303,28 @@ impl AttractorApiService {
         pipeline_id: &str,
         artifact_path: &str,
     ) -> RuntimeRouteResponse {
-        let name = artifact_path
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect::<String>();
-        self.with_pipeline_artifact(pipeline_id, artifact_path, |file| RuntimeRouteResponse {
-            status_code: 200,
-            content_type: artifact_media_type(&file.absolute_path),
-            body: Value::Null,
-            download: Some((format!("attachment; filename=\"{name}\""), file.content)),
+        self.with_pipeline_artifact(pipeline_id, artifact_path, |file| {
+            // Named by the file storage resolved, not the path as spelled.
+            let name = file
+                .absolute_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>();
+            RuntimeRouteResponse {
+                status_code: 200,
+                content_type: artifact_media_type(&file.absolute_path),
+                body: Value::Null,
+                download: Some((format!("attachment; filename=\"{name}\""), file.content)),
+            }
         })
     }
 

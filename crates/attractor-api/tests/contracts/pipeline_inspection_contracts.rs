@@ -204,6 +204,19 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
             "application/json",
             &definition_bytes,
         ),
+        // Spellings storage normalizes keep the resolved file's name.
+        (
+            "artifacts/flow/flow-definition.json/",
+            "flow-definition.json",
+            "application/json",
+            &definition_bytes,
+        ),
+        (
+            "artifacts/flow/./flow-definition.json/.",
+            "flow-definition.json",
+            "application/json",
+            &definition_bytes,
+        ),
     ] {
         for query in ["?download=1", "?download=true"] {
             let download = handle_attractor_request(

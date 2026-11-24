@@ -1445,6 +1445,25 @@ async fn artifact_downloads_are_exact_attachments_the_browser_does_not_sniff() {
             assert_eq!(&bytes(download).await, content, "{name}{query}");
         }
     }
+    // Named by the file storage resolved, however the request spelled it.
+    for spelled in ["result.json/", "./result.json/.", "result.json%20"] {
+        let download = send(
+            &app,
+            "GET",
+            &format!("{}?download=1", uri(spelled)),
+            None,
+            &[],
+            None,
+        )
+        .await;
+        assert_eq!(download.status(), StatusCode::OK, "{spelled}");
+        assert_eq!(
+            header(&download, "content-disposition"),
+            Some("attachment; filename=\"result.json\""),
+            "{spelled}"
+        );
+        assert_eq!(&bytes(download).await, &json_bytes, "{spelled}");
+    }
 
     // Previews are unchanged: text as before, binary refused.
     let preview = send(&app, "GET", &uri("result.json"), None, &[], None).await;
