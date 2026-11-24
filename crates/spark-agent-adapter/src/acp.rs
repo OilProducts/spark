@@ -2583,10 +2583,15 @@ impl Turn {
         let mut reset = None;
         let mut restored = None;
         if let Some(saved) = &self.plan.saved {
+            // The same directory, however the saved record spells it, such
+            // as with a `\\?\` prefix; every other field matches exactly.
             let matches = AcpSessionRecord {
                 session_id: saved.session_id.clone(),
+                cwd: saved.cwd.clone(),
                 ..current.clone()
-            } == *saved;
+            } == *saved
+                && spark_common::paths::canonicalize_clean(&saved.cwd)
+                    .is_ok_and(|cwd| cwd == self.plan.cwd);
             let restore = if !matches {
                 Err("its harness, work area, configuration or instructions changed".to_string())
             } else if capabilities.session_capabilities.resume.is_some() {
@@ -3911,37 +3916,119 @@ mod tests {
         );
     }
 
-    /// A live session's work area is the probe's conventional one, so the
-    /// options it acknowledges reach the chooser asking for that work area.
+    /// A probe and every live session request name the work area alike: its
+    /// conventional canonical path, whatever spelling the caller or a saved
+    /// session used, and options a live session acknowledges reach the
+    /// chooser asking under another spelling. The agent is a shell script.
+    #[cfg(unix)]
     #[test]
-    fn live_sessions_and_choosers_share_one_conventional_work_area() {
+    fn probe_and_live_sessions_send_one_conventional_work_area() {
+        const AGENT: &str = r#"
+log=$1
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log"
+  id=${line#*\"id\":}
+  id=${id%%[,\}]*}
+  IFS= read -r capabilities < "$2"
+  case $line in
+    *'"method":"initialize"'*) result="{\"protocolVersion\":1,\"agentCapabilities\":$capabilities}" ;;
+    *'"method":"session/new"'*) result='{"sessionId":"shell-session","configOptions":[{"id":"model","name":"Model","type":"select","currentValue":"small","options":[{"value":"small","name":"Small"}]}]}' ;;
+    *'"method":"session/resume"'* | *'"method":"session/load"'*) result='{}' ;;
+    *'"method":"session/prompt"'*) result='{"stopReason":"end_turn"}' ;;
+    *) continue ;;
+  esac
+  printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$result"
+done
+"#;
         let temp = tempfile::tempdir().unwrap();
-        let spelled = temp.path().join(".");
-        let cwd = spark_common::paths::canonicalize_clean(&spelled).unwrap();
-        assert!(!cwd.to_string_lossy().starts_with(r"\\?\"), "{cwd:?}");
-        let plan = Plan {
-            harness_id: "work-area-test".to_string(),
-            harness_label: "Work area test".to_string(),
-            clarification: None,
-            policy: Default::default(),
-            cwd,
-            generation: "generation".to_string(),
-            instructions: None,
-            instructions_sha256: None,
-            channel_rendered: false,
-            selections: Vec::new(),
-            saved: None,
-            prompt: String::new(),
-            fresh_context: None,
-        };
-        let option = json!({
-            "id": "model", "name": "Model", "type": "select", "currentValue": "small",
-            "options": [{"value": "small", "name": "Small"}],
-        });
-        plan.acknowledge(&[serde_json::from_value(option.clone()).unwrap()]);
-        assert_eq!(
-            acknowledged_options(&spelled, "work-area-test", "generation"),
-            Some(vec![option])
+        let real = temp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let cwd = spark_common::paths::canonicalize_clean(&real).unwrap();
+        let (agent, log, capabilities) = (
+            temp.path().join("agent.sh"),
+            temp.path().join("acp.log"),
+            temp.path().join("capabilities"),
         );
+        std::fs::write(&agent, AGENT).unwrap();
+        let harness = json!({
+            "name": "Shell agent",
+            "executable": "/bin/sh",
+            "args": [agent, log, capabilities],
+        });
+        let request = |saved: Option<&AcpSessionRecord>| AgentTurnRequest {
+            conversation_id: "work-area".to_string(),
+            project_path: alias.to_string_lossy().into_owned(),
+            prompt: "Hi.".to_string(),
+            history: Vec::new(),
+            provider: Some("acp:shell".to_string()),
+            model: None,
+            llm_profile: None,
+            reasoning_effort: None,
+            chat_mode: None,
+            metadata: BTreeMap::from([
+                (
+                    "spark.execution.settings".to_string(),
+                    json!({"configuration": {"agents": {"acp_harnesses": {"shell": harness}}}}),
+                ),
+                // A flow node's turn: nothing parks, so each turn launches anew.
+                ("spark.runtime.run_id".to_string(), json!("run")),
+            ])
+            .into_iter()
+            .chain(saved.map(AcpSessionRecord::to_metadata).unwrap_or_default())
+            .collect(),
+        };
+        let run = |saved, agent_capabilities: &str| {
+            std::fs::write(&capabilities, agent_capabilities).unwrap();
+            run_turn(&request(saved), "shell", None, None)
+                .map_err(|failure| failure.message)
+                .unwrap()
+        };
+
+        std::fs::write(&capabilities, "{}").unwrap();
+        let shell: AcpHarness = serde_json::from_value(harness.clone()).unwrap();
+        discover("shell", &shell, Default::default(), &alias);
+        let fresh = run(None, "{}").record.unwrap();
+        assert_eq!(Path::new(&fresh.cwd), cwd);
+        assert!(acknowledged_options(
+            &alias,
+            "shell",
+            &launch_generation(&shell, Default::default())
+        )
+        .is_some());
+        // Saved under another spelling of the same directory, it continues.
+        let saved = AcpSessionRecord {
+            cwd: alias.to_string_lossy().into_owned(),
+            ..fresh.clone()
+        };
+        for agent_capabilities in [
+            r#"{"sessionCapabilities":{"resume":{}}}"#,
+            r#"{"loadSession":true}"#,
+        ] {
+            let turn = run(Some(&saved), agent_capabilities);
+            assert!(turn.output.thread_resume_failure.is_none());
+            assert_eq!(turn.record.as_ref(), Some(&fresh));
+        }
+
+        let sent = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|message| {
+                message["method"].as_str().is_some_and(|method| {
+                    method.starts_with("session/") && method != "session/prompt"
+                })
+            })
+            .map(|message| (message["method"].clone(), message["params"]["cwd"].clone()))
+            .collect::<Vec<_>>();
+        let expected = [
+            "session/new",
+            "session/new",
+            "session/resume",
+            "session/load",
+        ]
+        .map(|method| (json!(method), json!(cwd)));
+        assert_eq!(sent, expected);
     }
 }

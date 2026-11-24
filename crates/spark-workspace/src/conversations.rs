@@ -39,6 +39,7 @@ use spark_triggers::TriggerActivationRequest;
 use time::OffsetDateTime;
 
 use crate::errors::{WorkspaceError, WorkspaceResult};
+use crate::projects::normalize_project_path_or_400;
 
 const UI_TOOL_OUTPUT_PREVIEW_BYTES: usize = 8 * 1024;
 const ACTIVE_ASSISTANT_TURN_MESSAGE: &str = "An assistant turn is still in progress for this conversation. Wait for it to finish before sending another message.";
@@ -5587,13 +5588,6 @@ pub(crate) fn validate_reasoning_effort(
 ) -> WorkspaceResult<String> {
     spark_agent_adapter::config::validate_reasoning_effort(value, provider)
         .map_err(WorkspaceError::Validation)
-}
-
-fn normalize_project_path_or_400(project_path: &str) -> WorkspaceResult<String> {
-    normalize_project_path(project_path)
-        .map_err(|error| WorkspaceError::Validation(error.to_string()))?
-        .map(|path| path.to_string_lossy().into_owned())
-        .ok_or_else(|| WorkspaceError::Validation("Project path is required.".to_string()))
 }
 
 fn normalize_optional_project_path(value: Option<&str>) -> WorkspaceResult<Option<String>> {
