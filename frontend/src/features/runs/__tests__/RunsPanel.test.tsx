@@ -1513,6 +1513,50 @@ describe('RunsPanel', () => {
     await waitFor(() => expect(screen.getByTestId('run-header-title')).toHaveFocus())
   })
 
+  it('re-runs a native Windows path record with its registered project\'s execution default, not the workspace\'s', async () => {
+    const selectedRun = makeRun({
+      run_id: 'run-to-rerun',
+      flow_name: 'selected.dot',
+      status: 'completed',
+      project_path: 'C:\\Users\\chris\\repo',
+      working_directory: 'C:\\Users\\chris\\repo',
+      first_launch_input: 'windows topic',
+    })
+    const rerunFetch = installRerunFetchMock(selectedRun).getMockImplementation()!
+    const box = (id: string, label: string) => ({ id, label, mode: 'local_container', enabled: true, image: 'spark:dev', capabilities: {}, metadata: {} })
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => resolveRequestUrl(input).endsWith('/workspace/api/settings')
+      ? jsonResponse({
+        execution_placement: {
+          execution_modes: ['native', 'local_container'],
+          config: { filename: 'execution-profiles.toml', path: 'C:/config/execution-profiles.toml', exists: true, loaded: true, synthesized_native_default: false },
+          default_execution_profile_id: 'workspace-box',
+          profiles: [box('workspace-box', 'Workspace box'), box('project-box', 'Project box')],
+          validation_errors: [],
+        },
+      })
+      : rerunFetch(input, init))
+
+    act(() => {
+      useStore.getState().registerProject('C:\\Users\\chris\\repo')
+      useStore.getState().upsertProjectRegistryEntry({
+        directoryPath: 'C:/Users/chris/repo',
+        lastAccessedAt: null,
+        isFavorite: false,
+        activeConversationId: null,
+        executionProfileId: 'project-box',
+      })
+      useStore.getState().setActiveProjectPath('C:/Users/chris/repo')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+    await user.click(await runList().findByText('windows topic'))
+    await user.click(await screen.findByTestId('run-summary-rerun-button'))
+
+    await waitFor(() => expect(screen.getByTestId('launch-panel-options-summary')).toHaveTextContent('in a container: Project box'))
+    expect(screen.getByTestId('execution-profile-override-select')).toHaveDisplayValue('Project box — in a container (project default)')
+  })
+
   it('opens the run flow in the editor with the relevant node queued for selection', async () => {
     const selectedRun = makeRun({
       run_id: 'run-to-rerun',
