@@ -1610,6 +1610,74 @@ fn a_relink_racing_a_paused_cancel_never_loses_the_cancel() {
 }
 
 #[test]
+fn a_pause_that_commits_just_before_a_cancel_is_written_seals_it_locally() {
+    let home = Home::new();
+    home.link();
+    home.seed_chat("chat-owner", "amber-owner", "chat", "complete", json!([]));
+    let store = crate::shared_store(&home.settings.data_dir);
+    let id = home.start_on(LINKED, "build", Some("amber-owner"));
+    // An unlink holds the write lock as the cancel arrives, so the cancel
+    // is written just after the pause commits.
+    let mut unlink =
+        rusqlite::Connection::open(home.settings.data_dir.join("state.sqlite3")).unwrap();
+    let pause = unlink
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    pause
+        .execute(
+            "DELETE FROM environment_links WHERE environment_id = ?1",
+            [LINKED],
+        )
+        .unwrap();
+    pause
+        .execute(
+            "UPDATE delegations_out SET paused = 'The link to this environment was removed.' \
+             WHERE delegation_id = ?1",
+            [&id],
+        )
+        .unwrap();
+    let canceled = std::thread::scope(|scope| {
+        let cancel = scope.spawn(|| delegations::cancel(&home.settings, &store, &id).unwrap());
+        // Time for the cancel to read the record before the pause commits; it
+        // must decide from the record as it stands once its cancel is written.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        pause.commit().unwrap();
+        cancel.join().unwrap()
+    });
+    assert_eq!(canceled.phase, "sealed", "{canceled:?}");
+    assert_eq!(canceled.result.unwrap()["status"], "canceled");
+    assert_eq!(canceled.submitted_at, None);
+    assert_eq!(home.results("chat-owner", &id).len(), 1);
+}
+
+#[test]
+fn a_created_cancel_acknowledged_before_b_answer_was_stored_is_sent_until_it_seals() {
+    let home = Home::new();
+    home.seed_chat("chat-owner", "amber-owner", "chat", "complete", json!([]));
+    // B tombstones a cancel for a task it never admitted.
+    let b = Peer::serve(|what, id| match what {
+        "cancel" => (200, b_state(id, "sealed", "canceled")),
+        _ => (200, b_state(id, "launched", "running")),
+    });
+    home.link_to(LINKED, &b);
+    let id = home.start_on(LINKED, "build", Some("amber-owner"));
+    // A crash after the cancel was acknowledged, before B's answer was stored.
+    assert!(home.environments().request_cancel_out(&id).unwrap());
+    assert!(home.environments().acknowledge_cancel_out(&id).unwrap());
+    let wedged = home.out(&id);
+    assert_eq!(wedged.phase, "created");
+    assert!(wedged.cancel_requested_at.is_some() && wedged.cancel_acknowledged_at.is_some());
+
+    let mut follower = delegations::Follower::default();
+    assert_eq!(home.tick(&mut follower), Vec::<String>::new());
+    let record = home.out(&id);
+    assert_eq!(record.phase, "sealed", "{record:?}");
+    assert_eq!(record.result.unwrap()["status"], "canceled");
+    assert_eq!(home.results("chat-owner", &id).len(), 1);
+    assert_eq!(b.requests(), [format!("cancel {id}")]);
+}
+
+#[test]
 fn a_committed_cancel_stands_when_delivering_it_to_the_owner_fails() {
     let home = Home::new();
     install_runtime(
@@ -1670,6 +1738,61 @@ fn a_panicking_follower_worker_is_reported_and_backs_off_its_records() {
     // Backed off: the next tick does not reach the broken worker again.
     assert_eq!(home.tick(&mut follower), Vec::<String>::new());
     assert!(broken.requests().is_empty());
+}
+
+#[test]
+fn a_panic_following_one_record_backs_off_only_that_record() {
+    let home = Home::new();
+    // B keeps the first record running and seals the rest.
+    let running = Arc::new(Mutex::new(String::new()));
+    let first = running.clone();
+    let b = Peer::serve(move |_, id| {
+        if *first.lock().unwrap() == id {
+            (200, b_state(id, "launched", "running"))
+        } else {
+            (200, b_state(id, "sealed", "completed"))
+        }
+    });
+    home.link_to(LINKED, &b);
+    for key in ["d1", "d2", "d3"] {
+        home.start_on(LINKED, key, None);
+    }
+    // In the order the follower takes them; the middle one panics.
+    let ids: Vec<_> = home
+        .environments()
+        .followed_out()
+        .unwrap()
+        .into_iter()
+        .map(|record| record.delegation_id)
+        .collect();
+    let [d1, d2, d3] = <[String; 3]>::try_from(ids).unwrap();
+    *running.lock().unwrap() = d1.clone();
+    let mut follower = delegations::Follower::default();
+    follower.panic_delegation = Some(d2.clone());
+
+    let diagnostics = home.tick(&mut follower);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let diagnostic = &diagnostics[0];
+    assert!(
+        diagnostic.contains(LINKED)
+            && diagnostic.contains(&d2)
+            && !diagnostic.contains(&d1)
+            && !diagnostic.contains(&d3),
+        "{diagnostic}"
+    );
+    assert_eq!(home.out(&d1).phase, "accepted");
+    assert_eq!(home.out(&d2).phase, "created");
+    assert_eq!(home.out(&d3).phase, "sealed");
+    assert_eq!(b.requests().len(), 2, "{:?}", b.requests());
+
+    // D1 kept its success, so the next tick polls it; D2 waits out its backoff.
+    assert_eq!(home.tick(&mut follower), Vec::<String>::new());
+    assert_eq!(b.count(&format!("poll {d1}")), 1);
+    assert!(
+        b.requests().iter().all(|seen| !seen.ends_with(&d2)),
+        "{:?}",
+        b.requests()
+    );
 }
 
 #[test]

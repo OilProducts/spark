@@ -600,12 +600,14 @@ pub fn cancel(
     store: &Arc<ConversationStore>,
     delegation_id: &str,
 ) -> WorkspaceResult<DelegationOut> {
+    environments(settings).request_cancel_out(delegation_id)?;
+    // Read after the cancel is recorded, so a pause that committed first is
+    // seen. Storage checks the pause and submission again as it seals, so a
+    // relink that commits before the seal leaves the record open.
     let record = get(settings, delegation_id)?;
     if record.phase == "sealed" {
         return Ok(record);
     }
-    environments(settings).request_cancel_out(delegation_id)?;
-    // Storage checks the pause and submission again as it seals.
     if let Some(reason) = record.paused.as_deref() {
         let target_kind = if record.kind == "flow" {
             "run"
@@ -696,14 +698,18 @@ pub struct Follower {
     /// panics.
     #[doc(hidden)]
     pub panic_environment: Option<String>,
+    /// Fault injection for contracts: following this delegation panics.
+    #[doc(hidden)]
+    pub panic_delegation: Option<String>,
 }
 
 impl Follower {
     /// One pass over every open record whose follow is due. Environments are
     /// polled in parallel so one unreachable peer does not stall healthy
-    /// ones, and each record is followed on its own, so one failing record
-    /// backs off alone. Returns the diagnostics it printed for workers that
-    /// panicked; their records back off as if they had failed.
+    /// ones, and each record is followed on its own, so one failing or
+    /// panicking record backs off alone. Returns the diagnostics it printed
+    /// for records and workers that panicked; their records back off as if
+    /// they had failed.
     // ponytail: scoped threads per tick, one request per due record; move to
     // independent per-environment tasks if a slow peer delaying the next tick
     // ever matters.
@@ -732,20 +738,38 @@ impl Follower {
                 .or_default()
                 .push(record);
         }
-        let panic_environment = self.panic_environment.as_deref();
+        let (panic_environment, panic_delegation) = (
+            self.panic_environment.as_deref(),
+            self.panic_delegation.as_deref(),
+        );
+        let lost = || Err::<(), _>("The follower panicked.".to_string());
         let follow_env = |env: &str, records: &[DelegationOut]| {
             if panic_environment == Some(env) {
                 panic!("Injected follower panic for environment {env}.");
             }
-            records
+            let mut panicked = Vec::new();
+            let outcomes: Vec<_> = records
                 .iter()
                 .map(|record| {
-                    (
-                        record.delegation_id.clone(),
-                        follow(settings, store, record),
-                    )
+                    let id = &record.delegation_id;
+                    // A panic loses only this record's outcome.
+                    let followed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if panic_delegation == Some(id.as_str()) {
+                            panic!("Injected follower panic for delegation {id}.");
+                        }
+                        follow(settings, store, record)
+                    }));
+                    let outcome = followed.unwrap_or_else(|_| {
+                        panicked.push(format!(
+                            "The delegation follower panicked following delegation {id} on \
+                             environment {env}; it retries after a backoff."
+                        ));
+                        lost()
+                    });
+                    (id.clone(), outcome)
                 })
-                .collect::<Vec<_>>()
+                .collect();
+            (outcomes, panicked)
         };
         let mut diagnostics = Vec::new();
         let outcomes = std::thread::scope(|scope| {
@@ -755,24 +779,26 @@ impl Follower {
                 .collect();
             let mut outcomes = Vec::new();
             for (env, records, worker) in workers {
-                if let Ok(followed) = worker.join() {
+                if let Ok((followed, panicked)) = worker.join() {
                     outcomes.extend(followed);
+                    diagnostics.extend(panicked);
                     continue;
                 }
-                // Its outcomes are lost: report it, and back its records off.
+                // A panic outside any one record loses the worker's outcomes:
+                // report it, and back its records off.
                 let ids: Vec<_> = records.iter().map(|r| r.delegation_id.clone()).collect();
-                let diagnostic = format!(
+                diagnostics.push(format!(
                     "The delegation follower for environment {env} panicked; delegations {} \
                      retry after a backoff.",
                     ids.join(", ")
-                );
-                eprintln!("{diagnostic}");
-                diagnostics.push(diagnostic);
-                let lost = Err("The follower panicked.".to_string());
-                outcomes.extend(ids.into_iter().map(|id| (id, lost.clone())));
+                ));
+                outcomes.extend(ids.into_iter().map(|id| (id, lost())));
             }
             outcomes
         });
+        for diagnostic in &diagnostics {
+            eprintln!("{diagnostic}");
+        }
         let finished = Instant::now();
         for (id, outcome) in outcomes {
             match outcome {
@@ -813,7 +839,10 @@ fn follow(
     let peer = |method: Method, path: &str, body: Option<Value>| {
         call(method, &link.origin, path, Some(&token), body.as_ref())
     };
-    let cancel = record.cancel_requested_at.is_some() && record.cancel_acknowledged_at.is_none();
+    // A created record with a cancel is never submitted: its cancel is sent
+    // again until B's answer moves it on, even once acknowledged.
+    let cancel = record.cancel_requested_at.is_some()
+        && (record.cancel_acknowledged_at.is_none() || record.phase == "created");
     let response = if cancel {
         // Sent first, so a task B never admitted is tombstoned, not launched.
         let body = json!({"origin_environment_id": store.environment_id()});
@@ -851,10 +880,14 @@ fn follow(
             return Ok(());
         }
     };
+    apply(settings, store, record, &state).map_err(|error| error.to_string())?;
+    // Only once B's answer is stored, so a failed apply resends the cancel.
     if cancel {
-        let _ = repository.acknowledge_cancel_out(id);
+        repository
+            .acknowledge_cancel_out(id)
+            .map_err(|error| error.to_string())?;
     }
-    apply(settings, store, record, &state).map_err(|error| error.to_string())
+    Ok(())
 }
 
 fn delegation_inbox_payload(record: &DelegationOut, state: &Value) -> Value {

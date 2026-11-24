@@ -23,7 +23,7 @@ use crate::error::{Result, StorageError};
 /// File name of the state database inside the Spark home.
 pub const STATE_DATABASE_FILE_NAME: &str = "state.sqlite3";
 /// Schema version written to `store_meta`; any other stored version fails open.
-pub const STATE_DATABASE_SCHEMA_VERSION: i64 = 6;
+pub const STATE_DATABASE_SCHEMA_VERSION: i64 = 7;
 /// Maximum rows returned by one catch-up before a resync is required.
 pub const CATCH_UP_MAX_ROWS: usize = 1000;
 /// Maximum payload bytes returned by one catch-up before a resync is required.
