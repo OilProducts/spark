@@ -392,6 +392,59 @@ it('reports a failed reload after a sent form once Paused is selected, beside Pa
     expect(sent(answerRoute('del-f', 'form-done'))).toHaveLength(1)
 })
 
+it('shows a reload that fails after Settings was reopened on the reopened card, with the sent form\'s draft released', async () => {
+    const form = deployForm('form-done', 'Done details')
+    const reload = later()
+    serve({
+        [LIST]: [ok(list(delegation('del-f', 'deploy-task', [form]))), reload.reply, ok(list(delegation('del-f', 'deploy-task', [form])))],
+        [answerRoute('del-f', 'form-done')]: [ok({})],
+    })
+    const first = renderCard()
+    const name = asked('deploy-task', 'Done details', 'del-f')
+    const before = await screen.findByRole('group', { name })
+    await first.user.type(within(before).getByRole('textbox', { name: 'Region' }), 'eu-west')
+    await first.user.type(within(before).getByRole('textbox', { name: 'Replicas' }), '3')
+    await first.user.click(within(before).getByRole('button', { name: 'Submit' }))
+    expect(await screen.findByText('Sent answer for deploy-task.')).toBeInTheDocument()
+    expect(localAnswers().drafts).toEqual({})
+    // Settings is left and reopened while the reload after the answer is still out.
+    first.unmount()
+
+    renderCard()
+    expect(await screen.findByText('deploy-task')).toBeInTheDocument()
+    await settled()
+    expect(screen.queryByRole('group', { name })).not.toBeInTheDocument()
+    await reload.resolve({ detail: 'database is locked' }, 500)
+    expect(await screen.findByText('Sent answer for deploy-task. Could not refresh delegations: Database is locked')).toBeInTheDocument()
+    expect(screen.getByText('deploy-task')).toBeInTheDocument()
+    expect(localAnswers().drafts).toEqual({})
+    expect(localAnswers().acknowledged).toEqual(new Set(['del-f:form-done']))
+    expect(sent(answerRoute('del-f', 'form-done'))).toHaveLength(1)
+})
+
+it('keeps a Local reload that fails after the user opened a linked environment\'s Settings off that card', async () => {
+    const reload = later()
+    const remoteList = `GET ${REMOTE}/workspace/api/delegations`
+    serve({
+        ...ENVIRONMENTS,
+        [LIST]: [ok(list(nightly)), reload.reply],
+        [answerRoute('del-1', 'q-approve')]: [ok({})],
+        [remoteList]: [ok(list(delegation('del-9', 'remote-task', [])))],
+    })
+    const first = renderCard()
+    await first.user.click(within(await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' }))
+    expect(await screen.findByText('Sent answer for nightly-checks.')).toBeInTheDocument()
+    first.unmount()
+    await switchTo('env-x')
+    renderCard()
+    expect(await screen.findByText('remote-task')).toBeInTheDocument()
+    await settled()
+
+    await reload.resolve({ detail: 'database is locked' }, 500)
+    expect(screen.queryByText(/Could not refresh delegations/)).not.toBeInTheDocument()
+    expect(screen.getByText('remote-task')).toBeInTheDocument()
+})
+
 it('keeps an unsent draft for a newer question when a refresh from before Settings was left returns late', async () => {
     const late = later()
     const newer = delegation('del-1', 'nightly-checks', [approveGate(), freeText('q-next', 'Anything else?')])

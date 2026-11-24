@@ -56,8 +56,9 @@ const activeEnv = () => getActiveEnvironmentId() ?? ''
 // by the owner's decision, after reviews asked both for this and for waiting on every environment's.
 const inFlightCounts: Record<string, number> = {}
 // The card showing each environment, so a change sent from a card since closed reports, shows its
-// updated row and reloads where it is seen.
-const shownCards = new Map<string, (done: string, updated?: DelegationOut) => Promise<void>>()
+// updated row and reloads where it is seen, and a reload that fails after Settings was reopened shows there.
+type ShownCard = { report: (done: string, updated?: DelegationOut) => Promise<void>; fail: (message: string) => void }
+const shownCards = new Map<string, ShownCard>()
 const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
 // Delegations still in flight are re-read this often, so new questions and phases show up.
 const LIVE_REFRESH_MS = 4000
@@ -328,15 +329,14 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         setStatus('')
     }), [load])
 
-    // After a change went through, a failed reload is reported in place of the change's status, beside
-    // the rows of whichever filter is selected by then.
+    // After a change went through, a failed reload is reported in place of the change's status, on the
+    // card showing this environment when it fails, beside the rows of whichever filter is selected by then.
     const reloadAfterChange = useCallback((done: string) => load(false, true).catch((err: unknown) => {
-        setLoadError(`${done} Could not refresh delegations: ${errorText(err, 'the request failed.')}`)
-        setStatus('')
-    }), [load])
+        shownCards.get(env)?.fail(`${done} Could not refresh delegations: ${errorText(err, 'the request failed.')}`)
+    }), [env, load])
 
     useEffect(() => {
-        const report = async (done: string, updated?: DelegationOut) => {
+        const report: ShownCard['report'] = async (done, updated) => {
             // The row shows the server's answer now, whether or not the reload below succeeds. One already
             // seen sealed is final: an older answer never reopens it.
             if (updated && seenRef.current[updated.delegation_id]?.phase !== 'sealed') {
@@ -352,9 +352,16 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             setStatus(done)
             await reloadAfterChange(done)
         }
-        shownCards.set(env, report)
+        const card: ShownCard = {
+            report,
+            fail: (message) => {
+                setLoadError(message)
+                setStatus('')
+            },
+        }
+        shownCards.set(env, card)
         return () => {
-            if (shownCards.get(env) === report) shownCards.delete(env)
+            if (shownCards.get(env) === card) shownCards.delete(env)
         }
     }, [env, reloadAfterChange])
 
@@ -432,7 +439,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                 : `Delegation ${record.request_key} had already ended: ${outcome}.`
         // The card showing this environment, which Settings may have reopened meanwhile, shows the result
         // and reloads; a card since closed never touches the environment shown now.
-        await shownCards.get(env)?.(done, updated)
+        await shownCards.get(env)?.report(done, updated)
         setBusy(false)
     }
 
@@ -458,7 +465,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         updateAnswers(env, ({ drafts: { [key]: _sent, ...drafts }, acknowledged }) => ({ drafts, acknowledged: new Set(acknowledged).add(key) }))
         // The reply is in, so the caller releases its draft now. The card showing this environment, which
         // Settings may have reopened meanwhile, reports it and reloads; a failed reload is reported on its own.
-        void shownCards.get(env)?.(`Sent answer for ${record.request_key}.`).then(() => setBusy(false))
+        void shownCards.get(env)?.report(`Sent answer for ${record.request_key}.`).then(() => setBusy(false))
         return true
     }
 
