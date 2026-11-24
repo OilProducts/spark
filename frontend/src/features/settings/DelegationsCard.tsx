@@ -50,9 +50,9 @@ const editDraft = (env: string, key: string, patch: Partial<AnswerDraft>) => upd
 }))
 // The environment a request goes to, read when it is sent.
 const activeEnv = () => getActiveEnvironmentId() ?? ''
-// List requests still out in any environment, superseded ones and those of a card since closed
-// included: a live refresh waits for all of them.
-let inFlightCount = 0
+// List requests still out, by environment, superseded ones and those of a card since closed included:
+// a live refresh waits for those of the environment shown, never for another environment's.
+const inFlightCounts: Record<string, number> = {}
 // The card showing each environment, so a reply sent from a card since closed reports and reloads where it is seen.
 const shownCards = new Map<string, (done: string) => Promise<void>>()
 const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
@@ -286,35 +286,38 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     // selected, is dropped; a current failure is thrown for the caller to report.
     const load = useCallback(async (polling = false) => {
         const requested = filterRef.current
-        // A Paused list can't show an active delegation sealing, so Paused's live refresh reads every
-        // delegation and keeps the paused ones itself; it still sees one that pauses.
-        const fetched = polling && requested === 'paused' ? 'all' : requested
         const env = activeEnv()
         const seq = ++requestSeqRef.current
         const current = () => mountedRef.current && seq === requestSeqRef.current && requested === filterRef.current
-        inFlightCount += 1
+        inFlightCounts[env] = (inFlightCounts[env] ?? 0) + 1
         setLoading(true)
         try {
-            const records = await fetchDelegations(FILTER_QUERY[fetched])
+            const [records, open] = await Promise.all([
+                fetchDelegations(FILTER_QUERY[requested]),
+                // A Paused list can't show an active delegation sealing or pausing, so Paused's live
+                // refresh also reads the Open list.
+                polling && requested === 'paused' ? fetchDelegations(FILTER_QUERY.open) : null,
+            ])
             if (!current()) return
-            setLoaded({ filter: requested, records: fetched === requested ? records : records.filter((row) => inFilter(row, requested)) })
+            setLoaded({ filter: requested, records })
+            const known = open ? [...open, ...records] : records
             // A list of every open delegation (All, Open) shows that one seen open but left out has sealed since.
-            const coversOpen = fetched !== 'paused'
+            const coversOpen = requested !== 'paused' || open !== null
             const kept = coversOpen
                 ? Object.fromEntries(Object.entries(seenRef.current).filter(([, row]) => row.phase === 'sealed'))
                 : seenRef.current
-            seenRef.current = { ...kept, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }
+            seenRef.current = { ...kept, ...Object.fromEntries(known.map((row) => [row.delegation_id, row])) }
             setSeen(seenRef.current)
             setLoadError(null)
             setCancelErrors((errors) => Object.fromEntries(Object.entries(errors).filter(([id]) => {
-                const record = records.find((row) => row.delegation_id === id)
+                const record = known.find((row) => row.delegation_id === id)
                 return !record || (!record.cancel_requested_at && record.phase !== 'sealed')
             })))
-            forgetUnasked(env, records, coversOpen)
+            forgetUnasked(env, known, coversOpen)
         } catch (err) {
             if (current()) throw err
         } finally {
-            inFlightCount -= 1
+            inFlightCounts[env] -= 1
             if (seq === requestSeqRef.current) setLoading(false)
         }
     }, [])
@@ -357,7 +360,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     useEffect(() => {
         if (!active || !live) return
         const timer = window.setInterval(() => {
-            if (inFlightCount === 0) void refresh(true)
+            if (!inFlightCounts[activeEnv()]) void refresh(true)
         }, LIVE_REFRESH_MS)
         return () => window.clearInterval(timer)
     }, [active, live, refresh])

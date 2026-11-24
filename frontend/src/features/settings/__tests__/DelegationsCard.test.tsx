@@ -507,11 +507,13 @@ it('hides an answered question across a stale snapshot and picks up a new one on
     expect(vi.getTimerCount()).toBe(0)
 })
 
-it('keeps an empty Paused view polling so a delegation that loses its link shows up', async () => {
+it('keeps an empty Paused view polling so a delegation that loses its link shows up, without reading the full history', async () => {
+    const unlinked = { ...nightly, paused: 'No link to this environment; link it again to resume.' }
     serve({
-        // Paused's live refresh reads every delegation and keeps the paused ones.
-        [LIST]: [ok(list(nightly)), ok(list({ ...nightly, paused: 'No link to this environment; link it again to resume.' }, delegation('del-3', 'release-task', [])))],
-        [`${LIST}?paused=true`]: [ok(list())],
+        [LIST]: [ok(list(nightly))],
+        [`${LIST}?paused=true`]: [ok(list()), ok(list(unlinked))],
+        // Paused's live refresh also reads the Open list.
+        [`${LIST}?open=true`]: [ok(list(unlinked, delegation('del-3', 'release-task', [])))],
     })
     const { user } = renderCard()
     expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
@@ -522,12 +524,15 @@ it('keeps an empty Paused view polling so a delegation that loses its link shows
     expect(await screen.findByText('No link to this environment; link it again to resume.')).toBeInTheDocument()
     expect(screen.getByText('nightly-checks')).toBeInTheDocument()
     expect(screen.queryByText('release-task')).not.toBeInTheDocument()
+    expect(sent(LIST)).toHaveLength(1)
+    expect(sent(`${LIST}?open=true`)).toHaveLength(1)
 })
 
 it('stops polling Paused once the last active delegation seals while it stays selected', async () => {
     serve({
-        [LIST]: [ok(list(nightly)), ok(list({ ...nightly, phase: 'sealed', result: { status: 'completed' } }))],
+        [LIST]: [ok(list(nightly))],
         [`${LIST}?paused=true`]: [ok(list())],
+        [`${LIST}?open=true`]: [ok(list())],
     })
     const { user } = renderCard()
     expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
@@ -537,12 +542,13 @@ it('stops polling Paused once the last active delegation seals while it stays se
 
     await act(async () => { vi.advanceTimersByTime(4000) })
     await settled()
-    expect(sent(LIST)).toHaveLength(2)
+    expect(sent(`${LIST}?open=true`)).toHaveLength(1)
+    expect(sent(LIST)).toHaveLength(1)
     expect(vi.getTimerCount()).toBe(0)
     expect(screen.getByText('No matching delegations.')).toBeInTheDocument()
 })
 
-it('skips live refreshes in another environment while a list request from the first is still out', async () => {
+it('keeps live refreshes going in a healthy environment while a closed card\'s list request in another is stalled', async () => {
     const late = later()
     const remoteList = `GET ${REMOTE}/workspace/api/delegations`
     serve({
@@ -552,7 +558,7 @@ it('skips live refreshes in another environment while a list request from the fi
     })
     const first = renderCard()
     expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
-    // A live refresh is in flight when the user switches environments and opens System settings there.
+    // A live refresh is stalled when the user switches environments and opens System settings there.
     await act(async () => { vi.advanceTimersByTime(4000) })
     expect(sent(LIST)).toHaveLength(2)
     first.unmount()
@@ -562,10 +568,8 @@ it('skips live refreshes in another environment while a list request from the fi
     await settled()
 
     await act(async () => { vi.advanceTimersByTime(4000) })
-    expect(sent(remoteList)).toHaveLength(1)
-    await late.resolve(list(nightly))
-    await act(async () => { vi.advanceTimersByTime(4000) })
     await waitFor(() => expect(sent(remoteList)).toHaveLength(2))
+    expect(sent(LIST)).toHaveLength(2)
 })
 
 it('stops polling an empty Paused view once Open shows every delegation seen in flight has sealed', async () => {
@@ -888,7 +892,7 @@ it('drops an Open response that resolves after Paused is selected, and polls onl
     const open = later()
     serve({
         [LIST]: [ok(list(nightly, pausedTask))],
-        [`${LIST}?open=true`]: [open.reply],
+        [`${LIST}?open=true`]: [open.reply, ok(list(nightly, pausedTask))],
         [`${LIST}?paused=true`]: [ok(list(pausedTask))],
     })
     const { user } = renderCard()
@@ -900,15 +904,16 @@ it('drops an Open response that resolves after Paused is selected, and polls onl
     await settled()
     // The superseded Open request is still out, so the live refresh skips its tick.
     await act(async () => { vi.advanceTimersByTime(4000) })
-    expect(sent(LIST)).toHaveLength(1)
+    expect(sent(`${LIST}?paused=true`)).toHaveLength(1)
 
     await open.resolve(list(nightly))
     expect(screen.queryByText('nightly-checks')).not.toBeInTheDocument()
     expect(screen.getByText('paused-task')).toBeInTheDocument()
-    // Paused's live refresh reads every delegation and keeps the paused ones.
     await act(async () => { vi.advanceTimersByTime(4000) })
-    await waitFor(() => expect(sent(LIST)).toHaveLength(2))
+    await waitFor(() => expect(sent(`${LIST}?paused=true`)).toHaveLength(2))
     await settled()
+    expect(sent(`${LIST}?open=true`)).toHaveLength(2)
+    expect(sent(LIST)).toHaveLength(1)
     expect(screen.getByText('paused-task')).toBeInTheDocument()
     expect(screen.queryByText('nightly-checks')).not.toBeInTheDocument()
 })
