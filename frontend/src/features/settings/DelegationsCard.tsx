@@ -50,9 +50,9 @@ const editDraft = (env: string, key: string, patch: Partial<AnswerDraft>) => upd
 }))
 // The environment a request goes to, read when it is sent.
 const activeEnv = () => getActiveEnvironmentId() ?? ''
-// List requests still out, by environment, superseded ones and those of a card since closed
+// List requests still out in any environment, superseded ones and those of a card since closed
 // included: a live refresh waits for all of them.
-const inFlightCounts: Record<string, number> = {}
+let inFlightCount = 0
 // The card showing each environment, so a reply sent from a card since closed reports and reloads where it is seen.
 const shownCards = new Map<string, (done: string) => Promise<void>>()
 const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
@@ -284,19 +284,22 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
 
     // Loads the selected filter. A response to an older request, or for a filter no longer
     // selected, is dropped; a current failure is thrown for the caller to report.
-    const load = useCallback(async () => {
+    const load = useCallback(async (polling = false) => {
         const requested = filterRef.current
+        // A Paused list can't show an active delegation sealing, so Paused's live refresh reads every
+        // delegation and keeps the paused ones itself; it still sees one that pauses.
+        const fetched = polling && requested === 'paused' ? 'all' : requested
         const env = activeEnv()
         const seq = ++requestSeqRef.current
         const current = () => mountedRef.current && seq === requestSeqRef.current && requested === filterRef.current
-        inFlightCounts[env] = (inFlightCounts[env] ?? 0) + 1
+        inFlightCount += 1
         setLoading(true)
         try {
-            const records = await fetchDelegations(FILTER_QUERY[requested])
+            const records = await fetchDelegations(FILTER_QUERY[fetched])
             if (!current()) return
-            setLoaded({ filter: requested, records })
+            setLoaded({ filter: requested, records: fetched === requested ? records : records.filter((row) => inFilter(row, requested)) })
             // A list of every open delegation (All, Open) shows that one seen open but left out has sealed since.
-            const coversOpen = requested !== 'paused'
+            const coversOpen = fetched !== 'paused'
             const kept = coversOpen
                 ? Object.fromEntries(Object.entries(seenRef.current).filter(([, row]) => row.phase === 'sealed'))
                 : seenRef.current
@@ -311,12 +314,12 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         } catch (err) {
             if (current()) throw err
         } finally {
-            inFlightCounts[env] -= 1
+            inFlightCount -= 1
             if (seq === requestSeqRef.current) setLoading(false)
         }
     }, [])
 
-    const refresh = useCallback(() => load().catch((err: unknown) => {
+    const refresh = useCallback((polling = false) => load(polling).catch((err: unknown) => {
         setLoadError(errorText(err, 'Could not load delegations.'))
         setStatus('')
     }), [load])
@@ -354,7 +357,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     useEffect(() => {
         if (!active || !live) return
         const timer = window.setInterval(() => {
-            if (!inFlightCounts[activeEnv()]) void refresh()
+            if (inFlightCount === 0) void refresh(true)
         }, LIVE_REFRESH_MS)
         return () => window.clearInterval(timer)
     }, [active, live, refresh])
