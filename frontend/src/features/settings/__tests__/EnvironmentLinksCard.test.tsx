@@ -30,6 +30,8 @@ beforeEach(() => {
         environment_id: 'env-local-1',
         display_name: 'mac-studio',
         protocol_version: 1,
+        ui_api_version: 1,
+        spark_version: '0.1.0',
     })
     vi.mocked(fetchPeerTokens).mockResolvedValue([
         { token_id: 'tok-1', label: 'Laptop', created_at: '2026-11-23T00:00:00Z', revoked_at: null },

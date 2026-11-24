@@ -171,6 +171,11 @@ async fn public_routes_serve_untrusted_requests() {
         let descriptor = json(descriptor).await;
         assert_eq!(descriptor["environment_id"], environment_id.as_str());
         assert_eq!(descriptor["protocol_version"], 1);
+        assert_eq!(descriptor["ui_api_version"], 1);
+        assert!(!descriptor["spark_version"]
+            .as_str()
+            .expect("spark version")
+            .is_empty());
         assert!(!descriptor["display_name"]
             .as_str()
             .expect("display name")
@@ -564,10 +569,141 @@ async fn delegation_list_and_discovery_routes_are_mounted_and_protected() {
         "/workspace/api/environments/links/env-b/projects",
         "/workspace/api/environments/links/env-b/flows",
         "/workspace/api/environments/links/env-b/flows/ops/run/files",
+        "/workspace/api/environments/links/env-b/proxy/environment",
+        "/workspace/api/environments/links/env-b/proxy/workspace/api/projects",
     ] {
         let remote = send(&app, "GET", uri, Some(REMOTE), &[], None).await;
         assert_eq!(remote.status(), StatusCode::UNAUTHORIZED, "{uri}");
     }
+}
+
+#[tokio::test]
+async fn linked_environment_proxy_injects_bearer_streams_sse_and_blocks_disallowed_paths() {
+    use futures_util::StreamExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cfg = settings(temp.path());
+    let app = crate::store_app_default(cfg.clone());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
+    let port = listener.local_addr().unwrap().port();
+    let (release_sse_tx, mut release_sse_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let upstream = tokio::spawn(async move {
+        // Request 1: POST JSON to /workspace/api/projects/register?foo=1
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = sock.read(&mut buf).await.unwrap();
+        let first_req = String::from_utf8_lossy(&buf[..n]).to_string();
+        let body = r#"{"ok":true}"#;
+        let resp = format!(
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        sock.write_all(resp.as_bytes()).await.unwrap();
+        drop(sock);
+
+        // Request 2: Streaming SSE on /workspace/api/live/events
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = sock.read(&mut buf).await.unwrap();
+        let second_req = String::from_utf8_lossy(&buf[..n]).to_string();
+        sock.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\ndata: first\n\n",
+        )
+        .await
+        .unwrap();
+        sock.flush().await.unwrap();
+        let _ = (&mut release_sse_rx).await;
+        sock.write_all(b"data: second\n\n").await.unwrap();
+        sock.flush().await.unwrap();
+        drop(sock);
+        (first_req, second_req)
+    });
+
+    spark_storage::environment::EnvironmentRepository::new(&cfg.data_dir)
+        .save_link(
+            &spark_storage::environment::EnvironmentLink {
+                environment_id: "env-b".into(),
+                origin: format!("http://127.0.0.1:{port}"),
+                label: "B".into(),
+                created_at: spark_storage::environment::now(),
+            },
+            "stored-peer-token",
+        )
+        .unwrap();
+
+    // Disallowed paths and traversal are refused before contacting upstream.
+    for bad in [
+        "/workspace/api/environments/links/env-b/proxy/assets/app.js",
+        "/workspace/api/environments/links/env-b/proxy/workspace/api/../environment",
+        "/workspace/api/environments/links/env-b/proxy/etc/passwd",
+        "/workspace/api/environments/links/env-missing/proxy/environment",
+    ] {
+        let refused = send(&app, "GET", bad, None, &[], None).await;
+        assert_eq!(refused.status(), StatusCode::NOT_FOUND, "{bad}");
+    }
+
+    // Request 1: forwards method, query, JSON body, and replaces caller Authorization with link bearer.
+    let posted = send(
+        &app,
+        "POST",
+        "/workspace/api/environments/links/env-b/proxy/workspace/api/projects/register?foo=1",
+        None,
+        &[("authorization", "Bearer caller-should-not-leak")],
+        Some(r#"{"project_path":"/srv/repo"}"#),
+    )
+    .await;
+    assert_eq!(posted.status(), StatusCode::CREATED);
+    assert_eq!(json(posted).await, json!({"ok": true}));
+
+    // Request 2: SSE chunk 1 arrives while upstream is still open!
+    let sse = send(
+        &app,
+        "GET",
+        "/workspace/api/environments/links/env-b/proxy/workspace/api/live/events",
+        None,
+        &[("accept", "text/event-stream")],
+        None,
+    )
+    .await;
+    assert_eq!(sse.status(), StatusCode::OK);
+    assert_eq!(
+        sse.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let mut stream = sse.into_body().into_data_stream();
+    let first_chunk = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+        .await
+        .expect("first SSE chunk arrived before upstream closed")
+        .expect("some chunk")
+        .expect("ok bytes");
+    assert_eq!(String::from_utf8_lossy(&first_chunk), "data: first\n\n");
+    let _ = release_sse_tx.send(());
+    let second_chunk = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+        .await
+        .expect("second SSE chunk")
+        .expect("some chunk")
+        .expect("ok bytes");
+    assert_eq!(String::from_utf8_lossy(&second_chunk), "data: second\n\n");
+
+    let (first_req, second_req) = upstream.await.unwrap();
+    assert!(first_req.starts_with("POST /workspace/api/projects/register?foo=1 HTTP/"));
+    assert!(first_req
+        .to_ascii_lowercase()
+        .contains("authorization: bearer stored-peer-token"));
+    assert!(!first_req.contains("caller-should-not-leak"));
+    assert!(first_req.contains(r#"{"project_path":"/srv/repo"}"#));
+    assert!(second_req.starts_with("GET /workspace/api/live/events HTTP/"));
+    assert!(second_req
+        .to_ascii_lowercase()
+        .contains("authorization: bearer stored-peer-token"));
 }
 
 fn request(

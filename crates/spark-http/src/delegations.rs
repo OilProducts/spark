@@ -1,13 +1,18 @@
 //! Routes under `/workspace/api` for links to other environments, the
 //! delegations this environment sends, and the ones it admits.
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, Query, State};
-use axum::routing::{get, post};
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{header, HeaderName, HeaderValue, StatusCode};
+use axum::response::Response;
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use spark_storage::environment::EnvironmentRepository;
 use spark_workspace::conversations::WorkspaceConversationService;
 use spark_workspace::delegations::{
     self, DelegationAnswerRequest, DelegationListFilter, DelegationStartRequest, IncomingCancel,
@@ -38,6 +43,10 @@ pub(crate) fn router() -> Router<HttpAppState> {
         .route(
             "/environments/links/{environment_id}/flows/{*flow_path}",
             get(link_flow_files),
+        )
+        .route(
+            "/environments/links/{environment_id}/proxy/{*rest}",
+            any(proxy_linked_environment),
         )
         .route("/delegations", get(list_delegations).post(start))
         .route("/delegations/{delegation_id}", get(get_delegation))
@@ -170,6 +179,121 @@ async fn list_delegations(
         }))
     })
     .await
+}
+
+fn proxy_client() -> Result<&'static reqwest::Client, WorkspaceError> {
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(10))
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| WorkspaceError::Internal(error.clone()))
+}
+
+/// Only Spark's own API surfaces may be proxied through a link, with no
+/// traversal segments.
+fn allowed_proxy_path(rest: &str) -> Option<&str> {
+    let trimmed = rest.trim_start_matches('/');
+    if trimmed.is_empty()
+        || trimmed.contains('\\')
+        || trimmed.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
+        || trimmed.split('/').any(|seg| matches!(seg, "." | ".."))
+    {
+        return None;
+    }
+    let allowed = trimmed == "environment"
+        || trimmed == "workspace/api"
+        || trimmed.starts_with("workspace/api/")
+        || trimmed == "attractor"
+        || trimmed.starts_with("attractor/");
+    allowed.then_some(trimmed)
+}
+
+/// Streams HTTP, binary, and SSE requests to a linked environment, injecting
+/// the stored bearer token on A's server so the token never reaches a client.
+async fn proxy_linked_environment(
+    State(state): State<HttpAppState>,
+    Path((environment_id, rest)): Path<(String, String)>,
+    request: Request,
+) -> Result<Response, WorkspaceApiError> {
+    let Some(path) = allowed_proxy_path(&rest) else {
+        return Err(WorkspaceApiError(WorkspaceError::NotFound(
+            "Not Found".to_string(),
+        )));
+    };
+    let data_dir = state.settings.data_dir.clone();
+    let env_id = environment_id.clone();
+    let link_and_token = tokio::task::spawn_blocking(move || {
+        EnvironmentRepository::new(&data_dir)
+            .link(&env_id)
+            .map_err(WorkspaceError::from)
+    })
+    .await
+    .map_err(|error| WorkspaceApiError(WorkspaceError::Internal(error.to_string())))??;
+    let Some((link, token)) = link_and_token else {
+        return Err(WorkspaceApiError(WorkspaceError::NotFound(format!(
+            "No link to environment {environment_id:?}."
+        ))));
+    };
+    let method =
+        reqwest::Method::from_bytes(request.method().as_str().as_bytes()).map_err(|_| {
+            WorkspaceApiError(WorkspaceError::Validation(
+                "Unsupported HTTP method.".into(),
+            ))
+        })?;
+    let mut url = format!("{}/{path}", link.origin.trim_end_matches('/'));
+    if let Some(query) = request.uri().query() {
+        url.push('?');
+        url.push_str(query);
+    }
+    let client = proxy_client().map_err(WorkspaceApiError)?;
+    let mut upstream = client.request(method, &url).bearer_auth(&token);
+    for name in [
+        header::CONTENT_TYPE,
+        header::ACCEPT,
+        header::IF_NONE_MATCH,
+        header::IF_MODIFIED_SINCE,
+        header::RANGE,
+        HeaderName::from_static("last-event-id"),
+    ] {
+        if let Some(value) = request.headers().get(&name) {
+            upstream = upstream.header(name, value.clone());
+        }
+    }
+    let body_stream = request.into_body().into_data_stream();
+    upstream = upstream.body(reqwest::Body::wrap_stream(body_stream));
+    let response = upstream.send().await.map_err(|error| {
+        WorkspaceApiError(WorkspaceError::ServiceUnavailable(format!(
+            "{}: {error}",
+            link.origin
+        )))
+    })?;
+    let status =
+        StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut builder = Response::builder().status(status);
+    for name in [
+        header::CONTENT_TYPE,
+        header::CACHE_CONTROL,
+        header::CONTENT_DISPOSITION,
+        header::ETAG,
+        header::CONTENT_LENGTH,
+        HeaderName::from_static("x-accel-buffering"),
+    ] {
+        if let Some(value) = response.headers().get(&name) {
+            if let Ok(header_value) = HeaderValue::from_bytes(value.as_bytes()) {
+                builder = builder.header(name, header_value);
+            }
+        }
+    }
+    let stream = Body::from_stream(response.bytes_stream());
+    builder
+        .body(stream)
+        .map_err(|error| WorkspaceApiError(WorkspaceError::Internal(error.to_string())))
 }
 
 async fn start(

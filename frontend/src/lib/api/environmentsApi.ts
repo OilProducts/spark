@@ -12,6 +12,8 @@ export type EnvironmentDescriptor = {
     environment_id: string
     display_name: string
     protocol_version: number
+    ui_api_version: number
+    spark_version: string
 }
 
 export type PairingCodeReceipt = {
@@ -91,6 +93,8 @@ function parseDescriptor(payload: unknown, endpoint: string): EnvironmentDescrip
         environment_id: expectString(record.environment_id, endpoint, 'environment_id'),
         display_name: expectString(record.display_name, endpoint, 'display_name'),
         protocol_version: typeof record.protocol_version === 'number' ? record.protocol_version : 1,
+        ui_api_version: typeof record.ui_api_version === 'number' ? record.ui_api_version : 1,
+        spark_version: asOptionalString(record.spark_version) ?? '',
     }
 }
 
@@ -222,8 +226,17 @@ function parseDelegations(payload: unknown, endpoint: string): DelegationOut[] {
     return items.map((item) => parseDelegation(item, endpoint))
 }
 
-export function fetchEnvironmentDescriptor(): Promise<EnvironmentDescriptor> {
-    return fetchJsonWithValidation('/environment', undefined, 'GET /environment', parseDescriptor)
+/**
+ * Base URL prefix for targeting either this local environment (null/empty) or
+ * a linked remote environment through the authenticated server-side proxy.
+ */
+export function environmentProxyPrefix(environmentId: string | null | undefined): string {
+    return environmentId ? `/workspace/api/environments/links/${encodeURIComponent(environmentId)}/proxy` : ''
+}
+
+export function fetchEnvironmentDescriptor(environmentId?: string | null): Promise<EnvironmentDescriptor> {
+    const prefix = environmentProxyPrefix(environmentId)
+    return fetchJsonWithValidation(`${prefix}/environment`, undefined, `GET ${prefix}/environment`, parseDescriptor)
 }
 
 export function createPairingCode(label: string): Promise<PairingCodeReceipt> {

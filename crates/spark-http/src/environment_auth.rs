@@ -20,7 +20,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
-use spark_storage::environment::{EnvironmentRepository, PROTOCOL_VERSION};
+use spark_storage::environment::{EnvironmentRepository, PROTOCOL_VERSION, UI_API_VERSION};
 
 use crate::{HttpAppState, WorkspaceApiError};
 
@@ -140,6 +140,8 @@ pub(crate) async fn environment_descriptor(State(state): State<HttpAppState>) ->
         "environment_id": state.conversation_store.environment_id(),
         "display_name": display_name(),
         "protocol_version": PROTOCOL_VERSION,
+        "ui_api_version": UI_API_VERSION,
+        "spark_version": env!("CARGO_PKG_VERSION"),
     }))
     .into_response();
     response.headers_mut().insert(
