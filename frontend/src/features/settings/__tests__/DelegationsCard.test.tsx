@@ -128,6 +128,11 @@ async function failWhileAway(user: User, answer: ReturnType<typeof later>, detai
     await user.click(screen.getByRole('button', { name: 'All' }))
     return screen.findByRole('group', { name: responderName })
 }
+// env-x is a linked environment; its requests go through its proxy.
+const REMOTE = '/workspace/api/environments/links/env-x/proxy'
+const descriptor = (id: string) => ok({ environment_id: id, display_name: id, protocol_version: 1, ui_api_version: 1 })
+const ENVIRONMENTS = { 'GET /environment': [descriptor('env-local')], [`GET ${REMOTE}/environment`]: [descriptor('env-x')] }
+const switchTo = (environmentId: string | null) => act(async () => { await selectEnvironment(environmentId) })
 const confirmCancel = async (user: User, requestKey: string) => {
     await user.click(await screen.findByRole('button', { name: `Cancel delegation ${requestKey}` }))
     await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel delegation' }))
@@ -365,9 +370,14 @@ it('keeps an unsent draft for a newer question when a refresh from before Settin
     const name = asked('nightly-checks', 'Anything else?', 'del-1')
     const next = await screen.findByRole('group', { name })
     await user.type(within(next).getByRole('textbox', { name: 'Free-text answer' }), 'later note')
+    // The new card's live refresh waits for the old card's request.
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(sent(LIST)).toHaveLength(3)
     // The old card's snapshot predates the newer question.
     await late.resolve(list(nightly))
     expect(within(screen.getByRole('group', { name })).getByRole('textbox', { name: 'Free-text answer' })).toHaveValue('later note')
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    await waitFor(() => expect(sent(LIST)).toHaveLength(4))
 })
 
 it('keeps an answered question hidden when Settings is reopened before the follower drops it, and sends it once', async () => {
@@ -503,16 +513,21 @@ it('keeps an empty Paused view polling so a delegation that loses its link shows
     expect(screen.getByText('nightly-checks')).toBeInTheDocument()
 })
 
-it('does not poll when every delegation it knows has sealed, even on an empty Paused view', async () => {
+it('stops polling an empty Paused view once Open shows every delegation seen in flight has sealed', async () => {
     serve({
-        [LIST]: [ok(list({ ...nightly, phase: 'sealed', result: { status: 'completed' } }))],
+        [LIST]: [ok(list(nightly))],
+        [`${LIST}?open=true`]: [ok(list())],
         [`${LIST}?paused=true`]: [ok(list())],
     })
     const { user } = renderCard()
-    expect(await screen.findByText('flow · completed')).toBeInTheDocument()
-    expect(vi.getTimerCount()).toBe(0)
-    await user.click(screen.getByRole('button', { name: 'Paused' }))
+    expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
+    expect(vi.getTimerCount()).toBe(1)
+    await user.click(screen.getByRole('button', { name: 'Open' }))
     expect(await screen.findByText('No matching delegations.')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Paused' }))
+    await waitFor(() => expect(sent(`${LIST}?paused=true`)).toHaveLength(1))
+    expect(await screen.findByText('No matching delegations.')).toBeInTheDocument()
+    await settled()
     expect(vi.getTimerCount()).toBe(0)
 })
 
@@ -536,17 +551,97 @@ it('reports a reply that fails after a refresh replaced its question, and keeps 
     expect(within(next).getByRole('textbox', { name: 'Free-text answer' })).toBeEnabled()
 })
 
-it('keeps one environment\'s answered questions and failed draft while another environment\'s Settings is open', async () => {
-    const remote = '/workspace/api/environments/links/env-x/proxy'
-    const descriptor = (id: string) => ok({ environment_id: id, display_name: id, protocol_version: 1, ui_api_version: 1 })
+it('shows a reply refused while Paused hides its responder, there and once All shows its question closed', async () => {
+    const answer = later()
     serve({
+        [LIST]: [ok(list(nightly)), ok(list(delegation('del-1', 'nightly-checks', [])))],
+        [`${LIST}?paused=true`]: [ok(list(pausedTask))],
+        [answerRoute('del-1', 'q-approve')]: [answer.reply],
+    })
+    const { user } = renderCard()
+    const gate = asked('nightly-checks', 'Ship this build?', 'del-1')
+    await user.click(within(await screen.findByRole('group', { name: gate })).getByRole('button', { name: 'Approve' }))
+    await user.click(screen.getByRole('button', { name: 'Paused' }))
+    expect(await screen.findByText('paused-task')).toBeInTheDocument()
+    await answer.resolve({ detail: 'Question q-approve is not open in delegation del-1.' }, 404)
+    const report = 'Could not answer nightly-checks: Question q-approve is not open in delegation del-1.'
+    expect(screen.getByText(report)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'All' }))
+    expect(await screen.findByText('flow · waiting')).toBeInTheDocument()
+    expect(screen.getByText(report)).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: gate })).not.toBeInTheDocument()
+})
+
+it('shows both of two replies, sent before and after Settings was reopened, refused after their questions closed', async () => {
+    const approve = later()
+    const note = later()
+    const both = delegation('del-1', 'nightly-checks', [approveGate(), freeText('q-note', 'Any release notes?')])
+    serve({
+        [LIST]: [ok(list(both)), ok(list(both)), ok(list(delegation('del-1', 'nightly-checks', [])))],
+        [answerRoute('del-1', 'q-approve')]: [approve.reply],
+        [answerRoute('del-1', 'q-note')]: [note.reply],
+    })
+    const gate = asked('nightly-checks', 'Ship this build?', 'del-1')
+    const notes = asked('nightly-checks', 'Any release notes?', 'del-1')
+    const first = renderCard()
+    await first.user.click(within(await screen.findByRole('group', { name: gate })).getByRole('button', { name: 'Approve' }))
+    first.unmount()
+
+    const { user } = renderCard()
+    const responder = await screen.findByRole('group', { name: notes })
+    await user.type(within(responder).getByRole('textbox', { name: 'Free-text answer' }), 'ship it')
+    await user.click(within(responder).getByRole('button', { name: 'Answer' }))
+    // The live refresh finds both questions closed while the replies are out.
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    await waitFor(() => expect(screen.queryByRole('group', { name: notes })).not.toBeInTheDocument())
+    await approve.resolve({ detail: 'Question q-approve is not open.' }, 404)
+    await note.resolve({ detail: 'Question q-note is not open.' }, 404)
+
+    expect(screen.getByText('Could not answer nightly-checks: Question q-approve is not open.')).toBeInTheDocument()
+    expect(screen.getByText('Could not answer nightly-checks: Question q-note is not open.')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: gate })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: notes })).not.toBeInTheDocument()
+})
+
+it('reports a reply sent before Settings was reopened, and its failed reload, on the card shown now, with the form draft released', async () => {
+    const answer = later()
+    const form = deployForm('form-away', 'Away details')
+    const row = delegation('del-f', 'deploy-task', [form])
+    serve({
+        [LIST]: [ok(list(row)), ok(list(row)), fail(500, 'database is locked'), ok(list(delegation('del-f', 'deploy-task', []))), ok(list(row))],
+        [answerRoute('del-f', 'form-away')]: [answer.reply],
+    })
+    const name = asked('deploy-task', 'Away details', 'del-f')
+    const first = renderCard()
+    const before = await screen.findByRole('group', { name })
+    await first.user.type(within(before).getByRole('textbox', { name: 'Region' }), 'eu-west')
+    await first.user.type(within(before).getByRole('textbox', { name: 'Replicas' }), '3')
+    await first.user.click(within(before).getByRole('button', { name: 'Submit' }))
+    first.unmount()
+
+    renderCard()
+    expect(within(await screen.findByRole('group', { name })).getByRole('button', { name: 'Submitting...' })).toBeDisabled()
+    await answer.resolve({})
+    expect(await screen.findByText('Sent answer for deploy-task. Could not refresh delegations: Database is locked')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name })).not.toBeInTheDocument()
+
+    // A refresh shows the form answered, the next asks it again: it starts empty.
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    await waitFor(() => expect(sent(LIST)).toHaveLength(4))
+    await settled()
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(within(await screen.findByRole('group', { name })).getByRole('textbox', { name: 'Region' })).toHaveValue('')
+})
+
+it('keeps one environment\'s answered questions and failed draft while another environment\'s Settings is open', async () => {
+    serve({
+        ...ENVIRONMENTS,
         // Every local snapshot still lists both questions.
         [LIST]: [ok(list(delegation('del-1', 'nightly-checks', [approveGate(), freeText('q-note', 'Any release notes?')])))],
         [answerRoute('del-1', 'q-approve')]: [ok({})],
         [answerRoute('del-1', 'q-note')]: [fail(409, 'Question q-note is busy.')],
-        'GET /environment': [descriptor('env-local')],
-        [`GET ${remote}/environment`]: [descriptor('env-x')],
-        [`GET ${remote}/workspace/api/delegations`]: [ok(list(delegation('del-9', 'remote-task', [])))],
+        [`GET ${REMOTE}/workspace/api/delegations`]: [ok(list(delegation('del-9', 'remote-task', [])))],
     })
     const gate = asked('nightly-checks', 'Ship this build?', 'del-1')
     const note = asked('nightly-checks', 'Any release notes?', 'del-1')
@@ -560,19 +655,49 @@ it('keeps one environment\'s answered questions and failed draft while another e
     first.unmount()
 
     // The other environment's System settings list only its own delegations.
-    await act(async () => { await selectEnvironment('env-x') })
+    await switchTo('env-x')
     const away = renderCard()
     expect(await screen.findByText('remote-task')).toBeInTheDocument()
     await settled()
     away.unmount()
 
-    await act(async () => { await selectEnvironment(null) })
+    await switchTo(null)
     renderCard()
     const back = await screen.findByRole('group', { name: note })
     expect(within(back).getByText('Question q-note is busy.')).toBeInTheDocument()
     expect(within(back).getByRole('textbox', { name: 'Free-text answer' })).toHaveValue('ship it')
     expect(screen.queryByRole('group', { name: gate })).not.toBeInTheDocument()
     expect(screen.getByText('flow · waiting on answer')).toBeInTheDocument()
+})
+
+it('keeps each environment\'s form values apart when linked homes share delegation and question IDs', async () => {
+    const shared = delegation('del-f', 'deploy-task', [deployForm('form-same', 'Same details')])
+    serve({
+        ...ENVIRONMENTS,
+        [LIST]: [ok(list(shared))],
+        [`GET ${REMOTE}/workspace/api/delegations`]: [ok(list(shared))],
+        [`POST ${REMOTE}${answerRoute('del-f', 'form-same').slice('POST '.length)}`]: [ok({})],
+    })
+    const name = asked('deploy-task', 'Same details', 'del-f')
+    const first = renderCard()
+    await first.user.type(within(await screen.findByRole('group', { name })).getByRole('textbox', { name: 'Region' }), 'eu-west')
+    first.unmount()
+
+    await switchTo('env-x')
+    const away = renderCard()
+    const remote = await screen.findByRole('group', { name })
+    expect(within(remote).getByRole('textbox', { name: 'Region' })).toHaveValue('')
+    await away.user.type(within(remote).getByRole('textbox', { name: 'Region' }), 'us-east')
+    await away.user.type(within(remote).getByRole('textbox', { name: 'Replicas' }), '2')
+    await away.user.click(within(remote).getByRole('button', { name: 'Submit' }))
+    expect(await screen.findByText('Sent answer for deploy-task.')).toBeInTheDocument()
+    await settled()
+    away.unmount()
+
+    await switchTo(null)
+    renderCard()
+    expect(within(await screen.findByRole('group', { name })).getByRole('textbox', { name: 'Region' })).toHaveValue('eu-west')
+    expect(sent(answerRoute('del-f', 'form-same'))).toEqual([])
 })
 
 it('disables answering on a delegation whose link is missing', async () => {

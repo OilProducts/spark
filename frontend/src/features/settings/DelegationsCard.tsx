@@ -20,31 +20,41 @@ import { getActiveEnvironmentId, useActiveEnvironment } from '@/lib/activeEnviro
 
 type Filter = 'all' | 'open' | 'paused'
 
-/** A question's unsent answer, whether it is being sent, and its last failure. A form's own fields stay in FormQuestionFields. */
+/** A question's unsent answer, whether it is being sent, and a check that kept it from being sent. A form's own fields stay in FormQuestionFields. */
 type AnswerDraft = { text: string; answers: Record<string, string>; sending: boolean; error: string | null }
 
 const EMPTY_DRAFT: AnswerDraft = { text: '', answers: {}, sending: false, error: null }
 
-/** An environment's drafts, the questions answered there, and a failed reply whose question a refresh had already dropped. */
-// ponytail: one error slot, cleared by the next answer sent; keep a list if several can fail at once.
-type Answers = { drafts: Record<string, AnswerDraft>; acknowledged: ReadonlySet<string>; error: string | null }
+/** A reply the linked environment refused. */
+type Failure = { requestKey: string; message: string }
 
-const NO_ANSWERS: Answers = { drafts: {}, acknowledged: new Set(), error: null }
+/** An environment's drafts, the questions answered there, and its refused replies, each by question. */
+type Answers = { drafts: Record<string, AnswerDraft>; acknowledged: ReadonlySet<string>; failures: Record<string, Failure> }
+
+const NO_ANSWERS: Answers = { drafts: {}, acknowledged: new Set(), failures: {} }
 
 // Answers outlive the card, so leaving Settings and coming back keeps unsent drafts, a reply still
 // in flight and its failure, and which questions were answered (hidden until a snapshot drops them).
 // They are kept by environment ('' is this machine): one environment's lists never prune another's.
-// ponytail: module-level like the other unsent answers; lost on reload.
+// A refused reply stays until its answer is edited or sent again, so one whose question closed stays on the card.
+// ponytail: module-level like the other unsent answers; lost on reload. Add a dismiss if closed questions' failures pile up.
 export const useDelegationAnswers = create<Record<string, Answers>>(() => ({}))
 const updateAnswers = (env: string, update: (answers: Answers) => Partial<Answers>) => useDelegationAnswers.setState((all) => {
     const answers = all[env] ?? NO_ANSWERS
     return { [env]: { ...answers, ...update(answers) } }
 })
-const editDraft = (env: string, key: string, patch: Partial<AnswerDraft>) => updateAnswers(env, ({ drafts }) => ({
+// Editing or resending an answer retires its refused reply.
+const editDraft = (env: string, key: string, patch: Partial<AnswerDraft>) => updateAnswers(env, ({ drafts, failures: { [key]: _retired, ...failures } }) => ({
     drafts: { ...drafts, [key]: { ...(drafts[key] ?? EMPTY_DRAFT), ...patch } },
+    failures,
 }))
 // The environment a request goes to, read when it is sent.
 const activeEnv = () => getActiveEnvironmentId() ?? ''
+// List requests still out, by environment, superseded ones and those of a card since closed
+// included: a live refresh waits for all of them.
+const inFlightCounts: Record<string, number> = {}
+// The card showing each environment, so a reply sent from a card since closed reports and reloads where it is seen.
+const shownCards = new Map<string, (done: string) => Promise<void>>()
 const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
 // Delegations still in flight are re-read this often, so new questions and phases show up.
 const LIVE_REFRESH_MS = 4000
@@ -108,6 +118,7 @@ function QuestionResponder({
     question,
     disabled,
     draft,
+    error,
     onDraft,
     onAnswer,
 }: {
@@ -117,6 +128,7 @@ function QuestionResponder({
     question: DelegationQuestion
     disabled: boolean
     draft: AnswerDraft
+    error: string | null
     onDraft: (patch: Partial<AnswerDraft>) => void
     onAnswer: (body: DelegationAnswerBody) => Promise<boolean>
 }) {
@@ -141,7 +153,7 @@ function QuestionResponder({
             {/* FormQuestionFields keeps its stored draft until the reply is accepted. */}
             {question.form ? (
                 <FormQuestionFields
-                    actionError={draft.error}
+                    actionError={error}
                     draftKey={`delegation:${draftKey}`}
                     form={question.form}
                     isSubmitting={disabled}
@@ -239,7 +251,7 @@ function QuestionResponder({
                     )}
                 </>
             )}
-            {draft.error && !question.form ? <InlineError>{draft.error}</InlineError> : null}
+            {error && !question.form ? <InlineError>{error}</InlineError> : null}
         </div>
     )
 }
@@ -249,12 +261,10 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const [filter, setFilter] = useState<Filter>('all')
     const filterRef = useRef<Filter>('all')
     const requestSeqRef = useRef(0)
-    // Every list request still out, superseded ones included: a live refresh waits for all of them.
-    const inFlightCountRef = useRef(0)
     // The last rows loaded and the filter they answer: another filter's rows are never shown.
     const [loaded, setLoaded] = useState<{ filter: Filter; records: DelegationOut[] } | null>(null)
     const env = useActiveEnvironment().activeEnvironmentId ?? ''
-    const { drafts, acknowledged, error: answerError } = useDelegationAnswers((all) => all[env] ?? NO_ANSWERS)
+    const { drafts, acknowledged, failures } = useDelegationAnswers((all) => all[env] ?? NO_ANSWERS)
     // Every delegation's latest record: live refresh falls back on it while a filter hasn't loaded, and
     // the ref lets a cancel confirmation act on what is true when it closes.
     const [seen, setSeen] = useState<Record<string, DelegationOut>>({})
@@ -279,24 +289,29 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         const env = activeEnv()
         const seq = ++requestSeqRef.current
         const current = () => mountedRef.current && seq === requestSeqRef.current && requested === filterRef.current
-        inFlightCountRef.current += 1
+        inFlightCounts[env] = (inFlightCounts[env] ?? 0) + 1
         setLoading(true)
         try {
             const records = await fetchDelegations(FILTER_QUERY[requested])
             if (!current()) return
             setLoaded({ filter: requested, records })
-            seenRef.current = { ...seenRef.current, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }
+            // A list of every open delegation (All, Open) shows that one seen open but left out has sealed since.
+            const coversOpen = requested !== 'paused'
+            const kept = coversOpen
+                ? Object.fromEntries(Object.entries(seenRef.current).filter(([, row]) => row.phase === 'sealed'))
+                : seenRef.current
+            seenRef.current = { ...kept, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }
             setSeen(seenRef.current)
             setLoadError(null)
             setCancelErrors((errors) => Object.fromEntries(Object.entries(errors).filter(([id]) => {
                 const record = records.find((row) => row.delegation_id === id)
                 return !record || (!record.cancel_requested_at && record.phase !== 'sealed')
             })))
-            forgetUnasked(env, records, requested !== 'paused')
+            forgetUnasked(env, records, coversOpen)
         } catch (err) {
             if (current()) throw err
         } finally {
-            inFlightCountRef.current -= 1
+            inFlightCounts[env] -= 1
             if (seq === requestSeqRef.current) setLoading(false)
         }
     }, [])
@@ -307,23 +322,39 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     }), [load])
 
     // After a change went through, a failed reload is reported in place of the change's status.
-    const reloadAfterChange = (done: string) => load().catch((err: unknown) => {
+    const reloadAfterChange = useCallback((done: string) => load().catch((err: unknown) => {
         setLoadError(`${done} Could not refresh delegations: ${errorText(err, 'the request failed.')}`)
         setStatus('')
-    })
+    }), [load])
+
+    useEffect(() => {
+        const report = async (done: string) => {
+            setStatus(done)
+            await reloadAfterChange(done)
+        }
+        shownCards.set(env, report)
+        return () => {
+            if (shownCards.get(env) === report) shownCards.delete(env)
+        }
+    }, [env, reloadAfterChange])
 
     useEffect(() => {
         if (active) void refresh()
     }, [active, filter, refresh])
 
     const rows = loaded?.filter === filter ? loaded.records : null
+    const questionsOf = (record: DelegationOut) => (record.phase === 'accepted'
+        ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))
+        : [])
+    // A refused reply shows on its responder, or on the card when its question closed or the filter hides it.
+    const shownKeys = new Set(rows?.flatMap((record) => questionsOf(record).map((question) => ackKey(record.delegation_id, question.question_id))))
     // The Paused view can't see the open delegations that may pause, so every delegation seen under
     // any filter decides there, as it does until a filter's first load succeeds.
     const live = (filter === 'paused' || rows === null ? Object.values(seen) : rows).some((record) => record.phase !== 'sealed')
     useEffect(() => {
         if (!active || !live) return
         const timer = window.setInterval(() => {
-            if (inFlightCountRef.current === 0) void refresh()
+            if (!inFlightCounts[activeEnv()]) void refresh()
         }, LIVE_REFRESH_MS)
         return () => window.clearInterval(timer)
     }, [active, live, refresh])
@@ -397,26 +428,25 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         const env = activeEnv()
         const key = ackKey(record.delegation_id, questionId)
         editDraft(env, key, { sending: true, error: null })
-        updateAnswers(env, () => ({ error: null }))
         setBusy(true)
         try {
             await answerDelegationQuestion(record.delegation_id, questionId, body)
         } catch (err) {
-            const message = errorText(err, 'Could not submit answer.')
-            // The draft stays beside the error to fix and resend. A refresh that dropped the question
-            // meanwhile (it closed or was replaced) took its draft: it stays closed and the card reports the failure.
-            updateAnswers(env, ({ drafts }) => (Object.hasOwn(drafts, key)
-                ? { drafts: { ...drafts, [key]: { ...drafts[key], sending: false, error: message } } }
-                : { error: `Could not answer ${record.request_key}: ${message}` }))
+            // The draft stays to fix and resend. A refresh that dropped the question meanwhile (it closed
+            // or was replaced) took its draft: the question stays closed, and the failure shows on the card.
+            const failure = { requestKey: record.request_key, message: errorText(err, 'Could not submit answer.') }
+            updateAnswers(env, ({ drafts, failures }) => ({
+                drafts: Object.hasOwn(drafts, key) ? { ...drafts, [key]: { ...drafts[key], sending: false } } : drafts,
+                failures: { ...failures, [key]: failure },
+            }))
             setStatus('')
             setBusy(false)
             return false
         }
         updateAnswers(env, ({ drafts: { [key]: _sent, ...drafts }, acknowledged }) => ({ drafts, acknowledged: new Set(acknowledged).add(key) }))
-        const done = `Sent answer for ${record.request_key}.`
-        setStatus(done)
-        // The reply is in, so the caller releases its draft now; a failed reload is reported on its own.
-        void reloadAfterChange(done).then(() => setBusy(false))
+        // The reply is in, so the caller releases its draft now. The card showing this environment, which
+        // Settings may have reopened meanwhile, reports it and reloads; a failed reload is reported on its own.
+        void shownCards.get(env)?.(`Sent answer for ${record.request_key}.`).then(() => setBusy(false))
         return true
     }
 
@@ -456,9 +486,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                         {rows.map((record) => {
                             const badge = delegationStatus(record, acknowledged)
                             const where = whereText(record)
-                            const questions = record.phase === 'accepted'
-                                ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))
-                                : []
+                            const questions = questionsOf(record)
                             // Answers go through the link to the other environment, which a paused
                             // delegation has lost, and a delegation being canceled no longer waits on them.
                             const answerable = !record.paused && !record.cancel_requested_at
@@ -520,12 +548,14 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                             return (
                                                 <QuestionResponder
                                                     key={question.question_id}
-                                                    draftKey={key}
+                                                    // Linked homes may share delegation and question IDs, so stored form values are kept by environment.
+                                                    draftKey={JSON.stringify([env, key])}
                                                     requestKey={record.request_key}
                                                     where={where}
                                                     question={question}
                                                     disabled={busy || draft.sending || !answerable}
                                                     draft={draft}
+                                                    error={draft.error ?? failures[key]?.message ?? null}
                                                     onDraft={(patch) => editDraft(env, key, patch)}
                                                     onAnswer={(body) => handleAnswer(record, question.question_id, body)}
                                                 />
@@ -538,7 +568,9 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                     </ul>
                 )}
                 {status ? <p role="status" className="text-xs text-muted-foreground">{status}</p> : null}
-                {answerError ? <InlineError>{answerError}</InlineError> : null}
+                {Object.entries(failures).filter(([key]) => !shownKeys.has(key)).map(([key, failure]) => (
+                    <InlineError key={key}>{`Could not answer ${failure.requestKey}: ${failure.message}`}</InlineError>
+                ))}
                 {loadError ? <InlineError>{loadError}</InlineError> : null}
             </CardContent>
         </Card>
