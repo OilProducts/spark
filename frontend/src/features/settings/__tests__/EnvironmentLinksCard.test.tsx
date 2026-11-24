@@ -29,7 +29,7 @@ function stubBackend(seed: { tokens?: Token[]; links?: Link[]; replies?: Record<
     const backend = {
         tokens: seed.tokens ?? [],
         links: seed.links ?? [],
-        /** Per-URL overrides for GETs: a JSON body, or a function returning the response. */
+        /** Per-URL overrides for GETs: a JSON body, or a function returning the response (or undefined to pass). */
         replies: seed.replies ?? {},
         /** Every non-GET request, as "METHOD url". */
         mutations: [] as string[],
@@ -42,8 +42,8 @@ function stubBackend(seed: { tokens?: Token[]; links?: Link[]; replies?: Record<
             backend.bodies.push(init?.body ? JSON.parse(String(init.body)) : null)
         }
         const reply = method === 'GET' ? backend.replies[url] : undefined
-        if (typeof reply === 'function') return reply()
-        if (reply !== undefined) return json(reply)
+        const answer = typeof reply === 'function' ? await reply() : reply === undefined ? undefined : json(reply)
+        if (answer) return answer
         const revoked = method === 'POST' && url.match(/^\/workspace\/api\/environment\/tokens\/([^/]+)\/revoke$/)
         if (revoked) {
             backend.tokens = backend.tokens.map((row) => row.token_id === revoked[1] ? { ...row, revoked_at: '2026-11-24T00:00:00Z' } : row)
@@ -173,8 +173,9 @@ it.each(mutations)('shows a successful %s even when the follow-up listing fails'
     render(card())
     await screen.findByRole('button', { name: 'Revoke CI runner' })
 
-    backend.replies[TOKENS] = () => json({ detail: 'token listing failed' }, 500)
-    backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
+    // Listings fail once the mutation has been sent.
+    backend.replies[TOKENS] = () => backend.mutations.length ? json({ detail: 'token listing failed' }, 500) : undefined
+    backend.replies[LINKS] = () => backend.mutations.length ? json({ detail: 'link listing failed' }, 500) : undefined
     const postMutationRows = await mutate(user)
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('Could not load peer tokens: Token listing failed')
@@ -190,9 +191,11 @@ it('waits for a listing before saying no links remain after removing the last vi
     render(card())
     await user.click(await screen.findByRole('button', { name: 'Remove link Build box' }))
 
-    // The follow-up listing is slow and finds a link added elsewhere meanwhile.
+    // The listing after the DELETE is slow and finds a link added elsewhere meanwhile.
     let release!: () => void
-    backend.replies[LINKS] = () => new Promise<Response>((resolve) => { release = () => resolve(json({ links: [link('env-gpu', 'GPU')] })) })
+    backend.replies[LINKS] = () => backend.mutations.length
+        ? new Promise<Response>((resolve) => { release = () => resolve(json({ links: [link('env-gpu', 'GPU')] })) })
+        : undefined
     await user.click(await screen.findByRole('button', { name: 'Remove link' }))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove link Build box' })).not.toBeInTheDocument())
     expect(screen.queryByText('No linked environments configured.')).not.toBeInTheDocument()
@@ -240,29 +243,37 @@ it('confirms revoking a token and removing a link, naming each, and sends nothin
     expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`])
 })
 
-it('sends no DELETE when a refresh shows the link was relinked while its removal was being confirmed', async () => {
+it.each([
+    ['refreshes', true],
+    ['never refreshes', false],
+])('sends no DELETE when another tab relinks the environment and this card %s while its removal is being confirmed', async (_name, refreshes) => {
     const user = userEvent.setup()
     const backend = stubBackend({ links: [link('env-build', 'Build box')] })
     render(card())
     await screen.findByRole('button', { name: 'Remove link Build box' })
 
-    // Refresh is slow; while Remove waits for confirmation, another tab relinks env-build at a new origin.
-    let finishRefresh!: () => void
-    backend.replies[LINKS] = () => {
-        delete backend.replies[LINKS]
-        return new Promise<Response>((resolve) => { finishRefresh = () => resolve(json({ links: backend.links })) })
+    // Optionally, a slow Refresh is in flight while Remove waits for confirmation.
+    let finishRefresh = () => {}
+    if (refreshes) {
+        backend.replies[LINKS] = () => {
+            delete backend.replies[LINKS]
+            return new Promise<Response>((resolve) => { finishRefresh = () => resolve(json({ links: backend.links })) })
+        }
+        await user.click(screen.getByRole('button', { name: 'Refresh' }))
     }
-    await user.click(screen.getByRole('button', { name: 'Refresh' }))
     await user.click(screen.getByRole('button', { name: 'Remove link Build box' }))
     const staleDialog = await screen.findByRole('alertdialog')
     expect(staleDialog).toHaveTextContent('Build box (https://env-build.example:8000)')
+    // Another tab relinks env-build at a new origin.
     backend.links = [{ ...link('env-build', 'Build box'), origin: 'https://new-build.example:8000', created_at: '2026-11-24T00:05:00Z' }]
     await act(async () => finishRefresh())
-    expect(await screen.findByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+    expect(screen.queryByText(/https:\/\/new-build\.example:8000/) !== null).toBe(refreshes)
 
     await user.click(within(staleDialog).getByRole('button', { name: 'Remove link' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('The link to Build box changed while you were confirming, so nothing was removed.')
+    expect(await screen.findByRole('alert')).toHaveTextContent('The link to Build box changed since you chose to remove it, so nothing was removed.')
     expect(backend.mutations).toEqual([])
+    expect(backend.links).toHaveLength(1)
+    expect(screen.getByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
 
     // The current link can be reviewed and removed.
     await user.click(screen.getByRole('button', { name: 'Remove link Build box' }))

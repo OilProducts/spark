@@ -57,11 +57,6 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const [busy, setBusy] = useState(false)
     const [projectsByEnv, setProjectsByEnv] = useState<Record<string, ProjectLookup>>({})
     const refreshSeqRef = useRef(0)
-    // The rows on screen now, to check a confirmation against what a refresh loaded while it was open.
-    const linksRef = useRef(links)
-    useEffect(() => {
-        linksRef.current = links
-    }, [links])
     // The Projects lookup in flight per environment; removing or replacing its link drops it so its answer is ignored.
     const lookupsRef = useRef(new Map<string, object>())
     const { confirm } = useDialogController()
@@ -237,15 +232,22 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             confirmVariant: 'destructive',
         })
         if (!confirmed) return
-        // Relinking an environment ID replaces its origin and created_at, so a changed row is a different link.
-        const current = linksRef.current.find((row) => row.environment_id === link.environment_id)
-        if (current?.origin !== link.origin || current.created_at !== link.created_at) {
-            showError(`The link to ${link.label || link.environment_id} changed while you were confirming, so nothing was removed. Review the current links and try again.`)
-            return
-        }
         setBusy(true)
         setError(null)
         try {
+            // DELETE goes by environment ID alone, and relinking that ID (here or in another tab) replaces its origin and
+            // created_at, so only delete the link the user confirmed if the server still has it.
+            // ponytail: a relink landing between this check and the DELETE still loses; closing that needs a conditional DELETE on the server.
+            const latest = await fetchEnvironmentLinks()
+            const current = latest.find((row) => row.environment_id === link.environment_id)
+            if (current?.origin !== link.origin || current.created_at !== link.created_at) {
+                refreshSeqRef.current += 1
+                forgetProjects(link.environment_id)
+                setLinks(latest)
+                setLinksLoaded(true)
+                showError(`The link to ${link.label || link.environment_id} changed since you chose to remove it, so nothing was removed. Review the current link before removing it again.`)
+                return
+            }
             await removeEnvironmentLink(link.environment_id)
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
             await settleMutation(`Removed link to ${link.label || link.environment_id}.`, () => {
