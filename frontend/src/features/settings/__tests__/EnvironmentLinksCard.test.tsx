@@ -282,15 +282,22 @@ it('keeps a replacement a reopened card listed when the removal of the old link 
     expect(screen.getByRole('button', { name: 'Remove link Build box' })).toBeInTheDocument()
 })
 
-/** Adds env-gpu as GPU through the form, holding the request until the returned function answers it as saved. */
-async function addGpuHeld(user: User, backend: ReturnType<typeof stubBackend>) {
-    let finishAdd = () => {}
-    backend.replies[`POST ${LINKS}`] = () => new Promise<Response>((resolve) => { finishAdd = () => resolve(json(link('env-gpu', 'GPU'))) })
+async function addGpu(user: User, label: string) {
     await user.type(screen.getByLabelText('Remote origin'), 'https://env-gpu.example:8000')
     await user.type(screen.getByLabelText('Remote environment ID'), 'env-gpu')
     await user.type(screen.getByLabelText('Pairing code'), 'code-xyz')
-    await user.type(screen.getByLabelText('Link label (optional)'), 'GPU')
+    await user.type(screen.getByLabelText('Link label (optional)'), label)
     await user.click(screen.getByRole('button', { name: 'Add link' }))
+}
+
+/** Adds env-gpu as GPU through the form, holding the request until the returned function answers it as saved. */
+async function addGpuHeld(user: User, backend: ReturnType<typeof stubBackend>) {
+    let finishAdd = () => {}
+    backend.replies[`POST ${LINKS}`] = () => {
+        delete backend.replies[`POST ${LINKS}`]
+        return new Promise<Response>((resolve) => { finishAdd = () => resolve(json(link('env-gpu', 'GPU'))) })
+    }
+    await addGpu(user, 'GPU')
     await waitFor(() => expect(backend.mutations).toEqual([`POST ${LINKS}`]))
     return () => finishAdd()
 }
@@ -337,6 +344,29 @@ it('keeps a link a reopened card listed and then removed absent when its add suc
     backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
     await act(async () => finishAdd())
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
+    expect(screen.queryByRole('button', { name: 'Remove link GPU' })).not.toBeInTheDocument()
+})
+
+it('keeps a link the reopened card added in place of an earlier add of that environment that succeeds late, beside a failed follow-up listing', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend()
+    const settings = render(card())
+    await screen.findByText('No linked environments configured.')
+    const finishAdd = await addGpuHeld(user, backend)
+
+    // The reopened card links env-gpu again, as GPU 2, while the first add's response is on its way.
+    settings.unmount()
+    render(card())
+    await screen.findByText('No linked environments configured.')
+    await addGpu(user, 'GPU 2')
+    await waitFor(() => expect(statusText()).toBe('Linked GPU 2.'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    expect(backend.mutations).toEqual([`POST ${LINKS}`, `POST ${LINKS}`])
+
+    backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
+    await act(async () => finishAdd())
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
+    expect(screen.getByRole('button', { name: 'Remove link GPU 2' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Remove link GPU' })).not.toBeInTheDocument()
 })
 
@@ -589,17 +619,17 @@ it('refreshes only cards for the environment a mutation changed once it succeeds
 
 it.each([
     ['after', 'a revoked token', true, false],
-    ['after', 'a failed token listing', true, true],
+    ['after', 'a failed token listing, not its superseded link listing error', true, true],
     ['just before', 'a revoked token', false, false],
-    ['just before', 'a failed token listing', false, true],
-])('shows a replacement a removal check finds during a refresh that finishes %s the check, beside that refresh\'s descriptor error and %s', async (_order, _tokens, checkFirst, tokensFail) => {
+    ['just before', 'a failed token listing, not its superseded link listing error', false, true],
+])('shows a replacement a removal check finds during a refresh that finishes %s the check, beside that refresh\'s descriptor error and %s', async (_order, _tokens, checkFirst, listingsFail) => {
     const user = userEvent.setup()
     const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')], links: [link('env-build', 'Build box')] })
     render(card())
     await screen.findByRole('button', { name: 'Revoke CI runner' })
 
-    // A slow Refresh finds the descriptor failing, env-build as it was, and either CI runner revoked from another tab or
-    // the token listing failing. Each held request answers with what the server had when it was asked.
+    // A slow Refresh finds the descriptor failing, and either CI runner revoked from another tab and env-build as it was,
+    // or the token and link listings failing. Each held request answers with what the server had when it was asked.
     const held: Array<() => void> = []
     const hold = (url: string, answer: () => Response) => {
         backend.replies[url] = () => {
@@ -609,10 +639,10 @@ it.each([
         }
     }
     hold('/environment', () => json({ detail: 'server restarting' }, 503))
-    hold(TOKENS, () => tokensFail
+    hold(TOKENS, () => listingsFail
         ? json({ detail: 'token listing failed' }, 500)
         : json({ tokens: [{ ...token('tok-ci', 'CI runner'), revoked_at: '2026-11-24T00:00:00Z' }] }))
-    hold(LINKS, () => json({ links: backend.links }))
+    hold(LINKS, () => listingsFail ? json({ detail: 'link listing failed' }, 500) : json({ links: backend.links }))
     await user.click(screen.getByRole('button', { name: 'Refresh' }))
     await waitFor(() => expect(held).toHaveLength(3))
     const refreshReplies = held.splice(0)
@@ -635,14 +665,16 @@ it.each([
     } else {
         await act(async () => finishRefresh())
         expect(await screen.findByRole('alert')).toHaveTextContent('Could not load this environment: Server restarting')
+        if (listingsFail) expect(screen.getByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
         await act(async () => finishCheck())
     }
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
     const alert = screen.getByRole('alert')
     expect(alert).toHaveTextContent('The link to Build box changed since you chose to remove it')
     expect(alert).toHaveTextContent('Could not load this environment: Server restarting')
-    if (tokensFail) {
+    if (listingsFail) {
         expect(alert).toHaveTextContent('Could not load peer tokens: Token listing failed')
+        expect(alert).not.toHaveTextContent('Could not load linked environments')
     } else {
         expect(screen.getByText(/· revoked 2026-11-24T00:00:00Z/)).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: 'Revoke CI runner' })).not.toBeInTheDocument()

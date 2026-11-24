@@ -44,8 +44,11 @@ const sameLink = (a: EnvironmentLink, b: EnvironmentLink) =>
 
 const firstEnabledIn = (scope: Element | null) => scope?.querySelector<HTMLElement>('button:enabled, input:enabled') ?? null
 
-/** A mutation the server confirmed: a revoked token, a created link, or the removed link as the user confirmed it. */
-type Mutation = { revoked: PeerToken } | { linked: EnvironmentLink } | { unlinked: EnvironmentLink }
+/**
+ * A mutation the server confirmed: a revoked token, a created link, or the removed link as the user confirmed it.
+ * A link change carries the ticket taken as its request was sent.
+ */
+type Mutation = { revoked: PeerToken } | { linked: EnvironmentLink; sent: number } | { unlinked: EnvironmentLink; sent: number }
 
 // Leaving Settings unmounts the card and switching environments remounts it, so a request can settle after its card
 // is gone. It then reaches the cards mounted now: those for its environment show a mutation and refresh, and a failure
@@ -53,6 +56,9 @@ type Mutation = { revoked: PeerToken } | { linked: EnvironmentLink } | { unlinke
 type LiveCard = { environmentId: string | null; settle: (mutation: Mutation) => void; showError: (message: string) => void }
 const liveCards = new Set<LiveCard>()
 let undeliveredError: string | null = null
+// Link listings (a refresh's or a removal check's) and link changes take ascending tickets, shared by every card, as
+// their requests are sent.
+let lastTicket = 0
 
 const msLeft = (receipt: PairingCodeReceipt) => Date.parse(receipt.expires_at) - Date.now()
 
@@ -70,16 +76,18 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const [linksLoaded, setLinksLoaded] = useState(false)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    // A links listing failure, kept apart with its listing's ticket so a newer listing that succeeds clears only it.
+    const [linksError, setLinksError] = useState<{ ticket: number; message: string } | null>(null)
     const [status, setStatus] = useState('')
     const [pairingCode, setPairingCode] = useState<PairingCodeReceipt | null>(null)
     const [busy, setBusy] = useState(false)
     const [projectsByEnv, setProjectsByEnv] = useState<Record<string, ProjectLookup>>({})
     const refreshSeqRef = useRef(0)
-    // Link listings (a refresh's or a removal check's) and confirmed link changes take ascending tickets as they start.
-    // Links show only from a ticket above the shown one's, so a listing that started earlier and lands later drops only
-    // its links result, while a newer listing that fails leaves the shown links in place.
-    const linksTicketRef = useRef(0)
+    // The ticket of the links shown. Links show only from a ticket above it, so a listing that started earlier and lands
+    // later drops only its links result, while a newer listing that fails leaves the shown links in place.
     const linksShownRef = useRef(0)
+    // Per environment ID, the ticket of the latest link change confirmed here; a change sent before it is older.
+    const confirmedRef = useRef(new Map<string, number>())
     // Every link version this card has listed: one listed before an add's response arrives shows the add came first.
     // ponytail: grows with the distinct link versions listed while the card is mounted, a handful in practice. As with
     // sameLink, a link removed and added again with the same origin and label within one second counts as listed.
@@ -95,6 +103,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         errorCountRef.current += 1
         setStatus('')
         setError((prev) => [keepShown ? prev : null, message].filter(Boolean).join(' '))
+        if (!keepShown) setLinksError(null)
     }, [])
 
     const forgetProjects = useCallback((environmentId: string) => {
@@ -109,6 +118,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     // Shows a link listing and drops Projects results for links it no longer has as they were when looked up.
     const showListedLinks = useCallback((ticket: number, listed: EnvironmentLink[]) => {
         linksShownRef.current = ticket
+        setLinksError((prev) => (prev && prev.ticket < ticket ? null : prev))
         for (const row of listed) {
             if (!listedLinksRef.current.some((seen) => sameLink(seen, row))) listedLinksRef.current.push(row)
         }
@@ -121,7 +131,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
 
     const refresh = useCallback(async () => {
         const seq = ++refreshSeqRef.current
-        const linksTicket = ++linksTicketRef.current
+        const linksTicket = ++lastTicket
         const errorCount = errorCountRef.current
         setPairingCode(expireReceipt)
         setLoading(true)
@@ -141,7 +151,8 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             if (linksResult.status === 'fulfilled') {
                 showListedLinks(linksTicket, linksResult.value)
             } else {
-                errors.push(`Could not load linked environments: ${errorText(linksResult.reason, 'unknown error.')}`)
+                setStatus('')
+                setLinksError({ ticket: linksTicket, message: `Could not load linked environments: ${errorText(linksResult.reason, 'unknown error.')}` })
                 setLinksLoaded(false)
             }
         }
@@ -167,12 +178,15 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                 : [...prev, { ...mutation.revoked, revoked: true }])
             return
         }
-        // A card that already listed the created link learned of the add before its response, so what it shows now,
-        // the link or a later change to it, is newer. Otherwise the add replaces whatever row the card shows for that ID:
-        // links carry no write order (created_at is wall-clock time), so a row listed while the add was pending counts as
-        // older than the add.
+        // A change to the same environment ID sent later and confirmed here already is newer. So is what a card shows after
+        // listing the created link: the add came before that listing. Otherwise the add replaces whatever row the card
+        // shows for that ID: links carry no write order (created_at is wall-clock time), so a row listed while the add
+        // was pending counts as older than the add.
+        const environmentId = 'linked' in mutation ? mutation.linked.environment_id : mutation.unlinked.environment_id
+        if ((confirmedRef.current.get(environmentId) ?? 0) > mutation.sent) return
         if ('linked' in mutation && listedLinksRef.current.some((seen) => sameLink(seen, mutation.linked))) return
-        linksShownRef.current = ++linksTicketRef.current
+        confirmedRef.current.set(environmentId, mutation.sent)
+        linksShownRef.current = ++lastTicket
         if ('linked' in mutation) {
             const created = mutation.linked
             forgetProjects(created.environment_id)
@@ -236,6 +250,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             await navigator.clipboard.writeText(value)
             setStatus(`Copied ${label}.`)
             setError(null)
+            setLinksError(null)
         } catch {
             showError(`Could not copy ${label}.`)
         }
@@ -274,6 +289,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         }
         setBusy(true)
         setError(null)
+        setLinksError(null)
         try {
             await action()
         } catch (err) {
@@ -303,6 +319,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         const label = formField(new FormData(form), 'code_label')
         setBusy(true)
         setError(null)
+        setLinksError(null)
         try {
             const receipt = await createPairingCode(label)
             setPairingCode(receipt)
@@ -340,11 +357,13 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         }
         setBusy(true)
         setError(null)
+        setLinksError(null)
         try {
+            const sent = ++lastTicket
             const created = await addEnvironmentLink({ origin, expected_id, code, label })
             form.reset()
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
-            await settleMutation(`Linked ${created.label || created.environment_id}.`, { linked: created })
+            await settleMutation(`Linked ${created.label || created.environment_id}.`, { linked: created, sent })
         } catch (err) {
             reportError(errorText(err, 'Could not add environment link.'))
         } finally {
@@ -365,7 +384,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             // delete the link the user confirmed if the server still has it as it was.
             // ponytail: a relink landing between this check and the DELETE, or one matching the row's origin, label and
             // second, still loses; closing that needs a conditional DELETE on the server, which this change leaves out of scope.
-            const linksTicket = ++linksTicketRef.current
+            const linksTicket = ++lastTicket
             const latest = await fetchEnvironmentLinks()
             // Requests go to whichever environment is active when sent, and the user can switch while the check runs.
             if (getActiveEnvironmentId() !== activeEnvironmentId) {
@@ -379,9 +398,10 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                 if (linksTicket > linksShownRef.current) showListedLinks(linksTicket, latest)
                 throw new Error(`The link to ${name} changed since you chose to remove it, so nothing was removed. Review the current link before removing it again.`)
             }
+            const sent = ++lastTicket
             await removeEnvironmentLink(link.environment_id)
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
-            await settleMutation(`Removed link to ${name}.`, { unlinked: link })
+            await settleMutation(`Removed link to ${name}.`, { unlinked: link, sent })
         })
     }
 
@@ -586,7 +606,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                 </section>
 
                 {status ? <p role="status" className="text-xs text-muted-foreground">{status}</p> : null}
-                {error ? <InlineError>{error}</InlineError> : null}
+                {error || linksError ? <InlineError>{[error, linksError?.message].filter(Boolean).join(' ')}</InlineError> : null}
             </CardContent>
         </Card>
     )
