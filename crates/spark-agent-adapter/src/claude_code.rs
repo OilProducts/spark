@@ -1626,10 +1626,16 @@ pub(crate) fn claude_code_executable() -> PathBuf {
 /// The CLI as every Spark launch sees it: the configured binary and config
 /// dir, which is where Claude Code keeps its sign-in.
 pub(crate) fn claude_command(native: Option<&NativeAgentSettings>) -> (PathBuf, Command) {
-    let executable = native
+    let configured = native
         .and_then(|config| config.claude_binary.as_ref())
         .map(PathBuf::from)
         .unwrap_or_else(claude_code_executable);
+    // As discovery finds it, so a Windows `claude.cmd` shim runs; else as
+    // configured, so a failure names it.
+    let executable = configured
+        .to_str()
+        .and_then(|name| crate::local_environment::find_executable_on_path(name, None))
+        .unwrap_or(configured);
     let mut command = Command::new(&executable);
     // Its own process group, so a forced stop also ends the agent's tools.
     crate::local_environment::configure_process_group(&mut command);

@@ -1786,9 +1786,19 @@ fn runtime_environment_prepends_first_party_tool_bin_to_path() {
     );
     let _seed_guard =
         EnvVarGuard::set("ATTRACTOR_CODEX_SEED_DIR", temp.path().join("missing-seed"));
-    let _path_guard = EnvVarGuard::set("PATH", &original_path);
+    // Windows keeps its search path as `Path`: Codex gets one `PATH` built on
+    // it, never a competing second spelling.
+    let inherited_key = if cfg!(windows) { "Path" } else { "PATH" };
+    let _path_guard = EnvVarGuard::remove("PATH");
+    let _inherited_guard = EnvVarGuard::set(inherited_key, &original_path);
 
     let env = build_codex_runtime_environment().expect("runtime env");
+    assert_eq!(
+        env.keys()
+            .filter(|key| key.eq_ignore_ascii_case("PATH"))
+            .collect::<Vec<_>>(),
+        ["PATH"]
+    );
     let path = env.get("PATH").expect("PATH");
     let entries = std::env::split_paths(path).collect::<Vec<_>>();
     let current_exe_parent = std::env::current_exe()
@@ -1872,6 +1882,14 @@ fn runtime_environment_seeds_only_from_the_explicit_seed_dir_never_the_host_home
         env.get("CODEX_HOME").map(PathBuf::from),
         Some(isolated_codex_home.clone())
     );
+    // Windows tools find the home through USERPROFILE.
+    for home in ["HOME", "USERPROFILE"] {
+        assert_eq!(
+            env.get(home).map(PathBuf::from),
+            Some(runtime_root.clone()),
+            "{home}"
+        );
+    }
     assert!(!isolated_codex_home.join("auth.json").exists());
     assert_eq!(
         fs::read_to_string(isolated_codex_home.join("config.toml")).expect("seeded config"),

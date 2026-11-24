@@ -3016,7 +3016,7 @@ pub(crate) fn build_codex_runtime_environment_with_settings(
     }
     let existing_path_key = env_map
         .keys()
-        .find(|key| key.eq_ignore_ascii_case("PATH"))
+        .find(|key| crate::local_environment::is_path_key(key))
         .cloned();
     let path = existing_path_key
         .as_deref()
@@ -3300,6 +3300,15 @@ fn resolve_codex_executable(
         .find_map(|candidate| complete_codex_candidate(candidate))
     {
         return codex;
+    }
+    // An npm install on Windows has only shims, such as `codex.cmd`, which a
+    // launch of `codex.exe` never finds.
+    if cfg!(windows) {
+        if let Some(shim) = path
+            .and_then(|path| crate::local_environment::find_executable_on_path("codex", Some(path)))
+        {
+            return shim;
+        }
     }
     PathBuf::from(codex_binary_name())
 }
@@ -4097,7 +4106,39 @@ mod tests {
 
         let resolved = resolve_codex_executable(None, Some(&path), &[]);
 
-        assert_eq!(resolved, PathBuf::from(codex_binary_name()));
+        // Windows names the `codex.exe` a launch of the bare name would run,
+        // spelled with PATHEXT's case.
+        if cfg!(windows) {
+            assert!(
+                resolved.as_os_str().eq_ignore_ascii_case(&path_codex),
+                "{resolved:?}"
+            );
+        } else {
+            assert_eq!(resolved, PathBuf::from(codex_binary_name()));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn codex_resolution_falls_back_to_an_npm_shim_on_windows() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin = temp.path().join("npm");
+        fs::create_dir_all(&bin).expect("npm dir");
+        // npm writes an extensionless sh script beside the shim.
+        for name in ["codex", "codex.cmd"] {
+            fs::write(bin.join(name), "").expect("shim");
+        }
+        let path = env::join_paths([&bin]).expect("PATH");
+
+        let resolved = resolve_codex_executable(None, Some(&path), &[]);
+
+        assert!(
+            resolved
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("codex.cmd")),
+            "{resolved:?}"
+        );
+        assert_eq!(resolved.parent(), Some(bin.as_path()));
     }
 
     #[test]

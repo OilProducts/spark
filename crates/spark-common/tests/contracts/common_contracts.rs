@@ -220,6 +220,32 @@ fn project_identity_matches_slug_and_sha1_contract() {
     );
 }
 
+/// Either separator names one share, so a project opened by either spelling
+/// is one project, as `C:/repo` and `C:\repo` are.
+#[cfg(windows)]
+#[test]
+fn unc_project_paths_normalize_to_backslashes_under_either_separator() {
+    // A local host's missing share fails fast where a made-up server might not.
+    let forward = "//localhost/spark-missing-share/repo";
+    let backward = r"\\localhost\spark-missing-share\repo";
+    for path in [forward, backward] {
+        // As text: `Path` equality ignores a prefix's separators.
+        assert_eq!(
+            spark_common::paths::normalize_path(path).unwrap().to_str(),
+            Some(backward),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        build_project_id(forward).unwrap(),
+        build_project_id(backward).unwrap()
+    );
+    assert_eq!(
+        build_project_id("C:/repo").unwrap(),
+        build_project_id(r"C:\repo").unwrap()
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn project_identity_resolves_symlinked_prefixes_like_python_resolve_strict_false() {

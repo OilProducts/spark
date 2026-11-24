@@ -774,8 +774,8 @@ fn live_harness(request: &AgentTurnRequest, harness_id: &str) -> Option<AcpHarne
 
 /// Whether `program` names an executable file: a path that exists, or a bare
 /// name found on `path` (else Spark's own `PATH`), honoring `PATHEXT` on
-/// Windows. A relative path is taken as found, since where it resolves depends
-/// on the launch.
+/// Windows, as [`launch_program`] resolves it. A relative path is taken as
+/// found, since where it resolves depends on the launch.
 pub fn program_found(program: &str, path: Option<&str>) -> bool {
     let candidate = Path::new(program);
     if candidate.is_absolute() {
@@ -786,6 +786,33 @@ pub fn program_found(program: &str, path: Option<&str>) -> bool {
     }
     crate::local_environment::find_executable_on_path(program, path.map(std::ffi::OsStr::new))
         .is_some()
+}
+
+/// The `PATH` a launch of `harness` searches: its own `env`'s, else the
+/// inherited one, in any case on Windows. `None` leaves Spark's own.
+pub fn launch_path(
+    harness: &AcpHarness,
+    inheritance: EnvironmentInheritancePolicy,
+) -> Option<String> {
+    let inherited = crate::local_environment::inherited_environment(inheritance);
+    harness
+        .env
+        .iter()
+        .chain(&inherited)
+        .find(|(key, _)| crate::local_environment::is_path_key(key))
+        .map(|(_, value)| value.clone())
+}
+
+/// `harness.executable` as its launch runs it: found on [`launch_path`], so a
+/// Windows `.cmd` shim runs as discovery finds it; else as registered, so a
+/// failure names it.
+fn launch_program(harness: &AcpHarness, inheritance: EnvironmentInheritancePolicy) -> PathBuf {
+    let path = launch_path(harness, inheritance);
+    crate::local_environment::find_executable_on_path(
+        &harness.executable,
+        path.as_deref().map(std::ffi::OsStr::new),
+    )
+    .unwrap_or_else(|| PathBuf::from(&harness.executable))
 }
 
 /// The configuration generation a launch of `harness` records: its
@@ -1765,7 +1792,7 @@ fn launch_command(
             .map_err(|error| format!("ACP harness {harness_id} system_instructions: {error}"))?,
         None => Default::default(),
     };
-    let mut command = Command::new(&harness.executable);
+    let mut command = Command::new(launch_program(harness, inheritance));
     command
         .args(&harness.args)
         .args(channel_args)
@@ -3713,7 +3740,7 @@ pub fn read_antigravity_usage(
     harness: &AcpHarness,
     inheritance: EnvironmentInheritancePolicy,
 ) -> Result<Vec<crate::UsageWindow>, String> {
-    let mut command = Command::new(&harness.executable);
+    let mut command = Command::new(launch_program(harness, inheritance));
     crate::local_environment::configure_process_group(&mut command);
     command
         .args(["-p", "/usage", "--output-format", "json"])

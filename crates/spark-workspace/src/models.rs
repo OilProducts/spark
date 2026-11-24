@@ -306,7 +306,7 @@ fn listing(
     let environment = unified_llm_adapter::ProviderEnvironment::from_env_map(
         &configuration
             .providers
-            .execution_environment(&std::env::vars().collect()),
+            .execution_environment(&spark_common::paths::utf8_env_vars()),
         None,
     );
     let mut cache = PROVIDER_MODELS_CACHE
@@ -400,7 +400,8 @@ fn acp_discoveries<'a>(
 )> {
     // One check per directory however it is named, such as Home through a
     // symlinked HOME, as sessions' acknowledged options are kept.
-    let work_area = std::fs::canonicalize(work_area).unwrap_or_else(|_| work_area.to_path_buf());
+    let work_area = spark_common::paths::canonicalize_clean(work_area)
+        .unwrap_or_else(|_| work_area.to_path_buf());
     if refresh {
         // Check again runs from Settings (Home), so drop other work areas'
         // cached results; each re-probes on its next listing.
@@ -417,7 +418,12 @@ fn acp_discoveries<'a>(
                 let inheritance = agents.environment_inheritance;
                 move || {
                     let mut discovery = acp::discover(&id, &harness, inheritance, &work_area);
-                    if discovery.setup_status == "unreachable" && !acp_program_found(&harness) {
+                    if discovery.setup_status == "unreachable"
+                        && !acp::program_found(
+                            &harness.executable,
+                            acp::launch_path(&harness, inheritance).as_deref(),
+                        )
+                    {
                         discovery.setup_status = "not_installed".into();
                     }
                     discovery
@@ -448,13 +454,6 @@ fn acp_discoveries<'a>(
             (id, harness, discovery)
         })
         .collect()
-}
-
-fn acp_program_found(harness: &spark_common::agent_settings::AcpHarness) -> bool {
-    acp::program_found(
-        &harness.executable,
-        harness.env.get("PATH").map(String::as_str),
-    )
 }
 
 /// An ACP harness's models are its model selector's values, in order. With

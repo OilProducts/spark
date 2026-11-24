@@ -366,10 +366,14 @@ fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
     let codex_env = agent_env("codex");
     let data_dir_text = data_dir.to_string_lossy().into_owned();
     assert_eq!(codex_env.get("SPARK_HOME"), Some(&data_dir_text));
-    assert_eq!(
-        codex_env.get("HOME").map(PathBuf::from),
-        Some(data_dir.join("runtime/codex"))
-    );
+    // Windows tools find the home through USERPROFILE.
+    for home in ["HOME", "USERPROFILE"] {
+        assert_eq!(
+            codex_env.get(home).map(PathBuf::from),
+            Some(data_dir.join("runtime/codex")),
+            "{home}"
+        );
+    }
     let claude_env = agent_env("claude");
     assert_eq!(claude_env.get("SPARK_HOME"), Some(&data_dir_text));
     assert_eq!(

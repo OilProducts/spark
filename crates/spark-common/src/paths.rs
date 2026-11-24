@@ -373,7 +373,18 @@ fn normalize_components(path: &Path) -> PathBuf {
             Component::ParentDir => {
                 normalized.pop();
             }
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            // `//server/share` and `\\server\share` name one share; one
+            // spelling keeps their project IDs equal, as `C:/` and `C:\` are.
+            Component::Prefix(prefix) => match prefix.kind() {
+                std::path::Prefix::UNC(server, share) => {
+                    let mut unc = OsString::from(r"\\");
+                    unc.push(server);
+                    unc.push(r"\");
+                    unc.push(share);
+                    normalized.push(unc);
+                }
+                _ => normalized.push(prefix.as_os_str()),
+            },
             Component::RootDir => normalized.push(component.as_os_str()),
             Component::Normal(value) => normalized.push(value),
         }

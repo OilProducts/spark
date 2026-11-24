@@ -84,6 +84,21 @@ fn local_environment_resolves_paths_and_handles_file_directory_lifecycle() {
     );
 }
 
+/// Prints the environment as `KEY=VALUE` lines, in the platform's shell.
+#[cfg(windows)]
+const PRINT_ENV: &str = "set";
+#[cfg(not(windows))]
+const PRINT_ENV: &str = "env";
+
+fn printed_env(result: &ExecResult) -> BTreeMap<String, String> {
+    result
+        .stdout
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
 #[test]
 fn local_environment_exec_command_captures_streams_timeout_and_filters_environment() {
     let _env_guard = ENV_LOCK
@@ -94,6 +109,21 @@ fn local_environment_exec_command_captures_streams_timeout_and_filters_environme
     let old_visible = std::env::var_os("UNIT_TEST_VISIBLE");
     std::env::set_var("Unit_Test_PaSsWoRd", "shh");
     std::env::set_var("UNIT_TEST_VISIBLE", "visible");
+    // The same steps in each platform's shell: cmd.exe on Windows, bash elsewhere.
+    #[cfg(windows)]
+    let (streams, streamed, sleep, started) = (
+        "echo out& (echo err)1>&2& exit 7",
+        ("out\r\n", "err\r\n"),
+        "echo start& ping -n 61 127.0.0.1 >nul",
+        "start\r\n",
+    );
+    #[cfg(not(windows))]
+    let (streams, streamed, sleep, started) = (
+        "printf 'out\\n'; printf 'err\\n' >&2; exit 7",
+        ("out\n", "err\n"),
+        "printf 'start\\n'; sleep 60",
+        "start\n",
+    );
 
     let environment = LocalExecutionEnvironment::with_options(
         tempdir.path(),
@@ -105,33 +135,41 @@ fn local_environment_exec_command_captures_streams_timeout_and_filters_environme
 
     let result = environment
         .exec_command(
-            "printf 'out\\n'; printf 'err\\n' >&2; exit 7",
+            streams,
             CommandOptions {
                 timeout_ms: Some(60_000),
                 ..CommandOptions::default()
             },
         )
         .expect("exec command");
-    assert_eq!(result.stdout, "out\n");
-    assert_eq!(result.stderr, "err\n");
+    assert_eq!((result.stdout.as_str(), result.stderr.as_str()), streamed);
     assert_eq!(result.exit_code, 7);
     assert!(!result.timed_out);
     assert!(result.duration_ms < 60_000);
 
-    let env_result = environment
-        .exec_command(
-            "printf '%s|%s|%s|%s' \"${Unit_Test_PaSsWoRd-unset}\" \"${UNIT_TEST_VISIBLE-unset}\" \"$EXPLICIT_VALUE\" \"${PATH:+set}\"",
-            CommandOptions {
-                timeout_ms: Some(60_000),
-                env_vars: BTreeMap::from([(
-                    "EXPLICIT_VALUE".to_string(),
-                    "from-env-vars".to_string(),
-                )]),
-                ..CommandOptions::default()
-            },
-        )
-        .expect("env command");
-    assert_eq!(env_result.stdout, "unset|unset|from-env-vars|set");
+    let explicit = CommandOptions {
+        timeout_ms: Some(60_000),
+        env_vars: BTreeMap::from([("EXPLICIT_VALUE".to_string(), "from-env-vars".to_string())]),
+        ..CommandOptions::default()
+    };
+    let core_only = printed_env(
+        &environment
+            .exec_command(PRINT_ENV, explicit.clone())
+            .expect("env command"),
+    );
+    assert!(
+        !core_only.contains_key("Unit_Test_PaSsWoRd"),
+        "{core_only:?}"
+    );
+    assert!(
+        !core_only.contains_key("UNIT_TEST_VISIBLE"),
+        "{core_only:?}"
+    );
+    assert_eq!(core_only["EXPLICIT_VALUE"], "from-env-vars");
+    assert!(
+        core_only.keys().any(|key| key.eq_ignore_ascii_case("PATH")),
+        "{core_only:?}"
+    );
 
     let inherit_all = LocalExecutionEnvironment::with_options(
         tempdir.path(),
@@ -140,26 +178,25 @@ fn local_environment_exec_command_captures_streams_timeout_and_filters_environme
         EnvironmentInheritancePolicy::InheritAll,
     )
     .into_execution_environment();
-    let inherit_all_result = inherit_all
-        .exec_command(
-            "printf '%s|%s|%s' \"${Unit_Test_PaSsWoRd-unset}\" \"${UNIT_TEST_VISIBLE-unset}\" \"$EXPLICIT_VALUE\"",
-            CommandOptions {
-                timeout_ms: Some(60_000),
-                env_vars: BTreeMap::from([(
-                    "EXPLICIT_VALUE".to_string(),
-                    "from-env-vars".to_string(),
-                )]),
-                ..CommandOptions::default()
-            },
-        )
-        .expect("inherit all env command");
-    assert_eq!(inherit_all_result.stdout, "shh|visible|from-env-vars");
+    let all = printed_env(
+        &inherit_all
+            .exec_command(PRINT_ENV, explicit)
+            .expect("inherit all env command"),
+    );
+    assert_eq!(
+        [
+            &all["Unit_Test_PaSsWoRd"],
+            &all["UNIT_TEST_VISIBLE"],
+            &all["EXPLICIT_VALUE"]
+        ],
+        ["shh", "visible", "from-env-vars"]
+    );
 
     let timeout_result = environment
-        .exec_command("printf 'start\\n'; sleep 60", CommandOptions::default())
+        .exec_command(sleep, CommandOptions::default())
         .expect("timeout command");
     assert!(timeout_result.timed_out);
-    assert_eq!(timeout_result.stdout, "start\n");
+    assert_eq!(timeout_result.stdout, started);
     assert_eq!(timeout_result.stderr, timeout_message(5_000));
     assert_ne!(timeout_result.exit_code, 0);
 
@@ -188,7 +225,7 @@ fn local_environment_exec_command_inherit_none_omits_parent_environment_but_keep
 
     let result = environment
         .exec_command(
-            "printf '%s|%s|%s' \"${Unit_Test_PaSsWoRd-unset}\" \"${UNIT_TEST_VISIBLE-unset}\" \"$EXPLICIT_VALUE\"",
+            PRINT_ENV,
             CommandOptions {
                 timeout_ms: Some(60_000),
                 env_vars: BTreeMap::from([(
@@ -203,10 +240,79 @@ fn local_environment_exec_command_inherit_none_omits_parent_environment_but_keep
     restore_env("Unit_Test_PaSsWoRd", old_password);
     restore_env("UNIT_TEST_VISIBLE", old_visible);
 
-    assert_eq!(result.stdout, "unset|unset|from-env-vars");
+    let env = printed_env(&result);
+    assert!(!env.contains_key("Unit_Test_PaSsWoRd"), "{env:?}");
+    assert!(!env.contains_key("UNIT_TEST_VISIBLE"), "{env:?}");
+    assert_eq!(env["EXPLICIT_VALUE"], "from-env-vars");
     assert_eq!(result.stderr, "");
     assert_eq!(result.exit_code, 0);
     assert!(!result.timed_out);
+}
+
+/// Windows names are case-insensitive, so a caller's `PATH` replaces the
+/// inherited `Path`; elsewhere `Path` is another variable and stays.
+#[test]
+fn local_environment_caller_path_replaces_inherited_path_in_any_case_only_on_windows() {
+    let _env_guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let tempdir = tempdir().expect("tempdir");
+    let original = std::env::var_os("PATH").expect("PATH");
+    // Windows keeps its search path as `Path`, so the inheritance is spelled so.
+    #[cfg(windows)]
+    {
+        std::env::remove_var("PATH");
+        std::env::set_var("Path", &original);
+    }
+    #[cfg(not(windows))]
+    std::env::set_var("Path", "inherited-mixed-case");
+    let caller_path = std::env::join_paths(
+        std::iter::once(tempdir.path().to_path_buf()).chain(std::env::split_paths(&original)),
+    )
+    .expect("caller PATH")
+    .into_string()
+    .expect("UTF-8 PATH");
+
+    let result = LocalExecutionEnvironment::with_options(
+        tempdir.path(),
+        5_000,
+        60_000,
+        EnvironmentInheritancePolicy::InheritCoreOnly,
+    )
+    .into_execution_environment()
+    .exec_command(
+        PRINT_ENV,
+        CommandOptions {
+            timeout_ms: Some(60_000),
+            env_vars: BTreeMap::from([("PATH".to_string(), caller_path.clone())]),
+            ..CommandOptions::default()
+        },
+    );
+
+    #[cfg(windows)]
+    std::env::set_var("Path", &original);
+    #[cfg(not(windows))]
+    std::env::remove_var("Path");
+
+    let env = printed_env(&result.expect("env command"));
+    let paths = env
+        .iter()
+        .filter(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect::<Vec<_>>();
+    #[cfg(windows)]
+    assert_eq!(
+        paths.iter().map(|(_, value)| *value).collect::<Vec<_>>(),
+        [caller_path.as_str()]
+    );
+    #[cfg(not(windows))]
+    assert_eq!(
+        paths,
+        [
+            ("PATH", caller_path.as_str()),
+            ("Path", "inherited-mixed-case")
+        ]
+    );
 }
 
 #[cfg(not(windows))]
