@@ -3,6 +3,9 @@ export const normalizeProjectPath = (path: string): string => {
   if (!trimmed) return ""
   const forwardSlashed = trimmed.replace(/\\/g, "/")
   // A UNC path (\\server\share) keeps `//server/share` as its root, so `..` cannot climb above the share.
+  // ponytail: requests send this key, and the backend's normalize_path keeps a UNC prefix exactly as spelled
+  // (crates/spark-common/src/paths.rs), so a project it registered as \\server\share is another identity.
+  // The owner deferred this to a backend fix that writes the UNC prefix in one spelling, not a frontend rewrite of every request.
   const unc = forwardSlashed.match(/^\/\/([^/]+)\/*([^/]*)(.*)$/)
   const uncRoot = unc ? `//${unc[1]}${unc[2] ? `/${unc[2]}` : ""}` : null
   const slashNormalized = forwardSlashed.replace(/\/{2,}/g, "/")

@@ -12,6 +12,7 @@ import {
     lastUsedProjectPath,
     orderProjects,
     projectLabel,
+    recentProjectPath,
 } from '../projectChoices'
 
 const project = (directoryPath: string, overrides: Partial<RegisteredProject> = {}): RegisteredProject => ({
@@ -108,4 +109,14 @@ describe('launchWorkingDirectory', () => {
         // The field defaults to the chat's project; another chosen project still wins.
         expect(launchWorkingDirectory('/work/old', '/work/old', '/work/new')).toBe('/work/new')
     })
+})
+
+it('defaults to the registered project of the latest run recorded with a native Windows path', () => {
+    const windows = { 'C:/work/repo': project('C:/work/repo'), '//fileserver/share/home': project('//fileserver/share/home', { lastAccessedAt: '2026-09-01T00:00:00Z' }) }
+    expect(recentProjectPath(windows, [
+        { project_path: 'C:\\work\\repo', started_at: '2026-09-02T00:00:00Z' },
+        { project_path: 'D:\\unregistered', started_at: '2026-09-03T00:00:00Z' },
+    ])).toBe('C:/work/repo')
+    const usedRepo = { ...windows, 'C:/work/repo': project('C:/work/repo', { lastAccessedAt: '2026-09-05T00:00:00Z' }) }
+    expect(recentProjectPath(usedRepo, [{ project_path: '\\\\fileserver\\share\\home', started_at: '2026-09-06T00:00:00Z' }])).toBe('//fileserver/share/home')
 })
