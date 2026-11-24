@@ -282,6 +282,37 @@ it('keeps a replacement a reopened card listed when the removal of the old link 
     expect(screen.getByRole('button', { name: 'Remove link Build box' })).toBeInTheDocument()
 })
 
+it.each([
+    ['keeps', '2026-11-24T00:05:00Z', true],
+    ['replaces', '2026-11-22T00:00:00Z', false],
+])('%s a link a reopened card listed for an environment, saved after or before an add of it that succeeds late, beside a failed follow-up listing', async (_name, listedAt, keeps) => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')] })
+    let finishAdd = () => {}
+    backend.replies[`POST ${LINKS}`] = () => new Promise<Response>((resolve) => { finishAdd = () => resolve(json(link('env-gpu', 'GPU'))) })
+    const settings = render(card())
+    await user.type(await screen.findByLabelText('Remote origin'), 'https://env-gpu.example:8000')
+    await user.type(screen.getByLabelText('Remote environment ID'), 'env-gpu')
+    await user.type(screen.getByLabelText('Pairing code'), 'code-xyz')
+    await user.type(screen.getByLabelText('Link label (optional)'), 'GPU')
+    await user.click(screen.getByRole('button', { name: 'Add link' }))
+    await waitFor(() => expect(backend.mutations).toEqual([`POST ${LINKS}`]))
+
+    // The reopened card lists env-gpu as another tab saved it, after this add was saved or before it, while the add's
+    // response is still on its way.
+    settings.unmount()
+    backend.links = [{ ...link('env-gpu', 'Listed GPU'), origin: 'https://other-gpu.example:8000', created_at: listedAt }]
+    render(card())
+    expect(await screen.findByRole('button', { name: 'Remove link Listed GPU' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+
+    backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
+    await act(async () => finishAdd())
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
+    expect(screen.queryByRole('button', { name: 'Remove link Listed GPU' }) !== null).toBe(keeps)
+    expect(screen.queryByRole('button', { name: 'Remove link GPU' }) !== null).toBe(!keeps)
+})
+
 it('shows a failure that lands while Settings is closed in the next card to open', async () => {
     const user = userEvent.setup()
     const backend = stubBackend({ links: [link('env-build', 'Build box')] })
@@ -298,7 +329,8 @@ it('shows a failure that lands while Settings is closed in the next card to open
     await act(async () => failDelete())
     render(card())
     expect(await screen.findByRole('alert')).toHaveTextContent('Database is locked')
-    expect(screen.getByText('Build box')).toBeInTheDocument()
+    // The undelivered failure shows on mount, before the card's own listing returns.
+    expect(await screen.findByText('Build box')).toBeInTheDocument()
 })
 
 it('waits for a listing before saying no links remain after removing the last visible one', async () => {
@@ -528,41 +560,66 @@ it('refreshes only cards for the environment a mutation changed once it succeeds
     expect(screen.getByRole('button', { name: 'Revoke GPU runner' })).toBeInTheDocument()
 })
 
-it('shows a replacement a removal check finds during a refresh, and still shows that refresh\'s other results', async () => {
+it.each([
+    ['after', 'a revoked token', true, false],
+    ['after', 'a failed token listing', true, true],
+    ['just before', 'a revoked token', false, false],
+    ['just before', 'a failed token listing', false, true],
+])('shows a replacement a removal check finds during a refresh that finishes %s the check, beside that refresh\'s descriptor error and %s', async (_order, _tokens, checkFirst, tokensFail) => {
     const user = userEvent.setup()
     const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')], links: [link('env-build', 'Build box')] })
     render(card())
     await screen.findByRole('button', { name: 'Revoke CI runner' })
 
-    // A slow Refresh finds the descriptor failing, CI runner revoked from another tab, and env-build as it was.
+    // A slow Refresh finds the descriptor failing, env-build as it was, and either CI runner revoked from another tab or
+    // the token listing failing. Each held request answers with what the server had when it was asked.
     const held: Array<() => void> = []
-    const hold = (url: string, answer: Response) => {
+    const hold = (url: string, answer: () => Response) => {
         backend.replies[url] = () => {
             delete backend.replies[url]
-            return new Promise<Response>((resolve) => held.push(() => resolve(answer)))
+            const response = answer()
+            return new Promise<Response>((resolve) => held.push(() => resolve(response)))
         }
     }
-    hold('/environment', json({ detail: 'server restarting' }, 503))
-    hold(TOKENS, json({ tokens: [{ ...token('tok-ci', 'CI runner'), revoked_at: '2026-11-24T00:00:00Z' }] }))
-    hold(LINKS, json({ links: backend.links }))
+    hold('/environment', () => json({ detail: 'server restarting' }, 503))
+    hold(TOKENS, () => tokensFail
+        ? json({ detail: 'token listing failed' }, 500)
+        : json({ tokens: [{ ...token('tok-ci', 'CI runner'), revoked_at: '2026-11-24T00:00:00Z' }] }))
+    hold(LINKS, () => json({ links: backend.links }))
     await user.click(screen.getByRole('button', { name: 'Refresh' }))
     await waitFor(() => expect(held).toHaveLength(3))
+    const refreshReplies = held.splice(0)
+    const finishRefresh = () => refreshReplies.forEach((release) => release())
 
-    // Another tab relinks env-build, and removing it here finds the replacement while the refresh is still in flight.
+    // Another tab relinks env-build, and removing it here checks the server while the refresh is still in flight.
     backend.links = [relinked]
+    hold(LINKS, () => json({ links: backend.links }))
     await user.click(screen.getByRole('button', { name: 'Remove link Build box' }))
     await user.click(await screen.findByRole('button', { name: 'Remove link' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('The link to Build box changed since you chose to remove it, so nothing was removed.')
-    expect(screen.getByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled()
+    await waitFor(() => expect(held).toHaveLength(1))
+    const [finishCheck] = held
 
-    await act(async () => held.forEach((release) => release()))
+    if (checkFirst) {
+        await act(async () => finishCheck())
+        expect(await screen.findByRole('alert')).toHaveTextContent('The link to Build box changed since you chose to remove it, so nothing was removed.')
+        expect(screen.getByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled()
+        await act(async () => finishRefresh())
+    } else {
+        await act(async () => finishRefresh())
+        expect(await screen.findByRole('alert')).toHaveTextContent('Could not load this environment: Server restarting')
+        await act(async () => finishCheck())
+    }
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
     const alert = screen.getByRole('alert')
     expect(alert).toHaveTextContent('The link to Build box changed since you chose to remove it')
     expect(alert).toHaveTextContent('Could not load this environment: Server restarting')
-    expect(screen.getByText(/· revoked 2026-11-24T00:00:00Z/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Revoke CI runner' })).not.toBeInTheDocument()
+    if (tokensFail) {
+        expect(alert).toHaveTextContent('Could not load peer tokens: Token listing failed')
+    } else {
+        expect(screen.getByText(/· revoked 2026-11-24T00:00:00Z/)).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Revoke CI runner' })).not.toBeInTheDocument()
+    }
     expect(screen.getByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
     expect(screen.queryByText(/https:\/\/env-build\.example:8000/)).not.toBeInTheDocument()
     expect(backend.mutations).toEqual([])

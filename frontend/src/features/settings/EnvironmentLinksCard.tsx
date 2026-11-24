@@ -84,10 +84,10 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const liveCardRef = useRef<LiveCard | null>(null)
     const { confirm } = useDialogController()
 
-    const showError = useCallback((message: string) => {
+    const showError = useCallback((message: string, keepShown = false) => {
         errorCountRef.current += 1
         setStatus('')
-        setError(message)
+        setError((prev) => [keepShown ? prev : null, message].filter(Boolean).join(' '))
     }, [])
 
     const forgetProjects = useCallback((environmentId: string) => {
@@ -151,9 +151,16 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                 ? prev.map((row) => row.token_id === id ? { ...row, revoked: true } : row)
                 : [...prev, { ...mutation.revoked, revoked: true }])
         } else if ('linked' in mutation) {
+            // A row for the same ID saved in a later second is a newer relink a listing here already shows; it stays.
+            // created_at is the server's fixed-width UTC time, which compares as text.
+            // ponytail: created_at has one-second resolution, so a relink saved in the same second is replaced.
             const created = mutation.linked
-            forgetProjects(created.environment_id)
-            setLinks((prev) => [...prev.filter((row) => row.environment_id !== created.environment_id), created])
+            const newer = (row: EnvironmentLink) => row.environment_id === created.environment_id && row.created_at > created.created_at
+            const lookup = lookupsRef.current.get(created.environment_id)
+            if (!lookup || !newer(lookup)) forgetProjects(created.environment_id)
+            setLinks((prev) => prev.some(newer)
+                ? prev
+                : [...prev.filter((row) => row.environment_id !== created.environment_id), created])
         } else {
             const removed = mutation.unlinked
             const lookup = lookupsRef.current.get(removed.environment_id)
@@ -224,9 +231,12 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         else setPairingCode(current)
     }
 
-    // Shows an action's failure here, or, once this card is gone, in the card showing now or the next one to mount.
+    // Shows an action's failure here, beside any error shown while it ran (each action clears earlier ones as it starts,
+    // so a refresh that finished meanwhile keeps its errors), or, once this card is gone, in the card showing now or the
+    // next one to mount.
     const reportError = (message: string) => {
-        const shown = liveCardRef.current ?? liveCards.values().next().value
+        if (liveCardRef.current) return showError(message, true)
+        const shown = liveCards.values().next().value
         if (shown) shown.showError(message)
         else undeliveredError = [undeliveredError, message].filter(Boolean).join(' ')
     }
