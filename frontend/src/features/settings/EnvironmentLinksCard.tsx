@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { flushSync } from 'react-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Field, FieldLabel } from '@/components/ui/field'
@@ -30,6 +31,9 @@ import {
 
 type ProjectLookup = { loading?: boolean; projects?: string[]; error?: string }
 
+/** The link a Projects lookup was made for. */
+type ProjectsTicket = Pick<EnvironmentLink, 'origin' | 'created_at'>
+
 /** `revoked` marks a revoke the server confirmed before a listing supplied its time. */
 type TokenRow = PeerToken & { revoked?: boolean }
 
@@ -58,17 +62,40 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const [busy, setBusy] = useState(false)
     const [projectsByEnv, setProjectsByEnv] = useState<Record<string, ProjectLookup>>({})
     const refreshSeqRef = useRef(0)
-    // The Projects lookup in flight per environment; removing or replacing its link drops it so its answer is ignored.
-    const lookupsRef = useRef(new Map<string, object>())
+    // Counts errors shown by actions, so a refresh leaves visible any error reported after it started.
+    const errorCountRef = useRef(0)
+    // The Projects lookup, cached or in flight, per environment; removing or replacing its link drops it so its answer is ignored.
+    const lookupsRef = useRef(new Map<string, ProjectsTicket>())
     const { confirm } = useDialogController()
 
     const showError = (message: string) => {
+        errorCountRef.current += 1
         setStatus('')
         setError(message)
     }
 
+    const forgetProjects = useCallback((environmentId: string) => {
+        lookupsRef.current.delete(environmentId)
+        setProjectsByEnv((prev) => {
+            const next = { ...prev }
+            delete next[environmentId]
+            return next
+        })
+    }, [])
+
+    // Shows a link listing and drops Projects results for links it no longer has as they were when looked up.
+    const showListedLinks = useCallback((listed: EnvironmentLink[]) => {
+        for (const [environmentId, ticket] of lookupsRef.current) {
+            const kept = listed.some((row) =>
+                row.environment_id === environmentId && row.origin === ticket.origin && row.created_at === ticket.created_at)
+            if (!kept) forgetProjects(environmentId)
+        }
+        setLinks(listed)
+    }, [forgetProjects])
+
     const refresh = useCallback(async () => {
         const seq = ++refreshSeqRef.current
+        const errorCount = errorCountRef.current
         setPairingCode(expireReceipt)
         setLoading(true)
         const [descriptorResult, tokensResult, linksResult] = await Promise.allSettled([
@@ -82,14 +109,20 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         else errors.push(`Could not load this environment: ${errorText(descriptorResult.reason, 'unknown error.')}`)
         if (tokensResult.status === 'fulfilled') setTokens(tokensResult.value)
         else errors.push(`Could not load peer tokens: ${errorText(tokensResult.reason, 'unknown error.')}`)
-        if (linksResult.status === 'fulfilled') setLinks(linksResult.value)
+        if (linksResult.status === 'fulfilled') showListedLinks(linksResult.value)
         else errors.push(`Could not load linked environments: ${errorText(linksResult.reason, 'unknown error.')}`)
         setTokensLoaded(tokensResult.status === 'fulfilled')
         setLinksLoaded(linksResult.status === 'fulfilled')
-        if (errors.length > 0) setStatus('')
-        setError(errors.length > 0 ? errors.join(' ') : null)
+        // An error an action reported after this refresh started stays, beside any listing errors.
+        const newerError = errorCountRef.current !== errorCount
+        if (errors.length > 0) {
+            setStatus('')
+            setError((prev) => [newerError ? prev : null, ...errors].filter(Boolean).join(' '))
+        } else if (!newerError) {
+            setError(null)
+        }
         setLoading(false)
-    }, [])
+    }, [showListedLinks])
 
     useEffect(() => {
         if (!active) return
@@ -131,20 +164,33 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         else setPairingCode(current)
     }
 
-    const forgetProjects = (environmentId: string) => {
-        lookupsRef.current.delete(environmentId)
-        setProjectsByEnv((prev) => {
-            const next = { ...prev }
-            delete next[environmentId]
-            return next
-        })
-    }
-
-    // The shared dialog has no trigger of its own to refocus on close, so a dismissed one hands focus back here.
-    const confirmFrom = async (trigger: HTMLElement, options: Parameters<typeof confirm>[0]) => {
-        if (await confirm(options)) return true
-        window.setTimeout(() => trigger.focus(), 0)
-        return false
+    // Confirms, then runs an action with the card busy. The shared dialog has no trigger of its own to refocus, so focus
+    // returns to the control that opened it once the dialog closes or the action settles, or, if that control is gone, to
+    // the first enabled control in its section. Focus the user has moved elsewhere meanwhile stays put.
+    const confirmThenRun = async (
+        trigger: HTMLElement,
+        options: Parameters<typeof confirm>[0],
+        failure: string,
+        action: () => Promise<void>,
+    ) => {
+        const section = trigger.closest('section')
+        if (!(await confirm(options))) {
+            window.setTimeout(() => trigger.focus(), 0)
+            return
+        }
+        setBusy(true)
+        setError(null)
+        try {
+            await action()
+        } catch (err) {
+            showError(errorText(err, failure))
+        } finally {
+            flushSync(() => setBusy(false))
+            if (!document.activeElement || document.activeElement === document.body) {
+                const target = trigger.isConnected ? trigger : section?.querySelector<HTMLElement>('button:enabled, input:enabled')
+                target?.focus()
+            }
+        }
     }
 
     // Shows a successful mutation at once, even if the follow-up listing fails, and retires refreshes started before it.
@@ -173,27 +219,17 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         }
     }
 
-    const handleRevoke = async (token: PeerToken, trigger: HTMLElement) => {
-        const confirmed = await confirmFrom(trigger, {
-            title: 'Revoke peer token?',
-            description: `${token.label ? `${token.label} (${token.token_id})` : token.token_id} will stop authenticating requests to this environment.`,
-            confirmLabel: 'Revoke token',
-            cancelLabel: 'Cancel',
-            confirmVariant: 'destructive',
-        })
-        if (!confirmed) return
-        setBusy(true)
-        setError(null)
-        try {
-            await revokePeerToken(token.token_id)
-            await settleMutation(`Revoked token ${token.label || token.token_id}.`, () => setTokens((prev) => prev.map((row) =>
-                row.token_id === token.token_id ? { ...row, revoked: true } : row)))
-        } catch (err) {
-            showError(errorText(err, 'Could not revoke token.'))
-        } finally {
-            setBusy(false)
-        }
-    }
+    const handleRevoke = (token: PeerToken, trigger: HTMLElement) => confirmThenRun(trigger, {
+        title: 'Revoke peer token?',
+        description: `${token.label ? `${token.label} (${token.token_id})` : token.token_id} will stop authenticating requests to this environment.`,
+        confirmLabel: 'Revoke token',
+        cancelLabel: 'Cancel',
+        confirmVariant: 'destructive',
+    }, 'Could not revoke token.', async () => {
+        await revokePeerToken(token.token_id)
+        await settleMutation(`Revoked token ${token.label || token.token_id}.`, () => setTokens((prev) => prev.map((row) =>
+            row.token_id === token.token_id ? { ...row, revoked: true } : row)))
+    })
 
     const handleAddLink = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault()
@@ -224,22 +260,20 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         }
     }
 
-    const handleRemoveLink = async (link: EnvironmentLink, trigger: HTMLElement) => {
+    const handleRemoveLink = (link: EnvironmentLink, trigger: HTMLElement) => {
         const name = link.label || link.environment_id
-        const confirmed = await confirmFrom(trigger, {
+        return confirmThenRun(trigger, {
             title: 'Remove environment link?',
             description: `${name} (${link.origin}) will be unlinked. Its open delegations pause until you link it again.`,
             confirmLabel: 'Remove link',
             cancelLabel: 'Cancel',
             confirmVariant: 'destructive',
-        })
-        if (!confirmed) return
-        setBusy(true)
-        setError(null)
-        try {
+        }, 'Could not remove link.', async () => {
             // DELETE goes by environment ID alone, and relinking that ID (here or in another tab) replaces its origin and
             // created_at, so only delete the link the user confirmed if the server still has it.
-            // ponytail: a relink landing between this check and the DELETE still loses; closing that needs a conditional DELETE on the server.
+            // ponytail: a relink landing between this check and the DELETE still loses; closing that needs a conditional
+            // DELETE on the server, which this change leaves out of scope.
+            const refreshesBefore = refreshSeqRef.current
             const latest = await fetchEnvironmentLinks()
             // Requests go to whichever environment is active when sent, and the user can switch while the check runs.
             if (getActiveEnvironmentId() !== activeEnvironmentId) {
@@ -247,12 +281,14 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             }
             const current = latest.find((row) => row.environment_id === link.environment_id)
             if (current?.origin !== link.origin || current.created_at !== link.created_at) {
-                // Retires any refresh in flight, so its older listing cannot replace this one; this ends its loading too.
-                refreshSeqRef.current += 1
-                forgetProjects(link.environment_id)
-                setLinks(latest)
-                setLinksLoaded(true)
-                setLoading(false)
+                // A refresh started during the check has a newer listing. Otherwise show this one, retiring older refreshes
+                // so their listings cannot replace it, which also ends their loading state.
+                if (refreshSeqRef.current === refreshesBefore) {
+                    refreshSeqRef.current += 1
+                    showListedLinks(latest)
+                    setLinksLoaded(true)
+                    setLoading(false)
+                }
                 showError(`The link to ${name} changed since you chose to remove it, so nothing was removed. Review the current link before removing it again.`)
                 return
             }
@@ -264,11 +300,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                 // Only a listing can say no links remain.
                 setLinksLoaded(false)
             })
-        } catch (err) {
-            showError(errorText(err, 'Could not remove link.'))
-        } finally {
-            setBusy(false)
-        }
+        })
     }
 
     const handleInspectProjects = async (link: EnvironmentLink) => {
@@ -277,7 +309,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             forgetProjects(link.environment_id)
             return
         }
-        const lookup = {}
+        const lookup = { origin: link.origin, created_at: link.created_at }
         lookupsRef.current.set(link.environment_id, lookup)
         setProjectsByEnv((prev) => ({ ...prev, [link.environment_id]: { loading: true } }))
         try {
@@ -348,7 +380,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                     ) : null}
                 </div>
 
-                <div className="space-y-2">
+                <section className="space-y-2">
                     <h3 className="text-sm font-medium text-foreground">Issued peer tokens</h3>
                     {tokens.length === 0 ? (
                         tokensLoaded ? <p className="text-xs text-muted-foreground">No peer tokens issued yet.</p> : null
@@ -392,9 +424,9 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                             })}
                         </ul>
                     )}
-                </div>
+                </section>
 
-                <div className="space-y-3">
+                <section className="space-y-3">
                     <h3 className="text-sm font-medium text-foreground">Linked environments</h3>
                     {links.length === 0 ? (
                         linksLoaded ? <p className="text-xs text-muted-foreground">No linked environments configured.</p> : null
@@ -469,7 +501,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                         </Field>
                         <Button type="submit" size="sm" disabled={busy}>Add link</Button>
                     </form>
-                </div>
+                </section>
 
                 {status ? <p role="status" className="text-xs text-muted-foreground">{status}</p> : null}
                 {error ? <InlineError>{error}</InlineError> : null}

@@ -21,6 +21,8 @@ const link = (environment_id: string, label: string): Link =>
     ({ environment_id, origin: `https://${environment_id}.example:8000`, label, created_at: '2026-11-23T00:00:00Z' })
 const token = (token_id: string, label: string, is_current = false): Token =>
     ({ token_id, label, created_at: '2026-11-23T00:00:00Z', revoked_at: null, is_current })
+/** env-build as another tab relinks it, at a new origin. */
+const relinked = { ...link('env-build', 'Build box'), origin: 'https://new-build.example:8000', created_at: '2026-11-24T00:05:00Z' }
 const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
@@ -29,7 +31,7 @@ function stubBackend(seed: { tokens?: Token[]; links?: Link[]; replies?: Record<
     const backend = {
         tokens: seed.tokens ?? [],
         links: seed.links ?? [],
-        /** Per-URL overrides for GETs: a JSON body, or a function returning the response (or undefined to pass). */
+        /** Overrides keyed by URL for a GET, else by "METHOD url": a JSON body, or a function returning the response (or undefined to pass). */
         replies: seed.replies ?? {},
         /** Every non-GET request, as "METHOD url". */
         mutations: [] as string[],
@@ -41,7 +43,7 @@ function stubBackend(seed: { tokens?: Token[]; links?: Link[]; replies?: Record<
             backend.mutations.push(`${method} ${url}`)
             backend.bodies.push(init?.body ? JSON.parse(String(init.body)) : null)
         }
-        const reply = method === 'GET' ? backend.replies[url] : undefined
+        const reply = backend.replies[method === 'GET' ? url : `${method} ${url}`]
         const answer = typeof reply === 'function' ? await reply() : reply === undefined ? undefined : json(reply)
         if (answer) return answer
         const revoked = method === 'POST' && url.match(/^\/workspace\/api\/environment\/tokens\/([^/]+)\/revoke$/)
@@ -265,7 +267,7 @@ it.each([
     const staleDialog = await screen.findByRole('alertdialog')
     expect(staleDialog).toHaveTextContent('Build box (https://env-build.example:8000)')
     // Another tab relinks env-build at a new origin.
-    backend.links = [{ ...link('env-build', 'Build box'), origin: 'https://new-build.example:8000', created_at: '2026-11-24T00:05:00Z' }]
+    backend.links = [relinked]
     await act(async () => finishRefresh())
     expect(screen.queryByText(/https:\/\/new-build\.example:8000/) !== null).toBe(refreshes)
 
@@ -303,7 +305,7 @@ it.each([
     await user.click(screen.getByRole('button', { name: 'Refresh' }))
     await user.click(screen.getByRole('button', { name: 'Remove link Build box' }))
     // Another tab relinks env-build at a new origin before this one confirms.
-    backend.links = [{ ...link('env-build', 'Build box'), origin: 'https://new-build.example:8000', created_at: '2026-11-24T00:05:00Z' }]
+    backend.links = [relinked]
     await user.click(await screen.findByRole('button', { name: 'Remove link' }))
     await waitFor(() => expect(held).toHaveLength(2))
     delete backend.replies[LINKS]
@@ -356,6 +358,128 @@ it.each([
         await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-gpu'))
         expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`])
     }
+})
+
+it('keeps focus on the control behind a failed revoke or removal, or in its section once that control is gone', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')], links: [link('env-build', 'Build box'), link('env-gpu', 'GPU')] })
+    backend.replies[`POST ${TOKENS}/tok-ci/revoke`] = () => json({ detail: 'database is locked' }, 500)
+    backend.replies[`DELETE ${LINKS}/env-gpu`] = () => json({ detail: 'database is locked' }, 500)
+    render(card())
+
+    await user.click(await screen.findByRole('button', { name: 'Revoke CI runner' }))
+    await user.click(await screen.findByRole('button', { name: 'Revoke token' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Database is locked')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Revoke CI runner' })).toHaveFocus())
+
+    await user.click(screen.getByRole('button', { name: 'Remove link GPU' }))
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(backend.mutations).toContain(`DELETE ${LINKS}/env-gpu`))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove link GPU' })).toHaveFocus())
+
+    // Another tab removes Build box while its removal is confirmed here, so its row and Remove button go.
+    await user.click(screen.getByRole('button', { name: 'Remove link Build box' }))
+    backend.links = backend.links.filter((row) => row.environment_id !== 'env-build')
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The link to Build box changed since you chose to remove it')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Switch to GPU' })).toHaveFocus())
+    expect(backend.mutations).toEqual([`POST ${TOKENS}/tok-ci/revoke`, `DELETE ${LINKS}/env-gpu`])
+})
+
+it.each([
+    ['succeeds', null],
+    ['fails', 'Could not load peer tokens: Tokens table missing'],
+])('keeps a copy failure visible when a refresh started before the copy %s', async (_name, listingError) => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')] })
+    stubClipboard({ writeText: vi.fn().mockRejectedValue(new DOMException('Denied', 'NotAllowedError')) })
+    render(card())
+    await screen.findByRole('button', { name: 'Revoke CI runner' })
+
+    let finishRefresh = () => {}
+    backend.replies[TOKENS] = () => {
+        delete backend.replies[TOKENS]
+        const answer = listingError ? json({ detail: 'tokens table missing' }, 500) : json({ tokens: backend.tokens })
+        return new Promise<Response>((resolve) => { finishRefresh = () => resolve(answer) })
+    }
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    await user.click(screen.getByRole('button', { name: 'Copy ID' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not copy environment ID.')
+
+    await act(async () => finishRefresh())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not copy environment ID.')
+    if (listingError) expect(screen.getByRole('alert')).toHaveTextContent(listingError)
+})
+
+it('clears an earlier listing alert once a copy succeeds', async () => {
+    const user = userEvent.setup()
+    stubBackend({ replies: { [TOKENS]: () => json({ detail: 'tokens table missing' }, 500) } })
+    stubClipboard({ writeText: vi.fn().mockResolvedValue(undefined) })
+    render(card())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load peer tokens: Tokens table missing')
+    await user.click(screen.getByRole('button', { name: 'Copy ID' }))
+    await waitFor(() => expect(statusText()).toBe('Copied environment ID.'))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
+it.each([
+    ['shown', false],
+    ['still loading', true],
+])('drops Projects results %s for a link a refresh shows was replaced', async (_name, inFlight) => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box')] })
+    const url = `${LINKS}/env-build/projects`
+    let finishLookup = () => {}
+    backend.replies[url] = () => inFlight
+        ? new Promise<Response>((resolve) => { finishLookup = () => resolve(json([{ project_path: '/srv/old' }])) })
+        : json([{ project_path: '/srv/old' }])
+    render(card())
+    await user.click(await screen.findByRole('button', { name: 'Projects on Build box' }))
+    if (!inFlight) expect(await screen.findByText('/srv/old')).toBeInTheDocument()
+
+    // Another tab relinks env-build, and a refresh here lists the replacement.
+    backend.links = [relinked]
+    backend.replies[url] = [{ project_path: '/srv/current' }]
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    expect(await screen.findByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+    await act(async () => finishLookup())
+    expect(screen.queryByText('/srv/old')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Projects on Build box' }))
+    expect(await screen.findByText('/srv/current')).toBeInTheDocument()
+    expect(screen.queryByText('/srv/old')).not.toBeInTheDocument()
+})
+
+it('keeps the rows of a listing that finished during a removal check that then finds the link changed', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box')] })
+    const view = render(card())
+    await user.click(await screen.findByRole('button', { name: 'Remove link Build box' }))
+
+    // Another tab relinks env-build before this one confirms; the removal's check is held.
+    backend.links = [relinked]
+    let finishCheck = () => {}
+    backend.replies[LINKS] = () => {
+        delete backend.replies[LINKS]
+        const answer = json({ links: backend.links })
+        return new Promise<Response>((resolve) => { finishCheck = () => resolve(answer) })
+    }
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(backend.replies[LINKS]).toBeUndefined())
+
+    // Meanwhile another tab links GPU, and returning to this tab lists it.
+    backend.links = [...backend.links, link('env-gpu', 'GPU')]
+    view.rerender(card(false))
+    view.rerender(card(true))
+    expect(await screen.findByRole('button', { name: 'Remove link GPU' })).toBeInTheDocument()
+
+    await act(async () => finishCheck())
+    expect(await screen.findByRole('alert')).toHaveTextContent('The link to Build box changed since you chose to remove it')
+    expect(screen.getByRole('button', { name: 'Remove link GPU' })).toBeInTheDocument()
+    expect(screen.getByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+    expect(backend.mutations).toEqual([])
 })
 
 it('updates the environment switcher without a reload when links are added and removed', async () => {
