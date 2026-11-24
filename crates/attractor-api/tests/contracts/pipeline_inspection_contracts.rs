@@ -173,14 +173,16 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
     assert_eq!(source.download, None);
 
     // A download is the file's exact bytes, named by its last segment in a
-    // safe quoted form, whether the file is text or binary.
+    // safe quoted form, whether the file is text or binary. The fixture name
+    // is one Windows can create; quotes, backslashes and control bytes are
+    // covered by the unit test on `attachment_file_name` in src/lib.rs.
     let bundle = RunStore::for_settings(&settings)
         .read_run_bundle("run-inspect")
         .expect("read")
         .expect("run");
     let binary = vec![0x89, b'P', b'N', b'G', 0x00, 0xff, 0xfe];
     fs::write(
-        bundle.paths.artifacts_dir().join("my \"capture\";v1.bin"),
+        bundle.paths.artifacts_dir().join("notes (draft);v1.bin"),
         &binary,
     )
     .expect("binary artifact");
@@ -193,8 +195,8 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
     .expect("source");
     for (encoded, name, content_type, bytes) in [
         (
-            "artifacts/my%20%22capture%22%3Bv1.bin",
-            "my__capture__v1.bin",
+            "artifacts/notes%20%28draft%29%3Bv1.bin",
+            "notes__draft__v1.bin",
             "application/octet-stream",
             &binary,
         ),
@@ -237,7 +239,7 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
     // Anything else is the ordinary preview, which shows text only.
     let preview = handle_attractor_request(
         "GET",
-        "/attractor/pipelines/run-inspect/artifacts/artifacts/my%20%22capture%22%3Bv1.bin?download=0",
+        "/attractor/pipelines/run-inspect/artifacts/artifacts/notes%20%28draft%29%3Bv1.bin?download=0",
         "",
         settings.clone(),
     );

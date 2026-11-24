@@ -2305,20 +2305,13 @@ impl AttractorApiService {
     ) -> RuntimeRouteResponse {
         self.with_pipeline_artifact(pipeline_id, artifact_path, |file| {
             // Named by the file storage resolved, not the path as spelled.
-            let name = file
-                .absolute_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                        c
-                    } else {
-                        '_'
-                    }
-                })
-                .collect::<String>();
+            let name = attachment_file_name(
+                &file
+                    .absolute_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+            );
             RuntimeRouteResponse {
                 status_code: 200,
                 content_type: artifact_media_type(&file.absolute_path),
@@ -4322,6 +4315,20 @@ fn is_terminal_status(status: &str) -> bool {
     )
 }
 
+/// `name` with only characters safe inside a quoted `Content-Disposition`
+/// filename; every other character becomes `_`.
+fn attachment_file_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn artifact_media_type(path: &Path) -> String {
     match path
         .extension()
@@ -4727,4 +4734,21 @@ fn child_event_groups(children: &[RunBundle]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    // Runs on every platform: the name is a string, not a file, so it may hold
+    // characters some filesystems reject.
+    #[test]
+    fn attachment_file_name_replaces_quotes_backslashes_and_control_bytes() {
+        assert_eq!(
+            super::attachment_file_name("my \"capture\";v1\\x\r\n\t\u{0}\u{7f}é.bin"),
+            "my__capture__v1_x______.bin"
+        );
+        assert_eq!(
+            super::attachment_file_name("report-v1_final.bin"),
+            "report-v1_final.bin"
+        );
+    }
 }

@@ -176,7 +176,7 @@ async fn public_routes_serve_untrusted_requests() {
         let descriptor = json(descriptor).await;
         assert_eq!(descriptor["environment_id"], environment_id.as_str());
         assert_eq!(descriptor["protocol_version"], 1);
-        assert_eq!(descriptor["ui_api_version"], 1);
+        assert_eq!(descriptor["ui_api_version"], 2);
         assert!(!descriptor["spark_version"]
             .as_str()
             .expect("spark version")
@@ -1434,7 +1434,13 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
     let identity = json(identity).await;
     assert_eq!(identity["environment_id"], b_id.as_str());
     assert_eq!(identity["protocol_version"], 1);
-    assert_eq!(identity["ui_api_version"], 1);
+    // UI API v2 is this wire contract: protected routes must answer with
+    // `X-Spark-Environment-Id` (the proxied 200 above needs it), and the
+    // authenticated `GET /workspace/api/environment` exposes `build_id`
+    // (checked below). A v1 peer fails the version check rather than a
+    // protected route.
+    assert_eq!(spark_storage::environment::UI_API_VERSION, 2);
+    assert_eq!(identity["ui_api_version"], 2);
     for field in ["display_name", "spark_version"] {
         assert!(
             !identity[field].as_str().expect(field).is_empty(),
