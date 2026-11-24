@@ -240,6 +240,40 @@ it('confirms revoking a token and removing a link, naming each, and sends nothin
     expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`])
 })
 
+it('sends no DELETE when a refresh shows the link was relinked while its removal was being confirmed', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box')] })
+    render(card())
+    await screen.findByRole('button', { name: 'Remove link Build box' })
+
+    // Refresh is slow; while Remove waits for confirmation, another tab relinks env-build at a new origin.
+    let finishRefresh!: () => void
+    backend.replies[LINKS] = () => {
+        delete backend.replies[LINKS]
+        return new Promise<Response>((resolve) => { finishRefresh = () => resolve(json({ links: backend.links })) })
+    }
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    await user.click(screen.getByRole('button', { name: 'Remove link Build box' }))
+    const staleDialog = await screen.findByRole('alertdialog')
+    expect(staleDialog).toHaveTextContent('Build box (https://env-build.example:8000)')
+    backend.links = [{ ...link('env-build', 'Build box'), origin: 'https://new-build.example:8000', created_at: '2026-11-24T00:05:00Z' }]
+    await act(async () => finishRefresh())
+    expect(await screen.findByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+
+    await user.click(within(staleDialog).getByRole('button', { name: 'Remove link' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The link to Build box changed while you were confirming, so nothing was removed.')
+    expect(backend.mutations).toEqual([])
+
+    // The current link can be reviewed and removed.
+    await user.click(screen.getByRole('button', { name: 'Remove link Build box' }))
+    const currentDialog = await screen.findByRole('alertdialog')
+    expect(currentDialog).toHaveTextContent('Build box (https://new-build.example:8000)')
+    await user.click(within(currentDialog).getByRole('button', { name: 'Remove link' }))
+    expect(await screen.findByText('No linked environments configured.')).toBeInTheDocument()
+    expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`])
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
 it('updates the environment switcher without a reload when links are added and removed', async () => {
     const user = userEvent.setup()
     const backend = stubBackend({ links: [link('env-build', 'Build box')] })

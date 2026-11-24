@@ -57,6 +57,11 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const [busy, setBusy] = useState(false)
     const [projectsByEnv, setProjectsByEnv] = useState<Record<string, ProjectLookup>>({})
     const refreshSeqRef = useRef(0)
+    // The rows on screen now, to check a confirmation against what a refresh loaded while it was open.
+    const linksRef = useRef(links)
+    useEffect(() => {
+        linksRef.current = links
+    }, [links])
     // The Projects lookup in flight per environment; removing or replacing its link drops it so its answer is ignored.
     const lookupsRef = useRef(new Map<string, object>())
     const { confirm } = useDialogController()
@@ -232,6 +237,12 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             confirmVariant: 'destructive',
         })
         if (!confirmed) return
+        // Relinking an environment ID replaces its origin and created_at, so a changed row is a different link.
+        const current = linksRef.current.find((row) => row.environment_id === link.environment_id)
+        if (current?.origin !== link.origin || current.created_at !== link.created_at) {
+            showError(`The link to ${link.label || link.environment_id} changed while you were confirming, so nothing was removed. Review the current links and try again.`)
+            return
+        }
         setBusy(true)
         setError(null)
         try {
