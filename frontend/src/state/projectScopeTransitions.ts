@@ -56,9 +56,11 @@ type ProjectScopeTransitionState = Pick<
 >>
 
 // Server records carry native paths (C:\repo); registry keys are normalized (C:/repo).
-const pathBelongsToProject = (path: string | null | undefined, projectPath: string) => {
+// A path belongs to the deepest registered project holding it, so removing /work keeps /work/child's runs.
+const pathBelongsToProject = (path: string | null | undefined, projectPath: string, registry: AppState['projectRegistry']) => {
     const normalized = normalizeProjectPath(path ?? '')
-    return normalized === projectPath || normalized.startsWith(`${projectPath}/`)
+    const holds = (root: string) => normalized === root || normalized.startsWith(`${root}/`)
+    return holds(projectPath) && !Object.keys(registry).some((other) => other.length > projectPath.length && holds(other))
 }
 
 const runBelongsToProject = (
@@ -70,27 +72,28 @@ const runBelongsToProject = (
         | null
         | undefined,
     projectPath: string,
+    registry: AppState['projectRegistry'],
 ) => (
     Boolean(run) && (
-        pathBelongsToProject(run?.project_path, projectPath)
-        || pathBelongsToProject(run?.working_directory, projectPath)
+        pathBelongsToProject(run?.project_path, projectPath, registry)
+        || pathBelongsToProject(run?.working_directory, projectPath, registry)
     )
 )
 
 const pruneRunsSessionsForProject = (
-    state: Pick<AppState, 'runsListSession' | 'runDetailSessionsByRunId'>,
+    state: Pick<AppState, 'runsListSession' | 'runDetailSessionsByRunId' | 'projectRegistry'>,
     projectPath: string,
 ) => {
     const removedRunIds = new Set<string>()
 
     state.runsListSession.runs.forEach((run) => {
-        if (runBelongsToProject(run, projectPath)) {
+        if (runBelongsToProject(run, projectPath, state.projectRegistry)) {
             removedRunIds.add(run.run_id)
         }
     })
 
     Object.entries(state.runDetailSessionsByRunId).forEach(([runId, session]) => {
-        if (runBelongsToProject(session.record, projectPath)) {
+        if (runBelongsToProject(session.record, projectPath, state.projectRegistry)) {
             removedRunIds.add(runId)
         }
     })

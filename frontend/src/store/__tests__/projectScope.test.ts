@@ -279,6 +279,22 @@ describe('project scope store behavior', () => {
     expect(next.runDetailSessionsByRunId['run-b']?.record?.run_id).toBe('run-b')
   })
 
+  it('keeps the runs and run selection of a project registered inside a removed one', () => {
+    const store = useStore.getState()
+    store.registerProject('/tmp/work')
+    store.registerProject('/tmp/work/child')
+    store.updateRunsListSession({ runs: [buildRunRecord('run-parent', '/tmp/work', 'a.dot'), buildRunRecord('run-child', '/tmp/work/child', 'b.dot')] })
+    store.updateRunDetailSession('run-child', { record: buildRunRecord('run-child', '/tmp/work/child', 'b.dot') })
+    store.setRunsSelectedRunId('run-child')
+
+    store.removeProject('/tmp/work', '/tmp/work/child')
+
+    const next = useStore.getState()
+    expect(next.runsListSession.runs.map((run) => run.run_id)).toEqual(['run-child'])
+    expect(selectSelectedRunId(next)).toBe('run-child')
+    expect(next.runDetailSessionsByRunId['run-child']).toBeDefined()
+  })
+
   it('drops the removed project missions and selection but keeps other projects', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')

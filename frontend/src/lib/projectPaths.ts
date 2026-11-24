@@ -7,7 +7,8 @@ export const normalizeProjectPath = (path: string): string => {
   // (crates/spark-common/src/paths.rs), so a project it registered as \\server\share is another identity.
   // The owner deferred this to a backend fix that writes the UNC prefix in one spelling, not a frontend rewrite of every request.
   // No `.` here: it skips line separators (U+2028/9), which are valid in folder names.
-  const unc = forwardSlashed.match(/^\/\/([^/]+)\/*([^/]*)/)
+  // UNC starts \\ or //, so a POSIX /\Team stays a POSIX path rather than a share.
+  const unc = /^(?:\\\\|\/\/)/.test(trimmed) ? forwardSlashed.match(/^\/\/([^/]+)\/*([^/]*)/) : null
   const uncRoot = unc ? `//${unc[1]}${unc[2] ? `/${unc[2]}` : ""}` : null
   const slashNormalized = forwardSlashed.replace(/\/{2,}/g, "/")
   const windowsPrefixMatch = slashNormalized.match(/^[A-Za-z]:\//)

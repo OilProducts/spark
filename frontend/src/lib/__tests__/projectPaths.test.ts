@@ -13,6 +13,7 @@ it('normalizes drive and POSIX paths as before', () => {
     expect(normalizeProjectPath('C:\\Users\\..\\..')).toBe('C:/')
     expect(normalizeProjectPath(' /tmp/demo//project/./subdir/.. ')).toBe('/tmp/demo/project')
     expect(normalizeProjectPath('///tmp/demo')).toBe('/tmp/demo')
+    expect(normalizeProjectPath('/\\Team/repo')).toBe('/Team/repo')
     expect(normalizeProjectPath('/..')).toBe('/')
     expect(normalizeProjectPath('relative/./path')).toBe('relative/path')
 })

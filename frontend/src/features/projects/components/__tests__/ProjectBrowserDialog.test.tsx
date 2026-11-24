@@ -43,3 +43,9 @@ it('keeps the POSIX Root breadcrumb', () => {
     expect(breadcrumbPaths('/Users/chris/repo')).toEqual(['/', '/Users', '/Users/chris', '/Users/chris/repo'])
     expect(within(screen.getByTestId('project-browser-breadcrumbs')).getAllByRole('button')[0]).toHaveTextContent('Root')
 })
+
+it('reads a POSIX folder named \\Team at the root as a folder, not a UNC share', () => {
+    expect(breadcrumbPaths('/\\Team/repo')).toEqual(['/', '/\\Team', '/\\Team/repo'])
+    const crumbs = within(screen.getByTestId('project-browser-breadcrumbs')).getAllByRole('button')
+    expect(crumbs.map((crumb) => crumb.textContent)).toEqual(['Root', '\\Team', 'repo'])
+})

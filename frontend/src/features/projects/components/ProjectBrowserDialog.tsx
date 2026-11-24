@@ -35,7 +35,8 @@ type BreadcrumbSegment = {
 
 function buildBreadcrumbSegments(path: string): BreadcrumbSegment[] {
     // A Windows path roots at its drive (C:\) or UNC share (\\server\share), and its crumbs keep the path's own separator.
-    const windows = path.match(/^(?:([A-Za-z]:)|[/\\]{2}([^/\\]+)[/\\]+([^/\\]+))/)
+    // A POSIX path such as /\Team is not UNC: there a backslash is part of the folder name.
+    const windows = path.match(/^(?:([A-Za-z]:)|(?:\\\\|\/\/)([^/\\]+)[/\\]+([^/\\]+))/)
     const separator = windows && path.includes('\\') ? '\\' : '/'
     const root = !windows ? '/'
         : windows[1] ? `${windows[1]}${separator}`
