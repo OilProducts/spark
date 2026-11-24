@@ -15,6 +15,8 @@ import { Switch } from "@/components/ui/switch"
 import { useDialogController } from "@/components/app/dialog-controller"
 import { Button } from "@/components/ui/button"
 import { ConnectionSettingsEditor } from "./ConnectionSettingsEditor"
+import { DelegationsCard } from "./DelegationsCard"
+import { EnvironmentLinksCard } from "./EnvironmentLinksCard"
 import { EnvironmentsCard } from "./EnvironmentsCard"
 import { RuntimeSettingsEditor } from "./RuntimeSettingsEditor"
 import { useSettingsNavigationProtection } from "./hooks/useSettingsNavigationProtection"
@@ -239,6 +241,8 @@ export function SettingsPanel() {
                     </Card>
                 ) : null}
                 <ConnectionSettingsEditor />
+                <EnvironmentLinksCard active={category === 'system'} />
+                <DelegationsCard active={category === 'system'} />
                 <EnvironmentsCard />
                 <RuntimeSettingsEditor />
                 </TabsContent>
