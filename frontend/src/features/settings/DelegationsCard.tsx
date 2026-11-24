@@ -1,4 +1,4 @@
-import { Activity, useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { create } from 'zustand'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { FormQuestionFields } from '@/components/app/form-question'
@@ -93,7 +93,7 @@ function QuestionResponder({
     disabled: boolean
     draft: AnswerDraft
     onDraft: (patch: Partial<AnswerDraft>) => void
-    onAnswer: (body: DelegationAnswerBody) => void
+    onAnswer: (body: DelegationAnswerBody) => Promise<boolean>
 }) {
     const label = question.prompt || question.form?.message || question.questions?.map((sub) => sub.question).join(' ') || 'Question'
 
@@ -113,10 +113,7 @@ function QuestionResponder({
 
     return (
         <div role="group" aria-label={`${requestKey}: ${label} (${where})`} className="space-y-2 border-t border-border pt-2">
-            {/* FormQuestionFields drops its stored draft as it replies (form-question.tsx), so a refused
-                reply keeps the entered values only while this card stays mounted; after leaving Settings
-                the form starts over beside the error. ponytail: keeping them needs FormQuestionFields to
-                drop its draft once a reply is accepted. */}
+            {/* FormQuestionFields keeps its stored draft until the reply is accepted. */}
             {question.form ? (
                 <FormQuestionFields
                     actionError={draft.error}
@@ -231,10 +228,14 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     // The last rows loaded and the filter they answer: another filter's rows are never shown.
     const [loaded, setLoaded] = useState<{ filter: Filter; records: DelegationOut[] } | null>(null)
     const { drafts, acknowledged } = useDelegationAnswers()
-    // Every delegation last seen, for rows held mounted while the filter leaves them out; the ref
-    // gives a cancel confirmation the latest record.
-    const [seen, setSeen] = useState<Record<string, DelegationOut>>({})
-    const seenRef = useRef(seen)
+    // Every delegation's latest record, so a cancel confirmation acts on what is true when it closes.
+    const seenRef = useRef<Record<string, DelegationOut>>({})
+    // A card left behind when Settings closes neither shows nor prunes with what its requests return.
+    const mountedRef = useRef(false)
+    useEffect(() => {
+        mountedRef.current = true
+        return () => { mountedRef.current = false }
+    }, [])
     const [loading, setLoading] = useState(false)
     const [busy, setBusy] = useState(false)
     const [loadError, setLoadError] = useState<string | null>(null)
@@ -246,7 +247,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const load = useCallback(async () => {
         const requested = filterRef.current
         const seq = ++requestSeqRef.current
-        const current = () => seq === requestSeqRef.current && requested === filterRef.current
+        const current = () => mountedRef.current && seq === requestSeqRef.current && requested === filterRef.current
         loadingRef.current = true
         setLoading(true)
         try {
@@ -254,7 +255,6 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             if (!current()) return
             setLoaded({ filter: requested, records })
             seenRef.current = { ...seenRef.current, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }
-            setSeen(seenRef.current)
             setLoadError(null)
             const asked = stillAsked(records)
             useDelegationAnswers.setState(({ drafts, acknowledged }) => ({
@@ -287,16 +287,9 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     }, [active, filter, refresh])
 
     const rows = loaded?.filter === filter ? loaded.records : null
-    const visibleIds = new Set((rows ?? []).map((record) => record.delegation_id))
-    // A row with an answer draft (or reply in flight) stays mounted, hidden, while the filter leaves it
-    // out: FormQuestionFields drops its stored draft as it replies, so only its live state keeps what
-    // was entered if the reply is refused.
-    const held = Object.values(seen).filter((record) => (
-        !visibleIds.has(record.delegation_id) && Object.keys(drafts).some((key) => key.startsWith(`${record.delegation_id}:`))
-    ))
     // The Paused view can't see the open delegations that may pause, so it keeps polling. Until a
-    // filter's first load succeeds, the delegations seen under other filters decide.
-    const live = filter === 'paused' || (rows ?? Object.values(seen)).some((record) => record.phase !== 'sealed')
+    // filter's first load succeeds, the last rows loaded under another filter decide.
+    const live = filter === 'paused' || (loaded?.records ?? []).some((record) => record.phase !== 'sealed')
     useEffect(() => {
         if (!active || !live) return
         const timer = window.setInterval(() => {
@@ -319,6 +312,11 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         let paused: boolean | null = null
         for (;;) {
             const latest = seenRef.current[record.delegation_id] ?? record
+            // A remote cancel already pending needs no second request; a paused one can still be sealed locally.
+            if (latest.cancel_requested_at && !latest.paused) {
+                setStatus(`Cancellation was already requested for ${record.request_key}.`)
+                return
+            }
             if ((latest.paused !== null) === paused) break
             paused = latest.paused !== null
             const confirmed = await dialogs.confirm({
@@ -345,7 +343,6 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         }
         // The row shows the server's answer now, whether or not the reload below succeeds.
         seenRef.current = { ...seenRef.current, [updated.delegation_id]: updated }
-        setSeen(seenRef.current)
         setLoaded((current) => current && {
             ...current,
             records: current.records.flatMap((row) => (
@@ -374,7 +371,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             editDraft(key, { sending: false, error: errorText(err, 'Could not submit answer.') })
             setStatus('')
             setBusy(false)
-            return
+            return false
         }
         useDelegationAnswers.setState(({ drafts, acknowledged }) => {
             const { [key]: _sent, ...rest } = drafts
@@ -384,6 +381,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         setStatus(done)
         await reloadAfterChange(done)
         setBusy(false)
+        return true
     }
 
     return (
@@ -417,21 +415,19 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                     loadError ? null : <p role="status" className="text-muted-foreground">Loading delegations…</p>
                 ) : rows.length === 0 ? (
                     <p className="text-xs text-muted-foreground">No matching delegations.</p>
-                ) : null}
-                {/* Always mounted, so a held row keeps its place in the tree across filters. */}
-                <ul className="space-y-2" hidden={visibleIds.size === 0}>
-                    {[...(rows ?? []), ...held].map((record) => {
-                        const badge = delegationStatus(record)
-                        const where = whereText(record)
-                        const questions = record.phase === 'accepted'
-                            ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))
-                            : []
-                        // Answers go through the link to the other environment, which a paused
-                        // delegation has lost, and a delegation being canceled no longer waits on them.
-                        const answerable = !record.paused && !record.cancel_requested_at
-                        return (
-                            <Activity key={record.delegation_id} mode={visibleIds.has(record.delegation_id) ? 'visible' : 'hidden'}>
-                                <li>
+                ) : (
+                    <ul className="space-y-2">
+                        {rows.map((record) => {
+                            const badge = delegationStatus(record)
+                            const where = whereText(record)
+                            const questions = record.phase === 'accepted'
+                                ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))
+                                : []
+                            // Answers go through the link to the other environment, which a paused
+                            // delegation has lost, and a delegation being canceled no longer waits on them.
+                            const answerable = !record.paused && !record.cancel_requested_at
+                            return (
+                                <li key={record.delegation_id}>
                                     <Well role="group" aria-label={`Delegation ${record.request_key} (${where})`} className="space-y-2 px-3 py-2">
                                         <div className="flex flex-wrap items-start justify-between gap-2">
                                             <div className="min-w-0 space-y-0.5">
@@ -494,16 +490,16 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                                     disabled={busy || draft.sending || !answerable}
                                                     draft={draft}
                                                     onDraft={(patch) => editDraft(key, patch)}
-                                                    onAnswer={(body) => void handleAnswer(record, question.question_id, body)}
+                                                    onAnswer={(body) => handleAnswer(record, question.question_id, body)}
                                                 />
                                             )
                                         })}
                                     </Well>
                                 </li>
-                            </Activity>
-                        )
-                    })}
-                </ul>
+                            )
+                        })}
+                    </ul>
+                )}
                 {status ? <p role="status" className="text-xs text-muted-foreground">{status}</p> : null}
                 {loadError ? <InlineError>{loadError}</InlineError> : null}
                 {cancelError ? <InlineError>{cancelError}</InlineError> : null}

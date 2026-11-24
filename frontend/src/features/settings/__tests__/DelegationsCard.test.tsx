@@ -276,27 +276,63 @@ it('keeps a free-text answer in flight, then its draft and 409, when Settings is
     expect(sent(answerRoute('del-1', 'q-note'))).toEqual([{ selected_value: 'ship it' }, { selected_value: 'ship it' }])
 })
 
-it('shows a refused form reply beside the form when Settings was left during the reply', async () => {
-    const answer = later()
+it('keeps the exact form draft beside a refused Submit, Decline or Cancel when Settings is left during the reply, and clears it once sent', async () => {
+    const form = deployForm('form-away', 'Away details')
+    const replies = [later(), later(), later()]
     serve({
-        [LIST]: [ok(list(delegation('del-f', 'deploy-task', [deployForm('form-away', 'Away details')])))],
-        [answerRoute('del-f', 'form-away')]: [answer.reply],
+        [LIST]: [ok(list(delegation('del-f', 'deploy-task', [form])))],
+        [answerRoute('del-f', 'form-away')]: [...replies.map((reply) => reply.reply), ok({})],
     })
-    const first = renderCard()
     const name = asked('deploy-task', 'Away details', 'del-f')
-    const before = await screen.findByRole('group', { name })
-    await first.user.type(within(before).getByRole('textbox', { name: 'Region' }), 'eu-west')
-    await first.user.type(within(before).getByRole('textbox', { name: 'Replicas' }), '3')
-    await first.user.click(within(before).getByRole('button', { name: 'Submit' }))
+    let view = renderCard()
+    let responder = await screen.findByRole('group', { name })
+    await view.user.type(within(responder).getByRole('textbox', { name: 'Region' }), 'eu-west')
+    // Past f64's exact integers: only the typed text keeps every digit.
+    await view.user.type(within(responder).getByRole('textbox', { name: 'Replicas' }), '12345678901234567890')
+    for (const [index, action] of (['Submit', 'Decline', 'Cancel'] as const).entries()) {
+        await view.user.click(within(responder).getByRole('button', { name: action }))
+        view.unmount()
+        view = renderCard()
+        responder = await screen.findByRole('group', { name })
+        expect(within(responder).getByRole('button', { name: 'Submitting...' })).toBeDisabled()
+        await replies[index].resolve({ detail: `${action} refused.` }, 409)
+        expect(within(responder).getByText(`${action} refused.`)).toBeInTheDocument()
+        expect(within(responder).getByRole('textbox', { name: 'Region' })).toHaveValue('eu-west')
+        expect(within(responder).getByRole('textbox', { name: 'Replicas' })).toHaveValue('12345678901234567890')
+        expect(within(responder).getByRole('textbox', { name: 'Replicas' })).toBeEnabled()
+    }
+    const [submit, decline, cancel] = sent(answerRoute('del-f', 'form-away'))
+    expect(submit).toMatchObject({ form: { action: 'accept', content: { region: 'eu-west' } } })
+    expect([decline, cancel]).toEqual([{ form: { action: 'decline' } }, { form: { action: 'cancel' } }])
+
+    // Once a reply is accepted, the question asked again starts from an empty form.
+    await view.user.click(within(responder).getByRole('button', { name: 'Submit' }))
+    expect(await screen.findByText('Sent answer for deploy-task.')).toBeInTheDocument()
+    await settled()
+    routes.set(LIST, [ok(list(delegation('del-f', 'deploy-task', []))), ok(list(delegation('del-f', 'deploy-task', [form])))])
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    await waitFor(() => expect(sent(LIST)).toHaveLength(6))
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(within(await screen.findByRole('group', { name })).getByRole('textbox', { name: 'Region' })).toHaveValue('')
+})
+
+it('keeps an unsent draft for a newer question when a refresh from before Settings was left returns late', async () => {
+    const late = later()
+    const newer = delegation('del-1', 'nightly-checks', [approveGate(), freeText('q-next', 'Anything else?')])
+    serve({ [LIST]: [ok(list(nightly)), late.reply, ok(list(newer))] })
+    const first = renderCard()
+    expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
+    // A live refresh is in flight when Settings closes.
+    await act(async () => { vi.advanceTimersByTime(4000) })
     first.unmount()
 
-    renderCard()
-    const responder = await screen.findByRole('group', { name })
-    expect(within(responder).getByRole('button', { name: 'Submitting...' })).toBeDisabled()
-    await answer.resolve({ detail: 'The form was already answered elsewhere.' }, 409)
-    expect(within(responder).getByText('The form was already answered elsewhere.')).toBeInTheDocument()
-    expect(within(responder).getByRole('button', { name: 'Submit' })).toBeEnabled()
-    expect(within(responder).getByRole('textbox', { name: 'Region' })).toBeEnabled()
+    const { user } = renderCard()
+    const name = asked('nightly-checks', 'Anything else?', 'del-1')
+    const next = await screen.findByRole('group', { name })
+    await user.type(within(next).getByRole('textbox', { name: 'Free-text answer' }), 'later note')
+    // The old card's snapshot predates the newer question.
+    await late.resolve(list(nightly))
+    expect(within(screen.getByRole('group', { name })).getByRole('textbox', { name: 'Free-text answer' })).toHaveValue('later note')
 })
 
 it('keeps an answered question hidden when Settings is reopened before the follower drops it, and sends it once', async () => {
@@ -479,6 +515,34 @@ it('asks again before sealing locally when a delegation pauses while its remote 
     await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel delegation' }))
     expect(await screen.findByText('Canceled delegation nightly-checks.')).toBeInTheDocument()
     expect(screen.getByText('flow · canceled')).toBeInTheDocument()
+    expect(sent(cancelRoute('del-1'))).toHaveLength(1)
+})
+
+it('sends no second cancel when a refresh shows a remote cancel already pending, and still offers the local seal once paused', async () => {
+    const canceling = { ...nightly, ...requested }
+    const unlinked = { ...canceling, paused: 'No link to this environment; link it again to resume.' }
+    const sealed = { ...unlinked, phase: 'sealed', result: { status: 'canceled' } }
+    serve({
+        [LIST]: [ok(list(nightly)), ok(list(canceling)), ok(list(unlinked)), ok(list(sealed))],
+        [cancelRoute('del-1')]: [ok(sealed)],
+    })
+    const { user } = renderCard()
+    await user.click(await screen.findByRole('button', { name: 'Cancel delegation nightly-checks' }))
+    const remote = screen.getByRole('alertdialog')
+    // Another session's cancel shows up while the dialog is open.
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(await screen.findByText('flow · canceling')).toBeInTheDocument()
+    await user.click(within(remote).getByRole('button', { name: 'Cancel delegation' }))
+    expect(await screen.findByText('Cancellation was already requested for nightly-checks.')).toBeInTheDocument()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(sent(cancelRoute('del-1'))).toEqual([])
+
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    await user.click(await screen.findByRole('button', { name: 'Seal delegation nightly-checks as canceled' }))
+    const local = screen.getByRole('alertdialog')
+    expect(within(local).getByText('nightly-checks is paused, so it will be sealed locally as canceled.')).toBeInTheDocument()
+    await user.click(within(local).getByRole('button', { name: 'Cancel delegation' }))
+    expect(await screen.findByText('Canceled delegation nightly-checks.')).toBeInTheDocument()
     expect(sent(cancelRoute('del-1'))).toHaveLength(1)
 })
 
