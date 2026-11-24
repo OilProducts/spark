@@ -1,5 +1,5 @@
-import { DEFAULT_UI_DEFAULTS, deriveGraphAttrErrors, normalizeGraphAttrs } from '@/state/store-helpers'
-import { describe, expect, it } from 'vitest'
+import { DEFAULT_UI_DEFAULTS, deriveGraphAttrErrors, loadRouteState, normalizeGraphAttrs, ROUTE_STATE_STORAGE_KEY } from '@/state/store-helpers'
+import { afterEach, describe, expect, it } from 'vitest'
 
 describe('normalizeGraphAttrs', () => {
     it('keeps unknown metadata values as supplied, without touching the input', () => {
@@ -45,5 +45,22 @@ describe('normalizeGraphAttrs', () => {
 describe('workspace model defaults', () => {
     it('uses provider defaults while loading', () => {
         expect(DEFAULT_UI_DEFAULTS).toEqual({ llm_provider: 'codex', llm_profile: '', llm_model: '', reasoning_effort: '' })
+    })
+})
+
+describe('loadRouteState', () => {
+    afterEach(() => window.localStorage.clear())
+
+    it('restores drive and UNC project paths in the registry key form', () => {
+        window.localStorage.setItem(ROUTE_STATE_STORAGE_KEY, JSON.stringify({
+            activeProjectPath: 'C:\\Users\\chris\\repo',
+            projectPagePath: '\\\\fileserver\\share\\repo',
+            selectedMission: { id: 'm-1', projectPath: 'C:\\Users\\chris\\repo' },
+        }))
+        expect(loadRouteState()).toMatchObject({
+            activeProjectPath: 'C:/Users/chris/repo',
+            projectPagePath: '//fileserver/share/repo',
+            selectedMission: { id: 'm-1', projectPath: 'C:/Users/chris/repo' },
+        })
     })
 })

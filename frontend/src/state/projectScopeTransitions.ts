@@ -55,13 +55,11 @@ type ProjectScopeTransitionState = Pick<
     | 'homeProjectGitMetadataByPath'
 >>
 
-const pathBelongsToProject = (path: string | null | undefined, projectPath: string) => (
-    typeof path === 'string'
-    && (
-        path === projectPath
-        || path.startsWith(`${projectPath}/`)
-    )
-)
+// Server records carry native paths (C:\repo); registry keys are normalized (C:/repo).
+const pathBelongsToProject = (path: string | null | undefined, projectPath: string) => {
+    const normalized = normalizeProjectPath(path ?? '')
+    return normalized === projectPath || normalized.startsWith(`${projectPath}/`)
+}
 
 const runBelongsToProject = (
     run:
@@ -251,7 +249,7 @@ export const buildRemoveProjectTransition = (
 
     const nextHomeConversationsById = { ...state.homeConversationCache.conversationsById }
     Object.entries(state.homeConversationCache.conversationsById).forEach(([conversationId, conversation]) => {
-        if (conversation.project_path === normalizedPath) {
+        if (normalizeProjectPath(conversation.project_path) === normalizedPath) {
             removedConversationIds.add(conversationId)
             delete nextHomeConversationsById[conversationId]
         }
@@ -285,9 +283,9 @@ export const buildRemoveProjectTransition = (
         recentProjectPaths: state.recentProjectPaths.filter((path) => path !== normalizedPath),
         activeProjectPath: nextResolvedActiveProjectPath,
         projectPagePath: state.projectPagePath === normalizedPath ? null : state.projectPagePath,
-        selectedMission: state.selectedMission?.projectPath === normalizedPath ? null : state.selectedMission,
+        selectedMission: normalizeProjectPath(state.selectedMission?.projectPath ?? '') === normalizedPath ? null : state.selectedMission,
         selectedRole: state.selectedRole?.projectPath === normalizedPath ? null : state.selectedRole,
-        missionBoard: state.missionBoard.filter((mission) => mission.project_path !== normalizedPath),
+        missionBoard: state.missionBoard.filter((mission) => normalizeProjectPath(mission.project_path) !== normalizedPath),
         viewMode: nextViewMode,
         ...nextRunsSessions,
         workingDir: nextResolvedActiveProjectPath

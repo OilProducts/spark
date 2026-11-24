@@ -231,6 +231,24 @@ it('replaces the open mission with not found when a link names a mission that is
     expect(screen.queryByRole('region', { name: 'Mission details' })).not.toBeInTheDocument()
 })
 
+it('restores and removes a mission recorded with a native Windows path by its normalized project', async () => {
+    task = mission({ project_path: 'C:\\Users\\chris\\repo', status: 'running', conversation_id: 'task-1', started_at: 't' })
+    useStore.setState({
+        projectRegistry: { ...useStore.getState().projectRegistry, 'C:/Users/chris/repo': { directoryPath: 'C:/Users/chris/repo', isFavorite: false, lastAccessedAt: null } },
+        // A selection restored from storage holds the normalized path.
+        selectedMission: { id: 'task-1', projectPath: 'C:/Users/chris/repo' },
+    })
+    render(<MissionsPanel active />)
+    const region = await screen.findByRole('region', { name: 'Mission details' })
+    expect(within(region).getByRole('heading', { name: 'Deliver search' })).toBeInTheDocument()
+    expect(screen.queryByText('Mission not found')).not.toBeInTheDocument()
+
+    act(() => useStore.getState().removeProject('C:/Users/chris/repo', '/project'))
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Mission details' })).not.toBeInTheDocument())
+    expect(useStore.getState().selectedMission).toBeNull()
+    expect(useStore.getState().missionBoard).toEqual([])
+})
+
 it('asks before closing or canceling a mission, and does nothing when kept open', async () => {
     task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't' })
     vi.mocked(window.confirm).mockReturnValue(false)

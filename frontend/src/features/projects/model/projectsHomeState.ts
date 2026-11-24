@@ -159,15 +159,6 @@ export function asProjectGitMetadataField(value: unknown): string | null {
     return trimmed.length > 0 ? trimmed : null
 }
 
-export function formatProjectListLabel(projectPath: string) {
-    const normalizedPath = normalizeProjectPath(projectPath)
-    const segments = normalizedPath.split(/[/\\]/).filter(Boolean)
-    if (segments.length === 0) {
-        return normalizedPath
-    }
-    return segments[segments.length - 1]
-}
-
 export function toHydratedProjectRecord(project: {
     created_at?: string
     project_path: string

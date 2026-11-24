@@ -1,10 +1,14 @@
 export const normalizeProjectPath = (path: string): string => {
   const trimmed = path.trim()
   if (!trimmed) return ""
-  const slashNormalized = trimmed.replace(/\\/g, "/").replace(/\/{2,}/g, "/")
+  const forwardSlashed = trimmed.replace(/\\/g, "/")
+  // A UNC path (\\server\share) keeps `//server/share` as its root, so `..` cannot climb above the share.
+  const unc = forwardSlashed.match(/^\/\/([^/]+)\/*([^/]*)(.*)$/)
+  const uncRoot = unc ? `//${unc[1]}${unc[2] ? `/${unc[2]}` : ""}` : null
+  const slashNormalized = forwardSlashed.replace(/\/{2,}/g, "/")
   const windowsPrefixMatch = slashNormalized.match(/^[A-Za-z]:\//)
   const prefix = slashNormalized.startsWith("/") ? "/" : windowsPrefixMatch ? windowsPrefixMatch[0] : ""
-  const rawBody = prefix ? slashNormalized.slice(prefix.length) : slashNormalized
+  const rawBody = unc ? unc[3] : prefix ? slashNormalized.slice(prefix.length) : slashNormalized
   const parts = rawBody.split("/").filter((part) => part.length > 0)
   const segments: string[] = []
   for (const part of parts) {
@@ -20,6 +24,9 @@ export const normalizeProjectPath = (path: string): string => {
     segments.push(part)
   }
   const normalizedBody = segments.join("/")
+  if (uncRoot) {
+    return normalizedBody ? `${uncRoot}/${normalizedBody}` : uncRoot
+  }
   if (!normalizedBody) {
     if (prefix === "/") {
       return "/"
@@ -29,7 +36,8 @@ export const normalizeProjectPath = (path: string): string => {
   return `${prefix}${normalizedBody}`
 }
 
-export const isAbsoluteProjectPath = (path: string): boolean => path.startsWith("/") || /^[A-Za-z]:\//.test(path)
+// POSIX (/x), drive (C:/x or C:\x) or UNC (//server/share or \\server\share).
+export const isAbsoluteProjectPath = (path: string): boolean => /^(?:\/|\\\\|[A-Za-z]:[/\\])/.test(path)
 
 export const formatProjectPathLabel = (projectPath: string | null): string => {
   if (!projectPath) {

@@ -1,8 +1,7 @@
 import type { RegisteredProject } from '@/state/store-types'
-import { normalizeProjectPath } from '@/lib/projectPaths'
+import { formatProjectPathLabel, normalizeProjectPath } from '@/lib/projectPaths'
 import { DEFAULT_WORKING_DIRECTORY } from '@/state/store-helpers'
 
-import { formatProjectListLabel } from './projectsHomeState'
 import { pinRank } from './conversationState'
 
 type Registry = Record<string, RegisteredProject>
@@ -10,7 +9,7 @@ type Registry = Record<string, RegisteredProject>
 /** A project's name: Home by its display name, others by their folder. */
 export function projectLabel(registry: Registry, projectPath: string | null | undefined): string {
     if (!projectPath) return 'No project'
-    return registry[projectPath]?.displayName ?? formatProjectListLabel(projectPath)
+    return registry[normalizeProjectPath(projectPath)]?.displayName ?? formatProjectPathLabel(projectPath)
 }
 
 const lastAccessed = (project: RegisteredProject) => project.lastAccessedAt ?? ''

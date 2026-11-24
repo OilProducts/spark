@@ -294,6 +294,31 @@ describe('project scope store behavior', () => {
     expect(next.selectedMission).toBeNull()
   })
 
+  it('removes conversations, missions and runs recorded with the native Windows path of a removed project', () => {
+    const store = useStore.getState()
+    store.registerProject('C:\\Users\\chris\\repo')
+    store.registerProject('C:\\Users\\chris\\other')
+    expect(useStore.getState().projectRegistry['C:/Users/chris/repo']).toBeDefined()
+    store.commitHomeConversationCache((cache) => {
+      const withRepo = applyConversationWindow(cache, 'conversation-a', 'C:\\Users\\chris\\repo')
+      return applyConversationWindow(withRepo, 'conversation-b', 'C:\\Users\\chris\\other')
+    })
+    const mission = (id: string, projectPath: string) => ({ id, project_path: projectPath, revision: 1, fields: { title: id, description: '', archived: false }, activity: [] })
+    store.setMissionBoard(() => [mission('m-a', 'C:\\Users\\chris\\repo'), mission('m-b', 'C:\\Users\\chris\\other')])
+    store.setSelectedMission({ id: 'm-a', projectPath: 'C:\\Users\\chris\\repo' })
+    store.updateRunsListSession({ projectFilter: 'C:/Users/chris/repo', runs: [buildRunRecord('run-a', 'C:\\Users\\chris\\repo', 'a.dot')] })
+
+    store.removeProject('C:/Users/chris/repo', 'C:/Users/chris/other')
+
+    const next = useStore.getState()
+    expect(next.homeConversationCache.conversationsById['conversation-a']).toBeUndefined()
+    expect(next.homeConversationCache.conversationsById['conversation-b']).toBeDefined()
+    expect(next.missionBoard.map((entry) => entry.id)).toEqual(['m-b'])
+    expect(next.selectedMission).toBeNull()
+    expect(next.runsListSession.runs).toEqual([])
+    expect(next.runsListSession.projectFilter).toBeNull()
+  })
+
   it('renames normalized home conversation cache entries with project path updates', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')

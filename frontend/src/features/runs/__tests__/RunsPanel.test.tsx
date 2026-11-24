@@ -3716,6 +3716,20 @@ describe('RunsPanel', () => {
       expect(useStore.getState().runsListSession.statusFilter).toBe('failed')
     })
 
+    it('matches runs recorded with a native Windows path to the normalized project filter', () => {
+      const state = useStore.getState()
+      const windowsRun = makeRun({ run_id: 'windows-run', flow_name: 'windows.dot', project_path: 'C:\\Users\\chris\\repo' })
+      state.updateRunsListSession({ status: 'ready', fetched: true, projectFilter: 'C:/Users/chris/repo', runs: [finishedLate, windowsRun] })
+      render(<DialogProvider><RunsPanel /></DialogProvider>)
+      expect(selected()).toBe('windows-run')
+      expect(screen.getAllByTestId('run-history-row')).toHaveLength(1)
+
+      // Picking the run keeps the filter that lists it.
+      act(() => state.setRunsSelectedRunId(null))
+      act(() => useStore.getState().setRunsSelectedRunId('windows-run'))
+      expect(useStore.getState().runsListSession.projectFilter).toBe('C:/Users/chris/repo')
+    })
+
     it('never replaces a run restored from last time, even while it loads, or one you picked', () => {
       const state = useStore.getState()
       state.updateRunsListSession({ status: 'loading' })

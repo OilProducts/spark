@@ -9,7 +9,7 @@ import { SaveStatus } from './SaveStatus'
 const isShadowed = (source?: string) => !!source && !['stored', 'built-in default'].includes(source)
 
 export function RuntimeSettingsEditor() {
-    const { saved, draft, setDraft, pending, error, message, setMessage, dirty, invalidRoots, save, discard } = useRuntimeSettingsEditor()
+    const { saved, draft, setDraft, pending, error, message, setMessage, dirty, save, discard } = useRuntimeSettingsEditor()
     return <Card className="gap-4 py-4">
         <CardHeader className="px-4"><h2 className="text-base font-semibold">Runtime paths</h2></CardHeader>
         <CardContent className="space-y-3 px-4">
@@ -30,14 +30,13 @@ export function RuntimeSettingsEditor() {
                 })}
                 <Field>
                     <FieldLabel htmlFor="runtime-project-roots">Project roots (one absolute path per line)</FieldLabel>
-                    <Textarea id="runtime-project-roots" className="min-h-20" disabled={pending} placeholder="Default roots" aria-invalid={invalidRoots} aria-describedby={invalidRoots ? 'runtime-roots-error' : undefined} value={draft.project_roots.join('\n')} onChange={(event) => { setDraft({ ...draft, project_roots: event.target.value ? event.target.value.split('\n') : [] }); setMessage('') }} />
-                    {invalidRoots && <p id="runtime-roots-error" role="alert">Each project root must be an absolute path.</p>}
+                    <Textarea id="runtime-project-roots" className="min-h-20" disabled={pending} placeholder="Default roots" value={draft.project_roots.join('\n')} onChange={(event) => { setDraft({ ...draft, project_roots: event.target.value ? event.target.value.split('\n') : [] }); setMessage('') }} />
                     {(!saved.effective || isShadowed(saved.sources?.project_roots) || saved.effective.project_roots.join('\n') !== (saved.stored?.project_roots ?? []).join('\n')) && (
                         <p className="text-xs text-muted-foreground">In use: {saved.effective ? saved.effective.project_roots.join(', ') || 'Default roots' : 'Unavailable'}{saved.sources?.project_roots ? ` · ${saved.sources.project_roots}` : ''}</p>
                     )}
                 </Field>
                 <div className="flex flex-wrap gap-2">
-                    <Button size="sm" aria-label="Save runtime paths" disabled={!dirty || pending || invalidRoots} onClick={() => void save()}>Save</Button>
+                    <Button size="sm" aria-label="Save runtime paths" disabled={!dirty || pending} onClick={() => void save()}>Save</Button>
                     <Button size="sm" aria-label="Discard runtime paths changes" variant="ghost" disabled={pending || (!dirty && !error)} onClick={() => void discard()}>Discard</Button>
                 </div>
             </>}
