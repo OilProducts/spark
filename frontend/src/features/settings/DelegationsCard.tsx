@@ -229,7 +229,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             </CardHeader>
             <CardContent className="space-y-3 px-4 text-sm">
                 <p className="text-muted-foreground">
-                    Tasks handed off from this environment to linked Spark machines. Paused delegations can be canceled locally or resumed by re-linking.
+                    Tasks handed off from this environment to linked Spark machines. Paused delegations resume when re-linked. Canceling one that was never sent ends it here; one the other machine may have keeps its cancel until re-linked.
                 </p>
                 {loading && records.length === 0 ? (
                     <p role="status" className="text-muted-foreground">Loading delegations…</p>

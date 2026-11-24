@@ -531,6 +531,7 @@ pub fn start(
             cancel_acknowledged_at: None,
             created_at: String::new(),
             updated_at: String::new(),
+            submitted_at: None,
         })?
     };
     if stored.request_sha256 != request_sha256 || stored.environment_id != environment_id {
@@ -590,9 +591,10 @@ pub fn get(settings: &SparkSettings, delegation_id: &str) -> WorkspaceResult<Del
 }
 
 /// Records the owner's cancellation; the follower sends it to B until B
-/// acknowledges, and keeps following until B seals the task. A delegation
-/// that is already paused (unlinked, revoked or refused by B) is sealed
-/// locally as `canceled` right away so it does not stay stuck open.
+/// acknowledges, and keeps following until B seals the task. A paused
+/// delegation (unlinked, revoked or refused by B) that was never submitted
+/// is sealed locally as `canceled` right away, since B never saw it; one B
+/// may have keeps its cancel pending, sent once a link resumes it.
 pub fn cancel(
     settings: &SparkSettings,
     store: &Arc<ConversationStore>,
@@ -603,6 +605,7 @@ pub fn cancel(
         return Ok(record);
     }
     environments(settings).request_cancel_out(delegation_id)?;
+    // Storage checks the pause and submission again as it seals.
     if let Some(reason) = record.paused.as_deref() {
         let target_kind = if record.kind == "flow" {
             "run"
@@ -617,7 +620,7 @@ pub fn cancel(
             "status": "canceled",
             "detail": format!("Canceled locally while paused: {reason}"),
         });
-        seal_out_and_notify(settings, store, &record, &state, result)?;
+        seal_out_and_notify(settings, store, &record, &state, result, true)?;
     }
     get(settings, delegation_id)
 }
@@ -689,16 +692,28 @@ fn encode(segment: &str) -> String {
 #[derive(Default)]
 pub struct Follower {
     backoff: HashMap<String, (Instant, Duration)>,
+    /// Fault injection for contracts: the worker following this environment
+    /// panics.
+    #[doc(hidden)]
+    pub panic_environment: Option<String>,
 }
 
 impl Follower {
     /// One pass over every open record whose follow is due. Environments are
-    /// polled in parallel so one unreachable peer does not stall healthy ones.
-    // ponytail: scoped threads per tick; move to independent per-environment
-    // tasks if a single slow timeout delaying the next tick ever matters.
-    pub fn tick(&mut self, settings: &SparkSettings, store: &Arc<ConversationStore>) {
+    /// polled in parallel so one unreachable peer does not stall healthy
+    /// ones, and each record is followed on its own, so one failing record
+    /// backs off alone. Returns the diagnostics it printed for workers that
+    /// panicked; their records back off as if they had failed.
+    // ponytail: scoped threads per tick, one request per due record; move to
+    // independent per-environment tasks if a slow peer delaying the next tick
+    // ever matters.
+    pub fn tick(
+        &mut self,
+        settings: &SparkSettings,
+        store: &Arc<ConversationStore>,
+    ) -> Vec<String> {
         let Ok(records) = environments(settings).followed_out() else {
-            return;
+            return Vec::new();
         };
         self.backoff
             .retain(|id, _| records.iter().any(|record| &record.delegation_id == id));
@@ -717,37 +732,47 @@ impl Follower {
                 .or_default()
                 .push(record);
         }
-        let follow_env = |env_records: Vec<DelegationOut>| -> Vec<(String, Result<(), String>)> {
-            let mut results = Vec::with_capacity(env_records.len());
-            let mut failed: Option<String> = None;
-            for record in env_records {
-                let id = record.delegation_id.clone();
-                if let Some(error) = &failed {
-                    results.push((id, Err(error.clone())));
+        let panic_environment = self.panic_environment.as_deref();
+        let follow_env = |env: &str, records: &[DelegationOut]| {
+            if panic_environment == Some(env) {
+                panic!("Injected follower panic for environment {env}.");
+            }
+            records
+                .iter()
+                .map(|record| {
+                    (
+                        record.delegation_id.clone(),
+                        follow(settings, store, record),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut diagnostics = Vec::new();
+        let outcomes = std::thread::scope(|scope| {
+            let workers: Vec<_> = by_env
+                .iter()
+                .map(|(env, records)| (env, records, scope.spawn(|| follow_env(env, records))))
+                .collect();
+            let mut outcomes = Vec::new();
+            for (env, records, worker) in workers {
+                if let Ok(followed) = worker.join() {
+                    outcomes.extend(followed);
                     continue;
                 }
-                let outcome = follow(settings, store, &record);
-                if let Err(error) = &outcome {
-                    failed = Some(error.clone());
-                }
-                results.push((id, outcome));
+                // Its outcomes are lost: report it, and back its records off.
+                let ids: Vec<_> = records.iter().map(|r| r.delegation_id.clone()).collect();
+                let diagnostic = format!(
+                    "The delegation follower for environment {env} panicked; delegations {} \
+                     retry after a backoff.",
+                    ids.join(", ")
+                );
+                eprintln!("{diagnostic}");
+                diagnostics.push(diagnostic);
+                let lost = Err("The follower panicked.".to_string());
+                outcomes.extend(ids.into_iter().map(|id| (id, lost.clone())));
             }
-            results
-        };
-        let outcomes: Vec<_> = if by_env.len() <= 1 {
-            by_env.into_values().flat_map(follow_env).collect()
-        } else {
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = by_env
-                    .into_values()
-                    .map(|env_records| scope.spawn(move || follow_env(env_records)))
-                    .collect();
-                handles
-                    .into_iter()
-                    .flat_map(|handle| handle.join().unwrap_or_default())
-                    .collect()
-            })
-        };
+            outcomes
+        });
         let finished = Instant::now();
         for (id, outcome) in outcomes {
             match outcome {
@@ -763,6 +788,7 @@ impl Follower {
                 }
             }
         }
+        diagnostics
     }
 }
 
@@ -793,6 +819,10 @@ fn follow(
         let body = json!({"origin_environment_id": store.environment_id()});
         peer(Method::POST, &format!("{path}/cancel"), Some(body))
     } else if record.phase == "created" {
+        // Noted first, so a cancel while paused knows B may have it.
+        if !repository.submit_out(id).map_err(|e| e.to_string())? {
+            return Ok(());
+        }
         let body = json!({
             "delegation_id": id,
             "origin_environment_id": store.environment_id(),
@@ -849,23 +879,28 @@ fn live_owner<'a>(
         .filter(|owner| matches!(conversations.conversation_project_path(owner), Ok(Some(_))))
 }
 
-/// Seals an outgoing record and delivers its one `delegation.result` inbox
-/// event in the same transaction when its owner conversation still exists.
+/// Seals an outgoing record (see `seal_out_on` for `unsubmitted`) and
+/// stores its one `delegation.result` inbox event in the same transaction
+/// when its owner conversation still exists, then delivers it. Once both
+/// are committed a delivery failure is only reported: the event stays in
+/// the inbox for the next delivery or startup recovery. Returns whether it
+/// sealed.
 fn seal_out_and_notify(
     settings: &SparkSettings,
     store: &Arc<ConversationStore>,
     record: &DelegationOut,
     state: &Value,
     result: Value,
-) -> WorkspaceResult<()> {
+    unsubmitted: bool,
+) -> WorkspaceResult<bool> {
     let id = &record.delegation_id;
     let conversations = ConversationRepository::new(store.clone());
     let Some(owner) = live_owner(&conversations, record) else {
-        environments(settings).seal_out(id, &result)?;
-        return Ok(());
+        return Ok(environments(settings).seal_out(id, &result, unsubmitted)?);
     };
     let mut payload = delegation_inbox_payload(record, state);
     payload["result"] = result.clone();
+    let mut sealed = false;
     conversations.append_inbox_event_with(
         owner,
         NewInboxEvent {
@@ -874,9 +909,19 @@ fn seal_out_and_notify(
             source: id.clone(),
             payload,
         },
-        |connection| seal_out_on(connection, id, &result),
+        |connection| {
+            sealed = seal_out_on(connection, id, &result, unsubmitted)?;
+            Ok(sealed)
+        },
     )?;
-    inbox::process_conversation(settings, store, owner)
+    if sealed {
+        if let Err(error) = inbox::process_conversation(settings, store, owner) {
+            eprintln!(
+                "Delegation {id} sealed, but delivering its result to conversation {owner} failed: {error}. The event waits in its inbox."
+            );
+        }
+    }
+    Ok(sealed)
 }
 
 /// Stores B's view of a record: its target once B acknowledges, new
@@ -897,7 +942,7 @@ fn apply(
     repository.set_out_state(id, state)?;
     if state["phase"] == "sealed" {
         let result = state.get("result").cloned().unwrap_or(Value::Null);
-        return seal_out_and_notify(settings, store, record, state, result);
+        return seal_out_and_notify(settings, store, record, state, result, false).map(drop);
     }
     let conversations = ConversationRepository::new(store.clone());
     let Some(owner) = live_owner(&conversations, record) else {

@@ -3,7 +3,8 @@ use std::path::Path;
 
 use spark_common::project::sha256_hex;
 use spark_storage::environment::{
-    ensure_environment_id, EnvironmentRepository, ENVIRONMENT_ID_FILE_NAME, PAIRING_CODE_TTL,
+    ensure_environment_id, DelegationOut, EnvironmentLink, EnvironmentRepository,
+    ENVIRONMENT_ID_FILE_NAME, PAIRING_CODE_TTL,
 };
 use spark_storage::ConversationStore;
 
@@ -173,4 +174,93 @@ fn revoked_token_no_longer_authenticates() {
     };
     assert!(listed(&revoked.token_id).revoked_at.is_some());
     assert!(listed(&kept.token_id).revoked_at.is_none());
+}
+
+fn created_out(repository: &EnvironmentRepository, request_key: &str) -> String {
+    repository
+        .create_out(&DelegationOut {
+            delegation_id: uuid::Uuid::new_v4().to_string(),
+            environment_id: "environment-b".into(),
+            project_path: "/b/project".into(),
+            kind: "flow".into(),
+            request: serde_json::json!({}),
+            request_sha256: "sha".into(),
+            caller: "owner".into(),
+            request_key: request_key.into(),
+            owner_conversation_id: None,
+            phase: String::new(),
+            target_id: None,
+            last_state: None,
+            result: None,
+            paused: None,
+            cancel_requested_at: None,
+            cancel_acknowledged_at: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+            submitted_at: None,
+        })
+        .expect("create")
+        .delegation_id
+}
+
+#[test]
+fn a_paused_delegation_seals_locally_only_if_never_submitted_when_it_seals() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("spark-home");
+    let _store = ConversationStore::open(&home).expect("store");
+    let repository = EnvironmentRepository::new(&home);
+    let link = EnvironmentLink {
+        environment_id: "environment-b".into(),
+        origin: "https://b.example".into(),
+        label: "B".into(),
+        created_at: String::new(),
+    };
+    repository.save_link(&link, "token").expect("link");
+    let canceled = serde_json::json!({"status": "canceled"});
+    let record = |id: &str| repository.out(id).expect("read").expect("record");
+
+    // Paused and never submitted: B never saw it, so it seals here, and
+    // neither a relink nor the follower reopens or submits it.
+    let never = created_out(&repository, "never");
+    repository.remove_link("environment-b").expect("unlink");
+    assert!(!repository.submit_out(&never).expect("submit"));
+    assert!(repository.request_cancel_out(&never).expect("cancel"));
+    assert!(repository.seal_out(&never, &canceled, true).expect("seal"));
+    repository.save_link(&link, "token").expect("relink");
+    assert!(!repository.submit_out(&never).expect("submit"));
+    let sealed = record(&never);
+    assert_eq!((sealed.phase.as_str(), sealed.paused), ("sealed", None));
+    assert_eq!(sealed.submitted_at, None);
+
+    // A relink that commits between the cancel's read and its seal wins: the
+    // cancel stays pending for the follower to send.
+    let raced = created_out(&repository, "raced");
+    repository.remove_link("environment-b").expect("unlink");
+    assert!(record(&raced).paused.is_some());
+    assert!(repository.request_cancel_out(&raced).expect("cancel"));
+    repository.save_link(&link, "token").expect("relink");
+    assert!(!repository.seal_out(&raced, &canceled, true).expect("seal"));
+    let pending = record(&raced);
+    assert_eq!((pending.phase.as_str(), pending.paused), ("created", None));
+    assert!(pending.cancel_requested_at.is_some() && pending.cancel_acknowledged_at.is_none());
+    // A pending cancel is sent instead of the submission.
+    assert!(!repository.submit_out(&raced).expect("submit"));
+
+    // Possibly submitted: B may have it, so its cancel waits for B.
+    let sent = created_out(&repository, "sent");
+    assert!(repository.submit_out(&sent).expect("submit"));
+    let first = record(&sent).submitted_at.expect("submitted");
+    assert!(repository.submit_out(&sent).expect("resubmit"));
+    assert_eq!(record(&sent).submitted_at, Some(first));
+    repository.remove_link("environment-b").expect("unlink");
+    assert!(repository.request_cancel_out(&sent).expect("cancel"));
+    assert!(!repository.seal_out(&sent, &canceled, true).expect("seal"));
+    let held = record(&sent);
+    assert_eq!(held.phase, "created");
+    assert!(held.paused.is_some() && held.cancel_acknowledged_at.is_none());
+    // B's answer seals it, once.
+    assert!(repository.seal_out(&sent, &canceled, false).expect("seal"));
+    assert!(!repository
+        .seal_out(&sent, &canceled, false)
+        .expect("seal again"));
 }

@@ -272,6 +272,8 @@ CREATE TABLE delegations_out (
     result TEXT CHECK (result IS NULL OR json_valid(result)),
     -- Why following stopped, until a link to the environment is saved again.
     paused TEXT,
+    -- Set before the follower first sends the record; NULL means B never saw it.
+    submitted_at TEXT,
     cancel_requested_at TEXT,
     cancel_acknowledged_at TEXT,
     created_at TEXT NOT NULL,

@@ -2305,19 +2305,22 @@ impl ConversationRepository {
         conversation_id: &str,
         event: NewInboxEvent,
     ) -> Result<Option<i64>> {
-        self.append_inbox_event_with(conversation_id, event, |_| Ok(()))
+        self.append_inbox_event_with(conversation_id, event, |_| Ok(true))
     }
 
     /// `append_inbox_event` in one transaction with `with`, which writes the
-    /// record the event reports on, so both commit or neither does.
+    /// record the event reports on, so both commit or neither does. The
+    /// event is appended only when `with` returns true.
     pub fn append_inbox_event_with(
         &self,
         conversation_id: &str,
         event: NewInboxEvent,
-        with: impl FnOnce(&Connection) -> Result<()>,
+        with: impl FnOnce(&Connection) -> Result<bool>,
     ) -> Result<Option<i64>> {
         self.write_inbox(conversation_id, |connection| {
-            with(connection)?;
+            if !with(connection)? {
+                return Ok(None);
+            }
             Ok(connection
                 .query_row(
                     "INSERT INTO inbox_events (conversation_id, seq, event_id, at, kind, source, \

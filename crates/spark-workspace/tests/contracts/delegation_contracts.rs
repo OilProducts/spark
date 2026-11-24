@@ -19,7 +19,7 @@ use spark_workspace::delegations::{
 use spark_workspace::inbox::{install_runtime, InboxRuntime};
 use spark_workspace::{ConversationTurnRequest, WorkspaceConversationService, WorkspaceError};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// The linked environment A delegates to, and the origin B records.
 const LINKED: &str = "environment-b";
@@ -1176,7 +1176,7 @@ fn a_lists_outgoing_delegations_with_filters() {
         .pause_out(&d1.delegation_id, "Paused for test")
         .unwrap();
     home.environments()
-        .seal_out(&d2.delegation_id, &json!({"status": "completed"}))
+        .seal_out(&d2.delegation_id, &json!({"status": "completed"}), false)
         .unwrap();
     let _ = store;
 
@@ -1293,4 +1293,447 @@ fn a_proxies_project_and_flow_discovery_to_a_linked_environment() {
         delegations::link_projects(&home.settings, "missing"),
         Err(WorkspaceError::NotFound(_))
     ));
+}
+
+/// A linked environment the test plays. Each request is recorded as
+/// `"<what> <delegation_id>"`, where what is `submit`, `poll` or `cancel`,
+/// and answered with `respond(what, delegation_id)`'s status and body.
+struct Peer {
+    origin: String,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl Peer {
+    fn serve(respond: impl Fn(&str, &str) -> (u16, Value) + Send + Sync + 'static) -> Self {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (seen, respond) = (requests.clone(), Arc::new(respond));
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let (seen, respond) = (seen.clone(), respond.clone());
+                // One thread per request, so concurrent followers overlap here.
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let mut parts = line.split_whitespace();
+                    let method = parts.next().unwrap_or_default().to_string();
+                    let path = parts.next().unwrap_or_default().to_string();
+                    let mut length = 0;
+                    loop {
+                        let mut header = String::new();
+                        reader.read_line(&mut header).unwrap();
+                        if header.trim().is_empty() {
+                            break;
+                        }
+                        if let Some((name, value)) = header.split_once(':') {
+                            if name.eq_ignore_ascii_case("content-length") {
+                                length = value.trim().parse().unwrap();
+                            }
+                        }
+                    }
+                    let mut body = vec![0; length];
+                    reader.read_exact(&mut body).unwrap();
+                    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                    let rest = path
+                        .trim_start_matches("/workspace/api/delegations/incoming")
+                        .trim_start_matches('/');
+                    let (id, what) = match rest.split_once('/') {
+                        Some((id, what)) => (id, what),
+                        None if method == "GET" => (rest, "poll"),
+                        None => (body["delegation_id"].as_str().unwrap_or_default(), "submit"),
+                    };
+                    seen.lock().unwrap().push(format!("{what} {id}"));
+                    let (status, reply) = respond(what, id);
+                    let reply = reply.to_string();
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {status} Answer\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                        reply.len()
+                    );
+                });
+            }
+        });
+        Self { origin, requests }
+    }
+    fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+    fn count(&self, request: &str) -> usize {
+        self.requests()
+            .iter()
+            .filter(|seen| *seen == request)
+            .count()
+    }
+}
+
+/// B's view of a delegation in `phase` with `status`; a sealed one carries
+/// its result.
+fn b_state(id: &str, phase: &str, status: &str) -> Value {
+    let mut state = json!({
+        "delegation_id": id, "phase": phase, "target_kind": "run",
+        "target_id": format!("run-{id}"), "status": status, "questions": [],
+    });
+    if phase == "sealed" {
+        state["result"] = json!({"status": status});
+    }
+    state
+}
+
+impl Home {
+    fn link_to(&self, environment_id: &str, peer: &Peer) {
+        let link = EnvironmentLink {
+            environment_id: environment_id.into(),
+            origin: peer.origin.clone(),
+            label: environment_id.into(),
+            created_at: String::new(),
+        };
+        self.environments().save_link(&link, "token").unwrap();
+    }
+    /// Starts a flow delegation to `environment_id` under `key`, reporting
+    /// to the conversation with handle `owner` when given.
+    fn start_on(&self, environment_id: &str, key: &str, owner: Option<&str>) -> String {
+        self.start(DelegationStartRequest {
+            environment_id: environment_id.into(),
+            conversation_handle: owner.map(str::to_string),
+            ..self.flow_start(key, key)
+        })
+        .unwrap()
+        .delegation_id
+    }
+    fn out(&self, id: &str) -> spark_storage::environment::DelegationOut {
+        delegations::get(&self.settings, id).unwrap()
+    }
+    /// The `delegation.result` events `owner`'s inbox holds for `id`.
+    fn results(&self, owner: &str, id: &str) -> Vec<spark_storage::conversation::InboxEvent> {
+        self.repository()
+            .inbox_events(owner)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == "delegation.result" && event.source == id)
+            .collect()
+    }
+    fn tick(&self, follower: &mut delegations::Follower) -> Vec<String> {
+        follower.tick(
+            &self.settings,
+            &crate::shared_store(&self.settings.data_dir),
+        )
+    }
+}
+
+#[test]
+fn follower_backs_off_only_the_record_that_fails() {
+    let home = Home::new();
+    let failing = Arc::new(Mutex::new(String::new()));
+    let down = failing.clone();
+    let b = Peer::serve(move |_, id| {
+        if *down.lock().unwrap() == id {
+            (500, json!({"detail": "down"}))
+        } else {
+            (200, b_state(id, "sealed", "completed"))
+        }
+    });
+    let c = Peer::serve(|_, id| (200, b_state(id, "sealed", "completed")));
+    home.link_to("env-b", &b);
+    home.link_to("env-c", &c);
+    let pair = [
+        home.start_on("env-b", "k1", None),
+        home.start_on("env-b", "k2", None),
+    ];
+    let other = home.start_on("env-c", "k3", None);
+    // The record the follower reaches first on B keeps failing.
+    let oldest = home
+        .environments()
+        .followed_out()
+        .unwrap()
+        .into_iter()
+        .find(|record| record.environment_id == "env-b")
+        .unwrap()
+        .delegation_id;
+    let sibling = pair.iter().find(|id| **id != oldest).unwrap().clone();
+    *failing.lock().unwrap() = oldest.clone();
+
+    let mut follower = delegations::Follower::default();
+    assert_eq!(home.tick(&mut follower), Vec::<String>::new());
+    for id in [&sibling, &other] {
+        assert_eq!(home.out(id).phase, "sealed", "{id}");
+    }
+    let held = home.out(&oldest);
+    assert_eq!((held.phase.as_str(), held.paused), ("created", None));
+    assert_eq!(b.count(&format!("submit {oldest}")), 1);
+    assert_eq!(b.count(&format!("submit {sibling}")), 1);
+
+    // Before its retry is due, the failing record is left alone.
+    home.tick(&mut follower);
+    assert_eq!(b.requests().len(), 2, "{:?}", b.requests());
+    assert_eq!(home.out(&oldest).phase, "created");
+}
+
+#[test]
+fn a_cancel_seals_locally_only_what_b_never_saw_and_sends_the_rest_on_relink() {
+    let home = Home::new();
+    home.seed_chat("chat-owner", "amber-owner", "chat", "complete", json!([]));
+    let store = crate::shared_store(&home.settings.data_dir);
+    // B launches what it is sent, except one submission whose answer is
+    // lost; it acknowledges a cancel while the target stops, then seals it.
+    let lost = Arc::new(Mutex::new(String::new()));
+    let canceled = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (lose, cancels) = (lost.clone(), canceled.clone());
+    let b = Peer::serve(move |what, id| match what {
+        "submit" if *lose.lock().unwrap() == id => (500, json!({"detail": "lost"})),
+        "cancel" => {
+            cancels.lock().unwrap().push(id.to_string());
+            (200, b_state(id, "launched", "running"))
+        }
+        "poll" if cancels.lock().unwrap().iter().any(|c| c == id) => {
+            (200, b_state(id, "sealed", "canceled"))
+        }
+        _ => (200, b_state(id, "launched", "running")),
+    });
+    home.link_to(LINKED, &b);
+    let owner = Some("amber-owner");
+    let before = home.start_on(LINKED, "before", owner);
+    let after = home.start_on(LINKED, "after", owner);
+    let maybe = home.start_on(LINKED, "maybe", owner);
+    *lost.lock().unwrap() = maybe.clone();
+    home.tick(&mut delegations::Follower::default());
+    assert_eq!(home.out(&before).phase, "accepted");
+    assert_eq!(home.out(&after).phase, "accepted");
+    let possibly = home.out(&maybe);
+    assert_eq!(possibly.phase, "created");
+    assert!(possibly.submitted_at.is_some());
+
+    // Canceled before the pause: the cancel waits for B.
+    let cancel = |id: &str| delegations::cancel(&home.settings, &store, id).unwrap();
+    assert_eq!(cancel(&before).phase, "accepted");
+    let never = home.start_on(LINKED, "never", owner);
+    delegations::remove_link(&home.settings, LINKED).unwrap();
+    for id in [&before, &after, &maybe, &never] {
+        assert!(home.out(id).paused.is_some(), "{id}");
+    }
+
+    // Canceled while paused: only the record never submitted seals here.
+    let sealed = cancel(&never);
+    assert_eq!(sealed.phase, "sealed");
+    assert_eq!(sealed.result.unwrap()["status"], "canceled");
+    for id in [&before, &after, &maybe] {
+        let pending = cancel(id);
+        assert_ne!(pending.phase, "sealed", "{id}");
+        assert!(pending.paused.is_some(), "{id}");
+        assert!(pending.cancel_requested_at.is_some(), "{id}");
+        assert!(pending.cancel_acknowledged_at.is_none(), "{id}");
+        assert!(home.results("chat-owner", id).is_empty(), "{id}");
+    }
+
+    // Relinked, the follower sends the pending cancels, never a submission,
+    // and seals each on B's answer.
+    home.link_to(LINKED, &b);
+    let seen = b.requests().len();
+    let mut follower = delegations::Follower::default();
+    home.tick(&mut follower);
+    let mut sent = b.requests().split_off(seen);
+    sent.sort();
+    let mut expected: Vec<_> = [&before, &after, &maybe]
+        .map(|id| format!("cancel {id}"))
+        .into();
+    expected.sort();
+    assert_eq!(sent, expected);
+    for id in [&before, &after, &maybe] {
+        let acknowledged = home.out(id);
+        assert!(acknowledged.cancel_acknowledged_at.is_some(), "{id}");
+        assert_eq!(acknowledged.phase, "accepted", "{id}");
+    }
+    home.tick(&mut follower);
+    for id in [&before, &after, &maybe, &never] {
+        let record = home.out(id);
+        assert_eq!(record.phase, "sealed", "{id}");
+        assert_eq!(record.result.unwrap()["status"], "canceled", "{id}");
+        let results = home.results("chat-owner", id);
+        assert_eq!(results.len(), 1, "{id}: {results:?}");
+        assert_eq!(results[0].payload["result"]["status"], "canceled");
+    }
+    let settled = b.requests().len();
+    home.tick(&mut follower);
+    assert_eq!(b.requests().len(), settled);
+    assert_eq!(b.count(&format!("submit {never}")), 0);
+}
+
+#[test]
+fn a_relink_racing_a_paused_cancel_never_loses_the_cancel() {
+    let home = Home::new();
+    home.seed_chat("chat-owner", "amber-owner", "chat", "complete", json!([]));
+    let store = crate::shared_store(&home.settings.data_dir);
+    let b = Peer::serve(|what, id| match what {
+        // A cancel for a task B never admitted leaves a canceled tombstone.
+        "cancel" => (200, b_state(id, "sealed", "canceled")),
+        _ => (200, b_state(id, "launched", "running")),
+    });
+    let mut ids = Vec::new();
+    for round in 0..8 {
+        home.link_to(LINKED, &b);
+        let id = home.start_on(LINKED, &format!("race-{round}"), Some("amber-owner"));
+        delegations::remove_link(&home.settings, LINKED).unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                barrier.wait();
+                delegations::cancel(&home.settings, &store, &id).unwrap();
+            });
+            scope.spawn(|| {
+                barrier.wait();
+                home.link_to(LINKED, &b);
+            });
+        });
+        // Sealed locally before the relink, or left for the follower to send.
+        let record = home.out(&id);
+        assert!(record.cancel_requested_at.is_some());
+        if record.phase != "sealed" {
+            assert!(record.paused.is_none() && record.cancel_acknowledged_at.is_none());
+        }
+        ids.push(id);
+    }
+    home.tick(&mut delegations::Follower::default());
+    for id in &ids {
+        let record = home.out(id);
+        assert_eq!(record.phase, "sealed", "{id}");
+        assert_eq!(record.result.unwrap()["status"], "canceled");
+        assert_eq!(home.results("chat-owner", id).len(), 1, "{id}");
+    }
+    assert!(
+        b.requests().iter().all(|seen| seen.starts_with("cancel ")),
+        "{:?}",
+        b.requests()
+    );
+}
+
+#[test]
+fn a_committed_cancel_stands_when_delivering_it_to_the_owner_fails() {
+    let home = Home::new();
+    install_runtime(
+        &home.settings,
+        InboxRuntime {
+            agent_turn_backend: home.agent.clone(),
+            runtime_handler_runner_factory: attractor_api::default_runtime_handler_runner_factory(),
+            publish: Arc::new(|_| {}),
+        },
+    );
+    home.seed_chat("chat-owner", "amber-owner", "chat", "complete", json!([]));
+    home.link();
+    let store = crate::shared_store(&home.settings.data_dir);
+    let id = home.start_on(LINKED, "build", Some("amber-owner"));
+    delegations::remove_link(&home.settings, LINKED).unwrap();
+    // The owner's conversation can no longer take a turn, so delivering
+    // anything to it fails.
+    rusqlite::Connection::open(home.settings.data_dir.join("state.sqlite3"))
+        .unwrap()
+        .execute(
+            "UPDATE conversations SET metadata = \
+             json_set(metadata, '$.settings_schema_version', 2) WHERE id = 'chat-owner'",
+            [],
+        )
+        .unwrap();
+
+    for _ in 0..2 {
+        let canceled = delegations::cancel(&home.settings, &store, &id).unwrap();
+        assert_eq!(canceled.phase, "sealed");
+        assert_eq!(canceled.result.unwrap()["status"], "canceled");
+        let results = home.results("chat-owner", &id);
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert!(results[0].delivered_at.is_none(), "{results:?}");
+    }
+    assert!(home.agent.requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_panicking_follower_worker_is_reported_and_backs_off_its_records() {
+    let home = Home::new();
+    let healthy = Peer::serve(|_, id| (200, b_state(id, "sealed", "completed")));
+    let broken = Peer::serve(|_, id| (200, b_state(id, "sealed", "completed")));
+    home.link_to("env-ok", &healthy);
+    home.link_to("env-broken", &broken);
+    let ok = home.start_on("env-ok", "ok", None);
+    let lost = home.start_on("env-broken", "lost", None);
+    let mut follower = delegations::Follower::default();
+    follower.panic_environment = Some("env-broken".into());
+
+    let diagnostics = home.tick(&mut follower);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(
+        diagnostics[0].contains("env-broken") && diagnostics[0].contains(&lost),
+        "{diagnostics:?}"
+    );
+    assert_eq!(home.out(&ok).phase, "sealed");
+    assert_eq!(home.out(&lost).phase, "created");
+    // Backed off: the next tick does not reach the broken worker again.
+    assert_eq!(home.tick(&mut follower), Vec::<String>::new());
+    assert!(broken.requests().is_empty());
+}
+
+#[test]
+fn concurrent_results_for_one_owner_are_each_delivered_once() {
+    let home = Home::new();
+    install_runtime(
+        &home.settings,
+        InboxRuntime {
+            agent_turn_backend: home.agent.clone(),
+            runtime_handler_runner_factory: attractor_api::default_runtime_handler_runner_factory(),
+            publish: Arc::new(|_| {}),
+        },
+    );
+    home.seed_chat("chat-owner", "amber-owner", "chat", "complete", json!([]));
+    // Both peers answer at once, so both workers seal and deliver together,
+    // while the owner's first turn is held open.
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let peer = |barrier: Arc<std::sync::Barrier>| {
+        Peer::serve(move |_, id| {
+            barrier.wait();
+            (200, b_state(id, "sealed", "completed"))
+        })
+    };
+    let (one, two) = (peer(barrier.clone()), peer(barrier));
+    home.link_to("env-1", &one);
+    home.link_to("env-2", &two);
+    let ids = [
+        home.start_on("env-1", "one", Some("amber-owner")),
+        home.start_on("env-2", "two", Some("amber-owner")),
+    ];
+
+    let mut follower = delegations::Follower::default();
+    assert_eq!(home.tick(&mut follower), Vec::<String>::new());
+    for id in &ids {
+        assert_eq!(home.out(id).phase, "sealed", "{id}");
+        assert_eq!(home.results("chat-owner", id).len(), 1, "{id}");
+    }
+    home.agent.release(4);
+    let delivered = || {
+        let events = home.repository().inbox_events("chat-owner").unwrap();
+        let head = home.repository().read_head("chat-owner", None).unwrap();
+        let busy = head.unwrap()["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|turn| {
+                matches!(
+                    turn["status"].as_str(),
+                    Some("pending" | "streaming" | "queued")
+                )
+            });
+        events.len() == 2 && events.iter().all(|e| e.delivered_at.is_some()) && !busy
+    };
+    wait_for("both results delivered", delivered);
+    home.tick(&mut follower);
+    wait_for("both results delivered", delivered);
+    let prompts = home.agent.prompts().join("\n");
+    for id in &ids {
+        let event = format!("[event delegation:{id}:result from {id}]");
+        assert_eq!(prompts.matches(&event).count(), 1, "{prompts}");
+    }
+    assert_eq!(
+        home.repository().inbox_events("chat-owner").unwrap().len(),
+        2
+    );
+    assert_eq!(one.requests().len() + two.requests().len(), 2);
 }
