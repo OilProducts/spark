@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react'
+import { isRemoteEnvironmentActive } from '@/lib/activeEnvironment'
+import { applyTheme, cachedAppearance } from '@/lib/theme'
 import { fetchClientPreferences, saveClientPreferences, type ClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
 import { useSettingsNavigationProtection } from './useSettingsNavigationProtection'
 
+// The appearance is this browser's, kept by this machine's preferences: another environment's
+// Settings shows the one in use, and keeps a change to it here too.
+const shownIn = (remote: boolean, view: ClientPreferencesView): ClientPreferencesView =>
+    (remote ? { ...view, stored: { ...view.stored, appearance: cachedAppearance() } } : view)
+
 export function useClientPreferencesEditor() {
+    const [remote] = useState(isRemoteEnvironmentActive)
     const [saved, setSaved] = useState<ClientPreferencesView | null>(null)
     const [draft, setDraft] = useState<ClientPreferences | null>(null)
     const [pending, setPending] = useState(false)
@@ -14,7 +22,8 @@ export function useClientPreferencesEditor() {
         let cancelled = false
         const refresh = () => {
             if (pending) return
-            void fetchClientPreferences().then((value) => {
+            void fetchClientPreferences().then((fetched) => {
+                const value = shownIn(remote, fetched)
                 if (cancelled || value.revision === saved?.revision) return
                 if (dirty || pending) {
                     setMessage('Settings changed elsewhere. Your draft is retained; Discard reloads the latest values.')
@@ -25,7 +34,7 @@ export function useClientPreferencesEditor() {
         window.addEventListener('spark:settings-live-event', refresh)
         window.addEventListener('focus', refresh)
         return () => { cancelled = true; window.removeEventListener('spark:settings-live-event', refresh); window.removeEventListener('focus', refresh) }
-    }, [saved?.revision, dirty, pending])
+    }, [saved?.revision, dirty, pending, remote])
     const invalidWidth = draft?.editor_sidebar_width != null && (!Number.isInteger(draft.editor_sidebar_width) || draft.editor_sidebar_width < 256 || draft.editor_sidebar_width > 560)
     const graphHeight = draft?.run_presentation?.graph_height
     const invalidGraphHeight = graphHeight != null && (!Number.isInteger(graphHeight) || graphHeight < 280 || graphHeight > 960)
@@ -34,7 +43,15 @@ export function useClientPreferencesEditor() {
         setPending(true); setError(''); setMessage('')
         try {
             const value = await saveClientPreferences(saved, draft)
-            setSaved(value); setDraft(value.stored); setMessage('Saved.')
+            const appearance = draft.appearance ?? 'system'
+            const keep = remote && appearance !== saved.stored.appearance
+            if (keep) applyTheme(appearance)
+            setSaved(shownIn(remote, value)); setDraft(shownIn(remote, value).stored)
+            if (keep) {
+                const here = await fetchClientPreferences(null)
+                await saveClientPreferences(here, { ...here.stored, appearance }, null)
+            }
+            setMessage('Saved.')
         } catch (error) {
             setError(error instanceof Error ? error.message : 'Unable to save client preferences.')
         } finally { setPending(false) }
@@ -42,7 +59,7 @@ export function useClientPreferencesEditor() {
     const discard = async () => {
         setPending(true)
         try {
-            const value = await fetchClientPreferences()
+            const value = shownIn(remote, await fetchClientPreferences())
             setSaved(value); setDraft(value.stored); setError(''); setMessage('')
         } catch (error) { setError(error instanceof Error ? error.message : 'Unable to reload settings.') }
         finally { setPending(false) }

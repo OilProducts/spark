@@ -92,13 +92,13 @@ export function sendPendingFlowSaves(): boolean {
     return inFlightSaves.size > 0
 }
 
-// Editor fields whose text cannot be applied yet; saving waits for them.
-const invalidDrafts = new Map<string, string>()
+// Editor fields whose text cannot be applied yet; saving in their environment waits for them.
+const invalidDrafts = new Map<string, { message: string; environmentId: string | null }>()
 
-/** Records (or with `null`, clears) an editor draft that must block saving. */
+/** Records (or with `null`, clears) an editor draft that must block saving in the active environment. */
 export function setInvalidDraft(id: string, message: string | null) {
     if (message) {
-        invalidDrafts.set(id, message)
+        invalidDrafts.set(id, { message, environmentId: getActiveEnvironmentId() })
     } else {
         invalidDrafts.delete(id)
     }
@@ -139,6 +139,12 @@ async function persistFlowContent(
     const serialized = JSON.stringify(content)
     // The save state shown is the active environment's; a save that outlives a switch leaves it alone.
     const shown = () => (getActiveEnvironmentId() === environmentId ? useStore.getState() : null)
+    // Retry repeats the save whose failure is shown.
+    const showFailure = () => {
+        const state = shown()
+        if (state) lastSaveRequest = { name, content, projectPath, environmentId }
+        return state
+    }
     if (persistedBaselineByScope.get(scopeKey) === serialized) {
         recordFlowLoadDebug('save:skipped', name, {
             contentLength: serialized.length,
@@ -149,21 +155,19 @@ async function persistFlowContent(
         if (state?.saveState === 'error' || state?.saveState === 'conflict') state.resetSaveState()
         return true
     }
-    const draftErrors = [...invalidDrafts.values()]
+    const draftErrors = [...invalidDrafts.values()].filter((draft) => draft.environmentId === environmentId).map((draft) => draft.message)
     if (draftErrors.length > 0) {
-        shown()?.markSaveFailure(`Fix the editor's invalid input before saving: ${draftErrors.join(' ')}`, 'validation_error')
+        showFailure()?.markSaveFailure(`Fix the editor's invalid input before saving: ${draftErrors.join(' ')}`, 'validation_error')
         return false
     }
     const duplicates = duplicateDecisionsInFlow('flow' in content ? content.flow : null)
     if (duplicates.length > 0) {
-        shown()?.markSaveFailure(
+        showFailure()?.markSaveFailure(
             `Each decision may be declared once per node; duplicated: ${[...new Set(duplicates)].join(', ')}.`,
             'validation_error',
         )
         return false
     }
-    // Retry repeats the save whose failure is shown.
-    if (shown()) lastSaveRequest = { name, content, projectPath, environmentId }
     recordFlowLoadDebug('save:request', name, {
         contentLength: serialized.length,
     })
@@ -178,7 +182,7 @@ async function persistFlowContent(
             : null
         if (preview?.status === 'validation_error') {
             const problems = flowProblemsFromDetail(preview)
-            shown()?.markSaveFailure(buildErrorMessage('validation_error', problems?.map((problem) => problem.message).join(' ') ?? preview.error, 422), 'validation_error', problems)
+            showFailure()?.markSaveFailure(buildErrorMessage('validation_error', problems?.map((problem) => problem.message).join(' ') ?? preview.error, 422), 'validation_error', problems)
             return false
         }
         const response = await saveFlowValidated(name, content, projectPath, environmentId)
@@ -192,7 +196,7 @@ async function persistFlowContent(
                 message,
             })
             if (detail.status === 'conflict' || response.statusCode === 409) {
-                shown()?.markSaveConflict(message)
+                showFailure()?.markSaveConflict(message)
                 return false
             }
             let errorKind: SaveErrorKind = 'http'
@@ -201,7 +205,7 @@ async function persistFlowContent(
             } else if (detail.status === 'validation_error') {
                 errorKind = 'validation_error'
             }
-            shown()?.markSaveFailure(message, errorKind, flowProblemsFromDetail(detail))
+            showFailure()?.markSaveFailure(message, errorKind, flowProblemsFromDetail(detail))
             return false
         }
 
@@ -216,10 +220,10 @@ async function persistFlowContent(
                 message: FALLBACK_SAVE_FAILURE_MESSAGE,
             })
             if (status === 'conflict') {
-                shown()?.markSaveConflict(buildErrorMessage(status, undefined, response.statusCode))
+                showFailure()?.markSaveConflict(buildErrorMessage(status, undefined, response.statusCode))
                 return false
             }
-            shown()?.markSaveFailure(FALLBACK_SAVE_FAILURE_MESSAGE, 'unknown')
+            showFailure()?.markSaveFailure(FALLBACK_SAVE_FAILURE_MESSAGE, 'unknown')
             return false
         }
 
@@ -236,7 +240,7 @@ async function persistFlowContent(
         recordFlowLoadDebug('save:error', name, {
             message,
         })
-        shown()?.markSaveFailure(`Flow save failed: ${message}`, 'network')
+        showFailure()?.markSaveFailure(`Flow save failed: ${message}`, 'network')
         return false
     }
 }

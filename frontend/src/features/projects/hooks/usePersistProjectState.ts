@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { updateProjectStateValidated } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 
@@ -13,14 +14,17 @@ type PersistProjectStatePatch = {
   is_favorite?: boolean | null
 }
 
+/** Saves a project's state; its answer shows only while the environment it was saved in is shown. */
+async function sendProjectState(projectPath: string, patch: PersistProjectStatePatch, upsert: UpsertProjectRegistryEntry) {
+  const environmentId = getActiveEnvironmentId()
+  const project = await updateProjectStateValidated({ project_path: projectPath, ...patch })
+  if (getActiveEnvironmentId() === environmentId) upsert(toHydratedProjectRecord(project))
+}
+
 export function usePersistProjectState(upsertProjectRegistryEntry: UpsertProjectRegistryEntry) {
   return useCallback(async (projectPath: string, patch: PersistProjectStatePatch) => {
     try {
-      const project = await updateProjectStateValidated({
-        project_path: projectPath,
-        ...patch,
-      })
-      upsertProjectRegistryEntry(toHydratedProjectRecord(project))
+      await sendProjectState(projectPath, patch, upsertProjectRegistryEntry)
     } catch {
       // Keep the UI responsive if the background state sync fails.
     }
@@ -30,11 +34,7 @@ export function usePersistProjectState(upsertProjectRegistryEntry: UpsertProject
 /** Records that work just started in a project, so it becomes the last-used project. */
 export async function markProjectUsed(projectPath: string) {
   try {
-    const project = await updateProjectStateValidated({
-      project_path: projectPath,
-      last_accessed_at: new Date().toISOString(),
-    })
-    useStore.getState().upsertProjectRegistryEntry(toHydratedProjectRecord(project))
+    await sendProjectState(projectPath, { last_accessed_at: new Date().toISOString() }, useStore.getState().upsertProjectRegistryEntry)
   } catch {
     // The last-used project is a convenience; a failed sync keeps the old one.
   }

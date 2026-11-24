@@ -10,7 +10,7 @@ import type { NormalizedConversationRecord } from '@/features/projects/model/pro
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { cachedAppearance, applyTheme } from '@/lib/theme'
 import { requestNavigation } from '@/state/workspaceSlice'
-import { primeFlowSaveBaseline, resetFlowSaveBaselines, saveFlowContent } from '@/lib/flowPersistence'
+import { primeFlowSaveBaseline, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent, setInvalidDraft } from '@/lib/flowPersistence'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { conversationMutationAck } from '@/test/conversationWire'
@@ -102,6 +102,51 @@ describe('flow saves', () => {
         // Local content matching what remote saved is still a change here.
         await expect(saveFlowContent('demo', flow('Remote'), PROJECT)).resolves.toBe(true)
         expect(sent).toEqual(['POST /attractor/preview', 'POST /attractor/api/flows'])
+    })
+
+    it('sends a remote edit queued behind an autosave, whatever input is invalid in the environment switched to', async () => {
+        await switchEnvironment('env-r')
+        const firstSaved = deferred<unknown>()
+        const flowSaves = () => sent.filter((request) => request.endsWith('/api/flows'))
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : flowSaves().length === 1 ? firstSaved.promise : { status: 'saved' })
+        const first = saveFlowContent('demo', flow('Remote one'), PROJECT)
+        await waitFor(() => expect(flowSaves()).toHaveLength(1))
+        const queued = saveFlowContent('demo', flow('Remote two'), PROJECT)
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+        setInvalidDraft('local-field', 'Routes: a line without a target.')
+        try {
+            firstSaved.resolve({ status: 'saved' })
+            await expect(first).resolves.toBe(true)
+            await expect(queued).resolves.toBe(true)
+            expect(flowSaves()).toEqual([`POST ${REMOTE}/attractor/api/flows`, `POST ${REMOTE}/attractor/api/flows`])
+            // Saves here still wait for it.
+            await expect(saveFlowContent('demo', flow('Local'), PROJECT)).resolves.toBe(false)
+            expect(useStore.getState().saveErrorMessage).toContain('Routes: a line without a target.')
+        } finally { setInvalidDraft('local-field', null) }
+    })
+
+    it('retries the save whose failure is shown, after a switch away and back', async () => {
+        await switchEnvironment('env-r')
+        const remoteSaved = deferred<unknown>()
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : url.startsWith(REMOTE) ? remoteSaved.promise : { status: 'saved' })
+        const remote = saveFlowContent('demo', flow('Remote'), PROJECT)
+        await waitFor(() => expect(sent).toContain(`POST ${REMOTE}/attractor/api/flows`))
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+        await expect(saveFlowContent('demo', flow('Local'), PROJECT)).resolves.toBe(true)
+        await switchEnvironment('env-r')
+        resetStoreForEnvironmentSwitch(false)
+
+        remoteSaved.resolve(json({ detail: 'disk full' }, 500))
+        await expect(remote).resolves.toBe(false)
+        expect(useStore.getState().saveState).toBe('error')
+        sent = []
+        bodies = []
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : { status: 'saved' })
+        await expect(retryLastSaveContent()).resolves.toBe(true)
+        expect(sent).toEqual([`POST ${REMOTE}/attractor/preview`, `POST ${REMOTE}/attractor/api/flows`])
+        expect(bodies[1]).toMatchObject({ flow: { title: 'Remote' } })
     })
 })
 
@@ -270,12 +315,13 @@ it('writes nothing from a chat reply or deferred navigation that lands after a s
     } finally { window.removeEventListener('spark:before-navigation', hold) }
 })
 
-it('switches a chat\'s mode at the revision a model save before it acknowledged, when the save lands after a switch', async () => {
+it('switches a new chat\'s mode at the revision a model save before it acknowledged, and shows neither answer after a switch', async () => {
     const thread = (revision: number) => ({
         conversation_id: 'conversation-1', project_path: PROJECT, title: 'Thread', created_at: '2026-09-01T00:00:00Z',
         updated_at: '2026-09-01T00:00:00Z', revision, chat_mode: 'chat', turns: [], segments: [],
     })
     const modelSaved = deferred<unknown>()
+    const projectSaved = deferred<unknown>()
     const puts = () => sent.filter((request) => request.startsWith('PUT') && request.endsWith('/settings'))
     answer = (url, method) => {
         if (url.includes('/projects/chat-models')) return { providers: { codex: { status: 'available', error: null, label: 'Codex' } }, models: [
@@ -284,6 +330,7 @@ it('switches a chat\'s mode at the revision a model save before it acknowledged,
         if (url.endsWith('/workspace/api/settings')) return { models: { scope: 'project', source: 'workspace', revision: '1', stored: null,
             effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null } } }
         if (method === 'PUT' && url.endsWith('/settings')) return puts().length === 1 ? modelSaved.promise : conversationMutationAck(thread(9))
+        if (url.endsWith('/projects/state')) return projectSaved.promise
         return {}
     }
     await switchEnvironment('env-r')
@@ -299,9 +346,21 @@ it('switches a chat\'s mode at the revision a model save before it acknowledged,
     await switchEnvironment(null)
     resetStoreForEnvironmentSwitch(true)
     unmount()
+    // This machine has a project at the same path, with a chat of its own open.
+    act(() => {
+        useStore.getState().registerProject(PROJECT)
+        useStore.getState().updateProjectSessionState(PROJECT, { conversationId: 'local-chat' })
+    })
+    const local = useStore.getState()
 
     modelSaved.resolve(conversationMutationAck(thread(7)))
     await waitFor(() => expect(puts()).toHaveLength(2))
     expect(puts().every((request) => request.includes(REMOTE))).toBe(true)
     expect(bodies[sent.lastIndexOf(puts()[1])]).toMatchObject({ chat_mode: 'plan', expected_revision: '7' })
+    // The new chat's project state was sent remotely; its answer changes nothing here.
+    expect(sent).toContain(`PATCH ${REMOTE}/workspace/api/projects/state`)
+    projectSaved.resolve({ project_id: 'remote', project_path: PROJECT, display_name: 'Remote', active_conversation_id: 'conversation-1', is_favorite: true })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useStore.getState().projectRegistry).toEqual(local.projectRegistry)
+    expect(useStore.getState().projectSessionsByPath).toEqual(local.projectSessionsByPath)
 })

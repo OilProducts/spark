@@ -1,7 +1,10 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
+import { applyTheme, cachedAppearance, type Appearance } from '@/lib/theme'
+import { switchEnvironment } from '@/test/environments'
+import { ClientPreferencesController } from '../ClientPreferencesController'
 import { ClientPreferencesEditor } from '../ClientPreferencesEditor'
 import { fetchClientPreferences, parseClientPreferences, saveClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
 
@@ -71,4 +74,38 @@ it('defaults Show thinking on and toggles it as a switch in the settings editor'
     expect(toggle).toBeChecked()
     await userEvent.setup().click(toggle)
     expect(toggle).not.toBeChecked()
+})
+
+it('changes this browser\'s theme from another environment\'s Settings, and keeps it across switches', async () => {
+    const view = (revision: string, appearance: Appearance): ClientPreferencesView => ({ client_id: 'browser-one', revision,
+        stored: { editor_mode: null, editor_sidebar_width: null, appearance },
+        effective: { editor_mode: 'structured', editor_sidebar_width: 288, appearance } })
+    // Each environment's server, keyed by environment.
+    const servers: Record<string, ClientPreferencesView> = { local: view('local-1', 'light'), remote: view('remote-1', 'dark') }
+    const server = (environmentId: string | null | undefined) => (environmentId === null ? 'local' : 'remote')
+    vi.mocked(fetchClientPreferences).mockImplementation(async (environmentId) => servers[server(environmentId)])
+    vi.mocked(saveClientPreferences).mockImplementation(async (base, preferences, environmentId) => (servers[server(environmentId)] = {
+        ...base, revision: `${base.revision}+`, stored: preferences, effective: { ...base.effective, ...preferences } }))
+    applyTheme('light')
+    await switchEnvironment('env-r')
+    const settings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    const user = userEvent.setup()
+    const theme = await screen.findByLabelText('Theme')
+    // The theme in use shows, not the one the remote environment keeps.
+    await waitFor(() => expect(theme).toHaveValue('light'))
+
+    await user.selectOptions(theme, 'dark')
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await screen.findByText('Saved.')
+    expect(document.documentElement).toHaveClass('dark')
+    expect(servers.local.stored.appearance).toBe('dark')
+
+    // Back on this machine, its preferences keep the theme chosen remotely.
+    settings.unmount()
+    await switchEnvironment(null)
+    render(<ClientPreferencesController />)
+    await waitFor(() => expect(fetchClientPreferences).toHaveBeenLastCalledWith(null))
+    await act(async () => {})
+    expect(cachedAppearance()).toBe('dark')
+    expect(document.documentElement).toHaveClass('dark')
 })
