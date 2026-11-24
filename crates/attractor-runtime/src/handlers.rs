@@ -3156,6 +3156,98 @@ fn run_owned_shell_command(
 /// the owner's record and everything above this wait, so nothing is published,
 /// and a crash meanwhile leaves the record for recovery. Its problems go to the
 /// given report.
+/// Resolves the POSIX shell used by flow `type: tool` nodes. On Unix this is
+/// `sh`; on Windows it locates Git for Windows' `bash.exe` / `sh.exe` (via
+/// `SPARK_SH`, `CLAUDE_CODE_GIT_BASH_PATH`, `PATH`, beside `git.exe`, or
+/// standard Git install paths).
+fn resolve_posix_shell() -> std::io::Result<PathBuf> {
+    #[cfg(not(windows))]
+    {
+        Ok(PathBuf::from("sh"))
+    }
+    #[cfg(windows)]
+    {
+        let env_override = std::env::var_os("SPARK_SH")
+            .or_else(|| std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH"))
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let path_shell = spark_agent_adapter::local_environment::find_executable_on_path(
+            "sh", None,
+        )
+        .or_else(|| spark_agent_adapter::local_environment::find_executable_on_path("bash", None));
+        let git_path = spark_agent_adapter::local_environment::find_executable_on_path("git", None);
+        let mut standard = Vec::new();
+        for key in ["ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(base) = std::env::var_os(key) {
+                standard.push(PathBuf::from(base).join("Git").join("bin").join("bash.exe"));
+            }
+        }
+        if let Some(base) = std::env::var_os("LocalAppData") {
+            standard.push(
+                PathBuf::from(base)
+                    .join("Programs")
+                    .join("Git")
+                    .join("bin")
+                    .join("bash.exe"),
+            );
+        }
+        resolve_posix_shell_from(
+            env_override.as_deref(),
+            path_shell.as_deref(),
+            git_path.as_deref(),
+            &standard,
+        )
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn resolve_posix_shell_from(
+    env_override: Option<&Path>,
+    path_shell: Option<&Path>,
+    git_path: Option<&Path>,
+    standard_paths: &[PathBuf],
+) -> std::io::Result<PathBuf> {
+    if let Some(path) = env_override {
+        if path.is_file() {
+            return Ok(path.to_path_buf());
+        }
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "Configured POSIX shell '{}' does not exist (from SPARK_SH / CLAUDE_CODE_GIT_BASH_PATH).",
+                path.display()
+            ),
+        ));
+    }
+    if let Some(path) = path_shell.filter(|path| path.is_file()) {
+        return Ok(path.to_path_buf());
+    }
+    if let Some(git_root) = git_path.and_then(Path::parent).and_then(Path::parent) {
+        for segments in [
+            &["bin", "bash.exe"][..],
+            &["bin", "sh.exe"][..],
+            &["usr", "bin", "bash.exe"][..],
+            &["usr", "bin", "sh.exe"][..],
+        ] {
+            let candidate = segments
+                .iter()
+                .fold(git_root.to_path_buf(), |path, seg| path.join(seg));
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    for candidate in standard_paths {
+        if candidate.is_file() {
+            return Ok(candidate.clone());
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "A POSIX shell (sh/bash) is required to run tool nodes on Windows. Install Git for Windows or set SPARK_SH (or CLAUDE_CODE_GIT_BASH_PATH) to bash.exe.",
+    ))
+}
+
 fn run_shell_command(
     command: &str,
     cwd: &Path,
@@ -3165,7 +3257,7 @@ fn run_shell_command(
     mut stop: Option<&mut dyn FnMut() -> bool>,
     owner: Option<(&ToolOwner, &dyn Fn(&str))>,
 ) -> std::io::Result<ShellOutput> {
-    let mut command_line = Command::new("sh");
+    let mut command_line = Command::new(resolve_posix_shell()?);
     // Its own process group, so a timeout or cancellation stops every
     // descendant, not just the shell.
     spark_agent_adapter::local_environment::configure_process_group(&mut command_line);
@@ -4244,5 +4336,53 @@ mod activity_tests {
             std::fs::read_to_string(temp.path().join("tool-output/call-1.txt")).expect("artifact"),
             full_output
         );
+    }
+
+    #[test]
+    fn resolve_posix_shell_ranks_env_override_path_git_sibling_and_standard_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let git_root = temp.path().join("Git");
+        let git_exe = git_root.join("cmd").join("git.exe");
+        let git_bash = git_root.join("bin").join("bash.exe");
+        let custom_sh = temp.path().join("custom-bash.exe");
+        let path_sh = temp.path().join("path-sh.exe");
+        let std_bash = temp.path().join("ProgramFilesGit").join("bash.exe");
+        for file in [&git_exe, &git_bash, &custom_sh, &path_sh, &std_bash] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "").unwrap();
+        }
+
+        // Explicit override wins, and a missing explicit override fails clearly.
+        assert_eq!(
+            resolve_posix_shell_from(
+                Some(&custom_sh),
+                Some(&path_sh),
+                Some(&git_exe),
+                std::slice::from_ref(&std_bash),
+            )
+            .unwrap(),
+            custom_sh
+        );
+        let missing = temp.path().join("missing-bash.exe");
+        let err = resolve_posix_shell_from(Some(&missing), Some(&path_sh), Some(&git_exe), &[])
+            .unwrap_err();
+        assert!(err.to_string().contains("SPARK_SH"), "{err}");
+
+        // Next: PATH shell, then sibling of git.exe, then standard install paths.
+        assert_eq!(
+            resolve_posix_shell_from(None, Some(&path_sh), Some(&git_exe), &[std_bash.clone()])
+                .unwrap(),
+            path_sh
+        );
+        assert_eq!(
+            resolve_posix_shell_from(None, None, Some(&git_exe), &[std_bash.clone()]).unwrap(),
+            git_bash
+        );
+        assert_eq!(
+            resolve_posix_shell_from(None, None, None, &[std_bash.clone()]).unwrap(),
+            std_bash
+        );
+        let none = resolve_posix_shell_from(None, None, None, &[]).unwrap_err();
+        assert!(none.to_string().contains("Git for Windows"), "{none}");
     }
 }

@@ -114,15 +114,21 @@ pub(crate) async fn require_trust(
 }
 
 /// The machine's name, read once.
-// ponytail: asks the `hostname` command; an empty name falls back to "Spark".
+// ponytail: checks COMPUTERNAME (Windows), then `hostname`; falls back to "Spark".
 fn display_name() -> &'static str {
     static NAME: OnceLock<String> = OnceLock::new();
     NAME.get_or_init(|| {
-        std::process::Command::new("hostname")
-            .output()
+        std::env::var("COMPUTERNAME")
             .ok()
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .map(|name| name.trim().to_string())
             .filter(|name| !name.is_empty())
+            .or_else(|| {
+                std::process::Command::new("hostname")
+                    .output()
+                    .ok()
+                    .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                    .filter(|name| !name.is_empty())
+            })
             .unwrap_or_else(|| "Spark".to_string())
     })
 }

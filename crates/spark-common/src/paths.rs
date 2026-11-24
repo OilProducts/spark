@@ -53,7 +53,69 @@ pub fn normalize_path(value: impl AsRef<Path>) -> Result<PathBuf> {
             .join(expanded)
     };
     let mut symlink_count = 0;
-    Ok(resolve_non_strict(&absolute, &mut symlink_count))
+    Ok(strip_verbatim_prefix(resolve_non_strict(
+        &absolute,
+        &mut symlink_count,
+    )))
+}
+
+/// Removes Windows extended-length (`\\?\C:\...` and `\\?\UNC\server\share`)
+/// prefixes that `std::fs::canonicalize` produces on Windows, so paths compare
+/// equal to user-facing paths and work in `PATH` and child shells.
+pub fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
+/// Like [`std::fs::canonicalize`], without Windows `\\?\` verbatim prefixes.
+pub fn canonicalize_clean(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path).map(strip_verbatim_prefix)
+}
+
+/// Resolves the user's home directory from `HOME`, falling back to Windows'
+/// `USERPROFILE` and `HOMEDRIVE` + `HOMEPATH`.
+pub fn user_home_dir_with_env(env: &impl Environment) -> Option<PathBuf> {
+    env.get_var("HOME")
+        .or_else(|| env.get_var("USERPROFILE"))
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            let drive = env.get_var("HOMEDRIVE").filter(|v| !v.is_empty())?;
+            let path = env.get_var("HOMEPATH").filter(|v| !v.is_empty())?;
+            Some(PathBuf::from(format!("{drive}{path}")))
+        })
+}
+
+pub fn user_home_dir() -> Option<PathBuf> {
+    user_home_dir_with_env(&ProcessEnvironment)
+}
+
+/// Expands `~`, `~/...`, and `~\...` using `env`.
+pub fn expand_tilde_with_env(path: &Path, env: &impl Environment) -> PathBuf {
+    let path_text = path.to_string_lossy();
+    if path_text == "~" {
+        return user_home_dir_with_env(env).unwrap_or_else(|| path.to_path_buf());
+    }
+    if let Some(rest) = path_text
+        .strip_prefix("~/")
+        .or_else(|| path_text.strip_prefix(r"~\"))
+    {
+        if let Some(home) = user_home_dir_with_env(env) {
+            return home.join(rest);
+        }
+    }
+    path.to_path_buf()
 }
 
 pub fn detect_project_root() -> PathBuf {
@@ -177,22 +239,7 @@ fn remap_by_matching_segment(
 }
 
 fn expand_tilde(path: &Path) -> PathBuf {
-    let path_text = path.to_string_lossy();
-    if path_text == "~" {
-        return home_dir().unwrap_or_else(|| path.to_path_buf());
-    }
-    if let Some(rest) = path_text.strip_prefix("~/") {
-        if let Some(home) = home_dir() {
-            return home.join(rest);
-        }
-    }
-    path.to_path_buf()
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    expand_tilde_with_env(path, &ProcessEnvironment)
 }
 
 fn resolve_non_strict(path: &Path, symlink_count: &mut usize) -> PathBuf {

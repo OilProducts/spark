@@ -1580,6 +1580,7 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
 /// is `checking` while one background check runs, whose end is announced.
 /// Its result, a failure included, is kept until Check again or an agents
 /// change, and a check that ends after a save cleared it is discarded.
+#[cfg(unix)]
 #[test]
 fn model_listing_never_waits_on_a_harness_check() {
     use std::time::{Duration, Instant};
@@ -1774,6 +1775,7 @@ fn model_listing_never_waits_on_a_harness_check() {
     assert_eq!(count(&launches), 8);
 }
 
+#[cfg(unix)]
 #[test]
 fn each_native_harness_keeps_its_check_when_the_other_changes() {
     use std::os::unix::fs::PermissionsExt;
@@ -1852,6 +1854,7 @@ fn each_native_harness_keeps_its_check_when_the_other_changes() {
     assert_eq!(count(&launches), 1);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_kept_check_keeps_the_setup_it_found() {
     use std::os::unix::fs::PermissionsExt;

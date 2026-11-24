@@ -3012,7 +3012,13 @@ pub(crate) fn build_codex_runtime_environment_with_settings(
             }
         }
     }
-    let path = env_map.get("PATH").cloned();
+    let existing_path_key = env_map
+        .keys()
+        .find(|key| key.eq_ignore_ascii_case("PATH"))
+        .cloned();
+    let path = existing_path_key
+        .as_deref()
+        .and_then(|key| env_map.remove(key));
     env_map.extend(spark_agent_environment(path.as_deref()));
     let runtime_root = runtime_root(&env_map);
     ensure_dir(&runtime_root)?;
@@ -3050,10 +3056,9 @@ pub(crate) fn build_codex_runtime_environment_with_settings(
         ))
     })?;
 
-    env_map.insert(
-        "HOME".to_string(),
-        runtime_root.to_string_lossy().into_owned(),
-    );
+    let runtime_root_text = runtime_root.to_string_lossy().into_owned();
+    env_map.insert("HOME".to_string(), runtime_root_text.clone());
+    env_map.insert("USERPROFILE".to_string(), runtime_root_text);
     env_map.insert(
         "CODEX_HOME".to_string(),
         codex_home.to_string_lossy().into_owned(),
@@ -3086,6 +3091,8 @@ pub(crate) fn spark_runtime_dir(env_map: &BTreeMap<String, String>, agent: &str)
         .or_else(|| {
             env_map
                 .get("HOME")
+                .or_else(|| env_map.get("USERPROFILE"))
+                .filter(|value| !value.trim().is_empty())
                 .map(|home| PathBuf::from(home).join(".spark"))
         })
         .unwrap_or_else(|| PathBuf::from(".spark"))
@@ -3293,7 +3300,7 @@ fn complete_codex_candidate(candidate: &Path) -> Option<PathBuf> {
     if has_code_mode_host(candidate) {
         return Some(candidate.to_path_buf());
     }
-    let canonical = candidate.canonicalize().ok()?;
+    let canonical = spark_common::paths::canonicalize_clean(candidate).ok()?;
     has_code_mode_host(&canonical).then_some(canonical)
 }
 
@@ -3453,7 +3460,7 @@ fn first_party_tool_bin_dirs() -> Vec<PathBuf> {
     let mut seen = Vec::<String>::new();
     let mut directories = Vec::new();
     for candidate in candidates {
-        let normalized = candidate.canonicalize().unwrap_or(candidate);
+        let normalized = spark_common::paths::canonicalize_clean(&candidate).unwrap_or(candidate);
         if !normalized.is_dir() {
             continue;
         }

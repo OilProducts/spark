@@ -674,3 +674,48 @@ fn redacted_acp_environments_restore_only_from_the_same_registration() {
         }
     }
 }
+
+#[test]
+fn windows_home_tilde_and_verbatim_prefix_helpers_normalize_cleanly() {
+    use spark_common::paths::{
+        expand_tilde_with_env, strip_verbatim_prefix, user_home_dir_with_env,
+    };
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    let env_profile = BTreeMap::from([("USERPROFILE".to_string(), r"C:\Users\chris".to_string())]);
+    assert_eq!(
+        user_home_dir_with_env(&env_profile),
+        Some(PathBuf::from(r"C:\Users\chris"))
+    );
+    assert_eq!(
+        expand_tilde_with_env(Path::new(r"~\.spark"), &env_profile),
+        PathBuf::from(r"C:\Users\chris").join(".spark")
+    );
+    assert_eq!(
+        expand_tilde_with_env(Path::new("~/.spark"), &env_profile),
+        PathBuf::from(r"C:\Users\chris").join(".spark")
+    );
+
+    let env_drive = BTreeMap::from([
+        ("HOMEDRIVE".to_string(), "D:".to_string()),
+        ("HOMEPATH".to_string(), r"\Users\builder".to_string()),
+    ]);
+    assert_eq!(
+        user_home_dir_with_env(&env_drive),
+        Some(PathBuf::from(r"D:\Users\builder"))
+    );
+
+    assert_eq!(
+        strip_verbatim_prefix(PathBuf::from(r"\\?\C:\Users\chris\repo")),
+        PathBuf::from(r"C:\Users\chris\repo")
+    );
+    assert_eq!(
+        strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\fileserver\share\repo")),
+        PathBuf::from(r"\\fileserver\share\repo")
+    );
+    assert_eq!(
+        strip_verbatim_prefix(PathBuf::from("/Users/chris/repo")),
+        PathBuf::from("/Users/chris/repo")
+    );
+}

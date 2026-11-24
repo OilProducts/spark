@@ -2561,22 +2561,11 @@ fn expand_user_path(value: &str, env: &impl Environment) -> PathBuf {
     if value.is_empty() {
         return PathBuf::from(".");
     }
-    if value == "~" {
-        return env
-            .get_var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(value));
-    }
-    if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = env.get_var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(value)
+    spark_common::paths::expand_tilde_with_env(Path::new(value), env)
 }
 
 fn resolve_display_path(path: &Path) -> String {
-    std::fs::canonicalize(path)
+    spark_common::paths::canonicalize_clean(path)
         .unwrap_or_else(|_| {
             if path.is_absolute() {
                 path.to_path_buf()

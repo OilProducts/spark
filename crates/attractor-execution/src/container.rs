@@ -772,10 +772,12 @@ mod settings_tests {
         assert!(!format!("{spec:?}").contains("secret-test-sentinel"));
     }
 
+    #[cfg(unix)]
     struct TargetShell {
         home: PathBuf,
         calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
+    #[cfg(unix)]
     impl ContainerCommandRunner for TargetShell {
         fn command_exists(&self, _: &str) -> bool {
             true
@@ -805,6 +807,7 @@ mod settings_tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn paths_resolve_in_target_home_and_path_and_are_frozen_for_active_work() {
         use std::os::unix::fs::PermissionsExt;

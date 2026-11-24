@@ -19,7 +19,6 @@ base64 = "0.22"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 glob = "0.3"
 regex = "1.10"
-rustix = { version = "1.1.4", features = ["process"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 similar = "3"
@@ -30,6 +29,9 @@ tokio = { version = "1", features = ["rt", "net", "process", "io-util", "sync", 
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["serde", "v4"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["process"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

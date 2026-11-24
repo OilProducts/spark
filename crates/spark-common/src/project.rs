@@ -40,7 +40,7 @@ pub fn repository_scope_path(path: impl AsRef<Path>) -> PathBuf {
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     ) {
         Ok(text) if !text.is_empty() => {
-            std::fs::canonicalize(&text).unwrap_or_else(|_| PathBuf::from(text))
+            crate::paths::canonicalize_clean(&text).unwrap_or_else(|_| PathBuf::from(text))
         }
         _ => normalize_path(path.to_string_lossy().as_ref()).unwrap_or_else(|_| path.to_path_buf()),
     }

@@ -724,18 +724,7 @@ fn coalesce_optional_path(
 }
 
 fn expand_for_absolute_check(path: &std::path::Path) -> PathBuf {
-    let text = path.to_string_lossy();
-    if text == "~" {
-        return std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| path.to_path_buf());
-    }
-    if let Some(rest) = text.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-            return home.join(rest);
-        }
-    }
-    path.to_path_buf()
+    crate::paths::expand_tilde_with_env(path, &ProcessEnvironment)
 }
 
 /// Non-secret resolved settings captured for an execution; profiles accompany this in their domain snapshots.

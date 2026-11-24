@@ -218,6 +218,7 @@ fn claude_thinking_blocks(
 /// process_contracts installed_claude_code_thinking_display -- --ignored --nocapture`
 /// Without a token, SPARK_THINKING_PROBE_CONFIG_DIR borrows a signed-in config
 /// dir instead: its settings are not loaded and no session is saved in it.
+#[cfg(unix)]
 #[test]
 #[ignore = "runs the installed claude CLI; needs CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY or SPARK_THINKING_PROBE_CONFIG_DIR"]
 fn installed_claude_code_thinking_display_returns_text_the_default_withholds() {

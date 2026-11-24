@@ -910,34 +910,43 @@ pub fn terminate_process_group(process_group_id: u32, mut child: Option<&mut Chi
     }
 }
 
-fn find_executable(name: &str) -> Option<PathBuf> {
+pub fn find_executable_on_path(
+    name: &str,
+    path_override: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
     let candidate = Path::new(name);
-    if candidate.is_absolute() && is_executable(candidate) {
-        return Some(candidate.to_path_buf());
+    if candidate.is_absolute() {
+        return is_executable(candidate).then(|| candidate.to_path_buf());
     }
-    let path_var = env::var_os("PATH")?;
+    let path_var = path_override
+        .map(std::ffi::OsStr::to_os_string)
+        .or_else(|| env::var_os("PATH"))?;
     for directory in env::split_paths(&path_var) {
+        let direct = directory.join(name);
+        if is_executable(&direct) {
+            return Some(direct);
+        }
         #[cfg(windows)]
         {
             let pathext = env::var_os("PATHEXT")
                 .unwrap_or_else(|| std::ffi::OsString::from(".EXE;.BAT;.CMD"));
-            for extension in pathext.to_string_lossy().split(';') {
+            for extension in pathext
+                .to_string_lossy()
+                .split(';')
+                .filter(|ext| !ext.is_empty())
+            {
                 let candidate = directory.join(format!("{name}{extension}"));
                 if is_executable(&candidate) {
                     return Some(candidate);
                 }
             }
         }
-
-        #[cfg(not(windows))]
-        {
-            let candidate = directory.join(name);
-            if is_executable(&candidate) {
-                return Some(candidate);
-            }
-        }
     }
     None
+}
+
+fn find_executable(name: &str) -> Option<PathBuf> {
+    find_executable_on_path(name, None)
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -1017,6 +1026,7 @@ fn is_core_env_key(key: &str) -> bool {
         "APPDATA",
         "CARGO_HOME",
         "CLASSPATH",
+        "COMPUTERNAME",
         "COMSPEC",
         "CONDA_PREFIX",
         "DYLD_LIBRARY_PATH",
@@ -1034,24 +1044,35 @@ fn is_core_env_key(key: &str) -> bool {
         "LOCALAPPDATA",
         "LOGNAME",
         "MANPATH",
+        "NUMBER_OF_PROCESSORS",
         "NVM_DIR",
         "NODE_PATH",
         "OLDPWD",
+        "OS",
         "PATH",
+        "PATHEXT",
         "PNPM_HOME",
         "PKG_CONFIG_PATH",
+        "PROCESSOR_ARCHITECTURE",
+        "PROGRAMDATA",
         "PROGRAMFILES",
         "PROGRAMFILES(X86)",
+        "PSMODULEPATH",
         "PYTHONHOME",
         "PYTHONPATH",
         "PWD",
         "RUSTUP_HOME",
         "SDKMAN_DIR",
         "SHELL",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TEMP",
         "TERM",
+        "TMP",
         "TMPDIR",
         "USER",
         "USERNAME",
+        "USERPROFILE",
         "UV_CACHE_DIR",
         "UV_TOOL_DIR",
         "VIRTUAL_ENV",

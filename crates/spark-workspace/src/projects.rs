@@ -455,23 +455,12 @@ fn normalize_project_directory(directory: &str) -> WorkspaceResult<PathBuf> {
 }
 
 fn expand_tilde(path: &Path) -> PathBuf {
-    let text = path.to_string_lossy();
-    if text == "~" {
-        return service_home_dir().unwrap_or_else(|_| path.to_path_buf());
-    }
-    if let Some(rest) = text.strip_prefix("~/") {
-        if let Ok(home) = service_home_dir() {
-            return home.join(rest);
-        }
-    }
-    path.to_path_buf()
+    spark_common::paths::expand_tilde_with_env(path, &spark_common::paths::ProcessEnvironment)
 }
 
 fn service_home_dir() -> std::result::Result<PathBuf, String> {
-    std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(|| "HOME is not set.".to_string())
+    spark_common::paths::user_home_dir()
+        .ok_or_else(|| "HOME or USERPROFILE is not set.".to_string())
 }
 
 fn work_area(project_path: Option<&str>) -> WorkspaceResult<PathBuf> {

@@ -26,7 +26,13 @@ export function useRuntimeSettingsEditor() {
         window.addEventListener('focus', refresh)
         return () => { cancelled = true; window.removeEventListener('spark:settings-live-event', refresh); window.removeEventListener('focus', refresh) }
     }, [saved?.revision, dirty, pending])
-    const invalidRoots = draft?.project_roots.some((path) => !path.startsWith('/') && !path.startsWith('~/')) ?? false
+    const isAbsoluteRoot = (path: string) =>
+        path.startsWith('/')
+        || path.startsWith('~/')
+        || path.startsWith('~\\')
+        || path.startsWith('\\\\')
+        || /^[A-Za-z]:[/\\]/.test(path)
+    const invalidRoots = draft?.project_roots.some((path) => !isAbsoluteRoot(path)) ?? false
     const save = async () => {
         if (!saved || !draft || pending || invalidRoots) return
         setPending(true); setError(''); setMessage('')

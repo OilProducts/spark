@@ -302,6 +302,7 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
     use std::os::unix::fs::PermissionsExt;

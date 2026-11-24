@@ -1839,6 +1839,7 @@ fn claude_code_sign_in_reports_cli_failures_and_cancels_without_signing_in() {
     assert!(!temp.path().join("fake-signed-in").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_stuck_auth_status_fails_instead_of_blocking_the_connection() {
     let temp = tempfile::tempdir().expect("tempdir");

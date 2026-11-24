@@ -760,20 +760,19 @@ fn live_harness(request: &AgentTurnRequest, harness_id: &str) -> Option<AcpHarne
 }
 
 /// Whether `program` names an executable file: a path that exists, or a bare
-/// name found on `path`, else on Spark's own `PATH`. A relative path is taken
-/// as found, since where it resolves depends on the launch.
-// ponytail: ignores PATHEXT, so a bare name on Windows must include its extension.
+/// name found on `path` (else Spark's own `PATH`), honoring `PATHEXT` on
+/// Windows. A relative path is taken as found, since where it resolves depends
+/// on the launch.
 pub fn program_found(program: &str, path: Option<&str>) -> bool {
-    let program = Path::new(program);
-    if program.is_absolute() {
-        return program.is_file();
+    let candidate = Path::new(program);
+    if candidate.is_absolute() {
+        return candidate.is_file();
     }
-    if program.components().count() > 1 {
+    if candidate.components().count() > 1 {
         return true;
     }
-    path.map(std::ffi::OsString::from)
-        .or_else(|| std::env::var_os("PATH"))
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+    crate::local_environment::find_executable_on_path(program, path.map(std::ffi::OsStr::new))
+        .is_some()
 }
 
 /// The configuration generation a launch of `harness` records: its
@@ -928,7 +927,7 @@ fn probe(
     cwd: &Path,
     sign_in: Option<&str>,
 ) -> Result<Probed, ProbeFailure> {
-    let cwd = std::fs::canonicalize(cwd)
+    let cwd = spark_common::paths::canonicalize_clean(cwd)
         .map_err(|error| format!("work area {} is unavailable: {error}", cwd.display()))?;
     // A declared channel launches as it would for chat, with harmless text.
     let instructions = harness

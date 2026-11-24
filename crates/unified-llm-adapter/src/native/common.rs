@@ -406,19 +406,36 @@ pub(super) fn normalize_image_source(
 }
 
 pub(super) fn is_local_media_path(value: &str) -> bool {
-    value.starts_with('/') || value.starts_with("./") || value.starts_with('~')
+    let bytes = value.as_bytes();
+    let windows_drive = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/');
+    value.starts_with('/')
+        || value.starts_with("./")
+        || value.starts_with(r".\")
+        || value.starts_with(r"\\")
+        || value.starts_with('~')
+        || windows_drive
 }
 
 pub(super) fn expand_user_path(value: &str) -> PathBuf {
-    if value == "~" {
-        return env::var_os("HOME")
+    let home = || {
+        env::var_os("HOME")
+            .or_else(|| env::var_os("USERPROFILE"))
+            .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(value));
+    };
+    if value == "~" {
+        return home().unwrap_or_else(|| PathBuf::from(value));
     }
-    if let Some(rest) = value.strip_prefix("~/") {
-        return env::var_os("HOME")
-            .map(|home| PathBuf::from(home).join(rest))
-            .unwrap_or_else(|| PathBuf::from(value));
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix(r"~\"))
+    {
+        if let Some(home) = home() {
+            return home.join(rest);
+        }
     }
     PathBuf::from(value)
 }

@@ -122,8 +122,9 @@ pub fn build_app_with_conversation_store(
     conversation_store: Arc<spark_storage::ConversationStore>,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
 ) -> Result<Router, spark_storage::StorageError> {
-    let normalized =
-        |path: &std::path::Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let normalized = |path: &std::path::Path| {
+        spark_common::paths::canonicalize_clean(path).unwrap_or_else(|_| path.to_path_buf())
+    };
     if normalized(&settings.data_dir) != normalized(conversation_store.home_dir()) {
         return Err(spark_storage::StorageError::InvalidConversationState {
             path: settings.data_dir.clone(),

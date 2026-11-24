@@ -668,9 +668,25 @@ fn run_systemctl_unchecked(
 
 fn find_on_path(name: &str, env: &impl Environment) -> Option<PathBuf> {
     let path = env.get_var("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| is_executable_file(candidate))
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            let pathext = env
+                .get_var("PATHEXT")
+                .unwrap_or_else(|| ".EXE;.BAT;.CMD".to_string());
+            for ext in pathext.split(';').filter(|ext| !ext.is_empty()) {
+                let candidate = dir.join(format!("{name}{ext}"));
+                if is_executable_file(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(unix)]
@@ -689,23 +705,11 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 fn expand_tilde_with_env(value: &str, env: &impl Environment) -> PathBuf {
-    if value == "~" {
-        return env
-            .get_var("HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from(value));
+    let expanded = spark_common::paths::expand_tilde_with_env(Path::new(value), env);
+    if expanded != Path::new(value) {
+        return expanded;
     }
-    if let Some(rest) = value.strip_prefix("~/") {
-        if let Some(home) = env
-            .get_var("HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(value)
+    spark_common::paths::expand_tilde_with_env(Path::new(value), &ProcessEnvironment)
 }
 
 pub fn build_serve_configuration_from_args(
