@@ -7,6 +7,7 @@ import { useDialogController } from '@/components/app/dialog-controller'
 import { InlineError } from '@/components/app/inline-error'
 import { Well } from '@/components/app/well'
 import {
+    getActiveEnvironmentId,
     notifyEnvironmentLinksChanged,
     selectEnvironment,
     useActiveEnvironment,
@@ -224,9 +225,10 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     }
 
     const handleRemoveLink = async (link: EnvironmentLink, trigger: HTMLElement) => {
+        const name = link.label || link.environment_id
         const confirmed = await confirmFrom(trigger, {
             title: 'Remove environment link?',
-            description: `${link.label || link.environment_id} (${link.origin}) will be unlinked. Its open delegations pause until you link it again.`,
+            description: `${name} (${link.origin}) will be unlinked. Its open delegations pause until you link it again.`,
             confirmLabel: 'Remove link',
             cancelLabel: 'Cancel',
             confirmVariant: 'destructive',
@@ -239,18 +241,24 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             // created_at, so only delete the link the user confirmed if the server still has it.
             // ponytail: a relink landing between this check and the DELETE still loses; closing that needs a conditional DELETE on the server.
             const latest = await fetchEnvironmentLinks()
+            // Requests go to whichever environment is active when sent, and the user can switch while the check runs.
+            if (getActiveEnvironmentId() !== activeEnvironmentId) {
+                throw new Error(`Switched environments before removing the link to ${name}, so nothing was removed.`)
+            }
             const current = latest.find((row) => row.environment_id === link.environment_id)
             if (current?.origin !== link.origin || current.created_at !== link.created_at) {
+                // Retires any refresh in flight, so its older listing cannot replace this one; this ends its loading too.
                 refreshSeqRef.current += 1
                 forgetProjects(link.environment_id)
                 setLinks(latest)
                 setLinksLoaded(true)
-                showError(`The link to ${link.label || link.environment_id} changed since you chose to remove it, so nothing was removed. Review the current link before removing it again.`)
+                setLoading(false)
+                showError(`The link to ${name} changed since you chose to remove it, so nothing was removed. Review the current link before removing it again.`)
                 return
             }
             await removeEnvironmentLink(link.environment_id)
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
-            await settleMutation(`Removed link to ${link.label || link.environment_id}.`, () => {
+            await settleMutation(`Removed link to ${name}.`, () => {
                 forgetProjects(link.environment_id)
                 setLinks((prev) => prev.filter((row) => row.environment_id !== link.environment_id))
                 // Only a listing can say no links remain.

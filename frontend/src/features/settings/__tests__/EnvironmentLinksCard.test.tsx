@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { EnvironmentBootstrap, EnvironmentSwitcherBar } from '@/app/EnvironmentSwitcher'
 import { DialogProvider } from '@/components/app/dialog-controller'
-import { resetActiveEnvironmentForTests } from '@/lib/activeEnvironment'
+import { getActiveEnvironmentId, resetActiveEnvironmentForTests } from '@/lib/activeEnvironment'
 import { EnvironmentLinksCard } from '../EnvironmentLinksCard'
 
 const TOKENS = '/workspace/api/environment/tokens'
@@ -283,6 +283,79 @@ it.each([
     expect(await screen.findByText('No linked environments configured.')).toBeInTheDocument()
     expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`])
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
+it.each([
+    ['before', true],
+    ['after', false],
+])('keeps the relinked row and re-enables Refresh when a pending refresh finishes %s the removal check', async (_name, refreshFirst) => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box')] })
+    render(card())
+    await screen.findByRole('button', { name: 'Remove link Build box' })
+
+    // Link listings are held, each answering with the links the server had when it was asked.
+    const held: Array<() => void> = []
+    backend.replies[LINKS] = () => {
+        const answer = json({ links: backend.links })
+        return new Promise<Response>((resolve) => held.push(() => resolve(answer)))
+    }
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    await user.click(screen.getByRole('button', { name: 'Remove link Build box' }))
+    // Another tab relinks env-build at a new origin before this one confirms.
+    backend.links = [{ ...link('env-build', 'Build box'), origin: 'https://new-build.example:8000', created_at: '2026-11-24T00:05:00Z' }]
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(held).toHaveLength(2))
+    delete backend.replies[LINKS]
+    const [finishRefresh, finishCheck] = held
+    await act(async () => (refreshFirst ? finishRefresh : finishCheck)())
+    await act(async () => (refreshFirst ? finishCheck : finishRefresh)())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The link to Build box changed since you chose to remove it, so nothing was removed.')
+    expect(screen.getByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+    expect(screen.queryByText(/https:\/\/env-build\.example:8000/)).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    expect(backend.mutations).toEqual([])
+})
+
+it.each([
+    ['completes', true],
+    ['is still verifying', false],
+])('removes a link only from the environment where it was confirmed when a switch %s as its check returns', async (_name, switchFirst) => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box'), link('env-gpu', 'GPU')] })
+    // Switching to GPU waits on its descriptor, relayed through its proxy.
+    let finishSwitch = () => {}
+    backend.replies[`${LINKS}/env-gpu/proxy/environment`] = () => new Promise<Response>((resolve) => {
+        finishSwitch = () => resolve(json({ ...descriptor, environment_id: 'env-gpu', display_name: 'gpu-box' }))
+    })
+    render(<DialogProvider><EnvironmentBootstrap /><EnvironmentSwitcherBar /><EnvironmentLinksCard /></DialogProvider>)
+    const gpuTab = await screen.findByTestId('environment-tab-env-gpu')
+    await user.click(await screen.findByRole('button', { name: 'Remove link Build box' }))
+
+    // The removal's link check is held while the user switches to GPU.
+    let finishCheck = () => {}
+    backend.replies[LINKS] = () => {
+        delete backend.replies[LINKS]
+        const answer = json({ links: backend.links })
+        return new Promise<Response>((resolve) => { finishCheck = () => resolve(answer) })
+    }
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    await user.click(gpuTab)
+    if (switchFirst) {
+        await act(async () => finishSwitch())
+        await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-gpu'))
+        await act(async () => finishCheck())
+        expect(await screen.findByRole('alert')).toHaveTextContent('Switched environments before removing the link to Build box, so nothing was removed.')
+        expect(backend.mutations).toEqual([])
+    } else {
+        await act(async () => finishCheck())
+        await waitFor(() => expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`]))
+        await act(async () => finishSwitch())
+        await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-gpu'))
+        expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`])
+    }
 })
 
 it('updates the environment switcher without a reload when links are added and removed', async () => {
