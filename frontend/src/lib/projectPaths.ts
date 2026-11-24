@@ -1,14 +1,15 @@
 export const normalizeProjectPath = (path: string): string => {
   const trimmed = path.trim()
   if (!trimmed) return ""
-  const forwardSlashed = trimmed.replace(/\\/g, "/")
   // A UNC path (\\server\share) keeps `//server/share` as its root, so `..` cannot climb above the share.
   // ponytail: requests send this key, and the backend's normalize_path keeps a UNC prefix exactly as spelled
   // (crates/spark-common/src/paths.rs), so a project it registered as \\server\share is another identity.
   // The owner deferred this to a backend fix that writes the UNC prefix in one spelling, not a frontend rewrite of every request.
   // No `.` here: it skips line separators (U+2028/9), which are valid in folder names.
   // UNC starts \\ or //, so a POSIX /\Team stays a POSIX path rather than a share.
-  const unc = /^(?:\\\\|\/\/)/.test(trimmed) ? forwardSlashed.match(/^\/\/([^/]+)\/*([^/]*)/) : null
+  const unc = /^(?:\\\\|\/\/)/.test(trimmed) ? trimmed.replace(/\\/g, "/").match(/^\/\/([^/]+)\/*([^/]*)/) : null
+  // A backslash separates Windows paths; in a POSIX path (leading /) it is part of a folder name: /tmp/team\repo is not /tmp/team/repo.
+  const forwardSlashed = trimmed.startsWith("/") && !unc ? trimmed : trimmed.replace(/\\/g, "/")
   const uncRoot = unc ? `//${unc[1]}${unc[2] ? `/${unc[2]}` : ""}` : null
   const slashNormalized = forwardSlashed.replace(/\/{2,}/g, "/")
   const windowsPrefixMatch = slashNormalized.match(/^[A-Za-z]:\//)

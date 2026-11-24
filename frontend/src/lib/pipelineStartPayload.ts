@@ -43,7 +43,10 @@ export interface PipelineContinuePayload {
 
 export const resolveExecutionWorkingDirectory = (form: Pick<RunInitiationFormState, 'projectPath' | 'workingDirectory'>): string => {
     const normalizedProjectPath = normalizeProjectPath(form.projectPath)
-    const normalizedWorkingDirectory = normalizeProjectPath(form.workingDirectory)
+    // A POSIX project (single leading /) has no UNC shares: there //usr/local is /usr/local.
+    const posixProject = /^\/(?!\/)/.test(normalizedProjectPath)
+    const workingDirectory = form.workingDirectory.trim()
+    const normalizedWorkingDirectory = normalizeProjectPath(posixProject ? workingDirectory.replace(/^\/+/, '/') : workingDirectory)
 
     if (!normalizedWorkingDirectory) {
         return normalizedProjectPath

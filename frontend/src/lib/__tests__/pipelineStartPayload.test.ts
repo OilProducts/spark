@@ -15,3 +15,13 @@ it('keeps the UNC share prefix in the project and working directory of start and
         { startNodeId: 'task', flowSourceMode: 'snapshot' },
     )).toMatchObject({ project_path: '//fileserver/share/repo', working_directory: '//fileserver/share/repo/wt' })
 })
+
+it('resolves a // working directory in a POSIX project as a POSIX path, not a UNC share', () => {
+    const project = { projectPath: '/tmp/project', model: null, workingDirectory: ' //usr/local/../../bin ' }
+    expect(buildPipelineStartPayload({ ...project, flowSource: 'a.dot' })).toMatchObject({ project_path: '/tmp/project', working_directory: '/bin' })
+    expect(buildPipelineContinuePayload(project, { startNodeId: 'task', flowSourceMode: 'snapshot' }))
+        .toMatchObject({ project_path: '/tmp/project', working_directory: '/bin' })
+    // A Windows project still reads // as a UNC share root.
+    expect(buildPipelineStartPayload({ ...project, projectPath: 'C:\\repo', flowSource: 'a.dot', workingDirectory: '\\\\server\\share\\..\\x' }))
+        .toMatchObject({ working_directory: '//server/share/x' })
+})

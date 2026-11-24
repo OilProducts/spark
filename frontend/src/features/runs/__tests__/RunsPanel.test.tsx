@@ -3774,6 +3774,16 @@ describe('RunsPanel', () => {
       expect(useStore.getState().runsListSession.projectFilter).toBe('C:/Users/chris/repo')
     })
 
+    it('keeps a POSIX run from /tmp/team\\repo out of the /tmp/team/repo filter', () => {
+      const state = useStore.getState()
+      const slashRun = makeRun({ run_id: 'slash-run', flow_name: 'slash.dot', project_path: '/tmp/team/repo' })
+      const backslashRun = makeRun({ run_id: 'backslash-run', flow_name: 'backslash.dot', project_path: '/tmp/team\\repo' })
+      state.updateRunsListSession({ status: 'ready', fetched: true, projectFilter: '/tmp/team/repo', runs: [slashRun, backslashRun] })
+      render(<DialogProvider><RunsPanel /></DialogProvider>)
+      expect(screen.getAllByTestId('run-history-row')).toHaveLength(1)
+      expect(selected()).toBe('slash-run')
+    })
+
     it('never replaces a run restored from last time, even while it loads, or one you picked', () => {
       const state = useStore.getState()
       state.updateRunsListSession({ status: 'loading' })

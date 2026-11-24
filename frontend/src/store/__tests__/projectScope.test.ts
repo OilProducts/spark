@@ -303,9 +303,10 @@ describe('project scope store behavior', () => {
     const ownRun = { ...buildRunRecord('run-a', '/tmp/project-a', 'a.dot'), working_directory: '/tmp/elsewhere/worktree' }
     const unownedRun = { ...buildRunRecord('run-loose', '/tmp/project-a', 'loose.dot'), project_path: null }
     store.updateRunsListSession({ runs: [crossRun, ownRun, unownedRun] })
-    store.updateRunDetailSession('run-b', { record: crossRun })
-    store.updateRunDetailSession('run-a', { record: ownRun })
+    // Opening a run creates its detail session.
+    store.setRunsSelectedRunId('run-a')
     store.setRunsSelectedRunId('run-b')
+    expect(Object.keys(useStore.getState().runDetailSessionsByRunId)).toEqual(expect.arrayContaining(['run-a', 'run-b']))
 
     store.removeProject('/tmp/project-a', '/tmp/project-b')
 
@@ -324,9 +325,9 @@ describe('project scope store behavior', () => {
     const childRun = { ...buildRunRecord('run-child', 'C:\\work\\child', 'child.dot'), working_directory: 'C:\\work\\child' }
     const ownRun = buildRunRecord('run-work', 'C:\\work', 'work.dot')
     store.updateRunsListSession({ runs: [childRun, ownRun] })
-    store.updateRunDetailSession('run-child', { record: childRun })
-    store.updateRunDetailSession('run-work', { record: ownRun })
+    store.setRunsSelectedRunId('run-work')
     store.setRunsSelectedRunId('run-child')
+    expect(Object.keys(useStore.getState().runDetailSessionsByRunId)).toEqual(expect.arrayContaining(['run-work', 'run-child']))
 
     store.removeProject('C:/work', 'C:/other')
 
@@ -335,6 +336,24 @@ describe('project scope store behavior', () => {
     expect(selectSelectedRunId(next)).toBe('run-child')
     expect(next.runDetailSessionsByRunId['run-child']).toBeDefined()
     expect(next.runDetailSessionsByRunId['run-work']).toBeUndefined()
+  })
+
+  it('keeps a POSIX run from /tmp/team\\repo, its selection and unsent gate answer, when /tmp/team/repo is removed', () => {
+    const store = useStore.getState()
+    store.registerProject('/tmp/team/repo')
+    store.registerProject('/tmp/team\\repo')
+    expect(Object.keys(useStore.getState().projectRegistry)).toEqual(expect.arrayContaining(['/tmp/team/repo', '/tmp/team\\repo']))
+    const backslashRun = buildRunRecord('run-backslash', '/tmp/team\\repo', 'b.dot')
+    store.updateRunsListSession({ runs: [backslashRun, buildRunRecord('run-slash', '/tmp/team/repo', 'a.dot')] })
+    store.setRunsSelectedRunId('run-backslash')
+    store.updateRunDetailSession('run-backslash', { freeformAnswersByGateId: { gate: 'unsent answer' } })
+
+    store.removeProject('/tmp/team/repo', '/tmp/team\\repo')
+
+    const next = useStore.getState()
+    expect(next.runsListSession.runs.map((run) => run.run_id)).toEqual(['run-backslash'])
+    expect(selectSelectedRunId(next)).toBe('run-backslash')
+    expect(next.runDetailSessionsByRunId['run-backslash']?.freeformAnswersByGateId).toEqual({ gate: 'unsent answer' })
   })
 
   it('drops the removed project missions and selection but keeps other projects', () => {
