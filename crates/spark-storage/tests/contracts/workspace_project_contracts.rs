@@ -16,7 +16,7 @@ use spark_storage::{
 fn project_registry_registers_lists_and_survives_restart_as_rows() {
     let temp = tempfile::tempdir().expect("tempdir");
     // Canonicalize: registered records hold canonical paths (macOS /var -> /private/var).
-    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let root = spark_common::paths::canonicalize_clean(temp.path()).expect("canonical tempdir");
     let home = root.join("spark-home");
     let project_dir = root.join("Registered Project");
     fs::create_dir_all(&project_dir).expect("project dir");
@@ -144,7 +144,12 @@ fn project_registry_updates_optional_state_and_deletes_project_handles() {
     let project_path = "/projects/my-app";
     let registry = ProjectRegistry::new(&home);
     let record = registry.register_project(project_path).expect("register");
-    assert_eq!(record.project_path, project_path);
+    assert_eq!(
+        record.project_path,
+        spark_common::paths::normalize_path(project_path)
+            .expect("normalize")
+            .to_string_lossy()
+    );
     assert_eq!(
         registry
             .project_settings("/projects/other")
