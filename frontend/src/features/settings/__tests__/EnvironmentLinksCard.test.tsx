@@ -306,6 +306,59 @@ it('clears an earlier success status when Projects discovery fails', async () =>
     expect(statusText()).toBe('')
 })
 
+/** Holds the first Projects lookup on env-build until released with a failure; later lookups list /srv/current. */
+function holdFirstProjectsLookup(backend: ReturnType<typeof stubBackend>) {
+    const url = `${LINKS}/env-build/projects`
+    const held = { fail: () => {} }
+    backend.replies[url] = () => {
+        backend.replies[url] = [{ project_path: '/srv/current' }]
+        return new Promise<Response>((resolve) => { held.fail = () => resolve(json({ detail: 'peer unreachable' }, 502)) })
+    }
+    return held
+}
+
+async function removeBuildBox(user: User) {
+    await user.click(screen.getByRole('button', { name: 'Remove link Build box' }))
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(statusText()).toBe('Removed link to Build box.'))
+}
+
+it('ignores a Projects lookup that finishes after its link was removed and linked again', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box')] })
+    const obsolete = holdFirstProjectsLookup(backend)
+    render(card())
+    await user.click(await screen.findByRole('button', { name: 'Projects on Build box' }))
+    await removeBuildBox(user)
+
+    await user.type(screen.getByLabelText('Remote origin'), 'https://env-build.example:8000')
+    await user.type(screen.getByLabelText('Remote environment ID'), 'env-build')
+    await user.type(screen.getByLabelText('Pairing code'), 'code-xyz')
+    await user.type(screen.getByLabelText('Link label (optional)'), 'Build box')
+    await user.click(screen.getByRole('button', { name: 'Add link' }))
+    await waitFor(() => expect(statusText()).toBe('Linked Build box.'))
+    await user.click(await screen.findByRole('button', { name: 'Projects on Build box' }))
+    expect(await screen.findByText('/srv/current')).toBeInTheDocument()
+
+    await act(async () => obsolete.fail())
+    expect(screen.getByText('/srv/current')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(statusText()).toBe('Linked Build box.')
+})
+
+it('ignores a Projects lookup that finishes after its link was removed', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box')] })
+    const obsolete = holdFirstProjectsLookup(backend)
+    render(card())
+    await user.click(await screen.findByRole('button', { name: 'Projects on Build box' }))
+    await removeBuildBox(user)
+
+    await act(async () => obsolete.fail())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(statusText()).toBe('Removed link to Build box.')
+})
+
 it('clears an earlier success status when a later refresh fails', async () => {
     const user = userEvent.setup()
     const backend = stubBackend()

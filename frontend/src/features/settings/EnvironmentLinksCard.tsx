@@ -57,6 +57,8 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const [busy, setBusy] = useState(false)
     const [projectsByEnv, setProjectsByEnv] = useState<Record<string, ProjectLookup>>({})
     const refreshSeqRef = useRef(0)
+    // The Projects lookup in flight per environment; removing or replacing its link drops it so its answer is ignored.
+    const lookupsRef = useRef(new Map<string, object>())
     const { confirm } = useDialogController()
 
     const showError = (message: string) => {
@@ -128,11 +130,14 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         else setPairingCode(current)
     }
 
-    const forgetProjects = (environmentId: string) => setProjectsByEnv((prev) => {
-        const next = { ...prev }
-        delete next[environmentId]
-        return next
-    })
+    const forgetProjects = (environmentId: string) => {
+        lookupsRef.current.delete(environmentId)
+        setProjectsByEnv((prev) => {
+            const next = { ...prev }
+            delete next[environmentId]
+            return next
+        })
+    }
 
     // The shared dialog has no trigger of its own to refocus on close, so a dismissed one hands focus back here.
     const confirmFrom = async (trigger: HTMLElement, options: Parameters<typeof confirm>[0]) => {
@@ -207,8 +212,10 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             const created = await addEnvironmentLink({ origin, expected_id, code, label })
             form.reset()
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
-            await settleMutation(`Linked ${created.label || created.environment_id}.`, () => setLinks((prev) =>
-                [...prev.filter((row) => row.environment_id !== created.environment_id), created]))
+            await settleMutation(`Linked ${created.label || created.environment_id}.`, () => {
+                forgetProjects(created.environment_id)
+                setLinks((prev) => [...prev.filter((row) => row.environment_id !== created.environment_id), created])
+            })
         } catch (err) {
             showError(errorText(err, 'Could not add environment link.'))
         } finally {
@@ -249,11 +256,15 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             forgetProjects(link.environment_id)
             return
         }
+        const lookup = {}
+        lookupsRef.current.set(link.environment_id, lookup)
         setProjectsByEnv((prev) => ({ ...prev, [link.environment_id]: { loading: true } }))
         try {
             const projects = await fetchLinkProjects(link.environment_id)
+            if (lookupsRef.current.get(link.environment_id) !== lookup) return
             setProjectsByEnv((prev) => ({ ...prev, [link.environment_id]: { projects } }))
         } catch (err) {
+            if (lookupsRef.current.get(link.environment_id) !== lookup) return
             setStatus('')
             setProjectsByEnv((prev) => ({
                 ...prev,
