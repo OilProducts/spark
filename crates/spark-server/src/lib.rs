@@ -673,18 +673,6 @@ fn find_on_path(name: &str, env: &impl Environment) -> Option<PathBuf> {
         if is_executable_file(&candidate) {
             return Some(candidate);
         }
-        #[cfg(windows)]
-        {
-            let pathext = env
-                .get_var("PATHEXT")
-                .unwrap_or_else(|| ".EXE;.BAT;.CMD".to_string());
-            for ext in pathext.split(';').filter(|ext| !ext.is_empty()) {
-                let candidate = dir.join(format!("{name}{ext}"));
-                if is_executable_file(&candidate) {
-                    return Some(candidate);
-                }
-            }
-        }
     }
     None
 }
@@ -1112,5 +1100,30 @@ fn write_process_output(output: &CommandOutput) {
     }
     if !output.stderr.is_empty() {
         let _ = std::io::stderr().write_all(output.stderr.as_bytes());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[test]
+    fn find_on_path_returns_only_executable_files_on_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let (empty, bin) = (temp.path().join("empty"), temp.path().join("bin"));
+        fs::create_dir_all(&empty).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        let tool = bin.join("systemctl");
+        fs::write(&tool, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(bin.join("notes"), "").unwrap();
+        let path = std::env::join_paths([&empty, &bin]).unwrap();
+        let env = [("PATH".to_string(), path.into_string().unwrap())];
+
+        assert_eq!(find_on_path("systemctl", &env), Some(tool));
+        assert_eq!(find_on_path("notes", &env), None, "no execute bit");
+        assert_eq!(find_on_path("missing", &env), None);
     }
 }

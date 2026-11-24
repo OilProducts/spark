@@ -19,6 +19,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use spark_common::paths::{Environment, ProcessEnvironment};
 use spark_common::settings::SparkSettings;
 use spark_storage::environment::{EnvironmentRepository, PROTOCOL_VERSION, UI_API_VERSION};
 
@@ -114,23 +115,42 @@ pub(crate) async fn require_trust(
 }
 
 /// The machine's name, read once.
-// ponytail: checks COMPUTERNAME (Windows), then `hostname`; falls back to "Spark".
+// ponytail: COMPUTERNAME (Windows only), then `hostname`; falls back to "Spark".
 fn display_name() -> &'static str {
     static NAME: OnceLock<String> = OnceLock::new();
     NAME.get_or_init(|| {
-        std::env::var("COMPUTERNAME")
-            .ok()
-            .map(|name| name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .or_else(|| {
-                std::process::Command::new("hostname")
-                    .output()
-                    .ok()
-                    .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-                    .filter(|name| !name.is_empty())
-            })
-            .unwrap_or_else(|| "Spark".to_string())
+        resolve_display_name(computer_name(&ProcessEnvironment), || {
+            std::process::Command::new("hostname")
+                .output()
+                .ok()
+                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        })
     })
+}
+
+/// `COMPUTERNAME` names the machine only on Windows; elsewhere a stray value
+/// must never override `hostname`.
+#[cfg(windows)]
+fn computer_name(env: &impl Environment) -> Option<String> {
+    env.get_var("COMPUTERNAME")
+}
+
+#[cfg(not(windows))]
+fn computer_name(_env: &impl Environment) -> Option<String> {
+    None
+}
+
+/// The first trimmed, nonempty name of `computer_name`, then `hostname`;
+/// otherwise "Spark".
+fn resolve_display_name(
+    computer_name: Option<String>,
+    hostname: impl FnOnce() -> Option<String>,
+) -> String {
+    let nonempty = |name: String| Some(name.trim().to_string()).filter(|name| !name.is_empty());
+    computer_name
+        .and_then(nonempty)
+        .or_else(|| hostname().and_then(nonempty))
+        .unwrap_or_else(|| "Spark".to_string())
 }
 
 /// `GET /environment`: public, readable from any page, so a client can check
@@ -281,4 +301,34 @@ async fn revoke_token(
         .into());
     }
     Ok(Json(json!({"token_id": token_id, "revoked": true})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_name_prefers_a_nonempty_computer_name_then_hostname_then_spark() {
+        let host = || Some(" host-box\n".to_string());
+        assert_eq!(
+            resolve_display_name(Some(" win-box ".into()), host),
+            "win-box"
+        );
+        assert_eq!(resolve_display_name(Some(" \t".into()), host), "host-box");
+        assert_eq!(resolve_display_name(None, host), "host-box");
+        assert_eq!(resolve_display_name(Some(String::new()), || None), "Spark");
+        assert_eq!(resolve_display_name(None, || Some("\n".into())), "Spark");
+    }
+
+    #[test]
+    fn only_windows_reads_computer_name() {
+        let env = [("COMPUTERNAME".to_string(), "other-box".to_string())];
+        let name = resolve_display_name(computer_name(&env), || Some("host-box".into()));
+        let expected = if cfg!(windows) {
+            "other-box"
+        } else {
+            "host-box"
+        };
+        assert_eq!(name, expected);
+    }
 }
