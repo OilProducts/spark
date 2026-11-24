@@ -1,10 +1,10 @@
 import type { LlmProfileMetadata } from '@/lib/llmSuggestions'
-import { ATTRACTOR_API_BASE } from './attractorApi'
+import { attractorUrl } from './attractorApi'
 
 export async function fetchLlmProfiles(): Promise<LlmProfileMetadata[]> {
     let response: Response
     try {
-        response = await fetch(`${ATTRACTOR_API_BASE}/llm-profiles`)
+        response = await fetch(attractorUrl('/api/llm-profiles'))
     } catch {
         return []
     }

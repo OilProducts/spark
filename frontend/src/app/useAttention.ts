@@ -69,6 +69,14 @@ let attentionFailed = false
 const attentionListeners = new Set<() => void>()
 let attentionRequest = 0
 
+/** Clears cached attention and cancels in-flight polls when switching environments. */
+export function resetAttentionState() {
+    attentionRequest += 1
+    attentionItems = null
+    attentionFailed = false
+    attentionListeners.forEach((listener) => listener())
+}
+
 /** Fetches pending attention now; anything that answers or resolves an item calls this so the Inbox clears at once. */
 export function refreshAttention() {
     const request = ++attentionRequest

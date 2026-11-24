@@ -1,15 +1,16 @@
+import { activeApiPrefix } from '../activeEnvironment'
 import { fetchJsonWithValidation } from './shared'
 
 export const WORKSPACE_PREFIX = '/workspace'
 export const WORKSPACE_API_PREFIX = `${WORKSPACE_PREFIX}/api`
 
 export function workspaceUrl(path: string): string {
-    return `${WORKSPACE_API_PREFIX}${path}`
+    return `${activeApiPrefix()}${WORKSPACE_API_PREFIX}${path}`
 }
 
 export function workspaceLiveEventsUrl(params: URLSearchParams): string {
     const query = params.toString()
-    return `${WORKSPACE_API_PREFIX}/live/events${query ? `?${query}` : ''}`
+    return `${activeApiPrefix()}${WORKSPACE_API_PREFIX}/live/events${query ? `?${query}` : ''}`
 }
 
 export async function fetchWorkspaceJsonValidated<T>(

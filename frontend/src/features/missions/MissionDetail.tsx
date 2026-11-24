@@ -1,4 +1,5 @@
 import { useStore } from '@/store'
+import { workspaceUrl } from '@/lib/api/apiClient'
 import { fetchTriggerListValidated, triggerKey, type TriggerResponse } from '@/lib/api/triggersApi'
 import { useInheritedModelSettings } from '@/components/model-chooser/useInheritedModelSettings'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
@@ -89,7 +90,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
         setLoadedPlaybook(null)
         if (!draftPlaybook) return
         let disposed = false
-        void fetch(`/workspace/api/playbooks/${encodeURIComponent(draftPlaybook)}?project_path=${encodeURIComponent(project)}`).then(response => response.ok ? response.json() : null).then(value => { if (!disposed) setLoadedPlaybook(value) }).catch(() => {})
+        void fetch(workspaceUrl(`/playbooks/${encodeURIComponent(draftPlaybook)}?project_path=${encodeURIComponent(project)}`)).then(response => response.ok ? response.json() : null).then(value => { if (!disposed) setLoadedPlaybook(value) }).catch(() => {})
         return () => { disposed = true }
     }, [draftPlaybook, project])
     const playbook = mission.playbook ?? (loadedPlaybook?.name === draftPlaybook ? loadedPlaybook : null)

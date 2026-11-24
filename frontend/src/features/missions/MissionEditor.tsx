@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { workspaceUrl } from '@/lib/api/apiClient'
 import type { Mission, Fields, Playbook } from './MissionsPanel'
 
 type Props = {
@@ -35,7 +36,7 @@ export function MissionEditor({ editing, draft, latest, busy, conflict, error, u
     useEffect(() => {
         if (started) return
         let disposed = false
-        void fetch(`/workspace/api/playbooks?project_path=${encodeURIComponent(project)}`).then(response => response.ok ? response.json() : []).then(value => { if (!disposed && Array.isArray(value)) setPlaybooks(value) }).catch(() => {})
+        void fetch(workspaceUrl(`/playbooks?project_path=${encodeURIComponent(project)}`)).then(response => response.ok ? response.json() : []).then(value => { if (!disposed && Array.isArray(value)) setPlaybooks(value) }).catch(() => {})
         return () => { disposed = true }
     }, [started, project])
     return <section aria-label="Mission details" className="flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={e => {

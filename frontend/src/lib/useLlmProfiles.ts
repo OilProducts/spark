@@ -11,6 +11,12 @@ type Store = {
 
 let shared: Store | null = null
 
+export function resetLlmProfilesCache() {
+    if (!shared) return
+    window.removeEventListener('spark:settings-live-event', shared.refresh)
+    shared = null
+}
+
 // Shared loader for the LLM profile catalog used by pickers and composer
 // commands so every surface observes the same snapshot while requests load.
 export function useLlmProfiles(): LlmProfileMetadata[] {

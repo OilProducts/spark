@@ -6,6 +6,12 @@ import { Input } from '@/components/ui/input'
 import { InlineError } from '@/components/app/inline-error'
 import { Well } from '@/components/app/well'
 import {
+    notifyEnvironmentLinksChanged,
+    selectEnvironment,
+    useActiveEnvironment,
+} from '@/lib/activeEnvironment'
+import { useStore } from '@/store'
+import {
     addEnvironmentLink,
     createPairingCode,
     fetchEnvironmentDescriptor,
@@ -23,6 +29,8 @@ import {
 type ProjectLookup = { loading?: boolean; projects?: string[]; error?: string }
 
 export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
+    const { activeEnvironmentId } = useActiveEnvironment()
+    const isLocalEnvironment = activeEnvironmentId === null
     const [descriptor, setDescriptor] = useState<EnvironmentDescriptor | null>(null)
     const [tokens, setTokens] = useState<PeerToken[]>([])
     const [links, setLinks] = useState<EnvironmentLink[]>([])
@@ -116,6 +124,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             const created = await addEnvironmentLink({ origin, expected_id, code, label })
             form.reset()
             setStatus(`Linked ${created.label || created.environment_id}.`)
+            if (isLocalEnvironment) notifyEnvironmentLinksChanged()
             await refresh()
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Could not add environment link.')
@@ -135,6 +144,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                 return next
             })
             setStatus(`Removed link to ${link.label || link.environment_id}.`)
+            if (isLocalEnvironment) notifyEnvironmentLinksChanged()
             await refresh()
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Could not remove link.')
@@ -184,7 +194,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                     <Well className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
                         <div className="min-w-0 space-y-0.5">
                             <div className="font-medium text-foreground">
-                                {descriptor.display_name} <span className="text-xs font-normal text-muted-foreground">· protocol v{descriptor.protocol_version}</span>
+                                {descriptor.display_name} <span className="text-xs font-normal text-muted-foreground">· protocol v{descriptor.protocol_version}{descriptor.ui_api_version > 0 ? ` · UI API v${descriptor.ui_api_version}` : ''}</span>
                             </div>
                             <div className="break-all font-mono text-xs text-muted-foreground">{descriptor.environment_id}</div>
                         </div>
@@ -268,6 +278,19 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                                                     <div className="break-all text-xs text-muted-foreground">{link.origin} · {link.environment_id}</div>
                                                 </div>
                                                 <div className="flex flex-wrap gap-2">
+                                                    {isLocalEnvironment ? (
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline"
+                                                            aria-label={`Switch to ${name}`}
+                                                            disabled={busy}
+                                                            onClick={() => void selectEnvironment(link.environment_id, {
+                                                                onActivated: () => useStore.getState().setViewMode('overview'),
+                                                            })}
+                                                        >
+                                                            Switch
+                                                        </Button>
+                                                    ) : null}
                                                     <Button size="sm" variant="outline" aria-label={`Projects on ${name}`} disabled={lookup?.loading || busy} onClick={() => void handleInspectProjects(link)}>
                                                         {lookup?.projects ? 'Hide projects' : lookup?.loading ? 'Loading…' : 'Projects'}
                                                     </Button>

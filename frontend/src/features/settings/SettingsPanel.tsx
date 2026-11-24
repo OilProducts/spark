@@ -25,6 +25,7 @@ import { SaveStatus } from './SaveStatus'
 import { ViewLayout } from '@/components/app/view-layout'
 import { Well } from '@/components/app/well'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
+import { useActiveEnvironment } from '@/lib/activeEnvironment'
 
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 
@@ -66,6 +67,8 @@ export function SettingsPanel() {
     const models = useModelSettingsEditor()
     const { confirm } = useDialogController()
     const llmProfiles = useLlmProfiles()
+    const { activeEnvironmentId } = useActiveEnvironment()
+    const isRemoteEnvironment = activeEnvironmentId !== null
     const [desktopSettings, setDesktopSettings] = useState<DesktopServerSettings | null>(null)
     const [desktopSettingsError, setDesktopSettingsError] = useState<string | null>(null)
     const [isSavingDesktopSettings, setIsSavingDesktopSettings] = useState(false)
@@ -91,7 +94,7 @@ export function SettingsPanel() {
 
     useEffect(() => {
         const invoke = getTauriInvoke()
-        if (!invoke) return
+        if (!invoke || isRemoteEnvironment) return
         let cancelled = false
         const refresh = () => {
             if (isSavingDesktopSettings) return
@@ -117,7 +120,7 @@ export function SettingsPanel() {
             window.removeEventListener('spark:settings-live-event', refresh)
             window.removeEventListener('focus', refresh)
         }
-    }, [desktopSettings?.revision, desktopDirty, isSavingDesktopSettings, desktopRetry])
+    }, [desktopSettings?.revision, desktopDirty, isSavingDesktopSettings, desktopRetry, isRemoteEnvironment])
 
     const updateRemoteAccess = async (enabled: boolean) => {
         const invoke = getTauriInvoke()
@@ -208,7 +211,7 @@ export function SettingsPanel() {
                 <AgentSettingsEditor />
                 </TabsContent>
                 <TabsContent value="system" forceMount hidden={category !== 'system'} className="space-y-6">
-                {getTauriInvoke() ? (
+                {getTauriInvoke() && !isRemoteEnvironment ? (
                     <Card className="gap-4 py-4">
                         <CardHeader className="gap-1 px-4"><h2 className="text-base font-semibold">Desktop server</h2></CardHeader>
                         <CardContent className="space-y-4 px-4 pt-0">

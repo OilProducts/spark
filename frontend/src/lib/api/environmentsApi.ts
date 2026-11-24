@@ -1,5 +1,14 @@
 import { fetchWorkspaceJsonValidated } from './apiClient'
 import {
+    activeApiPrefix,
+    environmentProxyPrefix,
+    parseEnvironmentDescriptor,
+    parseEnvironmentLink,
+    parseEnvironmentLinks,
+    type EnvironmentDescriptor,
+    type EnvironmentLink,
+} from '../activeEnvironment'
+import {
     asOptionalNullableString,
     asOptionalString,
     asUnknownRecord,
@@ -8,13 +17,7 @@ import {
     fetchJsonWithValidation,
 } from './shared'
 
-export type EnvironmentDescriptor = {
-    environment_id: string
-    display_name: string
-    protocol_version: number
-    ui_api_version: number
-    spark_version: string
-}
+export { environmentProxyPrefix, type EnvironmentDescriptor, type EnvironmentLink }
 
 export type PairingCodeReceipt = {
     environment_id: string
@@ -27,13 +30,6 @@ export type PeerToken = {
     label: string
     created_at: string
     revoked_at: string | null
-}
-
-export type EnvironmentLink = {
-    environment_id: string
-    origin: string
-    label: string
-    created_at: string
 }
 
 export type DelegationQuestionOption = {
@@ -87,17 +83,6 @@ export type DelegationAnswerBody = {
     form?: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
 }
 
-function parseDescriptor(payload: unknown, endpoint: string): EnvironmentDescriptor {
-    const record = expectObjectRecord(payload, endpoint)
-    return {
-        environment_id: expectString(record.environment_id, endpoint, 'environment_id'),
-        display_name: expectString(record.display_name, endpoint, 'display_name'),
-        protocol_version: typeof record.protocol_version === 'number' ? record.protocol_version : 1,
-        ui_api_version: typeof record.ui_api_version === 'number' ? record.ui_api_version : 1,
-        spark_version: asOptionalString(record.spark_version) ?? '',
-    }
-}
-
 function parsePairingCode(payload: unknown, endpoint: string): PairingCodeReceipt {
     const record = expectObjectRecord(payload, endpoint)
     return {
@@ -119,22 +104,6 @@ function parsePeerTokens(payload: unknown, endpoint: string): PeerToken[] {
             revoked_at: asOptionalNullableString(row.revoked_at) ?? null,
         }
     })
-}
-
-function parseEnvironmentLink(payload: unknown, endpoint: string): EnvironmentLink {
-    const row = expectObjectRecord(payload, endpoint)
-    return {
-        environment_id: expectString(row.environment_id, endpoint, 'environment_id'),
-        origin: expectString(row.origin, endpoint, 'origin'),
-        label: asOptionalString(row.label) ?? '',
-        created_at: asOptionalString(row.created_at) ?? '',
-    }
-}
-
-function parseEnvironmentLinks(payload: unknown, endpoint: string): EnvironmentLink[] {
-    const record = expectObjectRecord(payload, endpoint)
-    const items = Array.isArray(record.links) ? record.links : []
-    return items.map((item) => parseEnvironmentLink(item, endpoint))
 }
 
 function parseLinkProjects(payload: unknown, endpoint: string): string[] {
@@ -226,17 +195,9 @@ function parseDelegations(payload: unknown, endpoint: string): DelegationOut[] {
     return items.map((item) => parseDelegation(item, endpoint))
 }
 
-/**
- * Base URL prefix for targeting either this local environment (null/empty) or
- * a linked remote environment through the authenticated server-side proxy.
- */
-export function environmentProxyPrefix(environmentId: string | null | undefined): string {
-    return environmentId ? `/workspace/api/environments/links/${encodeURIComponent(environmentId)}/proxy` : ''
-}
-
 export function fetchEnvironmentDescriptor(environmentId?: string | null): Promise<EnvironmentDescriptor> {
-    const prefix = environmentProxyPrefix(environmentId)
-    return fetchJsonWithValidation(`${prefix}/environment`, undefined, `GET ${prefix}/environment`, parseDescriptor)
+    const prefix = environmentId === undefined ? activeApiPrefix() : environmentProxyPrefix(environmentId)
+    return fetchJsonWithValidation(`${prefix}/environment`, undefined, `GET ${prefix}/environment`, parseEnvironmentDescriptor)
 }
 
 export function createPairingCode(label: string): Promise<PairingCodeReceipt> {

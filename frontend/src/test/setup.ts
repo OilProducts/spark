@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, vi } from 'vitest'
+import { resetActiveEnvironmentForTests } from '@/lib/activeEnvironment'
 
 type ResizeObserverCallback = ConstructorParameters<typeof ResizeObserver>[0]
 
@@ -130,6 +131,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  resetActiveEnvironmentForTests()
   ResizeObserverMock.reset()
   if (typeof localStorage?.clear === 'function') {
     localStorage.clear()

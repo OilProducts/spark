@@ -1,9 +1,11 @@
 import { ActivityBar } from "@/app/ActivityBar"
 import { AppNotices, AppSessionControllers } from "@/app/AppSessionControllers"
+import { EnvironmentBootstrap, EnvironmentSwitcherBar, RemoteEnvironmentGate } from "@/app/EnvironmentSwitcher"
 import { EditorWorkspace } from "@/features/editor"
 import { ProjectsPanel } from "@/features/projects"
 import { RunStream, RunsPanel } from "@/features/runs"
 import { TriggersPanel } from "@/features/triggers"
+import { useActiveEnvironment } from "@/lib/activeEnvironment"
 import { useStore } from "@/store"
 import { useNarrowViewport } from "@/lib/useNarrowViewport"
 import { DialogProvider } from "@/components/app/dialog-controller"
@@ -16,7 +18,8 @@ import { lazy, Suspense } from "react"
 // Screens that mount only while open load on first visit, keeping them out of the startup bundle.
 const SettingsPanel = lazy(() => import("@/features/settings/SettingsPanel").then((module) => ({ default: module.SettingsPanel })))
 const OverviewPanel = lazy(() => import("@/features/overview/OverviewPanel").then((module) => ({ default: module.OverviewPanel })))
-function App() {
+
+function WorkspaceShell() {
   const viewMode = useStore((state) => state.viewMode)
   const isNarrowViewport = useNarrowViewport()
   const isHomeMode = viewMode === 'home' || viewMode === 'projects'
@@ -26,14 +29,14 @@ function App() {
   const isSettingsMode = viewMode === 'settings'
 
   return (
-    <DialogProvider>
+    <>
       <AppSessionControllers />
       <RunStream />
       <RunFlowDialog />
       <div
         data-testid="app-shell"
         data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
-        className={`h-screen flex antialiased bg-ground text-foreground ${isNarrowViewport ? 'flex-col' : 'flex-row'}`}
+        className={`flex-1 min-h-0 flex antialiased bg-ground text-foreground ${isNarrowViewport ? 'flex-col' : 'flex-row'}`}
       >
         {/* A button, not a #link: the hash is the app's place. */}
         <button
@@ -93,6 +96,25 @@ function App() {
             ) : null}
           </div>
         </main>
+      </div>
+    </>
+  )
+}
+
+function App() {
+  const { activeEnvironmentId, selectedEnvironmentId, status } = useActiveEnvironment()
+  const workspaceReady = selectedEnvironmentId === null || (status === 'ready' && activeEnvironmentId === selectedEnvironmentId)
+
+  return (
+    <DialogProvider>
+      <EnvironmentBootstrap />
+      <div className="h-screen flex flex-col antialiased bg-ground text-foreground">
+        <EnvironmentSwitcherBar />
+        {workspaceReady ? (
+          <WorkspaceShell key={activeEnvironmentId ?? 'local'} />
+        ) : (
+          <RemoteEnvironmentGate />
+        )}
       </div>
     </DialogProvider>
   )

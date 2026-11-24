@@ -1,3 +1,4 @@
+import { workspaceUrl } from '@/lib/api/apiClient'
 import { fetchSpark } from '@/lib/fetchSpark'
 export type DefinitionLayer = 'bundled' | 'project' | 'project_copy'
 export type DefinitionKind = 'flow' | 'role'
@@ -38,7 +39,7 @@ const TERMINAL = new Set(['completed', 'failed', 'validation_error', 'canceled']
 
 async function workspaceRequest<T>(route: string, project: string, params: Record<string, string> = {}, init?: RequestInit): Promise<T> {
     const query = new URLSearchParams({ project_path: project, ...params })
-    const response = await fetchSpark(`/workspace/api${route}?${query}`, init)
+    const response = await fetchSpark(workspaceUrl(`${route}?${query}`), init)
     const value = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(value.detail || `Request failed (${response.status})`)
     return value as T

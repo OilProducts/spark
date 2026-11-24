@@ -19,12 +19,13 @@ import {
     parseDiagnosticList,
 } from './shared'
 import { notifyAttentionChanged } from './attentionApi'
+import { activeApiPrefix } from '../activeEnvironment'
 
 export const ATTRACTOR_BASE = '/attractor'
 export const ATTRACTOR_API_BASE = `${ATTRACTOR_BASE}/api`
 
-function attractorUrl(path: string): string {
-    return `${ATTRACTOR_BASE}${path}`
+export function attractorUrl(path: string): string {
+    return `${activeApiPrefix()}${ATTRACTOR_BASE}${path}`
 }
 
 function projectQuery(projectPath: string | null): string {

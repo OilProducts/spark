@@ -6,6 +6,14 @@ type Discovery = { projectPath: string | null; payload?: ProjectChatModelsRespon
 type Entry = { value: Discovery | null; listeners: Set<() => void>; refresh: (event?: Event) => void; load: (quiet: boolean) => void }
 const projects = new Map<string, Entry>()
 
+export function resetModelOptionsCache() {
+    for (const entry of projects.values()) {
+        window.removeEventListener('spark:settings-live-event', entry.refresh)
+        window.removeEventListener('spark:harness-checked', entry.refresh)
+    }
+    projects.clear()
+}
+
 /** Refetches without clearing what is shown: a harness may offer values its sessions acknowledged since. */
 export function refreshModelOptions(projectPath: string | null) {
     projects.get(projectPath ?? '')?.load(true)
