@@ -891,8 +891,9 @@ async fn linked_environment_proxy_never_sends_a_literal_fragment_over_the_wire()
     let (peer, _) = fake_peer(&cfg).await;
     let address = origin.trim_start_matches("http://");
 
-    // The HTTP parser drops `#…` from the request line before routing; the
-    // peer gets the path without it, and encoded `%23` and `%3F` unchanged.
+    // The HTTP parser drops `#…` from the request line before routing (see
+    // `allowed_proxy_path`), so the proxy cannot see it to refuse it. The
+    // fragment never reaches the peer; encoded `%23` and `%3F` pass unchanged.
     for target in [
         "workspace/api/projects#../../environment",
         "attractor/pipelines/run-1/artifacts/notes%23draft%3F.txt#x",

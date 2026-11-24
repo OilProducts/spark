@@ -246,11 +246,15 @@ fn percent_decoded(segment: &str) -> Option<Vec<u8>> {
 /// and each decoded segment are checked, so no encoding smuggles in a
 /// traversal, backslash or control byte.
 ///
-/// `http::Uri` (http/src/uri/path.rs, `PathAndQuery::from_shared`) drops a
-/// literal `#fragment` while hyper parses the request line, before any
-/// middleware runs. So no path seen here holds a raw `#` or `?`, and the URL
-/// built from it carries no fragment to the peer; this check and the URL
-/// check below keep that true for whatever the parser hands over.
+/// A literal `#fragment` on the wire never reaches Spark code: hyper builds
+/// the request's `Uri` from the raw request-line bytes (hyper 1.11
+/// src/proto/h1/role.rs:222-224), and `PathAndQuery::from_shared` truncates
+/// at `#` (http 1.5 src/uri/path.rs:28-30). So no path seen here holds a raw
+/// `#` or `?`, the URL built from it carries no fragment to the peer, and
+/// this check and the URL check below keep that true for whatever the parser
+/// hands over.
+/// ponytail: the fragment is dropped, not refused; refusing it would need an
+/// HTTP/1 framing scanner on the TCP listener, ahead of hyper, for all routes.
 fn allowed_proxy_path(raw: &str) -> bool {
     let surface = raw == "environment"
         || raw == "workspace/api"
