@@ -75,8 +75,15 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const [busy, setBusy] = useState(false)
     const [projectsByEnv, setProjectsByEnv] = useState<Record<string, ProjectLookup>>({})
     const refreshSeqRef = useRef(0)
-    // Counts link listings a removal's check showed, so a refresh started before one drops only its links result.
-    const linksSeqRef = useRef(0)
+    // Link listings (a refresh's or a removal check's) and confirmed link changes take ascending tickets as they start.
+    // Links show only from a ticket above the shown one's, so a listing that started earlier and lands later drops only
+    // its links result, while a newer listing that fails leaves the shown links in place.
+    const linksTicketRef = useRef(0)
+    const linksShownRef = useRef(0)
+    // Every link version this card has listed: one listed before an add's response arrives shows the add came first.
+    // ponytail: grows with the distinct link versions listed while the card is mounted, a handful in practice. As with
+    // sameLink, a link removed and added again with the same origin and label within one second counts as listed.
+    const listedLinksRef = useRef<EnvironmentLink[]>([])
     // Counts errors shown by actions, so a refresh leaves visible any error reported after it started.
     const errorCountRef = useRef(0)
     // The Projects lookup, cached or in flight, per environment; removing or replacing its link drops it so its answer is ignored.
@@ -100,16 +107,21 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     }, [])
 
     // Shows a link listing and drops Projects results for links it no longer has as they were when looked up.
-    const showListedLinks = useCallback((listed: EnvironmentLink[]) => {
-        for (const [environmentId, ticket] of lookupsRef.current) {
-            if (!listed.some((row) => sameLink(row, ticket))) forgetProjects(environmentId)
+    const showListedLinks = useCallback((ticket: number, listed: EnvironmentLink[]) => {
+        linksShownRef.current = ticket
+        for (const row of listed) {
+            if (!listedLinksRef.current.some((seen) => sameLink(seen, row))) listedLinksRef.current.push(row)
+        }
+        for (const [environmentId, lookup] of lookupsRef.current) {
+            if (!listed.some((row) => sameLink(row, lookup))) forgetProjects(environmentId)
         }
         setLinks(listed)
+        setLinksLoaded(true)
     }, [forgetProjects])
 
     const refresh = useCallback(async () => {
         const seq = ++refreshSeqRef.current
-        const linksSeq = linksSeqRef.current
+        const linksTicket = ++linksTicketRef.current
         const errorCount = errorCountRef.current
         setPairingCode(expireReceipt)
         setLoading(true)
@@ -125,10 +137,13 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         if (tokensResult.status === 'fulfilled') setTokens(tokensResult.value)
         else errors.push(`Could not load peer tokens: ${errorText(tokensResult.reason, 'unknown error.')}`)
         setTokensLoaded(tokensResult.status === 'fulfilled')
-        if (linksSeq === linksSeqRef.current) {
-            if (linksResult.status === 'fulfilled') showListedLinks(linksResult.value)
-            else errors.push(`Could not load linked environments: ${errorText(linksResult.reason, 'unknown error.')}`)
-            setLinksLoaded(linksResult.status === 'fulfilled')
+        if (linksTicket > linksShownRef.current) {
+            if (linksResult.status === 'fulfilled') {
+                showListedLinks(linksTicket, linksResult.value)
+            } else {
+                errors.push(`Could not load linked environments: ${errorText(linksResult.reason, 'unknown error.')}`)
+                setLinksLoaded(false)
+            }
         }
         // An error an action reported after this refresh started stays, beside any listing errors.
         const newerError = errorCountRef.current !== errorCount
@@ -141,7 +156,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         setLoading(false)
     }, [showListedLinks])
 
-    // Shows a confirmed mutation at once, even if the follow-up listing fails, and retires refreshes started before it.
+    // Shows a confirmed mutation at once, even if the follow-up listing fails, and retires listings started before it.
     // A card that has not listed the revoked token yet adds it; a removal keeps a replacement listed for the same ID.
     const applyMutation = useCallback((mutation: Mutation) => {
         refreshSeqRef.current += 1
@@ -150,17 +165,18 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             setTokens((prev) => prev.some((row) => row.token_id === id)
                 ? prev.map((row) => row.token_id === id ? { ...row, revoked: true } : row)
                 : [...prev, { ...mutation.revoked, revoked: true }])
-        } else if ('linked' in mutation) {
-            // A row for the same ID saved in a later second is a newer relink a listing here already shows; it stays.
-            // created_at is the server's fixed-width UTC time, which compares as text.
-            // ponytail: created_at has one-second resolution, so a relink saved in the same second is replaced.
+            return
+        }
+        // A card that already listed the created link learned of the add before its response, so what it shows now,
+        // the link or a later change to it, is newer. Otherwise the add replaces whatever row the card shows for that ID:
+        // links carry no write order (created_at is wall-clock time), so a row listed while the add was pending counts as
+        // older than the add.
+        if ('linked' in mutation && listedLinksRef.current.some((seen) => sameLink(seen, mutation.linked))) return
+        linksShownRef.current = ++linksTicketRef.current
+        if ('linked' in mutation) {
             const created = mutation.linked
-            const newer = (row: EnvironmentLink) => row.environment_id === created.environment_id && row.created_at > created.created_at
-            const lookup = lookupsRef.current.get(created.environment_id)
-            if (!lookup || !newer(lookup)) forgetProjects(created.environment_id)
-            setLinks((prev) => prev.some(newer)
-                ? prev
-                : [...prev.filter((row) => row.environment_id !== created.environment_id), created])
+            forgetProjects(created.environment_id)
+            setLinks((prev) => [...prev.filter((row) => row.environment_id !== created.environment_id), created])
         } else {
             const removed = mutation.unlinked
             const lookup = lookupsRef.current.get(removed.environment_id)
@@ -349,7 +365,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             // delete the link the user confirmed if the server still has it as it was.
             // ponytail: a relink landing between this check and the DELETE, or one matching the row's origin, label and
             // second, still loses; closing that needs a conditional DELETE on the server, which this change leaves out of scope.
-            const refreshesBefore = refreshSeqRef.current
+            const linksTicket = ++linksTicketRef.current
             const latest = await fetchEnvironmentLinks()
             // Requests go to whichever environment is active when sent, and the user can switch while the check runs.
             if (getActiveEnvironmentId() !== activeEnvironmentId) {
@@ -358,13 +374,9 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             }
             const current = latest.find((row) => row.environment_id === link.environment_id)
             if (!current || !sameLink(current, link)) {
-                // A refresh started during the check has a newer listing. Otherwise show this one in place of the links an
-                // older refresh still in flight returns; that refresh still shows its other results and ends loading.
-                if (refreshSeqRef.current === refreshesBefore) {
-                    linksSeqRef.current += 1
-                    showListedLinks(latest)
-                    setLinksLoaded(true)
-                }
+                // Shown unless newer link state already is; an older refresh still in flight then drops only its links
+                // result, and a newer one replaces these links only if it lists them.
+                if (linksTicket > linksShownRef.current) showListedLinks(linksTicket, latest)
                 throw new Error(`The link to ${name} changed since you chose to remove it, so nothing was removed. Review the current link before removing it again.`)
             }
             await removeEnvironmentLink(link.environment_id)

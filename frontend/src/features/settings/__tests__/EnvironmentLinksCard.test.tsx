@@ -282,35 +282,62 @@ it('keeps a replacement a reopened card listed when the removal of the old link 
     expect(screen.getByRole('button', { name: 'Remove link Build box' })).toBeInTheDocument()
 })
 
-it.each([
-    ['keeps', '2026-11-24T00:05:00Z', true],
-    ['replaces', '2026-11-22T00:00:00Z', false],
-])('%s a link a reopened card listed for an environment, saved after or before an add of it that succeeds late, beside a failed follow-up listing', async (_name, listedAt, keeps) => {
-    const user = userEvent.setup()
-    const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')] })
+/** Adds env-gpu as GPU through the form, holding the request until the returned function answers it as saved. */
+async function addGpuHeld(user: User, backend: ReturnType<typeof stubBackend>) {
     let finishAdd = () => {}
     backend.replies[`POST ${LINKS}`] = () => new Promise<Response>((resolve) => { finishAdd = () => resolve(json(link('env-gpu', 'GPU'))) })
-    const settings = render(card())
-    await user.type(await screen.findByLabelText('Remote origin'), 'https://env-gpu.example:8000')
+    await user.type(screen.getByLabelText('Remote origin'), 'https://env-gpu.example:8000')
     await user.type(screen.getByLabelText('Remote environment ID'), 'env-gpu')
     await user.type(screen.getByLabelText('Pairing code'), 'code-xyz')
     await user.type(screen.getByLabelText('Link label (optional)'), 'GPU')
     await user.click(screen.getByRole('button', { name: 'Add link' }))
     await waitFor(() => expect(backend.mutations).toEqual([`POST ${LINKS}`]))
+    return () => finishAdd()
+}
 
-    // The reopened card lists env-gpu as another tab saved it, after this add was saved or before it, while the add's
-    // response is still on its way.
+it('shows a late add in a reopened card in place of the link it replaced, even one stamped later, beside a failed follow-up listing', async () => {
+    const user = userEvent.setup()
+    // The link the add replaces carries a later created_at, as after the server's clock was set back.
+    const replaced = { ...link('env-gpu', 'Old GPU'), origin: 'https://old-gpu.example:8000', created_at: '2026-11-25T00:00:00Z' }
+    const backend = stubBackend({ links: [replaced] })
+    const settings = render(card())
+    await screen.findByRole('button', { name: 'Remove link Old GPU' })
+    const finishAdd = await addGpuHeld(user, backend)
+
+    // The reopened card lists the old link before the add is saved.
     settings.unmount()
-    backend.links = [{ ...link('env-gpu', 'Listed GPU'), origin: 'https://other-gpu.example:8000', created_at: listedAt }]
     render(card())
-    expect(await screen.findByRole('button', { name: 'Remove link Listed GPU' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Remove link Old GPU' })).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
 
     backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
     await act(async () => finishAdd())
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
-    expect(screen.queryByRole('button', { name: 'Remove link Listed GPU' }) !== null).toBe(keeps)
-    expect(screen.queryByRole('button', { name: 'Remove link GPU' }) !== null).toBe(!keeps)
+    expect(screen.getByRole('button', { name: 'Remove link GPU' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove link Old GPU' })).not.toBeInTheDocument()
+})
+
+it('keeps a link a reopened card listed and then removed absent when its add succeeds late, beside a failed follow-up listing', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend()
+    const settings = render(card())
+    await screen.findByText('No linked environments configured.')
+    const finishAdd = await addGpuHeld(user, backend)
+
+    // The server saves GPU, and the reopened card lists it and removes it while the add's response is on its way.
+    settings.unmount()
+    backend.links = [link('env-gpu', 'GPU')]
+    render(card())
+    await user.click(await screen.findByRole('button', { name: 'Remove link GPU' }))
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(statusText()).toBe('Removed link to GPU.'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    expect(backend.mutations).toEqual([`POST ${LINKS}`, `DELETE ${LINKS}/env-gpu`])
+
+    backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
+    await act(async () => finishAdd())
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
+    expect(screen.queryByRole('button', { name: 'Remove link GPU' })).not.toBeInTheDocument()
 })
 
 it('shows a failure that lands while Settings is closed in the next card to open', async () => {
@@ -769,6 +796,58 @@ it('keeps the rows of a listing that finished during a removal check that then f
     expect(await screen.findByRole('alert')).toHaveTextContent('The link to Build box changed since you chose to remove it')
     expect(screen.getByRole('button', { name: 'Remove link GPU' })).toBeInTheDocument()
     expect(screen.getByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+    expect(backend.mutations).toEqual([])
+})
+
+it.each([
+    ['fails to list links', 'before', true, false],
+    ['fails to list links', 'after', false, false],
+    ['lists newer links', 'before', true, true],
+    ['lists newer links', 'after', false, true],
+])('shows the replacement a removal check finds unless the refresh from returning to System %s, finishing %s the check', async (_outcome, _order, refreshFirst, lists) => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')], links: [link('env-build', 'Build box')] })
+    const view = render(card())
+    await user.click(await screen.findByRole('button', { name: 'Remove link Build box' }))
+
+    // Another tab relinks env-build before this one confirms. The removal's check finds the replacement; the refresh from
+    // returning to System loads a renamed descriptor and a revoked token, and either fails to list links or lists GPU,
+    // linked meanwhile from another tab, beside the replacement. Both link listings are held.
+    backend.links = [relinked]
+    const held: Array<() => void> = []
+    const hold = (answer: Response) => new Promise<Response>((resolve) => held.push(() => resolve(answer)))
+    backend.replies[LINKS] = () => {
+        backend.replies[LINKS] = () => {
+            delete backend.replies[LINKS]
+            return hold(lists ? json({ links: [relinked, link('env-gpu', 'GPU')] }) : json({ detail: 'link listing failed' }, 500))
+        }
+        return hold(json({ links: backend.links }))
+    }
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(held).toHaveLength(1))
+    backend.replies['/environment'] = { ...descriptor, display_name: 'mac-studio-renamed' }
+    backend.tokens = [{ ...token('tok-ci', 'CI runner'), revoked_at: '2026-11-24T00:00:00Z' }]
+    view.rerender(card(false))
+    view.rerender(card(true))
+    await waitFor(() => expect(held).toHaveLength(2))
+
+    const [finishCheck, finishRefresh] = held
+    for (const finish of refreshFirst ? [finishRefresh, finishCheck] : [finishCheck, finishRefresh]) {
+        await act(async () => finish())
+    }
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('The link to Build box changed since you chose to remove it, so nothing was removed.')
+    if (lists) {
+        expect(alert).not.toHaveTextContent('Could not load linked environments')
+        expect(screen.getByRole('button', { name: 'Remove link GPU' })).toBeInTheDocument()
+    } else {
+        expect(alert).toHaveTextContent('Could not load linked environments: Link listing failed')
+    }
+    expect(screen.getByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+    expect(screen.queryByText(/https:\/\/env-build\.example:8000/)).not.toBeInTheDocument()
+    expect(screen.getByText('mac-studio-renamed')).toBeInTheDocument()
+    expect(screen.getByText(/· revoked 2026-11-24T00:00:00Z/)).toBeInTheDocument()
     expect(backend.mutations).toEqual([])
 })
 
