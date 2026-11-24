@@ -338,7 +338,7 @@ fn run_command() -> Command {
             value(
                 "conversation",
                 "HANDLE",
-                "Start from this conversation, in its project and under its mission or role budget",
+                "Start from this conversation, in its project and under its mission or role budget; defaults to SPARK_CONVERSATION_HANDLE when --project is omitted",
             ),
             project("Start in this project, with no conversation"),
             value("flow", "NAME", "Flow to run, from spark flow list").required(true),
@@ -356,13 +356,7 @@ fn run_command() -> Command {
             "execution-profile",
             "ID",
             "Execution profile to run on",
-        ))
-        .group(
-            ArgGroup::new("origin")
-                .args(["conversation", "project"])
-                .required(true)
-                .multiple(true),
-        ),
+        )),
         leaf("list", "List runs.").arg(project("Only this project's runs")),
         leaf("get", "Print a run's status and details.").arg(run_id()),
         leaf("cancel", "Cancel a run.").arg(run_id()),
@@ -371,7 +365,7 @@ fn run_command() -> Command {
             value(
                 "conversation",
                 "HANDLE",
-                "Conversation that asks for the retry",
+                "Conversation that asks for the retry; defaults to SPARK_CONVERSATION_HANDLE",
             ),
         ]),
         leaf("continue", "Start a new run from a node of an earlier run.")
@@ -386,7 +380,7 @@ fn run_command() -> Command {
                 value(
                     "conversation",
                     "HANDLE",
-                    "Conversation that asks for the run",
+                    "Conversation that asks for the run; defaults to SPARK_CONVERSATION_HANDLE when --project is omitted",
                 ),
                 project("Project to run in"),
             ])
@@ -432,7 +426,11 @@ fn send_command() -> Command {
         .arg_required_else_help(true)
         .args([
             value("to", "HANDLE", "Conversation to message").required(true),
-            value("from", "HANDLE", "Your own conversation's handle").required(true),
+            value(
+                "from",
+                "HANDLE",
+                "Your own conversation's handle; defaults to SPARK_CONVERSATION_HANDLE",
+            ),
             text_value("message", "TEXT", "Message text").required(true),
         ])
 }
@@ -443,26 +441,20 @@ fn mission_command() -> Command {
     domain("mission", "Manage a project's missions.").subcommands([
         leaf("list", "List a project's missions.").arg(project()),
         leaf("get", "Print a mission.").args([mission_id(), project()]),
-        leaf("create", "Create a mission.")
-            .args([
-                self::project("The mission's project"),
-                value(
-                    "conversation",
-                    "HANDLE",
-                    "Create it from this conversation, in its project",
-                ),
-                value(
-                    "json",
-                    "JSON",
-                    "Mission fields: inline JSON, a file path, or - for stdin",
-                )
-                .required(true),
-            ])
-            .group(
-                ArgGroup::new("origin")
-                    .args(["project", "conversation"])
-                    .required(true),
+        leaf("create", "Create a mission.").args([
+            self::project("The mission's project"),
+            value(
+                "conversation",
+                "HANDLE",
+                "Create it from this conversation, in its project; defaults to SPARK_CONVERSATION_HANDLE when --project is omitted",
             ),
+            value(
+                "json",
+                "JSON",
+                "Mission fields: inline JSON, a file path, or - for stdin",
+            )
+            .required(true),
+        ]),
         leaf("update", "Change a mission's fields.").args([
             mission_id(),
             project(),
@@ -989,10 +981,17 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
             },
         },
         ["run", "start"] => {
-            let conversation = value_of(m, "conversation");
-            if conversation.is_some() && project.is_some() {
+            let explicit_conversation = value_of(m, "conversation");
+            if explicit_conversation.is_some() && project.is_some() {
                 return Err(usage_error(
                     "spark run start takes --conversation or --project, not both: a run started from a conversation runs in that conversation's project, under its mission or role budget. Drop --project.",
+                ));
+            }
+            let conversation = explicit_conversation
+                .or_else(|| project.is_none().then(env_conversation_handle).flatten());
+            if conversation.is_none() && project.is_none() {
+                return Err(usage_error(
+                    "spark run start requires --conversation <HANDLE> (or SPARK_CONVERSATION_HANDLE) or --project <PATH>.",
                 ));
             }
             let mut launch = launch_body(m, stdin)?;
@@ -1020,7 +1019,7 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
             put(
                 &mut retry,
                 "conversation_handle",
-                value_of(m, "conversation"),
+                value_of(m, "conversation").or_else(env_conversation_handle),
             );
             ApiRequestPlan {
                 body: body(retry),
@@ -1043,7 +1042,8 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
             put(
                 &mut resume,
                 "conversation_handle",
-                value_of(m, "conversation"),
+                value_of(m, "conversation")
+                    .or_else(|| project.is_none().then(env_conversation_handle).flatten()),
             );
             model_fields(&mut resume, m);
             ApiRequestPlan {
@@ -1088,19 +1088,27 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
                 )
             }
         }
-        ["send"] => ApiRequestPlan {
-            body: Some(json!({
-                "conversation_handle": value_of(m, "from"),
-                "message": value_of(m, "message"),
-            })),
-            ..request(
-                Post,
-                format!(
-                    "/workspace/api/conversations/by-handle/{}/messages",
-                    encode(&value_of(m, "to").unwrap_or_default())
-                ),
-            )
-        },
+        ["send"] => {
+            let from = value_of(m, "from").or_else(env_conversation_handle);
+            let Some(from) = from else {
+                return Err(usage_error(
+                    "spark send requires --from <HANDLE> (or SPARK_CONVERSATION_HANDLE).",
+                ));
+            };
+            ApiRequestPlan {
+                body: Some(json!({
+                    "conversation_handle": from,
+                    "message": value_of(m, "message"),
+                })),
+                ..request(
+                    Post,
+                    format!(
+                        "/workspace/api/conversations/by-handle/{}/messages",
+                        encode(&value_of(m, "to").unwrap_or_default())
+                    ),
+                )
+            }
+        }
         ["mission", leaf] => {
             let mut path = "/workspace/api/missions".to_string();
             if !matches!(*leaf, "list" | "create") {
@@ -1109,8 +1117,20 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
             if matches!(*leaf, "start" | "wait" | "close") {
                 path = format!("{path}/{leaf}");
             }
+            let conversation = if *leaf == "create" {
+                let resolved = value_of(m, "conversation")
+                    .or_else(|| project.is_none().then(env_conversation_handle).flatten());
+                if resolved.is_none() && project.is_none() {
+                    return Err(usage_error(
+                        "spark mission create requires --conversation <HANDLE> (or SPARK_CONVERSATION_HANDLE) or --project <PATH>.",
+                    ));
+                }
+                resolved
+            } else {
+                value_of(m, "conversation")
+            };
             path.push_str(&query(&[
-                ("conversation_handle", value_of(m, "conversation")),
+                ("conversation_handle", conversation),
                 ("project_path", project.clone()),
             ]));
             let mission = match *leaf {
@@ -1272,10 +1292,19 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
                 ("target-project", "project_path"),
                 ("request-key", "request_key"),
                 ("run", "run_id"),
-                ("conversation", "conversation_handle"),
             ] {
                 put(&mut task, key, value_of(m, flag));
             }
+            put(
+                &mut task,
+                "conversation_handle",
+                value_of(m, "conversation").or_else(|| {
+                    value_of(m, "run")
+                        .is_none()
+                        .then(env_conversation_handle)
+                        .flatten()
+                }),
+            );
             ApiRequestPlan {
                 body: body(task),
                 ..request(Post, "/workspace/api/delegations".to_string())
@@ -1358,6 +1387,15 @@ fn launch_body(
         value_of(m, "execution-profile"),
     );
     Ok(body)
+}
+
+fn env_conversation_handle() -> Option<String> {
+    std::env::var(spark_common::project::CONVERSATION_HANDLE_ENV)
+        .ok()
+        .and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
 }
 
 fn model_fields(body: &mut Map<String, Value>, m: &ArgMatches) {

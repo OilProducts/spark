@@ -1752,16 +1752,28 @@ fn launch_command(
             .map_err(|error| format!("ACP harness {harness_id} system_instructions: {error}"))?,
         None => Default::default(),
     };
+    let mut env = crate::local_environment::inherited_environment(inheritance);
+    env.extend(harness.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    env.extend(channel_env);
+    let existing_path = env
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+        .map(|(_, v)| v.clone());
+    for (key, value) in crate::codex_app_server::spark_agent_environment(existing_path.as_deref()) {
+        if key.eq_ignore_ascii_case("PATH") {
+            env.retain(|k, _| !k.eq_ignore_ascii_case("PATH"));
+        }
+        env.insert(key, value);
+    }
+    env.extend(crate::agent::agent_turn_env(metadata));
+
     let mut command = Command::new(&harness.executable);
     command
         .args(&harness.args)
         .args(channel_args)
         .current_dir(cwd)
         .env_clear()
-        .envs(crate::local_environment::inherited_environment(inheritance))
-        .envs(&harness.env)
-        .envs(channel_env)
-        .envs(crate::agent::agent_turn_env(metadata));
+        .envs(env);
     Ok((command, instruction_file))
 }
 
@@ -2159,6 +2171,9 @@ struct Turn {
     live_messages: UnboundedReceiver<LiveMessage>,
     /// Shared flag telling `send_message` when the turn is between prompts.
     accepting_messages: Arc<AtomicBool>,
+    /// Whether instructions are pinned into each prompt because the harness has
+    /// neither a declared instruction channel nor ACP `systemPrompt` support.
+    in_prompt: bool,
 }
 
 /// A harness's `elicitation/create` waiting for its reply.
@@ -2187,7 +2202,7 @@ struct Ready {
     record: AcpSessionRecord,
     reset: Option<String>,
     resumed: bool,
-    /// Instructions the first prompt of a fresh session carries.
+    /// Instructions pinned into each prompt when no system-prompt channel exists.
     in_prompt: bool,
 }
 
@@ -2277,6 +2292,7 @@ impl Turn {
             replies: work.replies,
             live_messages: work.live_messages,
             accepting_messages: work.accepting_messages,
+            in_prompt: false,
         }
     }
 
@@ -2335,18 +2351,14 @@ impl Turn {
             resumed,
             in_prompt,
         } = ready;
+        self.in_prompt = in_prompt;
         let mut text = self.plan.prompt.clone();
         if let Some(context) = self.plan.fresh_context.as_ref().filter(|_| !resumed) {
             text = format!("{context}\n\n---\n\n{text}");
         }
-        // ponytail: instructions sent as prompt text weigh less than a system
-        // prompt and may fade in a long or compacted session.
-        if let Some(instructions) = self
-            .plan
-            .instructions
-            .as_ref()
-            .filter(|_| in_prompt && !resumed)
-        {
+        // Without a system-prompt channel, pin instructions onto every turn so
+        // harness context compaction or session resume cannot drop them.
+        if let Some(instructions) = self.plan.instructions.as_ref().filter(|_| self.in_prompt) {
             text = format!("<instructions>\n{instructions}\n</instructions>\n\n{text}");
         }
         let _ = self.out.messages.send(Message::Prompted);
@@ -2419,9 +2431,13 @@ impl Turn {
             let _ = self.out.messages.send(Message::Done(Err(error)));
             return false;
         }
+        let mut text = self.plan.prompt.clone();
+        if let Some(instructions) = self.plan.instructions.as_ref().filter(|_| self.in_prompt) {
+            text = format!("<instructions>\n{instructions}\n</instructions>\n\n{text}");
+        }
         let _ = self.out.messages.send(Message::Prompted);
         if let Err(error) = session
-            .send_prompt(self.plan.prompt.clone())
+            .send_prompt(text)
             .map_err(|error| format!("session/prompt failed: {}", describe(&error)))
         {
             let error = failure.get().cloned().unwrap_or(error);
