@@ -170,6 +170,90 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
         serde_json::from_str(source.body.as_str().expect("source")).expect("definition JSON");
     assert_eq!(definition["id"], json!("api_inspect"));
 
+    assert_eq!(source.download, None);
+
+    // A download is the file's exact bytes, named by its last segment in a
+    // safe quoted form, whether the file is text or binary. The fixture name
+    // is one Windows can create; quotes, backslashes and control bytes are
+    // covered by the unit test on `attachment_file_name` in src/lib.rs.
+    let bundle = RunStore::for_settings(&settings)
+        .read_run_bundle("run-inspect")
+        .expect("read")
+        .expect("run");
+    let binary = vec![0x89, b'P', b'N', b'G', 0x00, 0xff, 0xfe];
+    fs::write(
+        bundle.paths.artifacts_dir().join("notes (draft);v1.bin"),
+        &binary,
+    )
+    .expect("binary artifact");
+    let definition_bytes = fs::read(
+        bundle
+            .paths
+            .artifacts_dir()
+            .join("flow/flow-definition.json"),
+    )
+    .expect("source");
+    for (encoded, name, content_type, bytes) in [
+        (
+            "artifacts/notes%20%28draft%29%3Bv1.bin",
+            "notes__draft__v1.bin",
+            "application/octet-stream",
+            &binary,
+        ),
+        (
+            "artifacts/flow/flow-definition.json",
+            "flow-definition.json",
+            "application/json",
+            &definition_bytes,
+        ),
+        // Spellings storage normalizes keep the resolved file's name.
+        (
+            "artifacts/flow/flow-definition.json/",
+            "flow-definition.json",
+            "application/json",
+            &definition_bytes,
+        ),
+        (
+            "artifacts/flow/./flow-definition.json/.",
+            "flow-definition.json",
+            "application/json",
+            &definition_bytes,
+        ),
+    ] {
+        for query in ["?download=1", "?download=true"] {
+            let download = handle_attractor_request(
+                "GET",
+                &format!("/attractor/pipelines/run-inspect/artifacts/{encoded}{query}"),
+                "",
+                settings.clone(),
+            );
+            assert_eq!(download.status_code, 200, "{encoded}{query}");
+            assert_eq!(download.content_type, content_type);
+            assert_eq!(
+                download.download,
+                Some((format!("attachment; filename=\"{name}\""), bytes.clone())),
+                "{encoded}{query}"
+            );
+        }
+    }
+    // Anything else is the ordinary preview, which shows text only.
+    let preview = handle_attractor_request(
+        "GET",
+        "/attractor/pipelines/run-inspect/artifacts/artifacts/notes%20%28draft%29%3Bv1.bin?download=0",
+        "",
+        settings.clone(),
+    );
+    assert_eq!(preview.status_code, 415);
+    assert_eq!(preview.download, None);
+    let missing_download = handle_attractor_request(
+        "GET",
+        "/attractor/pipelines/run-inspect/artifacts/artifacts/missing.txt?download=1",
+        "",
+        settings.clone(),
+    );
+    assert_eq!(missing_download.status_code, 404);
+    assert_eq!(missing_download.download, None);
+
     let traversal = service.get_pipeline_artifact_file("run-inspect", "../run.json");
     assert_eq!(traversal.status_code, 400);
     assert_eq!(traversal.body, json!({"detail": "Invalid artifact path"}));

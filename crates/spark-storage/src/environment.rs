@@ -19,7 +19,7 @@ pub const ENVIRONMENT_ID_FILE_NAME: &str = "environment_id";
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Frontend↔backend HTTP/SSE contract version for remote UI views; bump on
 /// breaking workspace/attractor API or SSE envelope changes.
-pub const UI_API_VERSION: u32 = 1;
+pub const UI_API_VERSION: u32 = 2;
 /// How long a pairing code stays valid.
 pub const PAIRING_CODE_TTL: time::Duration = time::Duration::minutes(10);
 

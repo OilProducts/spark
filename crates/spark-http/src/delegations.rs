@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{header, HeaderName, HeaderValue, StatusCode};
-use axum::response::Response;
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,8 @@ use crate::{HttpAppState, WorkspaceApiError};
 type ApiResult<T> = Result<Json<T>, WorkspaceApiError>;
 
 pub(crate) fn router() -> Router<HttpAppState> {
+    // Read at startup, before an upgrade can replace the binary.
+    build_id();
     Router::new()
         .route("/environments/links", get(list_links).post(add_link))
         .route(
@@ -46,8 +48,9 @@ pub(crate) fn router() -> Router<HttpAppState> {
         )
         .route(
             "/environments/links/{environment_id}/proxy/{*rest}",
-            any(proxy_linked_environment),
+            any(proxy_linked_environment).layer(axum::middleware::map_response(sandboxed)),
         )
+        .route("/environment", get(environment))
         .route("/delegations", get(list_delegations).post(start))
         .route("/delegations/{delegation_id}", get(get_delegation))
         .route("/delegations/{delegation_id}/wait", get(wait))
@@ -186,6 +189,8 @@ fn proxy_client() -> Result<&'static reqwest::Client, WorkspaceError> {
     CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
+                // No ambient `HTTP_PROXY`/`ALL_PROXY` may relay a peer's token.
+                .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(10))
                 .build()
@@ -195,37 +200,192 @@ fn proxy_client() -> Result<&'static reqwest::Client, WorkspaceError> {
         .map_err(|error| WorkspaceError::Internal(error.clone()))
 }
 
-/// Only Spark's own API surfaces may be proxied through a link, with no
-/// traversal segments.
-fn allowed_proxy_path(rest: &str) -> Option<&str> {
-    let trimmed = rest.trim_start_matches('/');
-    if trimmed.is_empty()
-        || trimmed.contains('\\')
-        || trimmed.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
-        || trimmed.split('/').any(|seg| matches!(seg, "." | ".."))
-    {
-        return None;
+/// How long the linked-environment proxy waits on its upstream. Tests insert
+/// one as a request extension to shorten them; a network client cannot.
+#[derive(Clone, Copy, Debug)]
+pub struct ProxyTimeouts {
+    /// Until the response headers arrive; longer than the longest a Spark
+    /// route holds before answering, a delegation `wait` (`MAX_WAIT`).
+    pub headers: Duration,
+    /// Between body chunks; above the live stream's 15 s keepalive.
+    pub idle: Duration,
+}
+
+impl Default for ProxyTimeouts {
+    fn default() -> Self {
+        Self {
+            headers: MAX_WAIT + Duration::from_secs(15),
+            idle: Duration::from_secs(45),
+        }
     }
-    let allowed = trimmed == "environment"
-        || trimmed == "workspace/api"
-        || trimmed.starts_with("workspace/api/")
-        || trimmed == "attractor"
-        || trimmed.starts_with("attractor/");
-    allowed.then_some(trimmed)
+}
+
+/// The proxied path as the client sent it, still percent-encoded, so `%2F`,
+/// `%23` and `%3F` reach the peer unchanged.
+fn raw_proxy_path(uri: &Uri) -> Option<&str> {
+    uri.path()
+        .strip_prefix("/environments/links/")?
+        .split_once('/')?
+        .1
+        .strip_prefix("proxy/")
+}
+
+fn percent_decoded(segment: &str) -> Option<Vec<u8>> {
+    let mut bytes = segment.bytes();
+    let mut decoded = Vec::with_capacity(segment.len());
+    let hex = |byte: Option<u8>| char::from(byte?).to_digit(16);
+    while let Some(byte) = bytes.next() {
+        decoded.push(if byte == b'%' {
+            (hex(bytes.next())? * 16 + hex(bytes.next())?) as u8
+        } else {
+            byte
+        });
+    }
+    Some(decoded)
+}
+
+/// Only Spark's own API surfaces may be proxied through a link. The raw path
+/// and each decoded segment are checked, so no encoding smuggles in a
+/// traversal, backslash or control byte.
+///
+/// A literal `#fragment` on the wire never reaches Spark code: hyper builds
+/// the request's `Uri` from the raw request-line bytes (hyper 1.11
+/// src/proto/h1/role.rs:222-224), and `PathAndQuery::from_shared` truncates
+/// at `#` (http 1.5 src/uri/path.rs:28-30). So no path seen here holds a raw
+/// `#` or `?`, the URL built from it carries no fragment to the peer, and
+/// this check and the URL check below keep that true for whatever the parser
+/// hands over.
+/// ponytail: the fragment is dropped, not refused; refusing it would need an
+/// HTTP/1 framing scanner on the TCP listener, ahead of hyper, for all routes.
+fn allowed_proxy_path(raw: &str) -> bool {
+    let surface = raw == "environment"
+        || raw == "workspace/api"
+        || raw.starts_with("workspace/api/")
+        || raw
+            .strip_prefix("attractor/")
+            .is_some_and(|rest| !rest.is_empty());
+    surface
+        && !raw
+            .bytes()
+            .any(|byte| matches!(byte, b'?' | b'#' | b'\\') || byte.is_ascii_control())
+        && raw.split('/').all(|segment| {
+            percent_decoded(segment).is_some_and(|decoded| {
+                !decoded
+                    .iter()
+                    .any(|byte| *byte == b'\\' || byte.is_ascii_control())
+                    && !decoded
+                        .split(|byte| *byte == b'/')
+                        .any(|part| part == b"." || part == b"..")
+            })
+        })
+}
+
+fn header_bytes(value: Option<&HeaderValue>) -> &[u8] {
+    value.map_or(b"", HeaderValue::as_bytes)
+}
+
+/// The part before any `;` parameters, lowercased, with only HTTP
+/// whitespace (space and tab) trimmed, as a browser trims. Read from bytes,
+/// since a parameter may hold non-ASCII bytes.
+fn essence(value: &[u8]) -> String {
+    let essence = value.split(|&byte| byte == b';').next().unwrap_or_default();
+    String::from_utf8_lossy(essence)
+        .trim_matches([' ', '\t'])
+        .to_ascii_lowercase()
+}
+
+/// A header's comma-separated items, split only at commas outside quoted
+/// strings, as a browser splits them (Fetch "get, decode, and split").
+fn list_items(value: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let (mut quoted, mut escaped) = (false, false);
+    value.split(move |&byte| {
+        match (quoted, escaped, byte) {
+            (_, true, _) => escaped = false,
+            (true, _, b'\\') => escaped = true,
+            (_, _, b'"') => quoted = !quoted,
+            (false, _, b',') => return true,
+            _ => {}
+        }
+        false
+    })
+}
+
+/// Types a browser renders as a document that can run script: HTML, XML,
+/// SVG, every `+html` or `+xml` type, and every `multipart/*` type, whose
+/// parts (`x-mixed-replace`) it renders by their own types. A browser uses
+/// the last valid type of a comma-separated list, so any listed one in any
+/// of the values counts.
+fn renders_as_markup<'a>(content_types: impl IntoIterator<Item = &'a HeaderValue>) -> bool {
+    content_types
+        .into_iter()
+        .flat_map(|value| list_items(value.as_bytes()))
+        .map(essence)
+        .any(|essence| {
+            matches!(
+                essence.as_str(),
+                "text/html" | "text/xml" | "application/xml"
+            ) || essence.ends_with("+html")
+                || essence.ends_with("+xml")
+                || essence.starts_with("multipart/")
+        })
+}
+
+/// A disposition every browser reads as an attachment: visible ASCII only,
+/// and after optional HTTP whitespace, `attachment` followed at once by the
+/// end of the value or `;`.
+fn is_attachment(disposition: Option<&HeaderValue>) -> bool {
+    let value = header_bytes(disposition);
+    let ows = value
+        .iter()
+        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+        .count();
+    let (kind, rest) = value[ows..].split_at(value[ows..].len().min(10));
+    value
+        .iter()
+        .all(|byte| byte.is_ascii() && !byte.is_ascii_control())
+        && kind.eq_ignore_ascii_case(b"attachment")
+        && matches!(rest.first(), None | Some(b';'))
+}
+
+/// Everything the proxy answers, the peer's content and the proxy's own
+/// errors, is sandboxed and never sniffed into another type.
+async fn sandboxed(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox; default-src 'none'"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response
+}
+
+fn detail(status: StatusCode, detail: String) -> Response {
+    (status, Json(json!({ "detail": detail }))).into_response()
 }
 
 /// Streams HTTP, binary, and SSE requests to a linked environment, injecting
 /// the stored bearer token on A's server so the token never reaches a client.
+/// The peer must answer as the linked environment, and its responses are
+/// sandboxed so nothing it serves runs as this origin.
 async fn proxy_linked_environment(
     State(state): State<HttpAppState>,
-    Path((environment_id, rest)): Path<(String, String)>,
+    Path((environment_id, _)): Path<(String, String)>,
     request: Request,
 ) -> Result<Response, WorkspaceApiError> {
-    let Some(path) = allowed_proxy_path(&rest) else {
-        return Err(WorkspaceApiError(WorkspaceError::NotFound(
-            "Not Found".to_string(),
-        )));
-    };
+    let not_found = || WorkspaceApiError(WorkspaceError::NotFound("Not Found".to_string()));
+    let path = raw_proxy_path(request.uri())
+        .filter(|path| allowed_proxy_path(path))
+        .ok_or_else(not_found)?
+        .to_string();
+    let query = request.uri().query().map(str::to_string);
+    let timeouts = request
+        .extensions()
+        .get::<ProxyTimeouts>()
+        .copied()
+        .unwrap_or_default();
     let data_dir = state.settings.data_dir.clone();
     let env_id = environment_id.clone();
     let link_and_token = tokio::task::spawn_blocking(move || {
@@ -240,19 +400,38 @@ async fn proxy_linked_environment(
             "No link to environment {environment_id:?}."
         ))));
     };
-    let method =
-        reqwest::Method::from_bytes(request.method().as_str().as_bytes()).map_err(|_| {
-            WorkspaceApiError(WorkspaceError::Validation(
-                "Unsupported HTTP method.".into(),
-            ))
-        })?;
-    let mut url = format!("{}/{path}", link.origin.trim_end_matches('/'));
-    if let Some(query) = request.uri().query() {
-        url.push('?');
-        url.push_str(query);
+    let origin = reqwest::Url::parse(&link.origin).map_err(|error| {
+        WorkspaceApiError(WorkspaceError::Internal(format!(
+            "Stored origin {:?} is invalid: {error}",
+            link.origin
+        )))
+    })?;
+    let mut url = origin.clone();
+    url.set_path(&format!("/{path}"));
+    url.set_query(query.as_deref());
+    // The token goes only to the linked origin, for exactly the target sent.
+    // The client sends a CONNECT in authority form, without the path
+    // (hyper-util client/legacy/client.rs, `authority_form`).
+    if request.method() == Method::CONNECT
+        || url.scheme() != origin.scheme()
+        || url.host_str() != origin.host_str()
+        || url.port_or_known_default() != origin.port_or_known_default()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.path().strip_prefix('/') != Some(path.as_str())
+        || url.query() != query.as_deref()
+    {
+        return Err(WorkspaceApiError(WorkspaceError::Validation(
+            "The proxied request cannot be forwarded exactly as sent.".to_string(),
+        )));
     }
     let client = proxy_client().map_err(WorkspaceApiError)?;
-    let mut upstream = client.request(method, &url).bearer_auth(&token);
+    let mut upstream = client
+        .request(request.method().clone(), url)
+        .bearer_auth(&token)
+        // Marks the call as relayed, so even a loopback peer checks the token.
+        .header(header::FORWARDED, "by=spark-proxy");
     for name in [
         header::CONTENT_TYPE,
         header::ACCEPT,
@@ -267,15 +446,41 @@ async fn proxy_linked_environment(
     }
     let body_stream = request.into_body().into_data_stream();
     upstream = upstream.body(reqwest::Body::wrap_stream(body_stream));
-    let response = upstream.send().await.map_err(|error| {
-        WorkspaceApiError(WorkspaceError::ServiceUnavailable(format!(
-            "{}: {error}",
-            link.origin
-        )))
-    })?;
-    let status =
-        StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let mut builder = Response::builder().status(status);
+    let response = match tokio::time::timeout(timeouts.headers, upstream.send()).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            return Err(WorkspaceApiError(WorkspaceError::ServiceUnavailable(
+                format!("{}: {error}", link.origin),
+            )))
+        }
+        Err(_) => {
+            let waited = timeouts.headers;
+            return Ok(detail(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "{} sent no response within {waited:?}; check that it is running and reachable.",
+                    link.origin
+                ),
+            ));
+        }
+    };
+    let answered_as = response.headers().get(&crate::ENVIRONMENT_ID_HEADER);
+    let public = path == "environment";
+    let verified = answered_as.map_or(public, |id| id.as_bytes() == link.environment_id.as_bytes())
+        || (!public && response.status() == StatusCode::UNAUTHORIZED);
+    if !verified {
+        return Ok(detail(
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "{} answered as environment {:?}, not the linked {:?}; link it again if it moved.",
+                link.origin,
+                answered_as.map(|id| String::from_utf8_lossy(id.as_bytes()).into_owned()),
+                link.environment_id
+            ),
+        ));
+    }
+    let status = response.status();
+    let mut headers = HeaderMap::new();
     for name in [
         header::CONTENT_TYPE,
         header::CACHE_CONTROL,
@@ -285,15 +490,92 @@ async fn proxy_linked_environment(
         HeaderName::from_static("x-accel-buffering"),
     ] {
         if let Some(value) = response.headers().get(&name) {
-            if let Ok(header_value) = HeaderValue::from_bytes(value.as_bytes()) {
-                builder = builder.header(name, header_value);
-            }
+            headers.insert(name, value.clone());
         }
     }
-    let stream = Body::from_stream(response.bytes_stream());
-    builder
-        .body(stream)
-        .map_err(|error| WorkspaceApiError(WorkspaceError::Internal(error.to_string())))
+    if renders_as_markup(response.headers().get_all(header::CONTENT_TYPE))
+        && !is_attachment(headers.get(header::CONTENT_DISPOSITION))
+    {
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment"),
+        );
+    }
+    // Dropping the body (a client disconnect) drops `response`, which closes
+    // the upstream connection.
+    let idle = timeouts.idle;
+    let body = async_stream::stream! {
+        let mut response = response;
+        loop {
+            match tokio::time::timeout(idle, response.chunk()).await {
+                Ok(Ok(Some(chunk))) => yield Ok::<_, std::io::Error>(chunk),
+                Ok(Ok(None)) => break,
+                Ok(Err(error)) => {
+                    yield Err(std::io::Error::other(error));
+                    break;
+                }
+                Err(_) => {
+                    yield Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("{} sent nothing for {idle:?}.", link.origin),
+                    ));
+                    break;
+                }
+            }
+        }
+    };
+    Ok((status, headers, Body::from_stream(body)).into_response())
+}
+
+/// `GET /workspace/api/environment`: the public descriptor plus this build's
+/// id, for a caller holding a token.
+async fn environment(State(state): State<HttpAppState>) -> ApiResult<Value> {
+    let internal = |error: String| WorkspaceApiError(WorkspaceError::Internal(error));
+    let descriptor = crate::environment_auth::environment_descriptor(State(state)).await;
+    let bytes = axum::body::to_bytes(descriptor.into_body(), usize::MAX)
+        .await
+        .map_err(|error| internal(error.to_string()))?;
+    let mut descriptor: Value =
+        serde_json::from_slice(&bytes).map_err(|error| internal(error.to_string()))?;
+    descriptor["build_id"] = json!(build_id());
+    Ok(Json(descriptor))
+}
+
+/// Tells apart two builds that share `CARGO_PKG_VERSION`: a hash of the
+/// running executable's bytes, read once when the routes are built. An
+/// executable it cannot read announces `STAMPED_BUILD_ID` instead.
+// ponytail: reads the whole executable once at startup; use STAMPED_BUILD_ID
+// alone if that ever shows up in startup time.
+fn build_id() -> &'static str {
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| match executable_hash() {
+        Ok(hash) => format!("{}+{hash:016x}", env!("CARGO_PKG_VERSION")),
+        Err(error) => {
+            eprintln!("Unable to hash the executable for the build id: {error}");
+            STAMPED_BUILD_ID.to_string()
+        }
+    })
+}
+
+/// Fixed when this crate compiles (see build.rs), so the same on every start
+/// of one binary.
+const STAMPED_BUILD_ID: &str =
+    concat!(env!("CARGO_PKG_VERSION"), "+build.", env!("SPARK_BUILD_ID"));
+
+/// `DefaultHasher` (fixed keys) may change between Rust releases, but then so
+/// does every executable built with them.
+fn executable_hash() -> std::io::Result<u64> {
+    use std::hash::Hasher;
+    use std::io::Read;
+    let mut file = std::fs::File::open(std::env::current_exe()?)?;
+    let mut hasher = std::hash::DefaultHasher::new();
+    let mut chunk = vec![0; 1 << 20];
+    loop {
+        match file.read(&mut chunk)? {
+            0 => return Ok(hasher.finish()),
+            read => hasher.write(&chunk[..read]),
+        }
+    }
 }
 
 async fn start(
@@ -410,4 +692,17 @@ async fn answer_incoming(
         )
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fallback_build_id_is_a_nonempty_compile_time_stamp() {
+        // A `const`, so the same on every start of this binary.
+        const ID: &str = super::STAMPED_BUILD_ID;
+        let stamp = ID
+            .strip_prefix(concat!(env!("CARGO_PKG_VERSION"), "+build."))
+            .expect("version prefix");
+        assert!(!stamp.is_empty(), "{ID}");
+    }
 }
