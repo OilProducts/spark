@@ -1,4 +1,5 @@
 import { Activity, useCallback, useEffect, useRef, useState } from 'react'
+import { create } from 'zustand'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { FormQuestionFields } from '@/components/app/form-question'
 import { Button } from '@/components/ui/button'
@@ -18,10 +19,21 @@ import {
 
 type Filter = 'all' | 'open' | 'paused'
 
-/** A question's unsent answer and its last failure. A form's own fields stay in FormQuestionFields. */
-type AnswerDraft = { text: string; answers: Record<string, string>; error: string | null }
+/** A question's unsent answer, whether it is being sent, and its last failure. A form's own fields stay in FormQuestionFields. */
+type AnswerDraft = { text: string; answers: Record<string, string>; sending: boolean; error: string | null }
 
-const EMPTY_DRAFT: AnswerDraft = { text: '', answers: {}, error: null }
+const EMPTY_DRAFT: AnswerDraft = { text: '', answers: {}, sending: false, error: null }
+
+// Answers outlive the card, so leaving Settings and coming back keeps unsent drafts, a reply still
+// in flight and its failure, and which questions were answered (hidden until a snapshot drops them).
+// ponytail: module-level like the other unsent answers; lost on reload.
+export const useDelegationAnswers = create<{ drafts: Record<string, AnswerDraft>; acknowledged: ReadonlySet<string> }>(() => ({
+    drafts: {},
+    acknowledged: new Set(),
+}))
+const editDraft = (key: string, patch: Partial<AnswerDraft>) => useDelegationAnswers.setState(({ drafts }) => ({
+    drafts: { ...drafts, [key]: { ...(drafts[key] ?? EMPTY_DRAFT), ...patch } },
+}))
 const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
 // Delegations still in flight are re-read this often, so new questions and phases show up.
 const LIVE_REFRESH_MS = 4000
@@ -39,6 +51,9 @@ const whereText = (record: DelegationOut) => [
     `env ${record.environment_id}`,
     record.target_id ? `target ${record.target_id}` : null,
 ].filter(Boolean).join(' · ')
+
+// A sub-question's answer so far; an agent's ID such as "constructor" is never read off the prototype.
+const answerOf = (answers: Record<string, string>, id: string) => (Object.hasOwn(answers, id) ? answers[id] : '')
 
 // Whether a snapshot leaves a question key standing: its delegation isn't listed, or still asks it.
 const stillAsked = (records: DelegationOut[]) => (key: string) => {
@@ -83,7 +98,7 @@ function QuestionResponder({
     const label = question.prompt || question.form?.message || question.questions?.map((sub) => sub.question).join(' ') || 'Question'
 
     const submitAnswers = (subs: NonNullable<DelegationQuestion['questions']>) => {
-        const trimmed = Object.fromEntries(subs.map((sub) => [sub.id, (draft.answers[sub.id] ?? '').trim()]))
+        const trimmed = Object.fromEntries(subs.map((sub) => [sub.id, answerOf(draft.answers, sub.id).trim()]))
         const missing = subs.find((sub) => !trimmed[sub.id])
         if (missing) {
             onDraft({ error: `Answer "${missing.question}" before submitting.` })
@@ -98,6 +113,10 @@ function QuestionResponder({
 
     return (
         <div role="group" aria-label={`${requestKey}: ${label} (${where})`} className="space-y-2 border-t border-border pt-2">
+            {/* FormQuestionFields drops its stored draft as it replies (form-question.tsx), so a refused
+                reply keeps the entered values only while this card stays mounted; after leaving Settings
+                the form starts over beside the error. ponytail: keeping them needs FormQuestionFields to
+                drop its draft once a reply is accepted. */}
             {question.form ? (
                 <FormQuestionFields
                     actionError={draft.error}
@@ -110,7 +129,7 @@ function QuestionResponder({
             ) : question.questions ? (
                 <>
                     {question.questions.map((sub) => {
-                        const value = draft.answers[sub.id] ?? ''
+                        const value = answerOf(draft.answers, sub.id)
                         const subOptions = sub.options ?? []
                         // The field holds the answer as is: a click fills in its choice, typing keeps every character.
                         const setAnswer = (next: string) => onDraft({ answers: { ...draft.answers, [sub.id]: next }, error: null })
@@ -211,12 +230,11 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const loadingRef = useRef(false)
     // The last rows loaded and the filter they answer: another filter's rows are never shown.
     const [loaded, setLoaded] = useState<{ filter: Filter; records: DelegationOut[] } | null>(null)
-    // Answered questions stay hidden until a snapshot of their delegation no longer lists them.
-    const [acknowledged, setAcknowledged] = useState<ReadonlySet<string>>(() => new Set())
-    // Drafts live here, by question, so a filter switch while an answer is in flight keeps them and its failure.
-    const [drafts, setDrafts] = useState<Record<string, AnswerDraft>>({})
-    // Every delegation last seen, for rows held mounted while the filter leaves them out.
+    const { drafts, acknowledged } = useDelegationAnswers()
+    // Every delegation last seen, for rows held mounted while the filter leaves them out; the ref
+    // gives a cancel confirmation the latest record.
     const [seen, setSeen] = useState<Record<string, DelegationOut>>({})
+    const seenRef = useRef(seen)
     const [loading, setLoading] = useState(false)
     const [busy, setBusy] = useState(false)
     const [loadError, setLoadError] = useState<string | null>(null)
@@ -235,14 +253,14 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             const records = await fetchDelegations(FILTER_QUERY[requested])
             if (!current()) return
             setLoaded({ filter: requested, records })
-            setSeen((all) => ({ ...all, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }))
+            seenRef.current = { ...seenRef.current, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }
+            setSeen(seenRef.current)
             setLoadError(null)
             const asked = stillAsked(records)
-            setAcknowledged((keys) => {
-                const kept = [...keys].filter(asked)
-                return kept.length === keys.size ? keys : new Set(kept)
-            })
-            setDrafts((all) => Object.fromEntries(Object.entries(all).filter(([key]) => asked(key))))
+            useDelegationAnswers.setState(({ drafts, acknowledged }) => ({
+                drafts: Object.fromEntries(Object.entries(drafts).filter(([key]) => asked(key))),
+                acknowledged: [...acknowledged].every(asked) ? acknowledged : new Set([...acknowledged].filter(asked)),
+            }))
         } catch (err) {
             if (current()) throw err
         } finally {
@@ -276,8 +294,9 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const held = Object.values(seen).filter((record) => (
         !visibleIds.has(record.delegation_id) && Object.keys(drafts).some((key) => key.startsWith(`${record.delegation_id}:`))
     ))
-    // The Paused view can't see the open delegations that may pause, so it keeps polling.
-    const live = rows !== null && (filter === 'paused' || rows.some((record) => record.phase !== 'sealed'))
+    // The Paused view can't see the open delegations that may pause, so it keeps polling. Until a
+    // filter's first load succeeds, the delegations seen under other filters decide.
+    const live = filter === 'paused' || (rows ?? Object.values(seen)).some((record) => record.phase !== 'sealed')
     useEffect(() => {
         if (!active || !live) return
         const timer = window.setInterval(() => {
@@ -293,21 +312,26 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         setFilter(choice)
     }
 
-    const editDraft = (key: string, patch: Partial<AnswerDraft>) => {
-        setDrafts((all) => ({ ...all, [key]: { ...(all[key] ?? EMPTY_DRAFT), ...patch } }))
-    }
-
     const handleCancel = async (record: DelegationOut) => {
-        const confirmed = await dialogs.confirm({
-            title: `Cancel delegation ${record.request_key}?`,
-            description: record.paused
-                ? `${record.request_key} is paused, so it will be sealed locally as canceled.`
-                : `Spark asks the linked environment to stop ${record.request_key}.`,
-            confirmLabel: 'Cancel delegation',
-            cancelLabel: 'Keep delegation',
-            confirmVariant: 'destructive',
-        })
-        if (!confirmed) return
+        // A refresh while the dialog is open can find the delegation paused (sealed locally on cancel)
+        // or linked again (asked remotely): confirm again until the prompt matches what will happen.
+        // ponytail: a pause the server sees between this check and the request still seals locally.
+        let paused: boolean | null = null
+        for (;;) {
+            const latest = seenRef.current[record.delegation_id] ?? record
+            if ((latest.paused !== null) === paused) break
+            paused = latest.paused !== null
+            const confirmed = await dialogs.confirm({
+                title: `Cancel delegation ${record.request_key}?`,
+                description: paused
+                    ? `${record.request_key} is paused, so it will be sealed locally as canceled.`
+                    : `Spark asks the linked environment to stop ${record.request_key}.`,
+                confirmLabel: 'Cancel delegation',
+                cancelLabel: 'Keep delegation',
+                confirmVariant: 'destructive',
+            })
+            if (!confirmed) return
+        }
         setBusy(true)
         setCancelError(null)
         let updated: DelegationOut
@@ -320,6 +344,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             return
         }
         // The row shows the server's answer now, whether or not the reload below succeeds.
+        seenRef.current = { ...seenRef.current, [updated.delegation_id]: updated }
+        setSeen(seenRef.current)
         setLoaded((current) => current && {
             ...current,
             records: current.records.flatMap((row) => (
@@ -339,22 +365,20 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
 
     const handleAnswer = async (record: DelegationOut, questionId: string, body: DelegationAnswerBody) => {
         const key = ackKey(record.delegation_id, questionId)
-        editDraft(key, { error: null })
+        editDraft(key, { sending: true, error: null })
         setBusy(true)
         try {
             await answerDelegationQuestion(record.delegation_id, questionId, body)
         } catch (err) {
             // The draft stays beside the error to fix and resend.
-            editDraft(key, { error: errorText(err, 'Could not submit answer.') })
+            editDraft(key, { sending: false, error: errorText(err, 'Could not submit answer.') })
             setStatus('')
             setBusy(false)
             return
         }
-        setAcknowledged((keys) => new Set(keys).add(key))
-        setDrafts((all) => {
-            const next = { ...all }
-            delete next[key]
-            return next
+        useDelegationAnswers.setState(({ drafts, acknowledged }) => {
+            const { [key]: _sent, ...rest } = drafts
+            return { drafts: rest, acknowledged: new Set(acknowledged).add(key) }
         })
         const done = `Sent answer for ${record.request_key}.`
         setStatus(done)
@@ -459,6 +483,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                         ) : null}
                                         {questions.map((question) => {
                                             const key = ackKey(record.delegation_id, question.question_id)
+                                            const draft = drafts[key] ?? EMPTY_DRAFT
                                             return (
                                                 <QuestionResponder
                                                     key={question.question_id}
@@ -466,8 +491,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                                     requestKey={record.request_key}
                                                     where={where}
                                                     question={question}
-                                                    disabled={busy || !answerable}
-                                                    draft={drafts[key] ?? EMPTY_DRAFT}
+                                                    disabled={busy || draft.sending || !answerable}
+                                                    draft={draft}
                                                     onDraft={(patch) => editDraft(key, patch)}
                                                     onAnswer={(body) => void handleAnswer(record, question.question_id, body)}
                                                 />

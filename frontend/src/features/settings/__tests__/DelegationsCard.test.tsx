@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
-import { DelegationsCard } from '../DelegationsCard'
+import { DelegationsCard, useDelegationAnswers } from '../DelegationsCard'
 
 // Requests go through the real environmentsApi client and parser to a stubbed fetch.
 type Reply = () => Response | Promise<Response>
@@ -35,6 +35,7 @@ const sent = (key: string) => requests.filter((request) => request.key === key).
 
 beforeEach(() => {
     requests = []
+    useDelegationAnswers.setState({ drafts: {}, acknowledged: new Set() })
     // Only the card's live refresh is faked; Testing Library's waits keep real timeouts.
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -217,7 +218,7 @@ it('validates a form with FormQuestionFields, keeps it and its 409 across a filt
     expect(sent(answerRoute('del-f', 'form-retry'))).toEqual([accept, accept])
 })
 
-it('keeps the exact form draft when the user leaves and returns before a refused accept', async () => {
+it('keeps the exact form draft when the user switches filters and returns before a refused accept', async () => {
     const answer = later()
     serve({
         [LIST]: [ok(list(delegation('del-f', 'deploy-task', [deployForm('form-exact', 'Exact details')])))],
@@ -243,6 +244,84 @@ it('keeps the exact form draft when the user leaves and returns before a refused
     expect(within(responder).getByRole('textbox', { name: 'Region' })).toHaveValue('eu-west')
     expect(within(responder).getByRole('textbox', { name: 'Replicas' })).toHaveValue('12345678901234567890')
     expect(within(responder).getByRole('textbox', { name: 'Replicas' })).toBeEnabled()
+})
+
+// Leaving Settings unmounts the card; coming back mounts a new one.
+it('keeps a free-text answer in flight, then its draft and 409, when Settings is left and reopened during the reply', async () => {
+    const row = delegation('del-1', 'nightly-checks', [freeText('q-note', 'Any release notes?')])
+    const answer = later()
+    serve({
+        [LIST]: [ok(list(row))],
+        [answerRoute('del-1', 'q-note')]: [answer.reply, ok({})],
+    })
+    const first = renderCard()
+    const name = asked('nightly-checks', 'Any release notes?', 'del-1')
+    const before = await screen.findByRole('group', { name })
+    await first.user.type(within(before).getByRole('textbox', { name: 'Free-text answer' }), 'ship it')
+    await first.user.click(within(before).getByRole('button', { name: 'Answer' }))
+    first.unmount()
+
+    const { user } = renderCard()
+    const responder = await screen.findByRole('group', { name })
+    const text = within(responder).getByRole('textbox', { name: 'Free-text answer' })
+    expect(text).toHaveValue('ship it')
+    expect(text).toBeDisabled()
+    await answer.resolve({ detail: 'Question q-note is not open in delegation del-1.' }, 409)
+    expect(within(responder).getByText('Question q-note is not open in delegation del-1.')).toBeInTheDocument()
+    expect(text).toHaveValue('ship it')
+    expect(text).toBeEnabled()
+
+    await user.click(within(responder).getByRole('button', { name: 'Answer' }))
+    expect(await screen.findByText('Sent answer for nightly-checks.')).toBeInTheDocument()
+    expect(sent(answerRoute('del-1', 'q-note'))).toEqual([{ selected_value: 'ship it' }, { selected_value: 'ship it' }])
+})
+
+it('shows a refused form reply beside the form when Settings was left during the reply', async () => {
+    const answer = later()
+    serve({
+        [LIST]: [ok(list(delegation('del-f', 'deploy-task', [deployForm('form-away', 'Away details')])))],
+        [answerRoute('del-f', 'form-away')]: [answer.reply],
+    })
+    const first = renderCard()
+    const name = asked('deploy-task', 'Away details', 'del-f')
+    const before = await screen.findByRole('group', { name })
+    await first.user.type(within(before).getByRole('textbox', { name: 'Region' }), 'eu-west')
+    await first.user.type(within(before).getByRole('textbox', { name: 'Replicas' }), '3')
+    await first.user.click(within(before).getByRole('button', { name: 'Submit' }))
+    first.unmount()
+
+    renderCard()
+    const responder = await screen.findByRole('group', { name })
+    expect(within(responder).getByRole('button', { name: 'Submitting...' })).toBeDisabled()
+    await answer.resolve({ detail: 'The form was already answered elsewhere.' }, 409)
+    expect(within(responder).getByText('The form was already answered elsewhere.')).toBeInTheDocument()
+    expect(within(responder).getByRole('button', { name: 'Submit' })).toBeEnabled()
+    expect(within(responder).getByRole('textbox', { name: 'Region' })).toBeEnabled()
+})
+
+it('keeps an answered question hidden when Settings is reopened before the follower drops it, and sends it once', async () => {
+    const answer = later()
+    serve({
+        // The follower's snapshot still lists the gate after the answer went through.
+        [LIST]: [ok(list(nightly))],
+        [answerRoute('del-1', 'q-approve')]: [answer.reply],
+    })
+    const first = renderCard()
+    const gate = asked('nightly-checks', 'Ship this build?', 'del-1')
+    await first.user.click(within(await screen.findByRole('group', { name: gate })).getByRole('button', { name: 'Approve' }))
+    first.unmount()
+
+    const second = renderCard()
+    expect(within(await screen.findByRole('group', { name: gate })).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    await answer.resolve({})
+    await waitFor(() => expect(screen.queryByRole('group', { name: gate })).not.toBeInTheDocument())
+    second.unmount()
+
+    renderCard()
+    expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
+    await settled()
+    expect(screen.queryByRole('group', { name: gate })).not.toBeInTheDocument()
+    expect(sent(answerRoute('del-1', 'q-approve'))).toEqual([{ selected_value: 'approve' }])
 })
 
 it('keeps the form draft when a Decline or a Cancel is refused, across a filter switch', async () => {
@@ -378,6 +457,52 @@ it('offers a confirmed local seal once a delegation with a pending cancel loses 
     expect(sent(cancelRoute('del-1'))).toHaveLength(1)
 })
 
+it('asks again before sealing locally when a delegation pauses while its remote cancel is being confirmed', async () => {
+    const unlinked = { ...nightly, paused: 'No link to this environment; link it again to resume.' }
+    const sealed = { ...unlinked, phase: 'sealed', result: { status: 'canceled' } }
+    serve({
+        [LIST]: [ok(list(nightly)), ok(list(unlinked)), ok(list(sealed))],
+        [cancelRoute('del-1')]: [ok(sealed)],
+    })
+    const { user } = renderCard()
+    await user.click(await screen.findByRole('button', { name: 'Cancel delegation nightly-checks' }))
+    const remote = screen.getByRole('alertdialog')
+    expect(within(remote).getByText('Spark asks the linked environment to stop nightly-checks.')).toBeInTheDocument()
+
+    // The live refresh finds the link gone while the dialog is open.
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(await screen.findByText('No link to this environment; link it again to resume.')).toBeInTheDocument()
+    await user.click(within(remote).getByRole('button', { name: 'Cancel delegation' }))
+    expect(await screen.findByText('nightly-checks is paused, so it will be sealed locally as canceled.')).toBeInTheDocument()
+    expect(sent(cancelRoute('del-1'))).toEqual([])
+
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel delegation' }))
+    expect(await screen.findByText('Canceled delegation nightly-checks.')).toBeInTheDocument()
+    expect(screen.getByText('flow · canceled')).toBeInTheDocument()
+    expect(sent(cancelRoute('del-1'))).toHaveLength(1)
+})
+
+it('keeps polling with the error shown when a filter\'s first load fails while a delegation is in flight', async () => {
+    const retry = later()
+    serve({
+        [LIST]: [ok(list(nightly))],
+        [`${LIST}?open=true`]: [fail(500, 'database is locked'), retry.reply],
+    })
+    const { user } = renderCard()
+    expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Open' }))
+    expect(await screen.findByText('Database is locked')).toBeInTheDocument()
+
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(sent(`${LIST}?open=true`)).toHaveLength(2)
+    expect(screen.getByText('Database is locked')).toBeInTheDocument()
+    expect(screen.queryByText('Loading delegations…')).not.toBeInTheDocument()
+
+    await retry.resolve(list(nightly))
+    expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
+    expect(screen.queryByText('Database is locked')).not.toBeInTheDocument()
+})
+
 it('drops an Open response that resolves after Paused is selected', async () => {
     const open = later()
     serve({
@@ -488,6 +613,29 @@ it('masks secret sub-questions, keeps typed custom answers, submits chosen optio
     await user.click(within(responder).getByRole('button', { name: 'Submit answers' }))
     await settled()
     expect(sent(answerRoute('del-c', 'req-env'))).toEqual([{ answers: { env: 'prod', region: 'eu-west', token: 's3cret' } }])
+})
+
+it('treats an unanswered sub-question with the ID "constructor" as missing', async () => {
+    const request = {
+        question_id: 'req-build',
+        questions: [{ id: 'constructor', question: 'Which builder?', question_type: 'FREEFORM', options: [] }],
+    }
+    serve({
+        [LIST]: [ok(list(delegation('del-c', 'chat-task', [request], { kind: 'conversation' })))],
+        [answerRoute('del-c', 'req-build')]: [ok({})],
+    })
+    const { user } = renderCard()
+    const responder = await screen.findByRole('group', { name: asked('chat-task', 'Which builder?', 'del-c') })
+    const builder = within(responder).getByRole('textbox', { name: 'Which builder?' })
+    expect(builder).toHaveValue('')
+    await user.click(within(responder).getByRole('button', { name: 'Submit answers' }))
+    expect(within(responder).getByText('Answer "Which builder?" before submitting.')).toBeInTheDocument()
+    expect(sent(answerRoute('del-c', 'req-build'))).toEqual([])
+
+    await user.type(builder, 'docker')
+    await user.click(within(responder).getByRole('button', { name: 'Submit answers' }))
+    await settled()
+    expect(sent(answerRoute('del-c', 'req-build'))).toEqual([{ answers: { constructor: 'docker' } }])
 })
 
 it('offers no free text on a restricted run gate but keeps it for an agent clarification', async () => {
