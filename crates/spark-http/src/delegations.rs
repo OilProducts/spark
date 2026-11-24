@@ -331,13 +331,20 @@ fn renders_as_markup<'a>(content_types: impl IntoIterator<Item = &'a HeaderValue
 }
 
 /// A disposition every browser reads as an attachment: visible ASCII only,
-/// with `attachment` as its type (RFC 6266 allows space around it).
+/// and after optional HTTP whitespace, `attachment` followed at once by the
+/// end of the value or `;`.
 fn is_attachment(disposition: Option<&HeaderValue>) -> bool {
     let value = header_bytes(disposition);
+    let ows = value
+        .iter()
+        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+        .count();
+    let (kind, rest) = value[ows..].split_at(value[ows..].len().min(10));
     value
         .iter()
         .all(|byte| byte.is_ascii() && !byte.is_ascii_control())
-        && essence(value) == "attachment"
+        && kind.eq_ignore_ascii_case(b"attachment")
+        && matches!(rest.first(), None | Some(b';'))
 }
 
 /// Everything the proxy answers, the peer's content and the proxy's own

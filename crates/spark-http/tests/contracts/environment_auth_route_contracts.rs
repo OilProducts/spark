@@ -698,6 +698,9 @@ async fn fake_peer_route(State(peer): State<FakePeer>, request: Request<Body>) -
         "/workspace/api/named.html" => {
             typed(&[b"text/html"], br#"Attachment; filename="page.html""#)
         }
+        "/workspace/api/spaced.html" => {
+            typed(&[b"text/html"], br#"attachment ; filename="page.html""#)
+        }
         "/workspace/api/frames" => typed(&[b"multipart/x-mixed-replace; boundary=frame"], b""),
         "/workspace/api/quoted.png" => typed(&[br#"image/png; note="a, text/html""#], b""),
         "/workspace/api/escaped.png" => {
@@ -1063,10 +1066,16 @@ async fn linked_environment_proxy_sandboxes_what_the_peer_serves() {
             Some("attachment"),
             b"<svg/>",
         ),
-        // Only a plain ASCII `attachment` survives on markup; whitespace a
-        // browser does not trim makes the proxy's own replace it.
+        // Only a plain ASCII `attachment` followed at once by `;` or the end
+        // survives on markup; anything else is replaced by the proxy's own.
         (
             "workspace/api/nbsp.html",
+            b"text/html",
+            Some("attachment"),
+            b"typed",
+        ),
+        (
+            "workspace/api/spaced.html",
             b"text/html",
             Some("attachment"),
             b"typed",
