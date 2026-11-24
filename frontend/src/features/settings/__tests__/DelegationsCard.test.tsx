@@ -382,6 +382,31 @@ it('keeps the form draft when a Decline or a Cancel is refused, across a filter 
     expect(sent(answerRoute('del-f', 'form-keep'))).toEqual([{ form: { action: 'decline' } }, { form: { action: 'cancel' } }])
 })
 
+it('sends a form field named "__proto__" in the content map', async () => {
+    const odd = {
+        question_id: 'form-proto',
+        form: {
+            request_id: 'acp-proto',
+            harness: 'acp:x',
+            harness_label: 'X Agent',
+            message: 'Odd field',
+            // Parsed, so "__proto__" is the schema's own property name, as it is off the wire.
+            schema: JSON.parse('{"type":"object","properties":{"__proto__":{"type":"string","title":"Prototype"}},"required":["__proto__"]}'),
+        },
+    }
+    serve({
+        [LIST]: [ok(list(delegation('del-f', 'deploy-task', [odd])))],
+        [answerRoute('del-f', 'form-proto')]: [ok({})],
+    })
+    const { user } = renderCard()
+    const form = await screen.findByRole('group', { name: asked('deploy-task', 'Odd field', 'del-f') })
+    await user.type(within(form).getByRole('textbox', { name: 'Prototype' }), 'kept')
+    await user.click(within(form).getByRole('button', { name: 'Submit' }))
+    await settled()
+    expect(sent(answerRoute('del-f', 'form-proto')).map((body) => JSON.stringify(body)))
+        .toEqual(['{"form":{"action":"accept","content":{"__proto__":"kept"}}}'])
+})
+
 it('sends a form Cancel and Decline as their actions', async () => {
     serve({
         [LIST]: [ok(list(delegation('del-f', 'deploy-task', [deployForm('form-a', 'First form'), deployForm('form-b', 'Second form')])))],
@@ -586,6 +611,29 @@ it('drops an Open response that resolves after Paused is selected', async () => 
     expect(screen.getByText('paused-task')).toBeInTheDocument()
 })
 
+it('shows a failed cancel on its row, only where the row is listed, until a refresh shows it canceling', async () => {
+    serve({
+        [LIST]: [ok(list(nightly, pausedTask)), ok(list(nightly, pausedTask)), ok(list({ ...nightly, ...requested }, pausedTask))],
+        [`${LIST}?paused=true`]: [ok(list(pausedTask))],
+        [cancelRoute('del-1')]: [fail(409, 'delegation is busy')],
+    })
+    const { user } = renderCard()
+    const row = () => screen.findByRole('group', { name: /^Delegation nightly-checks/ })
+    await confirmCancel(user, 'nightly-checks')
+    expect(await within(await row()).findByText('Delegation is busy')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Paused' }))
+    expect(await screen.findByText('paused-task')).toBeInTheDocument()
+    expect(screen.queryByText('Delegation is busy')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'All' }))
+    expect(await within(await row()).findByText('Delegation is busy')).toBeInTheDocument()
+
+    // Another session's cancel went through: the refresh that shows it retires the error.
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(await screen.findByText('flow · canceling')).toBeInTheDocument()
+    expect(screen.queryByText('Delegation is busy')).not.toBeInTheDocument()
+})
+
 it('refreshes a cancel started under All with the filter selected when it completes', async () => {
     const cancel = later()
     serve({
@@ -700,6 +748,37 @@ it('treats an unanswered sub-question with the ID "constructor" as missing', asy
     await user.click(within(responder).getByRole('button', { name: 'Submit answers' }))
     await settled()
     expect(sent(answerRoute('del-c', 'req-build'))).toEqual([{ answers: { constructor: 'docker' } }])
+})
+
+it('releases unsent drafts, secrets included, once a delegation seals, keeping those still open to a retry', async () => {
+    const tokenRequest = (questionId: string) => ({
+        question_id: questionId,
+        questions: [{ id: 'token', question: 'Deploy token?', question_type: 'FREEFORM', isSecret: true }],
+    })
+    const first = delegation('del-1', 'nightly-checks', [tokenRequest('req-1')], { kind: 'conversation' })
+    const second = delegation('del-2', 'paused-task', [tokenRequest('req-2')], { kind: 'conversation' })
+    const unlinked = { ...second, paused: 'No link to this environment; link it again to resume.' }
+    serve({
+        // The sealed delegation's last snapshot still lists its request.
+        [LIST]: [ok(list(first, second)), ok(list({ ...first, phase: 'sealed', result: { status: 'completed' } }, unlinked)), fail(500, 'database is locked')],
+        [cancelRoute('del-2')]: [ok({ ...unlinked, phase: 'sealed', result: { status: 'canceled' } })],
+    })
+    const { user } = renderCard()
+    const token = async (requestKey: string, id: string) => within(await screen.findByRole('group', { name: asked(requestKey, 'Deploy token?', id) })).getByLabelText('Deploy token?')
+    await user.type(await token('nightly-checks', 'del-1'), 's3cret-1')
+    await user.type(await token('paused-task', 'del-2'), 's3cret-2')
+    expect(Object.keys(useDelegationAnswers.getState().drafts)).toEqual(['del-1:req-1', 'del-2:req-2'])
+
+    // del-1 seals; del-2 only pauses, so its draft waits for the link to come back.
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(await screen.findByText('conversation · completed')).toBeInTheDocument()
+    expect(Object.keys(useDelegationAnswers.getState().drafts)).toEqual(['del-2:req-2'])
+    expect(await token('paused-task', 'del-2')).toHaveValue('s3cret-2')
+
+    // Sealing it locally releases its draft even though the reload after it fails.
+    await confirmCancel(user, 'paused-task')
+    expect(await screen.findByText('Canceled delegation paused-task. Could not refresh delegations: Database is locked')).toBeInTheDocument()
+    expect(useDelegationAnswers.getState().drafts).toEqual({})
 })
 
 it('offers no free text on a restricted run gate but keeps it for an agent clarification', async () => {

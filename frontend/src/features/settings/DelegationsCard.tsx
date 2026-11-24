@@ -55,10 +55,19 @@ const whereText = (record: DelegationOut) => [
 // A sub-question's answer so far; an agent's ID such as "constructor" is never read off the prototype.
 const answerOf = (answers: Record<string, string>, id: string) => (Object.hasOwn(answers, id) ? answers[id] : '')
 
-// Whether a snapshot leaves a question key standing: its delegation isn't listed, or still asks it.
-const stillAsked = (records: DelegationOut[]) => (key: string) => {
-    const record = records.find((row) => key.startsWith(`${row.delegation_id}:`))
-    return !record || (record.last_state?.questions ?? []).some((question) => ackKey(record.delegation_id, question.question_id) === key)
+// Drops the drafts (secrets included) and acknowledgements of questions the records no longer ask:
+// a listed delegation that sealed, though its last snapshot may still list them, or that dropped them.
+// A delegation not listed keeps its keys, still open to a retry.
+const forgetUnasked = (records: DelegationOut[]) => {
+    const asked = (key: string) => {
+        const record = records.find((row) => key.startsWith(`${row.delegation_id}:`))
+        return !record || (record.phase !== 'sealed'
+            && (record.last_state?.questions ?? []).some((question) => ackKey(record.delegation_id, question.question_id) === key))
+    }
+    useDelegationAnswers.setState(({ drafts, acknowledged }) => ({
+        drafts: Object.fromEntries(Object.entries(drafts).filter(([key]) => asked(key))),
+        acknowledged: [...acknowledged].every(asked) ? acknowledged : new Set([...acknowledged].filter(asked)),
+    }))
 }
 
 function delegationStatus(record: DelegationOut): { label: string; tone: StatusTone } {
@@ -239,7 +248,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const [loading, setLoading] = useState(false)
     const [busy, setBusy] = useState(false)
     const [loadError, setLoadError] = useState<string | null>(null)
-    const [cancelError, setCancelError] = useState<string | null>(null)
+    // A failed cancel's error, by delegation, shown on its row until a refresh shows it canceling or sealed.
+    const [cancelErrors, setCancelErrors] = useState<Record<string, string>>({})
     const [status, setStatus] = useState('')
 
     // Loads the selected filter. A response to an older request, or for a filter no longer
@@ -256,11 +266,11 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             setLoaded({ filter: requested, records })
             seenRef.current = { ...seenRef.current, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }
             setLoadError(null)
-            const asked = stillAsked(records)
-            useDelegationAnswers.setState(({ drafts, acknowledged }) => ({
-                drafts: Object.fromEntries(Object.entries(drafts).filter(([key]) => asked(key))),
-                acknowledged: [...acknowledged].every(asked) ? acknowledged : new Set([...acknowledged].filter(asked)),
-            }))
+            setCancelErrors((errors) => Object.fromEntries(Object.entries(errors).filter(([id]) => {
+                const record = records.find((row) => row.delegation_id === id)
+                return !record || (!record.cancel_requested_at && record.phase !== 'sealed')
+            })))
+            forgetUnasked(records)
         } catch (err) {
             if (current()) throw err
         } finally {
@@ -331,18 +341,19 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             if (!confirmed) return
         }
         setBusy(true)
-        setCancelError(null)
+        setCancelErrors(({ [record.delegation_id]: _retried, ...errors }) => errors)
         let updated: DelegationOut
         try {
             updated = await cancelDelegation(record.delegation_id)
         } catch (err) {
-            setCancelError(errorText(err, 'Could not cancel delegation.'))
+            setCancelErrors((errors) => ({ ...errors, [record.delegation_id]: errorText(err, 'Could not cancel delegation.') }))
             setStatus('')
             setBusy(false)
             return
         }
         // The row shows the server's answer now, whether or not the reload below succeeds.
         seenRef.current = { ...seenRef.current, [updated.delegation_id]: updated }
+        forgetUnasked([updated])
         setLoaded((current) => current && {
             ...current,
             records: current.records.flatMap((row) => (
@@ -470,6 +481,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                         {record.paused ? (
                                             <div className="text-xs text-warning">{record.paused}</div>
                                         ) : null}
+                                        {cancelErrors[record.delegation_id] ? <InlineError>{cancelErrors[record.delegation_id]}</InlineError> : null}
                                         {questions.length > 0 && !answerable ? (
                                             <p className="text-xs text-muted-foreground">
                                                 {record.cancel_requested_at
@@ -502,7 +514,6 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                 )}
                 {status ? <p role="status" className="text-xs text-muted-foreground">{status}</p> : null}
                 {loadError ? <InlineError>{loadError}</InlineError> : null}
-                {cancelError ? <InlineError>{cancelError}</InlineError> : null}
             </CardContent>
         </Card>
     )
