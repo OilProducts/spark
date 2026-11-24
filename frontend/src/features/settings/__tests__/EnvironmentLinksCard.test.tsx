@@ -187,7 +187,8 @@ it.each(mutations)('shows a successful %s even when the follow-up listing fails'
     expect(backend.mutations).toHaveLength(1)
 })
 
-it.each(mutations)('updates a card reopened during a pending %s once it succeeds', async (name, mutate) => {
+it.each(mutations.flatMap(([name, mutate]) => (['succeeds', 'fails'] as const).map((listing) => [name, listing, mutate] as const)))(
+    'updates a card reopened during a pending %s once it succeeds, when its follow-up listing %s', async (name, listing, mutate) => {
     const user = userEvent.setup()
     const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')], links: [link('env-build', 'Build box')] })
     const request = { revoke: `POST ${TOKENS}/tok-ci/revoke`, add: `POST ${LINKS}`, remove: `DELETE ${LINKS}/env-build` }[name]
@@ -205,10 +206,21 @@ it.each(mutations)('updates a card reopened during a pending %s once it succeeds
     expect(screen.getByText('CI runner')).toBeInTheDocument()
     expect(screen.getByText('Build box')).toBeInTheDocument()
 
+    if (listing === 'fails') {
+        backend.replies[TOKENS] = () => json({ detail: 'token listing failed' }, 500)
+        backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
+    }
     await act(async () => finishRequest())
     await waitFor(postMutationRows)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
     postMutationRows()
+    if (listing === 'fails') {
+        const alert = screen.getByRole('alert')
+        expect(alert).toHaveTextContent('Could not load peer tokens: Token listing failed')
+        expect(alert).toHaveTextContent('Could not load linked environments: Link listing failed')
+    } else {
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    }
 })
 
 it('shows a failure that lands while Settings is closed in the next card to open', async () => {
@@ -455,6 +467,46 @@ it('refreshes only cards for the environment a mutation changed once it succeeds
     // Only the switcher reloads this machine's links; GPU's card and the removed card send nothing.
     expect(vi.mocked(fetch).mock.calls.slice(requests).map(([url]) => url)).toEqual(['/environment', LINKS])
     expect(screen.getByRole('button', { name: 'Revoke GPU runner' })).toBeInTheDocument()
+})
+
+it('shows a replacement a removal check finds during a refresh, and still shows that refresh\'s other results', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')], links: [link('env-build', 'Build box')] })
+    render(card())
+    await screen.findByRole('button', { name: 'Revoke CI runner' })
+
+    // A slow Refresh finds the descriptor failing, CI runner revoked from another tab, and env-build as it was.
+    const held: Array<() => void> = []
+    const hold = (url: string, answer: Response) => {
+        backend.replies[url] = () => {
+            delete backend.replies[url]
+            return new Promise<Response>((resolve) => held.push(() => resolve(answer)))
+        }
+    }
+    hold('/environment', json({ detail: 'server restarting' }, 503))
+    hold(TOKENS, json({ tokens: [{ ...token('tok-ci', 'CI runner'), revoked_at: '2026-11-24T00:00:00Z' }] }))
+    hold(LINKS, json({ links: backend.links }))
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(held).toHaveLength(3))
+
+    // Another tab relinks env-build, and removing it here finds the replacement while the refresh is still in flight.
+    backend.links = [relinked]
+    await user.click(screen.getByRole('button', { name: 'Remove link Build box' }))
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The link to Build box changed since you chose to remove it, so nothing was removed.')
+    expect(screen.getByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled()
+
+    await act(async () => held.forEach((release) => release()))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('The link to Build box changed since you chose to remove it')
+    expect(alert).toHaveTextContent('Could not load this environment: Server restarting')
+    expect(screen.getByText(/· revoked 2026-11-24T00:00:00Z/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Revoke CI runner' })).not.toBeInTheDocument()
+    expect(screen.getByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+    expect(screen.queryByText(/https:\/\/env-build\.example:8000/)).not.toBeInTheDocument()
+    expect(backend.mutations).toEqual([])
 })
 
 it('keeps a replacement saved at the same origin in the same second under another label, and shows it for review', async () => {

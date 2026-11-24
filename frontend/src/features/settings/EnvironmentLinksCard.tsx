@@ -44,10 +44,13 @@ const sameLink = (a: EnvironmentLink, b: EnvironmentLink) =>
 
 const firstEnabledIn = (scope: Element | null) => scope?.querySelector<HTMLElement>('button:enabled, input:enabled') ?? null
 
+/** A mutation the server confirmed: a revoked token ID, a created link, or a removed link's environment ID. */
+type Mutation = { revoked: string } | { linked: EnvironmentLink } | { unlinked: string }
+
 // Leaving Settings unmounts the card and switching environments remounts it, so a request can settle after its card
-// is gone. It then reaches the cards mounted now: those for its environment refresh after a mutation, and a failure
+// is gone. It then reaches the cards mounted now: those for its environment show a mutation and refresh, and a failure
 // shows in the current card, or in the next one to mount.
-type LiveCard = { environmentId: string | null; refresh: () => void; showError: (message: string) => void }
+type LiveCard = { environmentId: string | null; settle: (mutation: Mutation) => void; showError: (message: string) => void }
 const liveCards = new Set<LiveCard>()
 let undeliveredError: string | null = null
 
@@ -72,6 +75,8 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const [busy, setBusy] = useState(false)
     const [projectsByEnv, setProjectsByEnv] = useState<Record<string, ProjectLookup>>({})
     const refreshSeqRef = useRef(0)
+    // Counts link listings a removal's check showed, so a refresh started before one drops only its links result.
+    const linksSeqRef = useRef(0)
     // Counts errors shown by actions, so a refresh leaves visible any error reported after it started.
     const errorCountRef = useRef(0)
     // The Projects lookup, cached or in flight, per environment; removing or replacing its link drops it so its answer is ignored.
@@ -104,6 +109,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
 
     const refresh = useCallback(async () => {
         const seq = ++refreshSeqRef.current
+        const linksSeq = linksSeqRef.current
         const errorCount = errorCountRef.current
         setPairingCode(expireReceipt)
         setLoading(true)
@@ -118,10 +124,12 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         else errors.push(`Could not load this environment: ${errorText(descriptorResult.reason, 'unknown error.')}`)
         if (tokensResult.status === 'fulfilled') setTokens(tokensResult.value)
         else errors.push(`Could not load peer tokens: ${errorText(tokensResult.reason, 'unknown error.')}`)
-        if (linksResult.status === 'fulfilled') showListedLinks(linksResult.value)
-        else errors.push(`Could not load linked environments: ${errorText(linksResult.reason, 'unknown error.')}`)
         setTokensLoaded(tokensResult.status === 'fulfilled')
-        setLinksLoaded(linksResult.status === 'fulfilled')
+        if (linksSeq === linksSeqRef.current) {
+            if (linksResult.status === 'fulfilled') showListedLinks(linksResult.value)
+            else errors.push(`Could not load linked environments: ${errorText(linksResult.reason, 'unknown error.')}`)
+            setLinksLoaded(linksResult.status === 'fulfilled')
+        }
         // An error an action reported after this refresh started stays, beside any listing errors.
         const newerError = errorCountRef.current !== errorCount
         if (errors.length > 0) {
@@ -133,6 +141,23 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         setLoading(false)
     }, [showListedLinks])
 
+    // Shows a confirmed mutation at once, even if the follow-up listing fails, and retires refreshes started before it.
+    const applyMutation = useCallback((mutation: Mutation) => {
+        refreshSeqRef.current += 1
+        if ('revoked' in mutation) {
+            setTokens((prev) => prev.map((row) => row.token_id === mutation.revoked ? { ...row, revoked: true } : row))
+            return
+        }
+        const environmentId = 'linked' in mutation ? mutation.linked.environment_id : mutation.unlinked
+        forgetProjects(environmentId)
+        setLinks((prev) => [
+            ...prev.filter((row) => row.environment_id !== environmentId),
+            ...('linked' in mutation ? [mutation.linked] : []),
+        ])
+        // Only a listing can say no links remain.
+        if ('unlinked' in mutation) setLinksLoaded(false)
+    }, [forgetProjects])
+
     useEffect(() => {
         if (!active) return
         void refresh()
@@ -142,7 +167,8 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         // A hidden card refreshes once shown instead.
         const card = {
             environmentId: activeEnvironmentId,
-            refresh: () => {
+            settle: (mutation: Mutation) => {
+                applyMutation(mutation)
                 if (active) void refresh()
             },
             showError,
@@ -155,7 +181,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             liveCards.delete(card)
             liveCardRef.current = null
         }
-    }, [active, activeEnvironmentId, refresh, showError])
+    }, [active, activeEnvironmentId, applyMutation, refresh, showError])
 
     // Expire the receipt on time while mounted; refresh() re-checks it whenever the card becomes active.
     // A timer can fire before expires_at if the wall clock moves back, so it re-arms until the receipt has expired.
@@ -229,13 +255,11 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         }
     }
 
-    // Shows a successful mutation at once, even if the follow-up listing fails, and retires refreshes started before it.
-    const settleMutation = async (message: string, apply: () => void) => {
-        refreshSeqRef.current += 1
-        apply()
+    const settleMutation = async (message: string, mutation: Mutation) => {
+        applyMutation(mutation)
         setStatus(message)
         for (const card of liveCards) {
-            if (card !== liveCardRef.current && card.environmentId === activeEnvironmentId) card.refresh()
+            if (card !== liveCardRef.current && card.environmentId === activeEnvironmentId) card.settle(mutation)
         }
         // A card that is gone would list whichever environment is active now.
         if (liveCardRef.current) await refresh()
@@ -267,8 +291,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         confirmVariant: 'destructive',
     }, 'Could not revoke token.', async () => {
         await revokePeerToken(token.token_id)
-        await settleMutation(`Revoked token ${token.label || token.token_id}.`, () => setTokens((prev) => prev.map((row) =>
-            row.token_id === token.token_id ? { ...row, revoked: true } : row)))
+        await settleMutation(`Revoked token ${token.label || token.token_id}.`, { revoked: token.token_id })
     })
 
     const handleAddLink = async (event: FormEvent<HTMLFormElement>) => {
@@ -289,10 +312,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             const created = await addEnvironmentLink({ origin, expected_id, code, label })
             form.reset()
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
-            await settleMutation(`Linked ${created.label || created.environment_id}.`, () => {
-                forgetProjects(created.environment_id)
-                setLinks((prev) => [...prev.filter((row) => row.environment_id !== created.environment_id), created])
-            })
+            await settleMutation(`Linked ${created.label || created.environment_id}.`, { linked: created })
         } catch (err) {
             reportError(errorText(err, 'Could not add environment link.'))
         } finally {
@@ -322,24 +342,18 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             }
             const current = latest.find((row) => row.environment_id === link.environment_id)
             if (!current || !sameLink(current, link)) {
-                // A refresh started during the check has a newer listing. Otherwise show this one, retiring older refreshes
-                // so their listings cannot replace it, which also ends their loading state.
+                // A refresh started during the check has a newer listing. Otherwise show this one in place of the links an
+                // older refresh still in flight returns; that refresh still shows its other results and ends loading.
                 if (refreshSeqRef.current === refreshesBefore) {
-                    refreshSeqRef.current += 1
+                    linksSeqRef.current += 1
                     showListedLinks(latest)
                     setLinksLoaded(true)
-                    setLoading(false)
                 }
                 throw new Error(`The link to ${name} changed since you chose to remove it, so nothing was removed. Review the current link before removing it again.`)
             }
             await removeEnvironmentLink(link.environment_id)
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
-            await settleMutation(`Removed link to ${name}.`, () => {
-                forgetProjects(link.environment_id)
-                setLinks((prev) => prev.filter((row) => row.environment_id !== link.environment_id))
-                // Only a listing can say no links remain.
-                setLinksLoaded(false)
-            })
+            await settleMutation(`Removed link to ${name}.`, { unlinked: link.environment_id })
         })
     }
 
