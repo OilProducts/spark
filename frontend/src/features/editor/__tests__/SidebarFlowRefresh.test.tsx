@@ -2,7 +2,8 @@ import { DialogProvider } from '@/components/app/dialog-controller'
 import { Sidebar } from '@/features/editor/Sidebar'
 import { FlowsPanelActions, FlowsPanelList, useFlowCatalogPanel } from '@/features/editor/FlowsPanel'
 import { CanvasSessionModeProvider } from '@/features/workflow-canvas/canvasSessionContext'
-import { useStore } from '@/store'
+import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
+import { switchEnvironment } from '@/test/environments'
 import { ReactFlow, ReactFlowProvider, useEdgesState, useNodesState } from '@xyflow/react'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -246,6 +247,27 @@ describe('Editor sidebar manual refresh', () => {
         })
 
         expect(screen.getByRole('button', { name: 'beta-flow' })).toBeVisible()
+    })
+
+    it('opens a flow created after a switch to another environment nowhere', async () => {
+        const user = userEvent.setup()
+        const saved = createDeferred<boolean>()
+        saveFlowContentMock.mockReturnValue(saved.promise)
+        fetchFlowListMock.mockResolvedValue(['alpha'])
+        await switchEnvironment('env-r')
+        renderWithFlowProvider(<FlowsPanelHarness />)
+        await waitFor(() => expect(fetchFlowListMock).toHaveBeenCalledTimes(1))
+
+        await user.click(screen.getByRole('button', { name: 'New flow' }))
+        await user.type(screen.getByTestId('shared-dialog-input'), 'Beta')
+        await user.click(screen.getByTestId('shared-dialog-confirm'))
+        await waitFor(() => expect(saveFlowContentMock).toHaveBeenCalledOnce())
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+        act(() => useStore.setState({ activeFlow: 'local-flow' }))
+        await act(async () => saved.resolve(true))
+
+        expect(useStore.getState().activeFlow).toBe('local-flow')
     })
 
     it('keeps delete-flow refresh behavior intact', async () => {

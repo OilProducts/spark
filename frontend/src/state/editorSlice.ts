@@ -76,6 +76,7 @@ export const initialEditorSessionState = (route: RouteState = DEFAULT_ROUTE_STAT
     clientFlowEdgePorts: {},
     chatProjectOrder: [],
     clientRunPresentation: {},
+    editorMode: 'structured',
     selectedNodeId: null,
     selectedEdgeId: null,
     pendingEditorNodeSelection: null,
@@ -89,14 +90,17 @@ export const initialEditorSessionState = (route: RouteState = DEFAULT_ROUTE_STAT
     editorNodeInspectorSessionsByNodeId: {},
     flowMetadata: {},
     flowMetadataErrors: {},
+    flowMetadataUserEditVersion: 0,
     graphAttrs: {},
     graphAttrErrors: {},
+    graphAttrsUserEditVersion: 0,
     diagnostics: [],
     nodeDiagnostics: {},
     edgeDiagnostics: {},
     hasValidationErrors: false,
     uiDefaults: { ...DEFAULT_UI_DEFAULTS },
     saveState: 'idle',
+    saveStateVersion: 0,
     saveErrorMessage: null,
     saveErrorKind: null,
     saveErrorProblems: null,
@@ -129,7 +133,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
         set({ preferredShowThinking: show })
         completePreferenceInteraction({ show_thinking: show })
     },
-    editorMode: 'structured',
     setEditorMode: (mode) => set({ editorMode: mode }),
     setSelectedNodeId: (id) => set({ selectedNodeId: id }),
     setSelectedEdgeId: (id) => set({ selectedEdgeId: id }),
@@ -229,8 +232,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
             },
         }))
     },
-    flowMetadataUserEditVersion: 0,
-    graphAttrsUserEditVersion: 0,
     setFlowMetadata: (metadata) =>
         set((state) => deriveNextFlowMetadataState(state, metadata, true)),
     replaceFlowMetadata: (metadata) =>
@@ -305,7 +306,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
             const next = { ...state.uiDefaults, ...values }
             return { uiDefaults: next }
         }),
-    saveStateVersion: 0,
     markSaveInFlight: () =>
         set((state) => ({
             saveState: 'saving',

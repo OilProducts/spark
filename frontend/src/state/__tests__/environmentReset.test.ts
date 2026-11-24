@@ -33,6 +33,10 @@ it('starts a switched-to environment from fresh state, keeping the app-wide pref
         missionBoardLoaded: true,
         graphAttrs: { title: 'Local' },
         hasValidationErrors: true,
+        editorMode: 'files',
+        flowMetadataUserEditVersion: 2,
+        graphAttrsUserEditVersion: 2,
+        saveStateVersion: 3,
         clientPreferencesLoaded: true,
         chatProjectOrder: ['/local/project'],
         editorSidebarWidth: 400,
@@ -51,6 +55,7 @@ it('starts a switched-to environment from fresh state, keeping the app-wide pref
     const state = useStore.getState()
     const fresh = freshEnvironmentState()
     expect(Object.fromEntries(Object.keys(fresh).map((key) => [key, state[key as keyof typeof state]]))).toEqual(fresh)
+    expect(state).toMatchObject({ editorMode: 'structured', flowMetadataUserEditVersion: 0, graphAttrsUserEditVersion: 0, saveStateVersion: 0 })
     expect(state).toMatchObject({ editorSidebarWidth: 400, preferredEditorMode: 'files', preferredShowThinking: false })
     expect(cachedAppearance()).toBe('dark')
 

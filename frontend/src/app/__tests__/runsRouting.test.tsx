@@ -1,8 +1,10 @@
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { HistoryRoutingController } from '@/app/AppSessionControllers'
+import { EnvironmentBootstrap } from '@/app/EnvironmentSwitcher'
+import { useActiveEnvironment } from '@/lib/activeEnvironment'
 import { addsEntry, buildRunsHash, missionKey, parsePlaceHash, placeHash, roleKey, type Place } from '@/app/runsRouting'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- triggerKey names a trigger; it calls no API
 import { triggerKey, type TriggerResponse } from '@/lib/workspaceClient'
@@ -459,32 +461,33 @@ describe('routing across environments', () => {
         useStore.getState().setRunsSelectedRunId(runId)
         useStore.getState().setViewMode('runs')
     })
-    let unmount = () => {}
-    // As the app does: the workspace remounts in the environment switched to, with fresh state.
-    const showEnvironment = async (environmentId: string | null) => {
-        unmount()
-        await switchEnvironment(environmentId)
-        act(() => resetStoreForEnvironmentSwitch(environmentId === null))
-        unmount = render(<HistoryRoutingController />).unmount
-    }
+    // As the app does: the switch resets the store while the workspace is still mounted, which then
+    // remounts in the environment switched to.
+    const Workspace = () => <HistoryRoutingController key={useActiveEnvironment().activeEnvironmentId ?? 'local'} />
+    const showEnvironment = (environmentId: string | null) => act(() => switchEnvironment(environmentId))
 
     beforeEach(() => {
         resetHash()
         useStore.setState(useStore.getInitialState(), true)
         useStore.setState({ viewMode: 'home' })
+        // This machine's own environment list, which the bootstrap loads, isn't needed here.
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404 })))
     })
 
     afterEach(() => {
         cleanup()
         resetHash()
+        vi.unstubAllGlobals()
     })
 
-    it('leaves this machine where it is on Back or Forward to a remote environment\'s entry', async () => {
-        unmount = render(<HistoryRoutingController />).unmount
+    it('leaves this machine where it is on Back or Forward to a remote environment\'s entry, and switching adds none', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
         selectRun('local-run')
         await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run')))
+        const entries = window.history.length
 
         await showEnvironment('env-r')
+        expect(window.history.length).toBe(entries)
         // The local entry the switch happened on opens nothing remotely.
         expect(selectSelectedRunId(useStore.getState())).toBeNull()
         selectRun('remote-run')
@@ -493,6 +496,7 @@ describe('routing across environments', () => {
         await waitFor(() => expect(useStore.getState().viewMode).toBe('overview'))
 
         await showEnvironment(null)
+        expect(window.history.length).toBe(entries + 1)
         expect(useStore.getState().viewMode).toBe('runs')
         expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
         expect(window.location.hash).toBe(buildRunsHash('local-run'))

@@ -1,4 +1,5 @@
-import { useCallback, useMemo, type SetStateAction } from 'react'
+import { useCallback, useMemo, useState, type SetStateAction } from 'react'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { useStore } from '@/store'
 
 import type { PendingConversationTurnState, PendingUserMessage } from '../model/conversationState'
@@ -33,6 +34,10 @@ export function useProjectsHomeInteractionState({
     const homeConversationSessionsById = useStore((state) => state.homeConversationSessionsById)
     const updateHomeProjectSession = useStore((state) => state.updateHomeProjectSession)
     const updateHomeConversationSession = useStore((state) => state.updateHomeConversationSession)
+    // A chat's draft, error and turn are the environment this mounted in: a reply that lands after a
+    // switch writes none of them into the environment shown.
+    const [environmentId] = useState(getActiveEnvironmentId)
+    const shown = useCallback(() => getActiveEnvironmentId() === environmentId, [environmentId])
 
     const projectSession = useMemo(() => {
         if (!activeProjectPath) {
@@ -55,16 +60,16 @@ export function useProjectsHomeInteractionState({
     }, [activeConversationId, homeConversationSessionsById])
 
     const setChatDraft = useCallback((value: SetStateAction<string>) => {
-        if (!activeProjectPath) {
+        if (!activeProjectPath || !shown()) {
             return
         }
         updateHomeProjectSession(activeProjectPath, {
             chatDraft: typeof value === 'function' ? value(projectSession.chatDraft) : value,
         })
-    }, [activeProjectPath, projectSession.chatDraft, updateHomeProjectSession])
+    }, [activeProjectPath, projectSession.chatDraft, shown, updateHomeProjectSession])
 
     const setPendingConversationTurn = useCallback((value: SetStateAction<PendingConversationTurnState | null>) => {
-        if (!activeProjectPath) {
+        if (!activeProjectPath || !shown()) {
             return
         }
         updateHomeProjectSession(activeProjectPath, {
@@ -72,21 +77,21 @@ export function useProjectsHomeInteractionState({
                 ? value(projectSession.pendingConversationTurn)
                 : value,
         })
-    }, [activeProjectPath, projectSession.pendingConversationTurn, updateHomeProjectSession])
+    }, [activeProjectPath, projectSession.pendingConversationTurn, shown, updateHomeProjectSession])
 
     const setPanelError = useCallback((value: string | null) => {
-        if (!activeProjectPath) {
+        if (!activeProjectPath || !shown()) {
             return
         }
         updateHomeProjectSession(activeProjectPath, { panelError: value })
-    }, [activeProjectPath, updateHomeProjectSession])
+    }, [activeProjectPath, shown, updateHomeProjectSession])
 
     const setPendingDeleteConversationId = useCallback((value: string | null) => {
-        if (!activeProjectPath) {
+        if (!activeProjectPath || !shown()) {
             return
         }
         updateHomeProjectSession(activeProjectPath, { pendingDeleteConversationId: value })
-    }, [activeProjectPath, updateHomeProjectSession])
+    }, [activeProjectPath, shown, updateHomeProjectSession])
 
     const toggleToolCallExpanded = useCallback((toolCallId: string) => {
         if (!activeConversationId) {

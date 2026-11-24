@@ -3,6 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ClientPreferencesController } from '@/features/settings/ClientPreferencesController'
 import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
 import { useConversationComposer } from '@/features/projects/hooks/useConversationComposer'
+import { useProjectConversationCache } from '@/features/projects/hooks/useProjectConversationCache'
+import { useProjectsHomeController } from '@/features/projects/hooks/useProjectsHomeController'
+import { useProjectsHomeInteractionState } from '@/features/projects/hooks/useProjectsHomeInteractionState'
+import type { NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
+import { cachedAppearance, applyTheme } from '@/lib/theme'
+import { requestNavigation } from '@/state/workspaceSlice'
 import { primeFlowSaveBaseline, resetFlowSaveBaselines, saveFlowContent } from '@/lib/flowPersistence'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
@@ -15,6 +22,7 @@ const PROJECT = '/tmp/project'
 const flow = (title: string) => ({ flow: { schema_version: '2', id: 'demo', title, nodes: {} } })
 
 let sent: string[] = []
+let bodies: unknown[] = []
 let answer: (url: string, method: string) => unknown = () => ({})
 
 const json = (payload: unknown, status = 200) =>
@@ -24,9 +32,11 @@ beforeEach(() => {
     useStore.setState(useStore.getInitialState(), true)
     resetFlowSaveBaselines()
     sent = []
+    bodies = []
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const method = init?.method ?? 'GET'
         sent.push(`${method} ${String(input)}`)
+        bodies.push(typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body)
         const payload = await answer(String(input), method)
         return payload instanceof Response ? payload : json(payload)
     }))
@@ -123,6 +133,43 @@ it('saves a preference change to the environment it was made in, even once its l
     expect(useStore.getState().clientPreferencesLoaded).toBe(false)
 })
 
+it('saves a change queued behind a save in flight after the workspace unmounts, telling only its environment, and keeps this browser\'s appearance', async () => {
+    const view = (revision: string, width = 400) => ({ preferences: {
+        scope: 'client',
+        client_id: 'browser-one',
+        revision,
+        stored: { editor_mode: null, editor_sidebar_width: null },
+        effective: { editor_mode: 'files', editor_sidebar_width: width, appearance: 'dark' },
+    } })
+    localStorage.setItem('spark.client_id', 'browser-one')
+    applyTheme('light')
+    const firstSave = deferred<unknown>()
+    answer = (_url, method) => (method === 'GET' ? view('first') : sent.filter((request) => request.startsWith('PATCH')).length === 1 ? firstSave.promise : view('third', 500))
+    await switchEnvironment('env-r')
+    const { unmount } = render(<ClientPreferencesController />)
+    await waitFor(() => expect(useStore.getState().clientPreferencesLoaded).toBe(true))
+    // A remote environment's appearance leaves this browser's as it is.
+    expect(cachedAppearance()).toBe('light')
+
+    act(() => completePreferenceInteraction({ editor_sidebar_width: 450 }))
+    await waitFor(() => expect(sent.filter((request) => request.startsWith('PATCH'))).toHaveLength(1))
+    act(() => completePreferenceInteraction({ editor_sidebar_width: 500 }))
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    unmount()
+    const live = vi.fn()
+    window.addEventListener('spark:settings-live-event', live)
+    try {
+        firstSave.resolve(view('second', 450))
+        await waitFor(() => expect(sent.filter((request) => request.startsWith('PATCH'))).toHaveLength(2))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        expect(sent.every((request) => request.includes(REMOTE))).toBe(true)
+        expect(bodies.at(-1)).toMatchObject({ expected_revision: 'second', value: { preferences: { editor_sidebar_width: 500 } } })
+        expect(live).not.toHaveBeenCalled()
+    } finally { window.removeEventListener('spark:settings-live-event', live) }
+})
+
 it('sends a message and a mode switch delayed by a settings save to the environment they started in', async () => {
     const thread = {
         conversation_id: 'conversation-2',
@@ -135,7 +182,7 @@ it('sends a message and a mode switch delayed by a settings save to the environm
         turns: [],
         segments: [],
     }
-    const settingsSaved = deferred<boolean>()
+    const settingsSaved = deferred<boolean | string>()
     // The send fails, so its draft restore would show if it reached the local view.
     answer = (url) => (url.endsWith('/turns') ? json({ detail: 'busy' }, 500) : conversationMutationAck(thread))
     const applyConversationBatch = vi.fn()
@@ -150,7 +197,8 @@ it('sends a message and a mode switch delayed by a settings save to the environm
         waitForPendingSettingsSave: () => settingsSaved.promise,
         ensureConversationId: () => conversationId,
         getCurrentConversationId: () => conversationId,
-        getConversationRecord: () => undefined,
+        // The chat's record is in the remote cache until the switch resets it.
+        getConversationRecord: () => (getActiveEnvironmentId() === 'env-r' ? { settingsRevision: '5' } as NormalizedConversationRecord : undefined),
         applyConversationBatch,
         formatErrorMessage: (_error, fallback) => fallback,
         setChatDraft: vi.fn(),
@@ -166,7 +214,8 @@ it('sends a message and a mode switch delayed by a settings save to the environm
     resetStoreForEnvironmentSwitch(true)
     useStore.getState().updateHomeProjectSession(PROJECT, { chatDraft: 'Local draft' })
 
-    settingsSaved.resolve(true)
+    // The pending settings save acknowledged revision 7, after the mode switch began.
+    settingsSaved.resolve('7')
     await switching
     await waitFor(() => expect(sent).toHaveLength(2))
     // Let the failed send's handling finish.
@@ -176,6 +225,7 @@ it('sends a message and a mode switch delayed by a settings save to the environm
         `POST ${REMOTE}/workspace/api/conversations/conversation-1/turns`,
         `PUT ${REMOTE}/workspace/api/conversations/conversation-2/settings`,
     ]))
+    expect(bodies[sent.indexOf(`PUT ${REMOTE}/workspace/api/conversations/conversation-2/settings`)]).toMatchObject({ expected_revision: '7' })
     expect(applyConversationBatch).not.toHaveBeenCalled()
     expect(setPanelError).not.toHaveBeenCalled()
     expect(setPendingConversationTurn).not.toHaveBeenCalled()
@@ -183,4 +233,75 @@ it('sends a message and a mode switch delayed by a settings save to the environm
     expect(state.homeProjectSessionsByPath[PROJECT]?.chatDraft).toBe('Local draft')
     expect(state.homeConversationSessionsById).toEqual({})
     expect(state.sendingChats).toEqual({})
+})
+
+it('writes nothing from a chat reply or deferred navigation that lands after a switch', async () => {
+    await switchEnvironment('env-r')
+    const cache = renderHook(() => useProjectConversationCache({
+        persistProjectState: vi.fn(async () => {}),
+        projectSessionsByPath: {},
+        updateProjectSessionState: vi.fn(),
+    }))
+    const interaction = renderHook(() => useProjectsHomeInteractionState({ activeConversationId: 'conversation-1', activeProjectPath: PROJECT }))
+    // An open editor holds navigation until its saves finish.
+    let release = () => {}
+    const hold = (event: Event) => {
+        event.preventDefault()
+        release = (event as CustomEvent<{ proceed: () => void }>).detail.proceed
+    }
+    window.addEventListener('spark:before-navigation', hold)
+    const open = vi.fn()
+    try {
+        requestNavigation(open)
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+        const local = useStore.getState()
+
+        release()
+        act(() => {
+            cache.result.current.commitConversationCache((current) => ({ ...current, conversationsById: { remote: {} as NormalizedConversationRecord } }))
+            interaction.result.current.setChatDraft('Remote draft')
+            interaction.result.current.setPanelError('Remote error')
+        })
+
+        expect(open).not.toHaveBeenCalled()
+        expect(useStore.getState().homeConversationCache).toBe(local.homeConversationCache)
+        expect(useStore.getState().homeProjectSessionsByPath).toEqual({})
+    } finally { window.removeEventListener('spark:before-navigation', hold) }
+})
+
+it('switches a chat\'s mode at the revision a model save before it acknowledged, when the save lands after a switch', async () => {
+    const thread = (revision: number) => ({
+        conversation_id: 'conversation-1', project_path: PROJECT, title: 'Thread', created_at: '2026-09-01T00:00:00Z',
+        updated_at: '2026-09-01T00:00:00Z', revision, chat_mode: 'chat', turns: [], segments: [],
+    })
+    const modelSaved = deferred<unknown>()
+    const puts = () => sent.filter((request) => request.startsWith('PUT') && request.endsWith('/settings'))
+    answer = (url, method) => {
+        if (url.includes('/projects/chat-models')) return { providers: { codex: { status: 'available', error: null, label: 'Codex' } }, models: [
+            { provider: 'codex', id: 'gpt-5.4', display: 'GPT-5.4', is_default: true, supported_reasoning_efforts: ['medium'], default_reasoning_effort: 'medium' },
+        ] }
+        if (url.endsWith('/workspace/api/settings')) return { models: { scope: 'project', source: 'workspace', revision: '1', stored: null,
+            effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null } } }
+        if (method === 'PUT' && url.endsWith('/settings')) return puts().length === 1 ? modelSaved.promise : conversationMutationAck(thread(9))
+        return {}
+    }
+    await switchEnvironment('env-r')
+    act(() => {
+        useStore.getState().registerProject(PROJECT)
+        useStore.getState().setActiveProjectPath(PROJECT)
+    })
+    const { result, unmount } = renderHook(() => useProjectsHomeController())
+    await waitFor(() => expect(result.current.surfaceProps.onChatModeChange).toBeDefined())
+    act(() => result.current.surfaceProps.onModelSettingsChange({ provider: 'codex', llm_profile: null, model: 'gpt-5.4', reasoning_effort: 'medium' }))
+    await waitFor(() => expect(puts()).toHaveLength(1))
+    act(() => result.current.surfaceProps.onChatModeChange?.('plan'))
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    unmount()
+
+    modelSaved.resolve(conversationMutationAck(thread(7)))
+    await waitFor(() => expect(puts()).toHaveLength(2))
+    expect(puts().every((request) => request.includes(REMOTE))).toBe(true)
+    expect(bodies[sent.lastIndexOf(puts()[1])]).toMatchObject({ chat_mode: 'plan', expected_revision: '7' })
 })

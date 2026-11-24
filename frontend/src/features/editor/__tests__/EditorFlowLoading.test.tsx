@@ -1,5 +1,5 @@
 import { Editor } from '@/features/editor/Editor'
-import { useStore } from '@/store'
+import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { ReactFlowProvider } from '@xyflow/react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EditorPreviewResponse } from '@/features/editor/services/editorPreview'
 import { resetFlowSaveBaselines } from '@/lib/flowPersistence'
 import { ApiHttpError } from '@/lib/attractorClient'
+import { switchEnvironment } from '@/test/environments'
 import {
   loadEditorFlowFiles,
   loadEditorFlowPayload,
@@ -426,6 +427,40 @@ describe('Editor structured metadata', () => {
     expect(body.flow.title).toBe('Edited title')
     expect(body.flow.metadata).toEqual(metadata)
     expect(useStore.getState().flowMetadata).toMatchObject(metadata)
+  })
+
+  it('leaves for the files only in the environment the click was made in', async () => {
+    const user = userEvent.setup()
+    const save = createDeferred<Response>()
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => (String(url).endsWith('/api/flows') && init?.method === 'POST'
+      ? save.promise
+      : Promise.resolve(new Response(JSON.stringify({ status: 'ok' }), { status: 200 }))))
+    vi.stubGlobal('fetch', fetchMock)
+    await switchEnvironment('env-r')
+    const { unmount } = renderEditor()
+    const filesButton = screen.getByRole('button', { name: 'Files' })
+    await waitFor(() => expect(filesButton).toBeEnabled())
+    await user.click(filesButton)
+    await user.click(await screen.findByRole('button', { name: 'Structured' }))
+    await waitFor(() => expect(useStore.getState().editorMode).toBe('structured'))
+    act(() => useStore.getState().updateFlowMetadata('title', 'Edited title'))
+    const completed = vi.fn()
+    window.addEventListener('spark:preferences-completed', completed)
+    try {
+      // The click waits on the remote save; the switch happens meanwhile, as the app does it.
+      await user.click(filesButton)
+      await waitFor(() => expect(flowSaveRequests(fetchMock)).toHaveLength(1))
+      await switchEnvironment(null)
+      resetStoreForEnvironmentSwitch(true)
+      unmount()
+      await act(async () => save.resolve(new Response(JSON.stringify({ status: 'saved', name: 'bundled-flow' }), { status: 200 })))
+
+      expect(flowSaveRequests(fetchMock).map(([url]) => String(url))).toEqual([
+        '/workspace/api/environments/links/env-r/proxy/attractor/api/flows',
+      ])
+      expect(useStore.getState()).toMatchObject({ editorMode: 'structured', preferredEditorMode: 'structured' })
+      expect(completed).not.toHaveBeenCalled()
+    } finally { window.removeEventListener('spark:preferences-completed', completed) }
   })
 })
 

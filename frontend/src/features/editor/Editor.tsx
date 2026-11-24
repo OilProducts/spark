@@ -13,7 +13,8 @@ import {
 import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeParams } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { useStore, type EditorMode, type FlowDefinitionMetadata } from '@/store';
+import { captureShownWorkspace, useStore, type EditorMode, type FlowDefinitionMetadata } from '@/store';
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment';
 import { LaunchPanel } from '@/features/launch';
 import { defaultProjectChoice, launchWorkingDirectory } from '@/features/projects/model/projectChoices';
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState';
@@ -361,6 +362,8 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
     const { setViewport, getZoom } = useReactFlow();
     const [nodes, setNodes] = useNodesState<Node>([]);
     const [edges, setEdges] = useEdgesState<Edge>([]);
+    // Layouts belong to the environment this editor mounted in; one that finishes after a switch is dropped.
+    const [environmentId] = useState(getActiveEnvironmentId);
     const hydratedRef = useRef(false);
     const hydratedFlowNameRef = useRef<string | null>(null);
     // A flow belongs to a project: the same name in another project is another flow.
@@ -570,7 +573,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
     })
 
     const persistLayoutState = useCallback((layout?: SavedFlowLayoutV1 | null, userControlled = true) => {
-        if (!flowName || expandChildFlowsRef.current) {
+        if (!flowName || expandChildFlowsRef.current || getActiveEnvironmentId() !== environmentId) {
             return
         }
         const nextLayout = layout ?? layoutStateRef.current
@@ -584,7 +587,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             nextLayout,
             userControlled,
         )
-    }, [flowName])
+    }, [environmentId, flowName])
 
     const runEdgeRouting = useCallback(async (
         nextNodes: Node[],
@@ -1559,11 +1562,13 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             return;
         }
         // Each view leaves only once its edits are saved; a refused save keeps them, and its error, in view.
+        // A switch of environment or project meanwhile ends it: what is shown is another flow.
+        const shown = captureShownWorkspace();
         setSwitchingEditorMode(true);
         try {
             if (editorMode === 'files') {
                 const savedDrafts = fileDrafts;
-                if (!(await saveFileDrafts())) return;
+                if (!(await saveFileDrafts()) || !shown()) return;
                 // Edits typed while the save ran aren't in it: stay in the files with them unsaved.
                 if (fileDraftsRef.current !== savedDrafts) return;
                 setFileDrafts({});
@@ -1574,7 +1579,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 // A refused save is reported by the save indicator.
                 flushPendingSave();
                 await waitForFlowSaves();
-                if (!(await saveNow({ nodes, edges }))) return;
+                if (!shown() || !(await saveNow({ nodes, edges })) || !shown()) return;
                 reloadFlow();
             }
             setEditorMode(mode);
@@ -1968,9 +1973,15 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                                 // Runs launch the saved flow by name: persist the current
                                 // content first (a no-op when already saved, a retry after
                                 // a failed autosave), after any earlier save settles.
+                                // A switch of environment or project meanwhile stops the launch: this flow isn't shown there.
                                 prepareLaunch: async () => {
+                                    const shown = captureShownWorkspace();
                                     await waitForFlowSaves();
-                                    if (!(await saveNow({ nodes, edges }))) {
+                                    const saved = shown() && await saveNow({ nodes, edges });
+                                    if (!shown()) {
+                                        throw new Error('The environment or project changed before the run started.');
+                                    }
+                                    if (!saved) {
                                         throw new Error('Saving the flow failed; fix the save error before running.');
                                     }
                                 },

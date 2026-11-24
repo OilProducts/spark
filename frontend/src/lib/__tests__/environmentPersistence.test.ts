@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { markAttentionSeen, readAttentionWatermark } from '@/features/overview/model/overviewModel'
+import { markAttentionSeen, markFinishedSeen, readAttentionWatermark, readFinishedWatermark } from '@/features/overview/model/overviewModel'
 import { markChatRead, readChatReadState } from '@/features/projects/model/chatReadState'
 import { fetchClientPreferences, type ClientPreferencesView } from '@/features/settings/services/clientPreferences'
 import type { AttentionItem } from '@/lib/api/attentionApi'
+import type { RunRecord } from '@/features/runs/model/shared'
 import { loadSavedFlowLayout, saveSavedFlowLayout } from '@/lib/flowLayoutPersistence'
 import { useStore } from '@/store'
 import { deferred, switchEnvironment } from '@/test/environments'
@@ -23,16 +24,20 @@ afterEach(() => {
 })
 
 it('keeps the Overview watermarks per environment', async () => {
-    const seen = (updatedAt: string) => markAttentionSeen([{ updated_at: updatedAt } as AttentionItem])
+    const seen = (at: string) => {
+        markAttentionSeen([{ updated_at: at } as AttentionItem])
+        markFinishedSeen([{ run_id: 'run-1', parent_run_id: null, status: 'completed', outcome: 'success', ended_at: at } as RunRecord], [])
+    }
+    const watermarks = () => [readAttentionWatermark(), readFinishedWatermark()]
     seen('2026-11-01T00:00:00Z')
     await switchEnvironment('env-r')
-    expect(readAttentionWatermark()).toBeNull()
+    expect(watermarks()).toEqual([null, null])
     seen('2026-11-20T00:00:00Z')
 
     await switchEnvironment(null)
-    expect(readAttentionWatermark()).toBe(Date.parse('2026-11-01T00:00:00Z'))
+    expect(watermarks()).toEqual([Date.parse('2026-11-01T00:00:00Z'), Date.parse('2026-11-01T00:00:00Z')])
     await switchEnvironment('env-r')
-    expect(readAttentionWatermark()).toBe(Date.parse('2026-11-20T00:00:00Z'))
+    expect(watermarks()).toEqual([Date.parse('2026-11-20T00:00:00Z'), Date.parse('2026-11-20T00:00:00Z')])
 })
 
 it('caches flow layouts per environment, and loads positions only into the environment that asked', async () => {

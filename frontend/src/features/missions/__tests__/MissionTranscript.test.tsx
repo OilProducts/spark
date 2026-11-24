@@ -1,12 +1,13 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
+import { switchEnvironment } from '@/test/environments'
 import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
 import { parseConversationPageResponse } from '@/lib/workspaceClient'
 import { applyConversationPage } from '@/features/projects/model/projectsHomeState'
 import { conversationPage } from '@/test/conversationWire'
 import { buildRunsHash } from '@/app/runsRouting'
-import { MissionTranscript } from '../MissionTranscript'
+import { MissionTranscript, RunLink } from '../MissionTranscript'
 import type { MissionRun } from '../model/missionModel'
 
 const retry = vi.hoisted(() => vi.fn(async () => ({})))
@@ -137,4 +138,10 @@ it('shows run recoveries as run cards linking the resulting run, a pending one a
     expect(pendingRetry).not.toHaveTextContent('Failed')
     expect(screen.getByRole('link', { name: 'Build the index' })).toHaveAttribute('href', buildRunsHash('run-source'))
     expect(screen.getAllByRole('link')).toHaveLength(2)
+})
+
+it('links a run in the environment it is in', async () => {
+    await switchEnvironment('env-r')
+    render(<RunLink runId="run-1">Build</RunLink>)
+    expect(screen.getByRole('link', { name: 'Build' })).toHaveAttribute('href', `${buildRunsHash('run-1')}?env=env-r`)
 })

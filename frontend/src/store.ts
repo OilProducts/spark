@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { isRemoteEnvironmentActive } from './lib/activeEnvironment'
+import { getActiveEnvironmentId, isRemoteEnvironmentActive } from './lib/activeEnvironment'
 import { createEditorSlice, initialEditorSessionState } from './state/editorSlice'
 import { createHomeSessionSlice, initialHomeSessionState } from './state/homeSessionSlice'
 import { createRunsSessionSlice, initialRunsSessionState } from './state/runsSessionSlice'
@@ -33,6 +33,16 @@ export const selectRouteState = (state: AppState): RouteState => ({
     activeFlow: state.activeFlow,
     settingsCategory: state.settingsCategory,
 })
+
+/**
+ * Captures the environment and project shown; the check it returns says whether both still are, so
+ * work that finishes later writes nothing into what replaced them.
+ */
+export function captureShownWorkspace(): () => boolean {
+    const environmentId = getActiveEnvironmentId()
+    const projectPath = useStore.getState().activeProjectPath
+    return () => getActiveEnvironmentId() === environmentId && useStore.getState().activeProjectPath === projectPath
+}
 
 /** Reopens the route's run and trigger, which their sessions hold. */
 function restoreRouteSelections(route: RouteState) {

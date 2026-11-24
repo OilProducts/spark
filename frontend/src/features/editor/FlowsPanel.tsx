@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { ChevronDown, Plus, RefreshCw, Search } from 'lucide-react'
 
-import { useStore } from '@/store'
+import { captureShownWorkspace, useStore } from '@/store'
 import { sanitizeFlowId } from '@/lib/canonicalFlowModel'
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { useDialogController } from '@/components/app/dialog-controller'
@@ -193,11 +193,13 @@ function useFlowCatalogPanel() {
             },
         }
 
+        // Created after a switch of environment or project, the flow isn't in the list shown: it opens nothing.
+        const shown = captureShownWorkspace()
         const saved = await saveFlowContent(fileName, { flow })
-        if (!saved) return
+        if (!saved || !shown()) return
 
         await refreshFlows();
-        setActiveFlow(fileName);
+        if (shown()) setActiveFlow(fileName);
     }
 
     const handleDeleteFlow = async (e: MouseEvent, fileName: string) => {

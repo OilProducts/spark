@@ -129,7 +129,8 @@ export async function saveClientPreferences(view: ClientPreferencesView, prefere
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expected_revision: view.revision, section: 'client_preferences', value: { client_id: view.client_id, preferences } }),
     }, '/workspace/api/settings', parseClientPreferences, environmentId)
-    window.dispatchEvent(new Event('spark:settings-live-event'))
+    // Saved after a switch: the settings shown are another environment's, and didn't change.
+    if (getActiveEnvironmentId() === environmentId) window.dispatchEvent(new Event('spark:settings-live-event'))
     return result
 }
 

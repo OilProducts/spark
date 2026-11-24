@@ -632,6 +632,10 @@ function applyPlace(place: Place): boolean {
  */
 export function HistoryRoutingController() {
     useEffect(() => {
+        // This routes the environment it mounted in. A switch resets the store before it unmounts,
+        // and from then on it records and applies nothing, or the reset would add an entry.
+        const environmentId = getActiveEnvironmentId()
+        const retired = () => getActiveEnvironmentId() !== environmentId
         const hash = window.location.hash
         const linked = parsePlaceHash(hash, projectInView())
         // Another environment's link (a reload while one was shown starts on this machine) opens nothing.
@@ -644,7 +648,7 @@ export function HistoryRoutingController() {
         const opened = placeHash(current)
         const stopWaiting: () => void = projectInView() || foreign ? () => {} : useStore.subscribe(() => {
             const project = projectInView()
-            if (!project) return
+            if (!project || retired()) return
             stopWaiting()
             const place = parsePlaceHash(hash, project)
             if (place && placeHash(placeOf(useStore.getState())) === opened) applyPlace(place)
@@ -654,6 +658,7 @@ export function HistoryRoutingController() {
         let scheduled = false
         const record = () => {
             scheduled = false
+            if (retired()) return
             const next = placeOf(useStore.getState())
             if (addsEntry(useStore.getState(), current, next)) {
                 window.history.pushState({ sparkPlace: next }, '', placeHash(next))
@@ -672,6 +677,7 @@ export function HistoryRoutingController() {
         // A link that names no place, one in another environment, or one it can't reach now, leaves
         // the app where it is, and the link's entry then says where.
         const onNavigate = () => {
+            if (retired()) return
             const entry = window.history.state?.sparkPlace as Place | undefined
             const place = entry ?? parsePlaceHash(window.location.hash, projectInView())
             const held = place !== null && !isForeignPlace(place) && !applyPlace(place)

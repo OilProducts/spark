@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { useStore } from '@/store'
 import type {
     ConversationBatch,
@@ -49,6 +50,10 @@ export function useProjectConversationCache({
     const commitHomeConversationCache = useStore((state) => state.commitHomeConversationCache)
     const setHomeThreadSummariesStatus = useStore((state) => state.setHomeThreadSummariesStatus)
     const projectSessionsRef = useRef(projectSessionsByPath)
+    // The chats cached here are the environment this mounted in: once another is shown, late replies
+    // to its requests change nothing.
+    const [environmentId] = useState(getActiveEnvironmentId)
+    const shown = useCallback(() => getActiveEnvironmentId() === environmentId, [environmentId])
 
     useEffect(() => {
         projectSessionsRef.current = projectSessionsByPath
@@ -59,8 +64,9 @@ export function useProjectConversationCache({
             | typeof conversationCache
             | ((current: typeof conversationCache) => typeof conversationCache),
     ) => {
+        if (!shown()) return
         commitHomeConversationCache(typeof next === 'function' ? next(currentCache()) : next)
-    }, [commitHomeConversationCache])
+    }, [commitHomeConversationCache, shown])
 
     // A newer request for the same project supersedes an older one, whatever order they land in.
     const summaryRequestEpochs = useRef<Record<string, number>>({})
@@ -71,21 +77,22 @@ export function useProjectConversationCache({
         setHomeThreadSummariesStatus(projectPath, 'loading', null)
         try {
             const snapshot = await fetchProjectConversationListValidated(projectPath)
-            if (summaryRequestEpochs.current[projectPath] === epoch) {
+            if (summaryRequestEpochs.current[projectPath] === epoch && shown()) {
                 // Rows the live feed applied while the request was in flight outrank it by revision.
                 commitConversationCache((current) => applySummarySnapshotToCache(current, snapshot, 'http', projectPath))
                 setHomeThreadSummariesStatus(projectPath, 'ready', null)
             }
         } catch {
-            if (summaryRequestEpochs.current[projectPath] === epoch) {
+            if (summaryRequestEpochs.current[projectPath] === epoch && shown()) {
                 setHomeThreadSummariesStatus(projectPath, 'error', 'Unable to load threads.')
             }
         }
-        return currentCache().summariesByProjectPath[projectPath] ?? []
-    }, [commitConversationCache, setHomeThreadSummariesStatus])
+        return shown() ? currentCache().summariesByProjectPath[projectPath] ?? [] : []
+    }, [commitConversationCache, setHomeThreadSummariesStatus, shown])
 
     // A response that answers the open chat keeps it open in its project.
     const syncActiveConversation = useCallback((projectPath: string, conversationId: string) => {
+        if (!shown()) return
         const latestProjectScope = projectSessionsRef.current[projectPath]
         updateProjectSessionState(projectPath, { conversationId })
         if (latestProjectScope?.conversationId !== conversationId) {
@@ -94,7 +101,7 @@ export function useProjectConversationCache({
                 last_accessed_at: new Date().toISOString(),
             })
         }
-    }, [persistProjectState, updateProjectSessionState])
+    }, [persistProjectState, shown, updateProjectSessionState])
 
     /** A `window` page replaces the loaded window; an `older` page extends it. */
     const applyConversationPage = useCallback((

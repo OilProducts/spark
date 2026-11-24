@@ -26,14 +26,11 @@ function updateDraft(conversationId: string, update: (current: ComposerAttachmen
     useStore.getState().updateHomeConversationSession(conversationId, { attachments: update(readDraft(conversationId)) })
 }
 
+/** Updates a draft attachment still listed; one removed, or reset away by a switch, stays gone. */
 function setEntry(conversationId: string, localId: string, patch: Partial<ComposerAttachment>): boolean {
-    let found = false
-    updateDraft(conversationId, (current) => current.map((entry) => {
-        if (entry.localId !== localId) return entry
-        found = true
-        return { ...entry, ...patch }
-    }))
-    return found
+    if (!readDraft(conversationId).some((entry) => entry.localId === localId)) return false
+    updateDraft(conversationId, (current) => current.map((entry) => (entry.localId === localId ? { ...entry, ...patch } : entry)))
+    return true
 }
 
 async function upload(conversationId: string, entry: ComposerAttachment) {

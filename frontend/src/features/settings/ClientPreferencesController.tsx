@@ -20,7 +20,9 @@ export function ClientPreferencesController() {
         const current = () => !cancelled && getActiveEnvironmentId() === environmentId
         const apply = (value: ClientPreferencesView) => {
             saved.current = value
-            applyTheme(value.effective.appearance ?? 'system')
+            // The appearance is this browser's, kept by this machine's preferences; a remote
+            // environment's never replaces it.
+            if (environmentId === null) applyTheme(value.effective.appearance ?? 'system')
             useStore.setState(() => ({
                 clientPreferencesLoaded: true,
                 clientFlowNodePositions: value.effective.flow_node_positions ?? {},
@@ -43,8 +45,10 @@ export function ClientPreferencesController() {
                 if (current() && saved.current === base && !pending.current && !draft.current) { apply(value); setError(null) }
             }).catch(() => { if (current() && saved.current === base && !pending.current && !draft.current) setError({ kind: 'load', message: 'Couldn’t load your preferences, so Spark is using its defaults.' }) })
         }
+        // A change completed here is saved here even if the workspace unmounts first, as a switch does
+        // while an earlier save is in flight; only what it shows waits on current().
         const save = async () => {
-            if (!draft.current || pending.current || !current()) return
+            if (!draft.current || pending.current) return
             const submitted = draft.current
             pending.current = true
             try {

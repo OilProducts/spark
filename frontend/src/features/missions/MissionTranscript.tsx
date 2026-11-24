@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react'
 import { Check, CircleHelp, Flag, Pencil, Play, X, Zap } from 'lucide-react'
 import { useStore } from '@/store'
-import { buildRunsHash } from '@/app/runsRouting'
+import { placeHash } from '@/app/runsRouting'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { InlineError } from '@/components/app/inline-error'
 import { SectionHeading } from '@/components/app/section-heading'
 import { statusTextClassName } from '@/components/app/status'
@@ -31,9 +32,9 @@ export function openRun(runId: string) {
 
 export const formatTime = (value: string) => formatRunDate(value, Date.now())
 
-/** A run's title linking to it on the Runs page. */
+/** A run's title linking to it on the Runs page, in the environment it is in. */
 export function RunLink({ runId, className, children }: { runId: string; className?: string; children: ReactNode }) {
-    return <a href={buildRunsHash(runId)} className={cn('text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', className)} onClick={e => {
+    return <a href={placeHash({ envId: getActiveEnvironmentId(), view: 'runs', runId })} className={cn('text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', className)} onClick={e => {
         if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
         e.preventDefault(); openRun(runId)
     }}>{children}</a>

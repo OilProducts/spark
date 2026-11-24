@@ -100,8 +100,11 @@ type UseConversationComposerArgs = {
     llmProfiles?: LlmProfileMetadata[]
     onModelSettingsChange?: (value: ModelSettings) => void
     onOpenModelPicker?: () => void
-    /** Awaits any in-flight model settings save so a competing send uses acknowledged settings without 409 conflicts. */
-    waitForPendingSettingsSave?: (conversationId: string) => Promise<boolean>
+    /**
+     * Awaits any in-flight model settings save so a competing send uses acknowledged settings without
+     * 409 conflicts: false when one failed, else the settings revision they acknowledged (true when none ran).
+     */
+    waitForPendingSettingsSave?: (conversationId: string) => Promise<boolean | string>
     /** Set when the active harness does not support Plan mode; blocks `/plan` before switching. */
     planModeUnsupportedReason?: string | null
     ensureConversationId: () => string | null
@@ -146,7 +149,7 @@ export function useConversationComposer({
     setPanelError,
     setPendingConversationTurn,
 }: UseConversationComposerArgs) {
-    const awaitSettingsReady = async (conversationId: string): Promise<boolean> => {
+    const awaitSettingsReady = async (conversationId: string): Promise<boolean | string> => {
         if (!waitForPendingSettingsSave) return true
         if (awaitingSettingsTurn.has(conversationId)) return false
         awaitingSettingsTurn.add(conversationId)
@@ -167,9 +170,16 @@ export function useConversationComposer({
             return
         }
         const environmentId = getActiveEnvironmentId()
-        if (!(await awaitSettingsReady(conversationId))) {
+        const initialRevision = getConversationRecord(conversationId)?.settingsRevision
+        const ready = await awaitSettingsReady(conversationId)
+        if (!ready) {
             return
         }
+        // Shown, the chat's record holds every acknowledged save; after a switch it is gone, and the
+        // pending settings save, if one ran, acknowledged the newest revision.
+        const expectedRevision = (isShown(environmentId) ? getConversationRecord(conversationId)?.settingsRevision : undefined)
+            ?? (typeof ready === 'string' ? ready : initialRevision)
+            ?? '0'
         if (isShown(environmentId)) setPanelError(null)
         try {
             // Changed and unchanged settings both answer with the conversation row; the reducer
@@ -177,7 +187,7 @@ export function useConversationComposer({
             const ack = await updateConversationSettingsValidated(conversationId, {
                 project_path: activeProjectPath,
                 chat_mode: chatMode,
-                expected_revision: getConversationRecord(conversationId)?.settingsRevision ?? '0',
+                expected_revision: expectedRevision,
             }, environmentId)
             if (!isShown(environmentId)) return
             applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'settings-response', {

@@ -111,7 +111,7 @@ export function useProjectsHomeController() {
     // provider shown under a freshly picked provider).
     const [chatSettingsDrafts, setChatSettingsDrafts] = useState<Record<string, ModelSettings>>({})
     const pendingChatSettings = activeConversationId ? chatSettingsDrafts[activeConversationId] ?? null : null
-    const chatSettingsSaves = useRef(new Map<string, { values: ModelSettings | null; promise: Promise<boolean> }>())
+    const chatSettingsSaves = useRef(new Map<string, { values: ModelSettings | null; promise: Promise<boolean>; revision?: string }>())
     const projectsHomeViewModel = useMemo(() => buildProjectsHomeViewModel({
         activeConversationId,
         activeConversationRecord,
@@ -309,7 +309,7 @@ export function useProjectsHomeController() {
             running.values = values
             return running.promise
         }
-        const save: { values: ModelSettings | null; promise: Promise<boolean> } = {
+        const save: { values: ModelSettings | null; promise: Promise<boolean>; revision?: string } = {
             values,
             promise: Promise.resolve(true),
         }
@@ -329,6 +329,7 @@ export function useProjectsHomeController() {
                         model_settings: saving,
                     }, environmentId)
                     revision = ack.revision
+                    save.revision = revision
                     if (shown()) applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'chat-settings-response')
                     if (save.values === saving) break
                 }
@@ -353,12 +354,16 @@ export function useProjectsHomeController() {
         return run
     }, [activeProjectPath, applyConversationBatch, ensureConversationId, setPanelError, currentModelSettings])
 
-    const waitForPendingSettingsSave = useCallback(async (conversationId: string): Promise<boolean> => {
+    // A request waiting on these saves gets the settings revision they acknowledged, as it can't read
+    // it from the chat's record once a switch reset it.
+    const waitForPendingSettingsSave = useCallback(async (conversationId: string): Promise<boolean | string> => {
+        let acknowledged: boolean | string = true
         while (true) {
             const running = chatSettingsSaves.current.get(conversationId)
-            if (!running) return true
+            if (!running) return acknowledged
             const ok = await running.promise
             if (!ok) return false
+            acknowledged = running.revision ?? acknowledged
         }
     }, [])
 

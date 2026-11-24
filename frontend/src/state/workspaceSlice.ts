@@ -1,4 +1,5 @@
 import { type StateCreator } from 'zustand'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
 import {
     buildHydrateProjectRegistryTransition,
@@ -47,9 +48,14 @@ export const initialWorkspaceState = (route: RouteState = DEFAULT_ROUTE_STATE) =
     flowLoadFailure: null,
 }) satisfies Partial<WorkspaceSlice>
 
-/** Runs proceed once open editors allow leaving; a cancelled or blocked leave never runs it. */
+/**
+ * Runs proceed once open editors allow leaving; a cancelled or blocked leave never runs it, nor does
+ * one let through after a switch to another environment, which it would move instead.
+ */
 export const requestNavigation = (proceed: () => void) => {
-    if (window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail: { proceed } }))) proceed()
+    const environmentId = getActiveEnvironmentId()
+    const go = () => { if (getActiveEnvironmentId() === environmentId) proceed() }
+    if (window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail: { proceed: go } }))) go()
 }
 
 export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice> = (rawSet, get) => {

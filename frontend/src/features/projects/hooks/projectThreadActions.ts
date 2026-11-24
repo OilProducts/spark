@@ -5,6 +5,7 @@ import {
     fetchProjectConversationListValidated,
 } from '@/lib/workspaceClient'
 import { useDialogController } from '@/components/app/dialog-controller'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { useStore } from '@/store'
 import { requestNavigation } from '@/state/workspaceSlice'
 import {
@@ -99,8 +100,11 @@ export function useProjectThreadActions({
         }
         setPanelError(null)
         setPendingDeleteConversationId(conversationId)
+        const environmentId = getActiveEnvironmentId()
         try {
             await deleteConversationValidated(conversationId, projectPath)
+            // Deleted after a switch: the chats shown are another environment's, and stay as they are.
+            if (getActiveEnvironmentId() !== environmentId) return
             commitConversationCache((current) => removeConversationFromCache({
                 ...current,
                 summariesByProjectPath: {
