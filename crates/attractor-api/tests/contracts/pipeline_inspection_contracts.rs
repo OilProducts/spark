@@ -170,6 +170,49 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
         serde_json::from_str(source.body.as_str().expect("source")).expect("definition JSON");
     assert_eq!(definition["id"], json!("api_inspect"));
 
+    assert_eq!(source.content_disposition, None);
+
+    // A download names the file by its last segment, in a safe quoted form.
+    let bundle = RunStore::for_settings(&settings)
+        .read_run_bundle("run-inspect")
+        .expect("read")
+        .expect("run");
+    fs::write(
+        bundle.paths.artifacts_dir().join("my \"report\";v1.html"),
+        "<p>report</p>",
+    )
+    .expect("html artifact");
+    for (query, expected) in [
+        (
+            "?download=1",
+            Some(r#"attachment; filename="my__report__v1.html""#),
+        ),
+        (
+            "?download=true",
+            Some(r#"attachment; filename="my__report__v1.html""#),
+        ),
+        ("?download=0", None),
+        ("", None),
+    ] {
+        let download = handle_attractor_request(
+            "GET",
+            &format!("/attractor/pipelines/run-inspect/artifacts/artifacts/my%20%22report%22%3Bv1.html{query}"),
+            "",
+            settings.clone(),
+        );
+        assert_eq!(download.status_code, 200, "{query}");
+        assert_eq!(download.body, json!("<p>report</p>"), "{query}");
+        assert_eq!(download.content_disposition.as_deref(), expected, "{query}");
+    }
+    let missing_download = handle_attractor_request(
+        "GET",
+        "/attractor/pipelines/run-inspect/artifacts/artifacts/missing.txt?download=1",
+        "",
+        settings.clone(),
+    );
+    assert_eq!(missing_download.status_code, 404);
+    assert_eq!(missing_download.content_disposition, None);
+
     let traversal = service.get_pipeline_artifact_file("run-inspect", "../run.json");
     assert_eq!(traversal.status_code, 400);
     assert_eq!(traversal.body, json!({"detail": "Invalid artifact path"}));

@@ -1,13 +1,13 @@
 //! Routes under `/workspace/api` for links to other environments, the
 //! delegations this environment sends, and the ones it admits.
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{header, HeaderName, HeaderValue, StatusCode};
-use axum::response::Response;
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,8 @@ use crate::{HttpAppState, WorkspaceApiError};
 type ApiResult<T> = Result<Json<T>, WorkspaceApiError>;
 
 pub(crate) fn router() -> Router<HttpAppState> {
+    // Read at startup, before an upgrade can replace the binary.
+    build_id();
     Router::new()
         .route("/environments/links", get(list_links).post(add_link))
         .route(
@@ -48,6 +50,7 @@ pub(crate) fn router() -> Router<HttpAppState> {
             "/environments/links/{environment_id}/proxy/{*rest}",
             any(proxy_linked_environment),
         )
+        .route("/environment", get(environment))
         .route("/delegations", get(list_delegations).post(start))
         .route("/delegations/{delegation_id}", get(get_delegation))
         .route("/delegations/{delegation_id}/wait", get(wait))
@@ -195,37 +198,122 @@ fn proxy_client() -> Result<&'static reqwest::Client, WorkspaceError> {
         .map_err(|error| WorkspaceError::Internal(error.clone()))
 }
 
-/// Only Spark's own API surfaces may be proxied through a link, with no
-/// traversal segments.
-fn allowed_proxy_path(rest: &str) -> Option<&str> {
-    let trimmed = rest.trim_start_matches('/');
-    if trimmed.is_empty()
-        || trimmed.contains('\\')
-        || trimmed.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
-        || trimmed.split('/').any(|seg| matches!(seg, "." | ".."))
-    {
-        return None;
+/// How long the linked-environment proxy waits on its upstream. Tests insert
+/// one as a request extension to shorten them; a network client cannot.
+#[derive(Clone, Copy, Debug)]
+pub struct ProxyTimeouts {
+    /// Until the response headers arrive.
+    pub headers: Duration,
+    /// Between body chunks; above the live stream's 15 s keepalive.
+    pub idle: Duration,
+}
+
+impl Default for ProxyTimeouts {
+    fn default() -> Self {
+        Self {
+            headers: Duration::from_secs(30),
+            idle: Duration::from_secs(45),
+        }
     }
-    let allowed = trimmed == "environment"
-        || trimmed == "workspace/api"
-        || trimmed.starts_with("workspace/api/")
-        || trimmed == "attractor"
-        || trimmed.starts_with("attractor/");
-    allowed.then_some(trimmed)
+}
+
+/// The proxied path as the client sent it, still percent-encoded, so `%2F`,
+/// `%23` and `%3F` reach the peer unchanged.
+fn raw_proxy_path(uri: &Uri) -> Option<&str> {
+    uri.path()
+        .strip_prefix("/environments/links/")?
+        .split_once('/')?
+        .1
+        .strip_prefix("proxy/")
+}
+
+fn percent_decoded(segment: &str) -> Option<Vec<u8>> {
+    let mut bytes = segment.bytes();
+    let mut decoded = Vec::with_capacity(segment.len());
+    let hex = |byte: Option<u8>| char::from(byte?).to_digit(16);
+    while let Some(byte) = bytes.next() {
+        decoded.push(if byte == b'%' {
+            (hex(bytes.next())? * 16 + hex(bytes.next())?) as u8
+        } else {
+            byte
+        });
+    }
+    Some(decoded)
+}
+
+/// Only Spark's own API surfaces may be proxied through a link. The raw path
+/// and each decoded segment are checked, so no encoding smuggles in a
+/// traversal, backslash or control byte.
+fn allowed_proxy_path(raw: &str) -> bool {
+    let surface = raw == "environment"
+        || raw == "workspace/api"
+        || raw.starts_with("workspace/api/")
+        || raw
+            .strip_prefix("attractor/")
+            .is_some_and(|rest| !rest.is_empty());
+    surface
+        && !raw
+            .bytes()
+            .any(|byte| matches!(byte, b'?' | b'#' | b'\\') || byte.is_ascii_control())
+        && raw.split('/').all(|segment| {
+            percent_decoded(segment).is_some_and(|decoded| {
+                !decoded
+                    .iter()
+                    .any(|byte| *byte == b'\\' || byte.is_ascii_control())
+                    && !decoded
+                        .split(|byte| *byte == b'/')
+                        .any(|part| part == b"." || part == b"..")
+            })
+        })
+}
+
+/// Types a browser renders as a document that can run script: HTML, XML,
+/// SVG and every `+html` or `+xml` type.
+fn renders_as_markup(content_type: Option<&HeaderValue>) -> bool {
+    let essence = content_type
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        essence.as_str(),
+        "text/html" | "text/xml" | "application/xml"
+    ) || essence.ends_with("+html")
+        || essence.ends_with("+xml")
+}
+
+fn is_attachment(disposition: Option<&HeaderValue>) -> bool {
+    disposition
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("attachment"))
+}
+
+fn detail(status: StatusCode, detail: String) -> Response {
+    (status, Json(json!({ "detail": detail }))).into_response()
 }
 
 /// Streams HTTP, binary, and SSE requests to a linked environment, injecting
 /// the stored bearer token on A's server so the token never reaches a client.
+/// The peer must answer as the linked environment, and its responses are
+/// sandboxed so nothing it serves runs as this origin.
 async fn proxy_linked_environment(
     State(state): State<HttpAppState>,
-    Path((environment_id, rest)): Path<(String, String)>,
+    Path((environment_id, _)): Path<(String, String)>,
     request: Request,
 ) -> Result<Response, WorkspaceApiError> {
-    let Some(path) = allowed_proxy_path(&rest) else {
-        return Err(WorkspaceApiError(WorkspaceError::NotFound(
-            "Not Found".to_string(),
-        )));
-    };
+    let not_found = || WorkspaceApiError(WorkspaceError::NotFound("Not Found".to_string()));
+    let path = raw_proxy_path(request.uri())
+        .filter(|path| allowed_proxy_path(path))
+        .ok_or_else(not_found)?
+        .to_string();
+    let query = request.uri().query().map(str::to_string);
+    let timeouts = request
+        .extensions()
+        .get::<ProxyTimeouts>()
+        .copied()
+        .unwrap_or_default();
     let data_dir = state.settings.data_dir.clone();
     let env_id = environment_id.clone();
     let link_and_token = tokio::task::spawn_blocking(move || {
@@ -240,19 +328,35 @@ async fn proxy_linked_environment(
             "No link to environment {environment_id:?}."
         ))));
     };
-    let method =
-        reqwest::Method::from_bytes(request.method().as_str().as_bytes()).map_err(|_| {
-            WorkspaceApiError(WorkspaceError::Validation(
-                "Unsupported HTTP method.".into(),
-            ))
-        })?;
-    let mut url = format!("{}/{path}", link.origin.trim_end_matches('/'));
-    if let Some(query) = request.uri().query() {
-        url.push('?');
-        url.push_str(query);
+    let origin = reqwest::Url::parse(&link.origin).map_err(|error| {
+        WorkspaceApiError(WorkspaceError::Internal(format!(
+            "Stored origin {:?} is invalid: {error}",
+            link.origin
+        )))
+    })?;
+    let mut url = origin.clone();
+    url.set_path(&format!("/{path}"));
+    url.set_query(query.as_deref());
+    // The token goes only to the linked origin, for exactly the path sent.
+    if url.scheme() != origin.scheme()
+        || url.host_str() != origin.host_str()
+        || url.port_or_known_default() != origin.port_or_known_default()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.path().strip_prefix('/') != Some(path.as_str())
+        || url.query() != query.as_deref()
+    {
+        return Err(WorkspaceApiError(WorkspaceError::Validation(
+            "The proxied path cannot be forwarded exactly as sent.".to_string(),
+        )));
     }
     let client = proxy_client().map_err(WorkspaceApiError)?;
-    let mut upstream = client.request(method, &url).bearer_auth(&token);
+    let mut upstream = client
+        .request(request.method().clone(), url)
+        .bearer_auth(&token)
+        // Marks the call as relayed, so even a loopback peer checks the token.
+        .header(header::FORWARDED, "by=spark-proxy");
     for name in [
         header::CONTENT_TYPE,
         header::ACCEPT,
@@ -267,15 +371,41 @@ async fn proxy_linked_environment(
     }
     let body_stream = request.into_body().into_data_stream();
     upstream = upstream.body(reqwest::Body::wrap_stream(body_stream));
-    let response = upstream.send().await.map_err(|error| {
-        WorkspaceApiError(WorkspaceError::ServiceUnavailable(format!(
-            "{}: {error}",
-            link.origin
-        )))
-    })?;
-    let status =
-        StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let mut builder = Response::builder().status(status);
+    let response = match tokio::time::timeout(timeouts.headers, upstream.send()).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            return Err(WorkspaceApiError(WorkspaceError::ServiceUnavailable(
+                format!("{}: {error}", link.origin),
+            )))
+        }
+        Err(_) => {
+            let waited = timeouts.headers;
+            return Ok(detail(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "{} sent no response within {waited:?}; check that it is running and reachable.",
+                    link.origin
+                ),
+            ));
+        }
+    };
+    let answered_as = response.headers().get(&crate::ENVIRONMENT_ID_HEADER);
+    let public = path == "environment";
+    let verified = answered_as.map_or(public, |id| id.as_bytes() == link.environment_id.as_bytes())
+        || (!public && response.status() == StatusCode::UNAUTHORIZED);
+    if !verified {
+        return Ok(detail(
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "{} answered as environment {:?}, not the linked {:?}; link it again if it moved.",
+                link.origin,
+                answered_as.map(|id| String::from_utf8_lossy(id.as_bytes()).into_owned()),
+                link.environment_id
+            ),
+        ));
+    }
+    let status = response.status();
+    let mut headers = HeaderMap::new();
     for name in [
         header::CONTENT_TYPE,
         header::CACHE_CONTROL,
@@ -285,15 +415,89 @@ async fn proxy_linked_environment(
         HeaderName::from_static("x-accel-buffering"),
     ] {
         if let Some(value) = response.headers().get(&name) {
-            if let Ok(header_value) = HeaderValue::from_bytes(value.as_bytes()) {
-                builder = builder.header(name, header_value);
-            }
+            headers.insert(name, value.clone());
         }
     }
-    let stream = Body::from_stream(response.bytes_stream());
-    builder
-        .body(stream)
-        .map_err(|error| WorkspaceApiError(WorkspaceError::Internal(error.to_string())))
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox; default-src 'none'"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    if renders_as_markup(headers.get(header::CONTENT_TYPE))
+        && !is_attachment(headers.get(header::CONTENT_DISPOSITION))
+    {
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment"),
+        );
+    }
+    // Dropping the body (a client disconnect) drops `response`, which closes
+    // the upstream connection.
+    let idle = timeouts.idle;
+    let body = async_stream::stream! {
+        let mut response = response;
+        loop {
+            match tokio::time::timeout(idle, response.chunk()).await {
+                Ok(Ok(Some(chunk))) => yield Ok::<_, std::io::Error>(chunk),
+                Ok(Ok(None)) => break,
+                Ok(Err(error)) => {
+                    yield Err(std::io::Error::other(error));
+                    break;
+                }
+                Err(_) => {
+                    yield Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("{} sent nothing for {idle:?}.", link.origin),
+                    ));
+                    break;
+                }
+            }
+        }
+    };
+    Ok((status, headers, Body::from_stream(body)).into_response())
+}
+
+/// `GET /workspace/api/environment`: the public descriptor plus this build's
+/// id, for a caller holding a token.
+async fn environment(State(state): State<HttpAppState>) -> ApiResult<Value> {
+    let internal = |error: String| WorkspaceApiError(WorkspaceError::Internal(error));
+    let descriptor = crate::environment_auth::environment_descriptor(State(state)).await;
+    let bytes = axum::body::to_bytes(descriptor.into_body(), usize::MAX)
+        .await
+        .map_err(|error| internal(error.to_string()))?;
+    let mut descriptor: Value =
+        serde_json::from_slice(&bytes).map_err(|error| internal(error.to_string()))?;
+    descriptor["build_id"] = json!(build_id());
+    Ok(Json(descriptor))
+}
+
+/// Tells apart two builds that share `CARGO_PKG_VERSION`: the running
+/// binary's size and modification time, read once when the routes are built.
+// ponytail: a copy that resets the file time reads as a new build; embed a
+// build stamp if ids must match across installs of one build.
+fn build_id() -> &'static str {
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| {
+        let version = env!("CARGO_PKG_VERSION");
+        let nanos = |time: SystemTime| {
+            time.duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos())
+        };
+        match std::env::current_exe()
+            .and_then(std::fs::metadata)
+            .and_then(|metadata| Ok((metadata.len(), metadata.modified()?)))
+        {
+            Ok((len, modified)) => format!("{version}+{len:x}.{:x}", nanos(modified)),
+            // Still unique to this build, since a new build needs a new process.
+            Err(error) => {
+                eprintln!("Unable to stamp the build id from the executable: {error}");
+                format!("{version}+process.{:x}", nanos(SystemTime::now()))
+            }
+        }
+    })
 }
 
 async fn start(

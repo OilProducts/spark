@@ -33,6 +33,13 @@ mod delegations;
 mod environment_auth;
 mod workspace;
 
+pub use delegations::ProxyTimeouts;
+
+/// Names the environment that answered, on every response, so a linking
+/// proxy can tell the environment it paired with from one now at its origin.
+pub(crate) const ENVIRONMENT_ID_HEADER: header::HeaderName =
+    header::HeaderName::from_static("x-spark-environment-id");
+
 /// Builders open the Spark home's conversation store and hold its exclusive
 /// home lock for the app's lifetime; a second app on the same home fails here
 /// with [`spark_storage::StorageError::HomeLocked`]. A failed build releases
@@ -261,6 +268,8 @@ fn build_app_on_store(
         state.settings.clone(),
         environment_auth::require_trust,
     );
+    let environment_id = HeaderValue::from_str(state.conversation_store.environment_id())
+        .expect("the environment ID is a UUID");
     let app = Router::new()
         .route("/", get(serve_index).layer(CompressionLayer::new()))
         .route(
@@ -293,7 +302,18 @@ fn build_app_on_store(
         .route("/attractor/{*path}", any(attractor_dispatch))
         .fallback(product_fallback)
         .with_state(state)
-        .layer(trust);
+        .layer(trust)
+        .layer(axum::middleware::map_response(
+            move |mut response: Response| {
+                let environment_id = environment_id.clone();
+                async move {
+                    response
+                        .headers_mut()
+                        .insert(ENVIRONMENT_ID_HEADER, environment_id);
+                    response
+                }
+            },
+        ));
     (app, live_hub)
 }
 
@@ -1064,6 +1084,7 @@ async fn attractor_dispatch(
         );
     }
     let content_type = response.content_type.clone();
+    let content_disposition = response.content_disposition.clone();
     let status =
         StatusCode::from_u16(response.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut response = if content_type.starts_with("application/json") {
@@ -1080,6 +1101,14 @@ async fn attractor_dispatch(
         response
             .headers_mut()
             .insert(header::CONTENT_TYPE, content_type);
+    }
+    if let Some(Ok(disposition)) = content_disposition.as_deref().map(HeaderValue::from_str) {
+        let headers = response.headers_mut();
+        headers.insert(header::CONTENT_DISPOSITION, disposition);
+        headers.insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        );
     }
     if response
         .headers()
