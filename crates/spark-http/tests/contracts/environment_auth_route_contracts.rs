@@ -471,10 +471,11 @@ async fn a_token_lookup_failure_is_an_error_not_local_owner_trust() {
     let app = crate::store_app_default(settings.clone());
     let (_, secret) = pair_token(&app, "laptop").await;
     let bearer = format!("Bearer {secret}");
-    // A directory where the state database was cannot be opened.
-    let database = settings.data_dir.join("state.sqlite3");
-    fs::remove_file(&database).expect("remove database");
-    fs::create_dir(&database).expect("database directory");
+    // The token lookup now fails. Dropped over SQL, not by deleting the file,
+    // which Windows refuses while the live store holds it open.
+    rusqlite::Connection::open(settings.data_dir.join("state.sqlite3"))
+        .and_then(|connection| connection.execute_batch("DROP TABLE peer_tokens"))
+        .expect("drop peer tokens");
 
     let response = send(
         &app,
