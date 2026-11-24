@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Activity, useCallback, useEffect, useRef, useState } from 'react'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { FormQuestionFields } from '@/components/app/form-question'
 import { Button } from '@/components/ui/button'
@@ -7,7 +7,6 @@ import { Input } from '@/components/ui/input'
 import { InlineError } from '@/components/app/inline-error'
 import { StatusDot, type StatusTone } from '@/components/app/status'
 import { Well } from '@/components/app/well'
-import type { FormQuestion, FormValue } from '@/lib/forms'
 import {
     answerDelegationQuestion,
     cancelDelegation,
@@ -19,8 +18,8 @@ import {
 
 type Filter = 'all' | 'open' | 'paused'
 
-/** A question's unsent answer and its last failure; `form` is what a refused form accept sent. */
-type AnswerDraft = { text: string; answers: Record<string, string>; form?: Record<string, FormValue>; error: string | null }
+/** A question's unsent answer and its last failure. A form's own fields stay in FormQuestionFields. */
+type AnswerDraft = { text: string; answers: Record<string, string>; error: string | null }
 
 const EMPTY_DRAFT: AnswerDraft = { text: '', answers: {}, error: null }
 const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
@@ -41,16 +40,11 @@ const whereText = (record: DelegationOut) => [
     record.target_id ? `target ${record.target_id}` : null,
 ].filter(Boolean).join(' · ')
 
-// FormQuestionFields drops its draft when it replies, so a refused accept comes back as defaults.
-// ponytail: a whole number past f64's exact integers isn't restored; it would need the form's own draft.
-const withSentValues = (form: FormQuestion, content: Record<string, FormValue>): FormQuestion => ({
-    ...form,
-    schema: {
-        ...form.schema,
-        properties: Object.fromEntries(Object.entries((form.schema.properties ?? {}) as Record<string, Record<string, unknown>>)
-            .map(([name, property]) => [name, { ...property, default: content[name] }])),
-    },
-})
+// Whether a snapshot leaves a question key standing: its delegation isn't listed, or still asks it.
+const stillAsked = (records: DelegationOut[]) => (key: string) => {
+    const record = records.find((row) => key.startsWith(`${row.delegation_id}:`))
+    return !record || (record.last_state?.questions ?? []).some((question) => ackKey(record.delegation_id, question.question_id) === key)
+}
 
 function delegationStatus(record: DelegationOut): { label: string; tone: StatusTone } {
     if (record.phase === 'sealed') {
@@ -108,7 +102,7 @@ function QuestionResponder({
                 <FormQuestionFields
                     actionError={draft.error}
                     draftKey={`delegation:${draftKey}`}
-                    form={draft.form ? withSentValues(question.form, draft.form) : question.form}
+                    form={question.form}
                     isSubmitting={disabled}
                     testId={`delegation-form-${question.question_id}`}
                     onReply={(reply) => onAnswer({ form: reply })}
@@ -221,6 +215,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const [acknowledged, setAcknowledged] = useState<ReadonlySet<string>>(() => new Set())
     // Drafts live here, by question, so a filter switch while an answer is in flight keeps them and its failure.
     const [drafts, setDrafts] = useState<Record<string, AnswerDraft>>({})
+    // Every delegation last seen, for rows held mounted while the filter leaves them out.
+    const [seen, setSeen] = useState<Record<string, DelegationOut>>({})
     const [loading, setLoading] = useState(false)
     const [busy, setBusy] = useState(false)
     const [loadError, setLoadError] = useState<string | null>(null)
@@ -239,14 +235,14 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             const records = await fetchDelegations(FILTER_QUERY[requested])
             if (!current()) return
             setLoaded({ filter: requested, records })
+            setSeen((all) => ({ ...all, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }))
             setLoadError(null)
+            const asked = stillAsked(records)
             setAcknowledged((keys) => {
-                const kept = [...keys].filter((key) => {
-                    const record = records.find((row) => key.startsWith(`${row.delegation_id}:`))
-                    return !record || (record.last_state?.questions ?? []).some((question) => ackKey(record.delegation_id, question.question_id) === key)
-                })
+                const kept = [...keys].filter(asked)
                 return kept.length === keys.size ? keys : new Set(kept)
             })
+            setDrafts((all) => Object.fromEntries(Object.entries(all).filter(([key]) => asked(key))))
         } catch (err) {
             if (current()) throw err
         } finally {
@@ -273,6 +269,13 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     }, [active, filter, refresh])
 
     const rows = loaded?.filter === filter ? loaded.records : null
+    const visibleIds = new Set((rows ?? []).map((record) => record.delegation_id))
+    // A row with an answer draft (or reply in flight) stays mounted, hidden, while the filter leaves it
+    // out: FormQuestionFields drops its stored draft as it replies, so only its live state keeps what
+    // was entered if the reply is refused.
+    const held = Object.values(seen).filter((record) => (
+        !visibleIds.has(record.delegation_id) && Object.keys(drafts).some((key) => key.startsWith(`${record.delegation_id}:`))
+    ))
     // The Paused view can't see the open delegations that may pause, so it keeps polling.
     const live = rows !== null && (filter === 'paused' || rows.some((record) => record.phase !== 'sealed'))
     useEffect(() => {
@@ -341,11 +344,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         try {
             await answerDelegationQuestion(record.delegation_id, questionId, body)
         } catch (err) {
-            // The draft stays beside the error, with a form's sent values, to fix and resend.
-            editDraft(key, {
-                error: errorText(err, 'Could not submit answer.'),
-                ...(body.form?.action === 'accept' ? { form: body.form.content } : {}),
-            })
+            // The draft stays beside the error to fix and resend.
+            editDraft(key, { error: errorText(err, 'Could not submit answer.') })
             setStatus('')
             setBusy(false)
             return
@@ -393,19 +393,21 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                     loadError ? null : <p role="status" className="text-muted-foreground">Loading delegations…</p>
                 ) : rows.length === 0 ? (
                     <p className="text-xs text-muted-foreground">No matching delegations.</p>
-                ) : (
-                    <ul className="space-y-2">
-                        {rows.map((record) => {
-                            const badge = delegationStatus(record)
-                            const where = whereText(record)
-                            const questions = record.phase === 'accepted'
-                                ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))
-                                : []
-                            // Answers go through the link to the other environment, which a paused
-                            // delegation has lost, and a delegation being canceled no longer waits on them.
-                            const answerable = !record.paused && !record.cancel_requested_at
-                            return (
-                                <li key={record.delegation_id}>
+                ) : null}
+                {/* Always mounted, so a held row keeps its place in the tree across filters. */}
+                <ul className="space-y-2" hidden={visibleIds.size === 0}>
+                    {[...(rows ?? []), ...held].map((record) => {
+                        const badge = delegationStatus(record)
+                        const where = whereText(record)
+                        const questions = record.phase === 'accepted'
+                            ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))
+                            : []
+                        // Answers go through the link to the other environment, which a paused
+                        // delegation has lost, and a delegation being canceled no longer waits on them.
+                        const answerable = !record.paused && !record.cancel_requested_at
+                        return (
+                            <Activity key={record.delegation_id} mode={visibleIds.has(record.delegation_id) ? 'visible' : 'hidden'}>
+                                <li>
                                     <Well role="group" aria-label={`Delegation ${record.request_key} (${where})`} className="space-y-2 px-3 py-2">
                                         <div className="flex flex-wrap items-start justify-between gap-2">
                                             <div className="min-w-0 space-y-0.5">
@@ -419,15 +421,30 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                                 <div className="break-all text-xs text-muted-foreground">{where}</div>
                                             </div>
                                             {record.phase !== 'sealed' ? (
-                                                <Button
-                                                    size="sm"
-                                                    variant="ghost"
-                                                    aria-label={`Cancel delegation ${record.request_key}`}
-                                                    disabled={busy || Boolean(record.cancel_requested_at)}
-                                                    onClick={() => void handleCancel(record)}
-                                                >
-                                                    Cancel delegation
-                                                </Button>
+                                                <div className="flex flex-wrap gap-1">
+                                                    {/* A requested cancel can't reach a paused delegation's environment;
+                                                        canceling it again seals it locally (spark-workspace delegations::cancel). */}
+                                                    {record.cancel_requested_at && record.paused ? (
+                                                        <Button
+                                                            size="sm"
+                                                            variant="ghost"
+                                                            aria-label={`Seal delegation ${record.request_key} as canceled`}
+                                                            disabled={busy}
+                                                            onClick={() => void handleCancel(record)}
+                                                        >
+                                                            Seal as canceled
+                                                        </Button>
+                                                    ) : null}
+                                                    <Button
+                                                        size="sm"
+                                                        variant="ghost"
+                                                        aria-label={`Cancel delegation ${record.request_key}`}
+                                                        disabled={busy || Boolean(record.cancel_requested_at)}
+                                                        onClick={() => void handleCancel(record)}
+                                                    >
+                                                        Cancel delegation
+                                                    </Button>
+                                                </div>
                                             ) : null}
                                         </div>
                                         {record.paused ? (
@@ -458,10 +475,10 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                         })}
                                     </Well>
                                 </li>
-                            )
-                        })}
-                    </ul>
-                )}
+                            </Activity>
+                        )
+                    })}
+                </ul>
                 {status ? <p role="status" className="text-xs text-muted-foreground">{status}</p> : null}
                 {loadError ? <InlineError>{loadError}</InlineError> : null}
                 {cancelError ? <InlineError>{cancelError}</InlineError> : null}
