@@ -642,6 +642,76 @@ fn process_delegation_start_requires_a_request_key_before_any_request() {
     assert_no_pending_connection(&listener);
 }
 
+#[test]
+fn process_environment_show_discovery_and_delegation_list_hit_expected_routes() {
+    let cases: &[(&[&str], &str, &str)] = &[
+        (
+            &["environment", "show"],
+            "/environment",
+            r#"{"environment_id":"env-a","display_name":"A","protocol_version":1}"#,
+        ),
+        (
+            &["environment", "link", "projects", "env-b"],
+            "/workspace/api/environments/links/env-b/projects",
+            r#"{"projects":[]}"#,
+        ),
+        (
+            &[
+                "flow",
+                "list",
+                "--environment",
+                "env-b",
+                "--project",
+                "/b/repo",
+            ],
+            "/workspace/api/environments/links/env-b/flows?project_path=%2Fb%2Frepo",
+            r#"[]"#,
+        ),
+        (
+            &[
+                "flow",
+                "get",
+                "ops/run",
+                "--environment",
+                "env-b",
+                "--project",
+                "/b/repo",
+                "--inputs",
+            ],
+            "/workspace/api/environments/links/env-b/flows/ops%2Frun/files?project_path=%2Fb%2Frepo",
+            r#"{"files":[{"name":"flow.md","content":"---\ntype: Flow\nid: run\nschema_version: '2'\ninputs:\n  - key: branch\n    description: Branch name\n---\n"}]}"#,
+        ),
+        (
+            &[
+                "delegation",
+                "list",
+                "--environment",
+                "env-b",
+                "--open",
+                "--paused",
+            ],
+            "/workspace/api/delegations?environment_id=env-b&open=true&paused=true",
+            r#"{"delegations":[]}"#,
+        ),
+    ];
+
+    for &(args, expected_path, body) in cases {
+        let (base_url, requests) = serve_once(HttpResponse::json(200, body));
+        let output = Command::new(spark_bin())
+            .args(args)
+            .args(["--base-url", base_url.as_str()])
+            .env_clear()
+            .output()
+            .expect("run spark");
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {output:?}");
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request");
+        assert_eq!(request.method, "GET", "{args:?}");
+        assert_eq!(request.path, expected_path, "{args:?}");
+    }
+}
+
 #[derive(Debug, Clone)]
 struct HttpResponse {
     status: u16,

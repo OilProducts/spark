@@ -358,7 +358,12 @@ in a linked environment (see Link Environments). Its questions and its result
 come back to the run or conversation that started it.
 
 ```bash
+spark environment link list
+spark environment link projects <environment_id>
+spark flow list --environment <environment_id> --project /absolute/path/there
+spark flow get examples/simple-linear --environment <environment_id> --project /absolute/path/there --inputs
 spark delegation start --environment <environment_id> --target-project /absolute/path/there --kind flow --request-key nightly-checks --conversation <your handle> --flow examples/simple-linear --summary "Run the checks there."
+spark delegation list --open
 spark delegation get <delegation_id>
 spark delegation wait <delegation_id> --timeout 600
 spark delegation answer <delegation_id> --question <question_id> --option approve
@@ -367,19 +372,23 @@ spark delegation cancel <delegation_id>
 
 - `--request-key` is your name for the task: starting again with the same key returns the same delegation, so a retried step never starts a second task.
 - `--kind conversation` starts a conversation there with `--message` instead of running a flow.
+- `spark delegation list` lists outgoing delegations (filter with `--environment`, `--phase`, `--open`, or `--paused`).
 - `spark delegation get <delegation_id>` shows the open questions. Answer a conversation's several questions at once with `--answers`, keyed by question id. A question with a `form` takes one typed reply with `--form`, such as `{"action":"accept","content":{"count":0}}`, `{"action":"decline"}` or `{"action":"cancel"}`.
 - `wait` prints the record once the delegation seals, or with `timed_out` when `--timeout` passes first; stopping it changes nothing on either side.
 
 ## Link Environments
 
 Two environments link with a pairing code. On the environment to be reached,
-create a code; on the environment that will delegate, add the link with that
-code, the other environment's address and its id:
+inspect its id or create a code (which also prints its `environment_id`); on
+the environment that will delegate, add the link with that code, the other
+environment's address and its id:
 
 ```bash
+spark environment show
 spark environment pair-code --label "Build server"
 spark environment link add --origin https://build.example:8000 --expected-id <environment_id> --code <code>
 spark environment link list
+spark environment link projects <environment_id>
 spark environment link remove <environment_id>
 spark environment tokens list
 spark environment tokens revoke <token_id>

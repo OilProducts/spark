@@ -1926,7 +1926,7 @@ fn query_payload<T>(payload: Result<Query<T>, QueryRejection>) -> Result<T, Work
         .map_err(|rejection| WorkspaceError::Validation(rejection.to_string()).into())
 }
 
-fn optional_query_payload<T: Default>(
+pub(crate) fn optional_query_payload<T: Default>(
     payload: Result<Query<T>, QueryRejection>,
 ) -> Result<T, WorkspaceApiError> {
     match payload {

@@ -42,10 +42,13 @@ const TREE: &[(&str, &[&str])] = &[
     ("playbook", &["list", "get"]),
     ("trigger", &["list", "get", "create", "update", "delete"]),
     ("settings", &["get", "validate", "set"]),
-    ("environment", &["pair-code", "tokens", "link"]),
+    ("environment", &["show", "pair-code", "tokens", "link"]),
     ("environment tokens", &["list", "revoke"]),
-    ("environment link", &["add", "list", "remove"]),
-    ("delegation", &["start", "get", "wait", "cancel", "answer"]),
+    ("environment link", &["add", "list", "projects", "remove"]),
+    (
+        "delegation",
+        &["start", "list", "get", "wait", "cancel", "answer"],
+    ),
 ];
 
 fn help(args: &[&str]) -> String {

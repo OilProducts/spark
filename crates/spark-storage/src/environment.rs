@@ -464,6 +464,18 @@ impl EnvironmentRepository {
             .optional()?)
     }
 
+    /// Every outgoing delegation, newest first.
+    pub fn list_out(&self) -> Result<Vec<DelegationOut>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(&format!(
+            "SELECT {OUT_COLUMNS} FROM delegations_out ORDER BY created_at DESC, delegation_id DESC"
+        ))?;
+        let records = statement
+            .query_map([], out_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(records)
+    }
+
     /// Unsealed records that are not paused, oldest first.
     pub fn followed_out(&self) -> Result<Vec<DelegationOut>> {
         let connection = self.connection()?;

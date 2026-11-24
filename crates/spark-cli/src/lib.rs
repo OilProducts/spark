@@ -277,6 +277,11 @@ fn flow_command() -> Command {
     domain("flow", "Find, read and validate flows.").subcommands([
         leaf("list", "List the flows this Spark can run.").args([
             project("Include this project's flows"),
+            value(
+                "environment",
+                "ID",
+                "Linked environment to list flows on, from spark environment link list",
+            ),
             switch("text", "Print a readable list instead of JSON"),
         ]),
         leaf(
@@ -289,6 +294,11 @@ fn flow_command() -> Command {
                 "Flow name as spark flow list shows it, e.g. team/work",
             ),
             project("Resolve the flow through this project's definitions"),
+            value(
+                "environment",
+                "ID",
+                "Linked environment to read the flow from, from spark environment link list",
+            ),
             switch("text", "Print the files as text instead of JSON"),
             switch(
                 "inputs",
@@ -564,9 +574,13 @@ fn settings_command() -> Command {
 fn environment_command() -> Command {
     domain(
         "environment",
-        "This environment's pairing codes, tokens and links to others.",
+        "This environment's identity, pairing codes, tokens and links to others.",
     )
     .subcommands([
+        leaf(
+            "show",
+            "Print this environment's id, name and protocol version.",
+        ),
         leaf(
             "pair-code",
             "Create a code another environment links to this one with.",
@@ -596,6 +610,14 @@ fn environment_command() -> Command {
                 text_value("label", "TEXT", "Label for the link"),
             ]),
             leaf("list", "List linked environments."),
+            leaf(
+                "projects",
+                "List projects registered on a linked environment.",
+            )
+            .arg(primary(
+                "ENVIRONMENT_ID",
+                "Linked environment id, from spark environment link list",
+            )),
             leaf("remove", "Remove a link.").arg(primary(
                 "ENVIRONMENT_ID",
                 "Linked environment id, from spark environment link list",
@@ -656,6 +678,20 @@ fn delegation_command() -> Command {
             context_arg().conflicts_with("message"),
             text_value("message", "TEXT", "First message, for --kind conversation")
                 .required_if_eq("kind", "conversation"),
+        ]),
+        leaf("list", "List outgoing delegations.").args([
+            value(
+                "environment",
+                "ID",
+                "Only delegations to this linked environment",
+            ),
+            Arg::new("phase")
+                .long("phase")
+                .value_name("PHASE")
+                .value_parser(["created", "accepted", "sealed"])
+                .help("Only delegations in this phase"),
+            switch("open", "Only unsealed delegations"),
+            switch("paused", "Only paused delegations"),
         ]),
         leaf(
             "get",
@@ -904,24 +940,43 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
     };
     let body = |body: Map<String, Value>| Some(Value::Object(body));
     let plan = match names {
-        ["flow", "list"] => ApiRequestPlan {
-            view: if text { View::FlowListText } else { View::Json },
-            ..request(Get, format!("/workspace/api/flows{in_project}"))
-        },
-        ["flow", "get"] => ApiRequestPlan {
-            view: if switch_of(m, "inputs") {
-                View::FlowInputs
-            } else if text {
-                View::FlowFilesText
-            } else {
-                View::Json
-            },
-            hint: flow_hint(id.clone()),
-            ..request(
-                Get,
-                format!("/workspace/api/flows/{enc_id}/files{in_project}"),
-            )
-        },
+        ["flow", "list"] => {
+            let path = match value_of(m, "environment") {
+                Some(environment) => format!(
+                    "/workspace/api/environments/links/{}/flows{in_project}",
+                    encode(&environment)
+                ),
+                None => format!("/workspace/api/flows{in_project}"),
+            };
+            ApiRequestPlan {
+                view: if text { View::FlowListText } else { View::Json },
+                ..request(Get, path)
+            }
+        }
+        ["flow", "get"] => {
+            let environment = value_of(m, "environment");
+            let path = match environment.as_deref() {
+                Some(environment) => format!(
+                    "/workspace/api/environments/links/{}/flows/{enc_id}/files{in_project}",
+                    encode(environment)
+                ),
+                None => format!("/workspace/api/flows/{enc_id}/files{in_project}"),
+            };
+            ApiRequestPlan {
+                view: if switch_of(m, "inputs") {
+                    View::FlowInputs
+                } else if text {
+                    View::FlowFilesText
+                } else {
+                    View::Json
+                },
+                hint: environment
+                    .is_none()
+                    .then(|| flow_hint(id.clone()))
+                    .flatten(),
+                ..request(Get, path)
+            }
+        }
         ["flow", "validate"] => match value_of(m, "dir") {
             Some(dir) => return Ok(Route::ValidateDir { dir, project, text }),
             None => ApiRequestPlan {
@@ -1154,6 +1209,7 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
                 }
             }
         }
+        ["environment", "show"] => request(Get, "/environment".to_string()),
         ["environment", "pair-code"] => {
             let mut code = Map::new();
             put(&mut code, "label", value_of(m, "label"));
@@ -1187,10 +1243,23 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
         ["environment", "link", "list"] => {
             request(Get, "/workspace/api/environments/links".to_string())
         }
+        ["environment", "link", "projects"] => request(
+            Get,
+            format!("/workspace/api/environments/links/{enc_id}/projects"),
+        ),
         ["environment", "link", "remove"] => request(
             Delete,
             format!("/workspace/api/environments/links/{enc_id}"),
         ),
+        ["delegation", "list"] => {
+            let q = query(&[
+                ("environment_id", value_of(m, "environment")),
+                ("phase", value_of(m, "phase")),
+                ("open", switch_of(m, "open").then(|| "true".to_string())),
+                ("paused", switch_of(m, "paused").then(|| "true".to_string())),
+            ]);
+            request(Get, format!("/workspace/api/delegations{q}"))
+        }
         ["delegation", "start"] => {
             let mut task = match value_of(m, "kind").as_deref() {
                 Some("flow") => launch_body(m, stdin)?,

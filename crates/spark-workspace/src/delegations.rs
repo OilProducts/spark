@@ -215,6 +215,73 @@ pub fn remove_link(settings: &SparkSettings, environment_id: &str) -> WorkspaceR
     }
 }
 
+/// Issues a read-only GET to a linked environment using its stored bearer token.
+fn linked_get(
+    settings: &SparkSettings,
+    environment_id: &str,
+    path: &str,
+) -> WorkspaceResult<Value> {
+    let (link, token) = environments(settings)
+        .link(environment_id)?
+        .ok_or_else(|| {
+            WorkspaceError::NotFound(format!(
+                "No link to environment {environment_id:?}; add one with spark environment link add."
+            ))
+        })?;
+    call(Method::GET, &link.origin, path, Some(&token), None).map_err(|error| match error {
+        PeerError::Status(404, detail) => WorkspaceError::NotFound(detail),
+        PeerError::Status(409, detail) => WorkspaceError::Conflict(detail),
+        PeerError::Status(400 | 422, detail) => WorkspaceError::Validation(detail),
+        PeerError::Status(401 | 403, detail) => WorkspaceError::Forbidden(format!(
+            "The environment refused this link's token ({detail}); link it again to refresh it."
+        )),
+        error => WorkspaceError::ServiceUnavailable(format!("{}: {error}", link.origin)),
+    })
+}
+
+fn project_query(project_path: Option<&str>) -> String {
+    match non_empty(project_path) {
+        Some(path) => format!("?project_path={}", encode(&path)),
+        None => String::new(),
+    }
+}
+
+/// Lists the projects registered on a linked environment.
+pub fn link_projects(settings: &SparkSettings, environment_id: &str) -> WorkspaceResult<Value> {
+    linked_get(settings, environment_id, "/workspace/api/projects")
+}
+
+/// Lists the flows available on a linked environment, optionally resolved for
+/// one of its registered projects.
+pub fn link_flows(
+    settings: &SparkSettings,
+    environment_id: &str,
+    project_path: Option<&str>,
+) -> WorkspaceResult<Value> {
+    let path = format!("/workspace/api/flows{}", project_query(project_path));
+    linked_get(settings, environment_id, &path)
+}
+
+/// Reads a flow's files (including `flow.md` and declared inputs) from a
+/// linked environment.
+pub fn link_flow_files(
+    settings: &SparkSettings,
+    environment_id: &str,
+    flow_name: &str,
+    project_path: Option<&str>,
+) -> WorkspaceResult<Value> {
+    let flow_name = flow_name.trim().trim_matches('/');
+    if flow_name.is_empty() {
+        return Err(validation("flow_name is required."));
+    }
+    let path = format!(
+        "/workspace/api/flows/{}/files{}",
+        encode(flow_name),
+        project_query(project_path)
+    );
+    linked_get(settings, environment_id, &path)
+}
+
 // ---- Calls to another environment --------------------------------------------
 
 #[derive(Debug)]
@@ -473,6 +540,47 @@ pub fn start(
         )));
     }
     Ok(stored)
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DelegationListFilter {
+    #[serde(default)]
+    pub environment_id: Option<String>,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub open: bool,
+    #[serde(default)]
+    pub paused: bool,
+}
+
+pub fn list(
+    settings: &SparkSettings,
+    filter: DelegationListFilter,
+) -> WorkspaceResult<Vec<DelegationOut>> {
+    let environment_id = non_empty(filter.environment_id.as_deref());
+    let phase = non_empty(filter.phase.as_deref());
+    if let Some(phase) = phase.as_deref() {
+        if !matches!(phase, "created" | "accepted" | "sealed") {
+            return Err(validation(format!(
+                "phase must be created, accepted or sealed, not {phase:?}."
+            )));
+        }
+    }
+    let records = environments(settings)
+        .list_out()?
+        .into_iter()
+        .filter(|record| {
+            environment_id
+                .as_deref()
+                .is_none_or(|env| record.environment_id == env)
+                && phase.as_deref().is_none_or(|p| record.phase == p)
+                && (!filter.open || record.phase != "sealed")
+                && (!filter.paused || record.paused.is_some())
+        })
+        .collect();
+    Ok(records)
 }
 
 pub fn get(settings: &SparkSettings, delegation_id: &str) -> WorkspaceResult<DelegationOut> {

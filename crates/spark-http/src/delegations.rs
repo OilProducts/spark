@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_workspace::conversations::WorkspaceConversationService;
 use spark_workspace::delegations::{
-    self, DelegationAnswerRequest, DelegationStartRequest, IncomingCancel, IncomingDelegation,
-    LinkAddRequest, MAX_WAIT,
+    self, DelegationAnswerRequest, DelegationListFilter, DelegationStartRequest, IncomingCancel,
+    IncomingDelegation, LinkAddRequest, MAX_WAIT,
 };
 use spark_workspace::{WorkspaceError, WorkspaceResult};
 
-use crate::workspace::{conversation_service, json_payload};
+use crate::workspace::{conversation_service, json_payload, optional_query_payload};
 use crate::{HttpAppState, WorkspaceApiError};
 
 type ApiResult<T> = Result<Json<T>, WorkspaceApiError>;
@@ -27,7 +27,19 @@ pub(crate) fn router() -> Router<HttpAppState> {
             "/environments/links/{environment_id}",
             axum::routing::delete(remove_link),
         )
-        .route("/delegations", post(start))
+        .route(
+            "/environments/links/{environment_id}/projects",
+            get(link_projects),
+        )
+        .route(
+            "/environments/links/{environment_id}/flows",
+            get(link_flows),
+        )
+        .route(
+            "/environments/links/{environment_id}/flows/{*flow_path}",
+            get(link_flow_files),
+        )
+        .route("/delegations", get(list_delegations).post(start))
         .route("/delegations/{delegation_id}", get(get_delegation))
         .route("/delegations/{delegation_id}/wait", get(wait))
         .route("/delegations/{delegation_id}/cancel", post(cancel))
@@ -91,6 +103,71 @@ async fn remove_link(
     blocking(move || {
         delegations::remove_link(&state.settings, &environment_id)?;
         Ok(json!({"environment_id": environment_id, "removed": true}))
+    })
+    .await
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinkFlowQuery {
+    #[serde(default)]
+    project_path: Option<String>,
+}
+
+async fn link_projects(
+    State(state): State<HttpAppState>,
+    Path(environment_id): Path<String>,
+) -> ApiResult<Value> {
+    blocking(move || delegations::link_projects(&state.settings, &environment_id)).await
+}
+
+async fn link_flows(
+    State(state): State<HttpAppState>,
+    Path(environment_id): Path<String>,
+    query: Result<Query<LinkFlowQuery>, axum::extract::rejection::QueryRejection>,
+) -> ApiResult<Value> {
+    let query = optional_query_payload(query)?;
+    blocking(move || {
+        delegations::link_flows(
+            &state.settings,
+            &environment_id,
+            query.project_path.as_deref(),
+        )
+    })
+    .await
+}
+
+async fn link_flow_files(
+    State(state): State<HttpAppState>,
+    Path((environment_id, flow_path)): Path<(String, String)>,
+    query: Result<Query<LinkFlowQuery>, axum::extract::rejection::QueryRejection>,
+) -> ApiResult<Value> {
+    let query = optional_query_payload(query)?;
+    let flow_name = flow_path
+        .trim_start_matches('/')
+        .strip_suffix("/files")
+        .ok_or_else(|| WorkspaceApiError(WorkspaceError::NotFound("Not Found".to_string())))?
+        .to_string();
+    blocking(move || {
+        delegations::link_flow_files(
+            &state.settings,
+            &environment_id,
+            &flow_name,
+            query.project_path.as_deref(),
+        )
+    })
+    .await
+}
+
+async fn list_delegations(
+    State(state): State<HttpAppState>,
+    query: Result<Query<DelegationListFilter>, axum::extract::rejection::QueryRejection>,
+) -> ApiResult<Value> {
+    let filter = optional_query_payload(query)?;
+    blocking(move || {
+        Ok(json!({
+            "delegations": delegations::list(&state.settings, filter)?
+        }))
     })
     .await
 }

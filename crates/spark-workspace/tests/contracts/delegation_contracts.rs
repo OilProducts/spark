@@ -1148,3 +1148,149 @@ fn b_matches_conversation_question_by_question_id_when_request_id_is_absent() {
     .unwrap();
     assert_eq!(home.state(&id(1))["questions"], json!([]));
 }
+
+#[test]
+fn a_lists_outgoing_delegations_with_filters() {
+    let home = Home::new();
+    home.link();
+    home.environments()
+        .save_link(
+            &EnvironmentLink {
+                environment_id: "env-other".into(),
+                origin: "https://other.example".into(),
+                label: "Other".into(),
+                created_at: String::new(),
+            },
+            "token-2",
+        )
+        .unwrap();
+    let store = crate::shared_store(&home.settings.data_dir);
+    let d1 = home.start(home.flow_start("k1", "Task 1")).unwrap();
+    let d2 = home
+        .start(DelegationStartRequest {
+            environment_id: "env-other".into(),
+            ..home.flow_start("k2", "Task 2")
+        })
+        .unwrap();
+    home.environments()
+        .pause_out(&d1.delegation_id, "Paused for test")
+        .unwrap();
+    home.environments()
+        .seal_out(&d2.delegation_id, &json!({"status": "completed"}))
+        .unwrap();
+    let _ = store;
+
+    let all = delegations::list(&home.settings, Default::default()).unwrap();
+    assert_eq!(all.len(), 2);
+
+    let open = delegations::list(
+        &home.settings,
+        delegations::DelegationListFilter {
+            open: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].delegation_id, d1.delegation_id);
+
+    let paused = delegations::list(
+        &home.settings,
+        delegations::DelegationListFilter {
+            paused: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(paused.len(), 1);
+    assert_eq!(paused[0].delegation_id, d1.delegation_id);
+
+    let by_env = delegations::list(
+        &home.settings,
+        delegations::DelegationListFilter {
+            environment_id: Some("env-other".into()),
+            phase: Some("sealed".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(by_env.len(), 1);
+    assert_eq!(by_env[0].delegation_id, d2.delegation_id);
+
+    let bad_phase = delegations::list(
+        &home.settings,
+        delegations::DelegationListFilter {
+            phase: Some("bogus".into()),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(bad_phase, Err(WorkspaceError::Validation(_))));
+}
+
+#[test]
+fn a_proxies_project_and_flow_discovery_to_a_linked_environment() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let home = Home::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        for body in [
+            r#"{"projects":[{"project_path":"/b/repo"}]}"#,
+            r#"[{"name":"ops/run"}]"#,
+            r#"{"name":"ops/run","files":[{"name":"flow.md","content":"---\nid: run\n---\n"}]}"#,
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap();
+            seen.push(String::from_utf8_lossy(&buf[..n]).to_string());
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+        seen
+    });
+
+    home.environments()
+        .save_link(
+            &EnvironmentLink {
+                environment_id: "env-b".into(),
+                origin: format!("http://127.0.0.1:{port}"),
+                label: "B".into(),
+                created_at: String::new(),
+            },
+            "peer-secret",
+        )
+        .unwrap();
+
+    let projects = delegations::link_projects(&home.settings, "env-b").unwrap();
+    assert_eq!(projects["projects"][0]["project_path"], "/b/repo");
+    let flows = delegations::link_flows(&home.settings, "env-b", Some("/b/repo")).unwrap();
+    assert_eq!(flows[0]["name"], "ops/run");
+    let files =
+        delegations::link_flow_files(&home.settings, "env-b", "ops/run", Some("/b/repo")).unwrap();
+    assert_eq!(files["files"][0]["name"], "flow.md");
+
+    let seen = server.join().unwrap();
+    assert!(seen[0].starts_with("GET /workspace/api/projects HTTP/"));
+    assert!(seen[1].starts_with("GET /workspace/api/flows?project_path=%2Fb%2Frepo HTTP/"));
+    assert!(seen[2]
+        .starts_with("GET /workspace/api/flows/ops%2Frun/files?project_path=%2Fb%2Frepo HTTP/"));
+    for request in &seen {
+        let lower = request.to_ascii_lowercase();
+        assert!(
+            lower.contains("authorization: bearer peer-secret"),
+            "{request}"
+        );
+    }
+
+    assert!(matches!(
+        delegations::link_projects(&home.settings, "missing"),
+        Err(WorkspaceError::NotFound(_))
+    ));
+}

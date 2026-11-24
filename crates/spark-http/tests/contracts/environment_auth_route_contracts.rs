@@ -241,7 +241,12 @@ async fn paired_token_is_accepted_until_revoked() {
     )
     .await;
     assert_eq!(code.status(), StatusCode::OK);
-    let code = json(code).await["code"].as_str().expect("code").to_string();
+    let code_payload = json(code).await;
+    assert_eq!(
+        code_payload["environment_id"],
+        crate::shared_store(&settings.data_dir).environment_id()
+    );
+    let code = code_payload["code"].as_str().expect("code").to_string();
     let paired = send(
         &app,
         "POST",
@@ -513,6 +518,56 @@ async fn specific_bound_ip_trusts_only_direct_local_self_connections() {
     )
     .await;
     assert_eq!(remote_on_any.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn delegation_list_and_discovery_routes_are_mounted_and_protected() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app = crate::store_app_default(settings(temp.path()));
+
+    let local_list = send(
+        &app,
+        "GET",
+        "/workspace/api/delegations?open=true",
+        None,
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(local_list.status(), StatusCode::OK);
+    assert_eq!(json(local_list).await, json!({"delegations": []}));
+
+    let missing_link = send(
+        &app,
+        "GET",
+        "/workspace/api/environments/links/env-missing/projects",
+        None,
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(missing_link.status(), StatusCode::NOT_FOUND);
+
+    let bad_flow_suffix = send(
+        &app,
+        "GET",
+        "/workspace/api/environments/links/env-missing/flows/ops/run",
+        None,
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(bad_flow_suffix.status(), StatusCode::NOT_FOUND);
+
+    for uri in [
+        "/workspace/api/delegations",
+        "/workspace/api/environments/links/env-b/projects",
+        "/workspace/api/environments/links/env-b/flows",
+        "/workspace/api/environments/links/env-b/flows/ops/run/files",
+    ] {
+        let remote = send(&app, "GET", uri, Some(REMOTE), &[], None).await;
+        assert_eq!(remote.status(), StatusCode::UNAUTHORIZED, "{uri}");
+    }
 }
 
 fn request(

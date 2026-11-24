@@ -223,7 +223,7 @@ pub(crate) fn workspace_router() -> Router<HttpAppState> {
 }
 
 async fn create_pairing_code(
-    State(settings): State<Arc<SparkSettings>>,
+    State(state): State<HttpAppState>,
     body: axum::body::Bytes,
 ) -> Result<Json<Value>, WorkspaceApiError> {
     let request = if body.is_empty() {
@@ -233,10 +233,14 @@ async fn create_pairing_code(
             spark_workspace::WorkspaceError::Validation(format!("Invalid request: {error}"))
         })?
     };
-    let (code, expires_at) = EnvironmentRepository::new(&settings.data_dir)
+    let (code, expires_at) = EnvironmentRepository::new(&state.settings.data_dir)
         .create_pairing_code(request.label.trim())
         .map_err(spark_workspace::WorkspaceError::from)?;
-    Ok(Json(json!({"code": code, "expires_at": expires_at})))
+    Ok(Json(json!({
+        "environment_id": state.conversation_store.environment_id(),
+        "code": code,
+        "expires_at": expires_at,
+    })))
 }
 
 async fn list_tokens(
