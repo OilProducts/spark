@@ -423,8 +423,9 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             : outcome === 'canceled'
                 ? `Canceled delegation ${record.request_key}.`
                 : `Delegation ${record.request_key} had already ended: ${outcome}.`
-        setStatus(done)
-        await reloadAfterChange(done)
+        // The card showing this environment, if any, reports it and reloads: one Settings left meanwhile
+        // never sends a list request to the environment shown now.
+        await shownCards.get(env)?.(done)
         setBusy(false)
     }
 

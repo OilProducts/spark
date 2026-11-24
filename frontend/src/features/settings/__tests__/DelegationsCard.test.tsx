@@ -995,6 +995,33 @@ it('refreshes a cancel started under All with the filter selected when it comple
     expect(screen.getByText('paused-task')).toBeInTheDocument()
 })
 
+it('leaves a linked environment\'s list requests and live refreshes alone when a cancel sent from Local completes there', async () => {
+    const cancel = later()
+    const remoteList = `GET ${REMOTE}/workspace/api/delegations`
+    serve({
+        ...ENVIRONMENTS,
+        [LIST]: [ok(list(nightly))],
+        [cancelRoute('del-1')]: [cancel.reply],
+        [remoteList]: [ok(list(delegation('del-9', 'remote-task', [])))],
+    })
+    const first = renderCard()
+    await confirmCancel(first.user, 'nightly-checks')
+    await waitFor(() => expect(sent(cancelRoute('del-1'))).toHaveLength(1))
+    // The user switches to the linked environment and opens its System settings while the cancel is out.
+    first.unmount()
+    await switchTo('env-x')
+    renderCard()
+    expect(await screen.findByText('remote-task')).toBeInTheDocument()
+    await settled()
+
+    await cancel.resolve({ ...nightly, ...requested })
+    expect(sent(remoteList)).toHaveLength(1)
+    expect(sent(LIST)).toHaveLength(1)
+    expect(screen.queryByText('Cancellation requested for nightly-checks.')).not.toBeInTheDocument()
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    await waitFor(() => expect(sent(remoteList)).toHaveLength(2))
+})
+
 it('applies a cancel result to its row even when the reload after it fails', async () => {
     serve({
         [LIST]: [ok(list(nightly)), fail(500, 'database is locked')],
