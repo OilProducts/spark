@@ -5,7 +5,6 @@ import { requestNavigation } from '@/state/workspaceSlice'
 import { revealSelection } from '@/components/app/view-layout'
 import { ATTENTION_CHANGED_EVENT, fetchPendingAttention, type AttentionItem } from '@/lib/api/attentionApi'
 import { triggerKey } from '@/lib/api/triggersApi'
-import { normalizeProjectPath } from '@/lib/projectPaths'
 import { flowTitle, formatRunDate, formatRunTime, runFlowTitle, runTitle } from '@/features/runs/model/runOverviewModel'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { focusRunHeading } from '@/features/runs/components/RunHeaderBar'
@@ -174,8 +173,7 @@ export function openTrigger(projectPath: string, triggerId: string) {
 
 export function openMission(id: string, projectPath: string) {
     revealSelection()
-    // Missions carry native paths (C:\repo); the selection, like the list's, holds the normalized one.
-    useStore.getState().setSelectedMission({ id, projectPath: normalizeProjectPath(projectPath) })
+    useStore.getState().setSelectedMission({ id, projectPath })
     useStore.getState().setViewMode('missions')
 }
 

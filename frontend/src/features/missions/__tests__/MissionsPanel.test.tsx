@@ -253,16 +253,20 @@ it('restores and removes a mission recorded with a native Windows path by its no
 it('keeps the route and history when an open mission recorded with a native Windows path is clicked again', async () => {
     task = mission({ project_path: 'C:\\work\\repo' })
     useStore.setState({ projectRegistry: { ...useStore.getState().projectRegistry, 'C:/work/repo': { directoryPath: 'C:/work/repo', isFavorite: false, lastAccessedAt: null } } })
-    // A link to the mission names its normalized project.
-    window.history.pushState(null, '', placeHash({ view: 'missions', missionId: missionKey({ projectPath: 'C:/work/repo', id: 'task-1' }) }))
-    render(<><HistoryRoutingController /><MissionsPanel active /></>)
-    await screen.findByRole('region', { name: 'Mission details' })
-    const hash = window.location.hash
-    const start = window.history.length
+    // A link names the project normalized, or, from an earlier version, with native backslashes.
+    for (const projectPath of ['C:/work/repo', 'C:\\work\\repo']) {
+        useStore.setState({ selectedMission: null })
+        window.history.pushState(null, '', placeHash({ view: 'missions', missionId: missionKey({ projectPath, id: 'task-1' }) }))
+        const view = render(<><HistoryRoutingController /><MissionsPanel active /></>)
+        await screen.findByRole('region', { name: 'Mission details' })
+        const hash = window.location.hash
+        const start = window.history.length
 
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Deliver search' })) })
-    expect(window.location.hash).toBe(hash)
-    expect(window.history.length).toBe(start)
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Deliver search' })) })
+        expect(window.location.hash).toBe(hash)
+        expect(window.history.length).toBe(start)
+        view.unmount()
+    }
 })
 
 it('asks before closing or canceling a mission, and does nothing when kept open', async () => {
