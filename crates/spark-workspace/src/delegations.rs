@@ -482,10 +482,35 @@ pub fn get(settings: &SparkSettings, delegation_id: &str) -> WorkspaceResult<Del
 }
 
 /// Records the owner's cancellation; the follower sends it to B until B
-/// acknowledges, and keeps following until B seals the task.
-pub fn cancel(settings: &SparkSettings, delegation_id: &str) -> WorkspaceResult<DelegationOut> {
-    get(settings, delegation_id)?;
+/// acknowledges, and keeps following until B seals the task. A delegation
+/// that is already paused (unlinked, revoked or refused by B) is sealed
+/// locally as `canceled` right away so it does not stay stuck open.
+pub fn cancel(
+    settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
+    delegation_id: &str,
+) -> WorkspaceResult<DelegationOut> {
+    let record = get(settings, delegation_id)?;
+    if record.phase == "sealed" {
+        return Ok(record);
+    }
     environments(settings).request_cancel_out(delegation_id)?;
+    if let Some(reason) = record.paused.as_deref() {
+        let target_kind = if record.kind == "flow" {
+            "run"
+        } else {
+            "conversation"
+        };
+        let state = json!({
+            "target_kind": target_kind,
+            "target_id": record.target_id,
+        });
+        let result = json!({
+            "status": "canceled",
+            "detail": format!("Canceled locally while paused: {reason}"),
+        });
+        seal_out_and_notify(settings, store, &record, &state, result)?;
+    }
     get(settings, delegation_id)
 }
 
@@ -559,7 +584,10 @@ pub struct Follower {
 }
 
 impl Follower {
-    /// One pass over every open record whose follow is due.
+    /// One pass over every open record whose follow is due. Environments are
+    /// polled in parallel so one unreachable peer does not stall healthy ones.
+    // ponytail: scoped threads per tick; move to independent per-environment
+    // tasks if a single slow timeout delaying the next tick ever matters.
     pub fn tick(&mut self, settings: &SparkSettings, store: &Arc<ConversationStore>) {
         let Ok(records) = environments(settings).followed_out() else {
             return;
@@ -567,12 +595,54 @@ impl Follower {
         self.backoff
             .retain(|id, _| records.iter().any(|record| &record.delegation_id == id));
         let now = Instant::now();
+        let mut by_env: BTreeMap<String, Vec<DelegationOut>> = BTreeMap::new();
         for record in records {
-            let id = record.delegation_id.clone();
-            if self.backoff.get(&id).is_some_and(|(due, _)| *due > now) {
+            if self
+                .backoff
+                .get(&record.delegation_id)
+                .is_some_and(|(due, _)| *due > now)
+            {
                 continue;
             }
-            match follow(settings, store, &record) {
+            by_env
+                .entry(record.environment_id.clone())
+                .or_default()
+                .push(record);
+        }
+        let follow_env = |env_records: Vec<DelegationOut>| -> Vec<(String, Result<(), String>)> {
+            let mut results = Vec::with_capacity(env_records.len());
+            let mut failed: Option<String> = None;
+            for record in env_records {
+                let id = record.delegation_id.clone();
+                if let Some(error) = &failed {
+                    results.push((id, Err(error.clone())));
+                    continue;
+                }
+                let outcome = follow(settings, store, &record);
+                if let Err(error) = &outcome {
+                    failed = Some(error.clone());
+                }
+                results.push((id, outcome));
+            }
+            results
+        };
+        let outcomes: Vec<_> = if by_env.len() <= 1 {
+            by_env.into_values().flat_map(follow_env).collect()
+        } else {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = by_env
+                    .into_values()
+                    .map(|env_records| scope.spawn(move || follow_env(env_records)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|handle| handle.join().unwrap_or_default())
+                    .collect()
+            })
+        };
+        let finished = Instant::now();
+        for (id, outcome) in outcomes {
+            match outcome {
                 Ok(()) => {
                     self.backoff.remove(&id);
                 }
@@ -581,7 +651,7 @@ impl Follower {
                         .backoff
                         .get(&id)
                         .map_or(FOLLOW_INTERVAL, |(_, delay)| (*delay * 2).min(MAX_BACKOFF));
-                    self.backoff.insert(id, (now + delay, delay));
+                    self.backoff.insert(id, (finished + delay, delay));
                 }
             }
         }
@@ -649,6 +719,58 @@ fn follow(
     apply(settings, store, record, &state).map_err(|error| error.to_string())
 }
 
+fn delegation_inbox_payload(record: &DelegationOut, state: &Value) -> Value {
+    json!({
+        "delegation_id": record.delegation_id,
+        "environment_id": record.environment_id,
+        "project_path": record.project_path,
+        "kind": record.kind,
+        "request_key": record.request_key,
+        "target_kind": state["target_kind"],
+        "target_id": state["target_id"],
+    })
+}
+
+fn live_owner<'a>(
+    conversations: &ConversationRepository,
+    record: &'a DelegationOut,
+) -> Option<&'a str> {
+    record
+        .owner_conversation_id
+        .as_deref()
+        .filter(|owner| matches!(conversations.conversation_project_path(owner), Ok(Some(_))))
+}
+
+/// Seals an outgoing record and delivers its one `delegation.result` inbox
+/// event in the same transaction when its owner conversation still exists.
+fn seal_out_and_notify(
+    settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
+    record: &DelegationOut,
+    state: &Value,
+    result: Value,
+) -> WorkspaceResult<()> {
+    let id = &record.delegation_id;
+    let conversations = ConversationRepository::new(store.clone());
+    let Some(owner) = live_owner(&conversations, record) else {
+        environments(settings).seal_out(id, &result)?;
+        return Ok(());
+    };
+    let mut payload = delegation_inbox_payload(record, state);
+    payload["result"] = result.clone();
+    conversations.append_inbox_event_with(
+        owner,
+        NewInboxEvent {
+            id: format!("delegation:{id}:result"),
+            kind: "delegation.result".to_string(),
+            source: id.clone(),
+            payload,
+        },
+        |connection| seal_out_on(connection, id, &result),
+    )?;
+    inbox::process_conversation(settings, store, owner)
+}
+
 /// Stores B's view of a record: its target once B acknowledges, new
 /// questions in the owner's inbox, and the seal with its inbox event.
 fn apply(
@@ -665,42 +787,15 @@ fn apply(
         }
     }
     repository.set_out_state(id, state)?;
-    let conversations = ConversationRepository::new(store.clone());
-    let owner = record
-        .owner_conversation_id
-        .as_deref()
-        .filter(|owner| matches!(conversations.conversation_project_path(owner), Ok(Some(_))));
-    let mut payload = json!({
-        "delegation_id": id,
-        "environment_id": record.environment_id,
-        "project_path": record.project_path,
-        "kind": record.kind,
-        "request_key": record.request_key,
-        "target_kind": state["target_kind"],
-        "target_id": state["target_id"],
-    });
     if state["phase"] == "sealed" {
         let result = state.get("result").cloned().unwrap_or(Value::Null);
-        let Some(owner) = owner else {
-            repository.seal_out(id, &result)?;
-            return Ok(());
-        };
-        payload["result"] = result.clone();
-        conversations.append_inbox_event_with(
-            owner,
-            NewInboxEvent {
-                id: format!("delegation:{id}:result"),
-                kind: "delegation.result".to_string(),
-                source: id.clone(),
-                payload,
-            },
-            |connection| seal_out_on(connection, id, &result),
-        )?;
-        return inbox::process_conversation(settings, store, owner);
+        return seal_out_and_notify(settings, store, record, state, result);
     }
-    let Some(owner) = owner else {
+    let conversations = ConversationRepository::new(store.clone());
+    let Some(owner) = live_owner(&conversations, record) else {
         return Ok(());
     };
+    let mut payload = delegation_inbox_payload(record, state);
     let mut changed = false;
     for question in state["questions"].as_array().into_iter().flatten() {
         let Some(question_id) = question["question_id"].as_str() else {
@@ -1096,16 +1191,17 @@ fn conversation_view(
     let questions: Vec<Value> = items("segments")
         .into_iter()
         .filter(|segment| segment["kind"] == "request_user_input" && segment["status"] == "pending")
-        .map(|segment| {
+        .filter_map(|segment| {
             let request = &segment["request_user_input"];
+            let question_id = conversation_question_id(request)?;
             let mut question = json!({
-                "question_id": request["request_id"].as_str().or(segment["id"].as_str()),
+                "question_id": question_id,
                 "questions": request["questions"],
             });
             if request["form"].is_object() {
                 question["form"] = request["form"].clone();
             }
-            question
+            Some(question)
         })
         .collect();
     let review = items("proposed_plans")
@@ -1135,6 +1231,29 @@ fn conversation_view(
         _ => None,
     };
     Ok((status.to_string(), questions, result))
+}
+
+/// The lookup ID `ConversationRepository::find_question` matches: the request's
+/// `request_id`, or its first question's `id` when `request_id` is absent.
+fn conversation_question_id(request: &Value) -> Option<&str> {
+    request["request_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .or_else(|| {
+            request["questions"]
+                .as_array()?
+                .iter()
+                .find_map(|question| question["id"].as_str().filter(|id| !id.is_empty()))
+        })
+}
+
+fn conversation_matches_question(request: &Value, question_id: &str) -> bool {
+    request["request_id"].as_str() == Some(question_id)
+        || request["questions"].as_array().is_some_and(|questions| {
+            questions
+                .iter()
+                .any(|question| question["id"].as_str() == Some(question_id))
+        })
 }
 
 /// Ends what a canceled conversation waits for from its owner, through the
@@ -1299,7 +1418,7 @@ pub fn answer_incoming(
         .find(|segment| {
             segment["kind"] == "request_user_input"
                 && segment["status"] == "pending"
-                && segment["request_user_input"]["request_id"] == question_id
+                && conversation_matches_question(&segment["request_user_input"], question_id)
         })
         .ok_or_else(unknown)?;
     if segment["request_user_input"]["form"].is_object() && request.form.is_none() {

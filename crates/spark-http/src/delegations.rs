@@ -149,7 +149,14 @@ async fn cancel(
     State(state): State<HttpAppState>,
     Path(delegation_id): Path<String>,
 ) -> ApiResult<Value> {
-    blocking(move || Ok(json!(delegations::cancel(&state.settings, &delegation_id)?))).await
+    blocking(move || {
+        Ok(json!(delegations::cancel(
+            &state.settings,
+            &state.conversation_store,
+            &delegation_id,
+        )?))
+    })
+    .await
 }
 
 async fn answer(

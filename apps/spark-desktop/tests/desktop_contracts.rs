@@ -590,3 +590,32 @@ fn desktop_retains_environment_selected_startup_paths() {
     captured.retain_startup_settings(&boot.settings);
     assert_eq!(captured.agents.native.claude_config_dir, Some(selected));
 }
+
+#[test]
+fn desktop_server_runs_before_build_hook_with_bound_url_before_opening_home() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
+    let bootstrap =
+        bootstrap_desktop_runtime(&DesktopServerSettings::default(), &spark_home(&paths)).unwrap();
+    let data_dir = bootstrap.settings.data_dir.clone();
+    let mut seen_url = String::new();
+    let mut server = spark_desktop::desktop_core::start_desktop_server_with_before_build(
+        bootstrap.settings,
+        LOCAL_BIND_HOST,
+        |url| {
+            seen_url = url.to_string();
+            // The HTTP app has not opened the home lock yet, so startup
+            // recovery and admitted delegations cannot have spawned agents.
+            let store = spark_storage::ConversationStore::open(&data_dir)
+                .map_err(|error| error.to_string())?;
+            drop(store);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(seen_url, server.url());
+    server.shutdown();
+
+    let source = include_str!("../src/lib.rs");
+    assert!(source.contains("start_desktop_server_with_before_build"));
+}

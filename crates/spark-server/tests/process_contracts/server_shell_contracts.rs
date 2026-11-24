@@ -1158,3 +1158,66 @@ fn serve_on_all_interfaces_gives_agents_a_loopback_base_url() {
     assert!(relayed.starts_with("HTTP/1.1 401"), "{relayed}");
     assert!(relayed.contains(r#"{"detail":"A peer token is required."}"#));
 }
+
+#[cfg(unix)]
+#[test]
+fn serve_on_ipv6_loopback_brackets_its_agent_and_listening_urls() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    if std::net::TcpListener::bind(("::1", 0)).is_err() {
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical");
+    let ui_dir = root.join("ui");
+    let home = root.join("home");
+    fs::create_dir_all(&ui_dir).expect("ui");
+    fs::create_dir_all(&home).expect("home");
+    fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("index");
+
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut server = ChildGuard(
+        Command::new(env!("CARGO_BIN_EXE_spark-server"))
+            .args(["serve", "--host", "::1", "--port", "0", "--data-dir"])
+            .arg(root.join("spark-home"))
+            .arg("--ui-dir")
+            .arg(&ui_dir)
+            .current_dir(&root)
+            .env("HOME", &home)
+            .env_remove("SPARK_HOME")
+            .env_remove("SPARK_API_BASE_URL")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn spark-server serve"),
+    );
+    let stdout = BufReader::new(server.0.stdout.take().expect("stdout"));
+    let (lines, printed) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in stdout.lines().map_while(Result::ok) {
+            let _ = lines.send(line);
+        }
+    });
+    let mut startup = Vec::new();
+    let port: u16 = loop {
+        let line = printed
+            .recv_timeout(Duration::from_secs(60))
+            .unwrap_or_else(|error| panic!("server did not start ({error}): {startup:?}"));
+        if let Some(port) = line.strip_prefix("Spark server listening on http://[::1]:") {
+            break port.parse().expect("port");
+        }
+        startup.push(line);
+    };
+    assert!(
+        startup.contains(&format!("Spark agent base URL http://[::1]:{port}")),
+        "{startup:?}"
+    );
+}

@@ -48,15 +48,33 @@ fn forwarded(headers: &HeaderMap) -> bool {
     })
 }
 
+/// The specific interface IP this server bound to, if any. Unspecified
+/// addresses (`0.0.0.0`, `::`) return `None` because agents reach them via
+/// loopback.
+fn bound_ip(settings: &SparkSettings) -> Option<IpAddr> {
+    settings
+        .connections
+        .server_host
+        .as_deref()
+        .and_then(|host| host.trim_matches(['[', ']']).parse::<IpAddr>().ok())
+        .map(|ip| ip.to_canonical())
+        .filter(|ip| !ip.is_unspecified())
+}
+
 /// A request served without connection info has no network peer: it came
 /// from this process, such as a test driving the router directly. Both
-/// serve sites attach connection info.
-fn is_local(request: &Request) -> bool {
+/// serve sites attach connection info. A local process connecting to a
+/// specific non-loopback `--host` IP arrives from that same bound IP.
+fn is_local(request: &Request, settings: &SparkSettings) -> bool {
+    let local_bind = bound_ip(settings);
     !forwarded(request.headers())
         && request
             .extensions()
             .get::<ConnectInfo<SocketAddr>>()
-            .is_none_or(|ConnectInfo(peer)| peer.ip().to_canonical().is_loopback())
+            .is_none_or(|ConnectInfo(peer)| {
+                let peer = peer.ip().to_canonical();
+                peer.is_loopback() || local_bind == Some(peer)
+            })
 }
 
 /// The token of an `Authorization: Bearer <token>` header; the scheme name
@@ -77,7 +95,7 @@ pub(crate) async fn require_trust(
     request: Request,
     next: Next,
 ) -> Response {
-    if is_exempt(request.method(), request.uri().path()) || is_local(&request) {
+    if is_exempt(request.method(), request.uri().path()) || is_local(&request, &settings) {
         return next.run(request).await;
     }
     let authorized = bearer(request.headers()).is_some_and(|secret| {

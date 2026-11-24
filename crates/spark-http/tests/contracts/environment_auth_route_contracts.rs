@@ -455,6 +455,66 @@ async fn pairing_is_rate_limited_per_peer_and_caps_its_body() {
     assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn specific_bound_ip_trusts_only_direct_local_self_connections() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut bound = settings(temp.path());
+    bound.connections.server_host = Some("10.1.2.3".to_string());
+    let app = crate::store_app_default(bound);
+
+    // Direct connection from the server's own bound IP (e.g. a local agent) passes.
+    let self_local = send(
+        &app,
+        "GET",
+        "/workspace/api/projects",
+        Some(REMOTE),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(self_local.status(), StatusCode::OK);
+
+    // A forwarded header on that IP still requires a bearer token.
+    let proxied = send(
+        &app,
+        "GET",
+        "/workspace/api/projects",
+        Some(REMOTE),
+        &[("x-forwarded-for", "203.0.113.9")],
+        None,
+    )
+    .await;
+    assert_eq!(proxied.status(), StatusCode::UNAUTHORIZED);
+
+    // Any other remote peer still requires a bearer token.
+    let other_remote = send(
+        &app,
+        "GET",
+        "/workspace/api/projects",
+        Some("10.1.2.4:40000"),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(other_remote.status(), StatusCode::UNAUTHORIZED);
+
+    // An unspecified bind (`0.0.0.0`) never trusts non-loopback peers.
+    let temp_any = tempfile::tempdir().expect("tempdir");
+    let mut any = settings(temp_any.path());
+    any.connections.server_host = Some("0.0.0.0".to_string());
+    let app_any = crate::store_app_default(any);
+    let remote_on_any = send(
+        &app_any,
+        "GET",
+        "/workspace/api/projects",
+        Some(REMOTE),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(remote_on_any.status(), StatusCode::UNAUTHORIZED);
+}
+
 fn request(
     method: &str,
     uri: &str,

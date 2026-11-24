@@ -1008,3 +1008,143 @@ fn b_shows_a_delegated_form_and_takes_only_its_one_typed_reply() {
     assert_eq!(home.state(&id(2))["questions"], json!([]));
     drop(active);
 }
+
+#[test]
+fn a_cancel_on_a_paused_delegation_seals_locally_and_notifies_owner() {
+    let home = Home::new();
+    home.link();
+    home.seed_chat("chat-owner", "amber-owner", "chat", "complete", json!([]));
+    let store = crate::shared_store(&home.settings.data_dir);
+    let started = home
+        .start(DelegationStartRequest {
+            conversation_handle: Some("amber-owner".into()),
+            ..home.flow_start("build", "Build it")
+        })
+        .unwrap();
+    delegations::remove_link(&home.settings, LINKED).unwrap();
+    let paused = delegations::get(&home.settings, &started.delegation_id).unwrap();
+    assert!(paused.paused.is_some(), "{paused:?}");
+
+    let canceled = delegations::cancel(&home.settings, &store, &started.delegation_id).unwrap();
+    assert_eq!(canceled.phase, "sealed");
+    assert!(canceled.paused.is_none());
+    assert!(canceled.cancel_requested_at.is_some());
+    assert_eq!(
+        canceled.result.as_ref().unwrap()["status"],
+        json!("canceled")
+    );
+
+    // Re-linking never reopens a sealed delegation, and owner got one inbox event.
+    home.link();
+    let after_relink = delegations::get(&home.settings, &started.delegation_id).unwrap();
+    assert_eq!(after_relink.phase, "sealed");
+    let events = home.repository().inbox_events("chat-owner").unwrap();
+    let results: Vec<_> = events
+        .iter()
+        .filter(|event| event.kind == "delegation.result" && event.source == started.delegation_id)
+        .collect();
+    assert_eq!(results.len(), 1, "{events:?}");
+    assert_eq!(results[0].payload["result"]["status"], json!("canceled"));
+}
+
+#[test]
+fn follower_polls_distinct_environments_in_parallel() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Barrier;
+
+    let home = Home::new();
+    let store = crate::shared_store(&home.settings.data_dir);
+    let barrier = Arc::new(Barrier::new(2));
+
+    let serve_one = |barrier: Arc<Barrier>| {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            // Both environments must be contacted concurrently to pass the barrier.
+            barrier.wait();
+            let body = r#"{"phase":"sealed","target_kind":"run","target_id":"r-1","status":"completed","questions":[],"result":{"status":"completed"}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        (format!("http://127.0.0.1:{port}"), handle)
+    };
+
+    let (origin_1, h1) = serve_one(barrier.clone());
+    let (origin_2, h2) = serve_one(barrier);
+    for (env_id, origin) in [("env-1", origin_1), ("env-2", origin_2)] {
+        home.environments()
+            .save_link(
+                &EnvironmentLink {
+                    environment_id: env_id.into(),
+                    origin,
+                    label: env_id.into(),
+                    created_at: String::new(),
+                },
+                "token",
+            )
+            .unwrap();
+    }
+    let d1 = home
+        .start(DelegationStartRequest {
+            environment_id: "env-1".into(),
+            ..home.flow_start("k1", "Task 1")
+        })
+        .unwrap();
+    let d2 = home
+        .start(DelegationStartRequest {
+            environment_id: "env-2".into(),
+            ..home.flow_start("k2", "Task 2")
+        })
+        .unwrap();
+
+    let mut follower = delegations::Follower::default();
+    follower.tick(&home.settings, &store);
+    h1.join().unwrap();
+    h2.join().unwrap();
+
+    for id in [d1.delegation_id, d2.delegation_id] {
+        let record = delegations::get(&home.settings, &id).unwrap();
+        assert_eq!(record.phase, "sealed", "{record:?}");
+    }
+}
+
+#[test]
+fn b_matches_conversation_question_by_question_id_when_request_id_is_absent() {
+    let home = Home::new();
+    home.seed_chat(
+        "chat-no-req-id",
+        "amber-no-req-id",
+        "chat",
+        "complete",
+        json!([{
+            "id": "segment-only", "turn_id": "turn-assistant", "order": 1,
+            "kind": "request_user_input", "role": "assistant", "status": "pending",
+            "timestamp": "2026-01-01T00:00:01Z", "updated_at": "2026-01-01T00:00:01Z", "content": "",
+            "request_user_input": {"status": "pending", "questions": [
+                {"id": "decision", "header": "Approve", "question": "Approve?", "isOther": false,
+                 "isSecret": false, "options": [{"label": "Approve", "description": "Go"}]}]}
+        }]),
+    );
+    home.launched(&id(1), "conversation", "chat-no-req-id");
+    let view = home.state(&id(1));
+    assert_eq!(view["questions"][0]["question_id"], "decision");
+
+    let agent = Arc::new(FormTaker::default());
+    let service = crate::conversations_with_backend(home.settings.clone(), agent);
+    answer_with(
+        &service,
+        &id(1),
+        "decision",
+        json!({"selected_value": "Approve"}),
+    )
+    .unwrap();
+    assert_eq!(home.state(&id(1))["questions"], json!([]));
+}

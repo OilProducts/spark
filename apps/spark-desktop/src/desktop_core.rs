@@ -232,8 +232,19 @@ pub fn bootstrap_desktop_runtime(
 }
 
 pub fn start_desktop_server(
+    settings: SparkSettings,
+    bind_host: &str,
+) -> Result<DesktopServer, String> {
+    start_desktop_server_with_before_build(settings, bind_host, |_| Ok(()))
+}
+
+/// Starts the embedded desktop server, invoking `before_build` with its bound
+/// loopback URL before building the HTTP app (and before startup recovery or
+/// admitted delegations can launch any agent process).
+pub fn start_desktop_server_with_before_build(
     mut settings: SparkSettings,
     bind_host: &str,
+    before_build: impl FnOnce(&str) -> Result<(), String>,
 ) -> Result<DesktopServer, String> {
     let listener = TcpListener::bind((bind_host, 0))
         .map_err(|error| format!("Unable to bind desktop server on {bind_host}:0: {error}"))?;
@@ -244,6 +255,7 @@ pub fn start_desktop_server(
         .local_addr()
         .map_err(|error| format!("Unable to read desktop server address: {error}"))?;
     let url = frontend_url_for_addr(local_addr);
+    before_build(&url)?;
     // Desktop owns its listener and client target; remote access still requires
     // the native confirmation boundary. Report that effective choice separately.
     settings.startup_sources.insert(

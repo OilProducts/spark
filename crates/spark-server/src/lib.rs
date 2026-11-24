@@ -842,29 +842,34 @@ fn run_serve_process(
     if config.debug_codex_jsonrpc {
         std::env::set_var(ENV_SPARK_DEBUG_CODEX_JSONRPC, "1");
     }
-    let bind_addr = format!("{}:{}", config.host, config.port);
+    let bind_host = config.host.trim_matches(['[', ']']).to_string();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
     runtime.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(&bind_addr)
+        let listener = tokio::net::TcpListener::bind((bind_host.as_str(), config.port))
             .await
             .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
         // `--port 0` binds a free port; everything after this uses the real one.
-        let port = listener
+        let local_addr = listener
             .local_addr()
-            .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?
-            .port();
+            .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
+        let port = local_addr.port();
         let mut settings = config.settings;
         settings.connections.server_port = Some(port);
         // Agents and local clients reach an all-interfaces server over
-        // loopback, where they need no token.
-        let local_host = match config.host.parse::<std::net::IpAddr>() {
-            Ok(ip) if ip.is_unspecified() => "127.0.0.1".to_string(),
-            _ => config.host.clone(),
+        // loopback, where they need no token; bracket IPv6 addresses.
+        let agent_ip = match local_addr.ip() {
+            std::net::IpAddr::V4(ip) if ip.is_unspecified() => {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+            }
+            std::net::IpAddr::V6(ip) if ip.is_unspecified() => {
+                std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+            }
+            ip => ip,
         };
-        let local_base_url = format!("http://{local_host}:{port}");
+        let local_base_url = format!("http://{}", std::net::SocketAddr::new(agent_ip, port));
         if config.port == 0 {
             settings.connections.client_api_base_url = Some(local_base_url.clone());
         }
@@ -878,8 +883,13 @@ fn run_serve_process(
                     format!("Unable to initialize Spark server: {error}\n"),
                 )
             })?;
+        let listen_host = if config.host.contains(':') && !config.host.starts_with('[') {
+            format!("[{}]", config.host)
+        } else {
+            config.host.clone()
+        };
         println!("Spark agent base URL {local_base_url}");
-        println!("Spark server listening on http://{}:{port}", config.host);
+        println!("Spark server listening on http://{listen_host}:{port}");
         axum_serve(listener, app).await
     })
 }
