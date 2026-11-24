@@ -46,17 +46,18 @@ export const resolveExecutionWorkingDirectory = (form: Pick<RunInitiationFormSta
     // A POSIX project (single leading /) has no UNC shares: there //usr/local is /usr/local.
     const posixProject = /^\/(?!\/)/.test(normalizedProjectPath)
     const workingDirectory = form.workingDirectory.trim()
-    const normalizedWorkingDirectory = normalizeProjectPath(posixProject ? workingDirectory.replace(/^\/+/, '/') : workingDirectory)
 
-    if (!normalizedWorkingDirectory) {
+    if (!workingDirectory) {
         return normalizedProjectPath
     }
-    if (isAbsoluteProjectPath(normalizedWorkingDirectory) || !normalizedProjectPath) {
-        return normalizedWorkingDirectory
+    if (isAbsoluteProjectPath(workingDirectory) || !normalizedProjectPath) {
+        return normalizeProjectPath(posixProject ? workingDirectory.replace(/^\/+/, '/') : workingDirectory)
     }
 
+    // A relative directory joins the project before normalizing, so its leading .. climbs the project
+    // and the project's style decides what a backslash means.
     const separator = normalizedProjectPath.endsWith('/') ? '' : '/'
-    return normalizeProjectPath(`${normalizedProjectPath}${separator}${normalizedWorkingDirectory}`)
+    return normalizeProjectPath(`${normalizedProjectPath}${separator}${workingDirectory}`)
 }
 
 export function buildPipelineStartPayload(

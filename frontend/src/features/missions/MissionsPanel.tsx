@@ -136,7 +136,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
         if (busy) return
         origin.current = trigger
         setNewProject(mission ? null : project)
-        useStore.getState().setSelectedMission(mission ? { id: mission.id, projectPath: mission.project_path } : null)
+        useStore.getState().setSelectedMission(mission ? { id: mission.id, projectPath: normalizeProjectPath(mission.project_path) } : null)
         setFocusRequest(value => value + 1)
         preserveDraft()
         const cached = drafts.current.get(mission?.id ?? `new:${project ?? ''}`)
@@ -175,7 +175,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
             drafts.current.delete(editing?.id ?? newKey)
             upsert(saved)
             if (!editing) void markProjectUsed(saved.project_path)
-            if (archive === undefined) { reset(saved); setMode('read'); useStore.getState().setSelectedMission({ id: saved.id, projectPath: saved.project_path }) }
+            if (archive === undefined) { reset(saved); setMode('read'); useStore.getState().setSelectedMission({ id: saved.id, projectPath: normalizeProjectPath(saved.project_path) }) }
             else { setEditing(saved); setDraft(current => ({ ...current, archived: saved.fields.archived })) }
             await refresh()
         } catch (e) { setError((e as Error).message); if (e instanceof MissionConflict) { setConflict(true); await refresh() } } finally { setBusy(false) }

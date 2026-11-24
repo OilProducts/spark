@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { buildPipelineContinuePayload, buildPipelineStartPayload } from '../pipelineStartPayload'
+import { buildPipelineContinuePayload, buildPipelineStartPayload, resolveExecutionWorkingDirectory } from '../pipelineStartPayload'
 
 it('keeps the UNC share prefix in the project and working directory of start and continue requests', () => {
     const project = { projectPath: '\\\\fileserver\\share\\repo', model: null }
@@ -24,4 +24,13 @@ it('resolves a // working directory in a POSIX project as a POSIX path, not a UN
     // A Windows project still reads // as a UNC share root.
     expect(buildPipelineStartPayload({ ...project, projectPath: 'C:\\repo', flowSource: 'a.dot', workingDirectory: '\\\\server\\share\\..\\x' }))
         .toMatchObject({ working_directory: '//server/share/x' })
+})
+
+it('joins a relative working directory to the project before normalizing it', () => {
+    // On POSIX a backslash is part of a folder name.
+    expect(resolveExecutionWorkingDirectory({ projectPath: '/tmp/project', workingDirectory: 'team\\repo' })).toBe('/tmp/project/team\\repo')
+    // A leading .. climbs the project, down to a UNC share's root.
+    expect(resolveExecutionWorkingDirectory({ projectPath: 'C:\\repo', workingDirectory: '..\\worktree' })).toBe('C:/worktree')
+    expect(resolveExecutionWorkingDirectory({ projectPath: '\\\\fileserver\\share\\repo', workingDirectory: '..\\other' })).toBe('//fileserver/share/other')
+    expect(resolveExecutionWorkingDirectory({ projectPath: '\\\\fileserver\\share\\repo', workingDirectory: '..\\..\\..\\other' })).toBe('//fileserver/share/other')
 })

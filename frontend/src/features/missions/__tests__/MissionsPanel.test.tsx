@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from 'vitest'
-import { TriggersSessionController } from '@/app/AppSessionControllers'
+import { HistoryRoutingController, TriggersSessionController } from '@/app/AppSessionControllers'
+import { missionKey, placeHash } from '@/app/runsRouting'
 import { TriggersPanel } from '@/features/triggers/TriggersPanel'
 import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
 import { MissionsPanel } from '../MissionsPanel'
@@ -247,6 +248,21 @@ it('restores and removes a mission recorded with a native Windows path by its no
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Mission details' })).not.toBeInTheDocument())
     expect(useStore.getState().selectedMission).toBeNull()
     expect(useStore.getState().missionBoard).toEqual([])
+})
+
+it('keeps the route and history when an open mission recorded with a native Windows path is clicked again', async () => {
+    task = mission({ project_path: 'C:\\work\\repo' })
+    useStore.setState({ projectRegistry: { ...useStore.getState().projectRegistry, 'C:/work/repo': { directoryPath: 'C:/work/repo', isFavorite: false, lastAccessedAt: null } } })
+    // A link to the mission names its normalized project.
+    window.history.pushState(null, '', placeHash({ view: 'missions', missionId: missionKey({ projectPath: 'C:/work/repo', id: 'task-1' }) }))
+    render(<><HistoryRoutingController /><MissionsPanel active /></>)
+    await screen.findByRole('region', { name: 'Mission details' })
+    const hash = window.location.hash
+    const start = window.history.length
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Deliver search' })) })
+    expect(window.location.hash).toBe(hash)
+    expect(window.history.length).toBe(start)
 })
 
 it('asks before closing or canceling a mission, and does nothing when kept open', async () => {
