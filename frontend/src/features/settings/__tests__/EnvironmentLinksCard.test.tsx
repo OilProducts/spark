@@ -187,6 +187,49 @@ it.each(mutations)('shows a successful %s even when the follow-up listing fails'
     expect(backend.mutations).toHaveLength(1)
 })
 
+it.each(mutations)('updates a card reopened during a pending %s once it succeeds', async (name, mutate) => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ tokens: [token('tok-ci', 'CI runner')], links: [link('env-build', 'Build box')] })
+    const request = { revoke: `POST ${TOKENS}/tok-ci/revoke`, add: `POST ${LINKS}`, remove: `DELETE ${LINKS}/env-build` }[name]
+    let finishRequest = () => {}
+    backend.replies[request] = () => new Promise<undefined>((resolve) => { finishRequest = () => resolve(undefined) })
+    const settings = render(card())
+    await screen.findByRole('button', { name: 'Revoke CI runner' })
+    const postMutationRows = await mutate(user)
+    await waitFor(() => expect(backend.mutations).toContain(request))
+
+    // Leaving Settings unmounts the card; reopening System mounts one that lists the rows as they were before the request.
+    settings.unmount()
+    render(card())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    expect(screen.getByText('CI runner')).toBeInTheDocument()
+    expect(screen.getByText('Build box')).toBeInTheDocument()
+
+    await act(async () => finishRequest())
+    await waitFor(postMutationRows)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    postMutationRows()
+})
+
+it('shows a failure that lands while Settings is closed in the next card to open', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box')] })
+    let failDelete = () => {}
+    backend.replies[`DELETE ${LINKS}/env-build`] = () => new Promise<Response>((resolve) => {
+        failDelete = () => resolve(json({ detail: 'database is locked' }, 500))
+    })
+    const settings = render(card())
+    await user.click(await screen.findByRole('button', { name: 'Remove link Build box' }))
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`]))
+
+    settings.unmount()
+    await act(async () => failDelete())
+    render(card())
+    expect(await screen.findByRole('alert')).toHaveTextContent('Database is locked')
+    expect(screen.getByText('Build box')).toBeInTheDocument()
+})
+
 it('waits for a listing before saying no links remain after removing the last visible one', async () => {
     const user = userEvent.setup()
     const backend = stubBackend({ links: [link('env-build', 'Build box')] })
@@ -347,6 +390,8 @@ it.each([
         backend.replies[gpuDescriptor] = gpu
         return new Promise<Response>((resolve) => { finishSwitch = () => resolve(json(gpu)) })
     }
+    backend.replies[`${LINKS}/env-gpu/proxy${TOKENS}`] = { tokens: [token('tok-gpu', 'GPU runner')] }
+    backend.replies[`${LINKS}/env-gpu/proxy${LINKS}`] = { links: [] }
     render(<WorkspaceLikeApp />)
     const gpuTab = await screen.findByTestId('environment-tab-env-gpu')
     // The card names its environment, as in the notice below, once its descriptor loads.
@@ -367,11 +412,15 @@ it.each([
     if (switchFirst) {
         await act(async () => finishSwitch())
         await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-gpu'))
+        // On GPU's card, the user opens a new confirmation before the old check returns.
+        await user.click(await screen.findByRole('button', { name: 'Revoke GPU runner' }))
+        const dialog = await screen.findByRole('alertdialog')
         await act(async () => finishCheck())
-        const notice = await screen.findByRole('alertdialog')
-        expect(notice).toHaveTextContent('Could not remove link.')
-        expect(notice).toHaveTextContent('You switched environments before the link to Build box on mac-studio was removed, so nothing was removed.')
+        expect(await screen.findByText('You switched environments before the link to Build box on mac-studio was removed, so nothing was removed.')).toBeInTheDocument()
+        expect(dialog).toHaveTextContent('Revoke peer token?')
         expect(backend.mutations).toEqual([])
+        await user.click(within(dialog).getByRole('button', { name: 'Revoke token' }))
+        await waitFor(() => expect(backend.mutations).toEqual([`POST ${LINKS}/env-gpu/proxy${TOKENS}/tok-gpu/revoke`]))
     } else {
         await act(async () => finishCheck())
         await waitFor(() => expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`]))
@@ -380,6 +429,32 @@ it.each([
         expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`])
         expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     }
+})
+
+it('refreshes only cards for the environment a mutation changed once it succeeds after a switch', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box'), link('env-gpu', 'GPU')] })
+    backend.replies[`${LINKS}/env-gpu/proxy/environment`] = { ...descriptor, environment_id: 'env-gpu', display_name: 'gpu-box' }
+    backend.replies[`${LINKS}/env-gpu/proxy${TOKENS}`] = { tokens: [token('tok-gpu', 'GPU runner')] }
+    backend.replies[`${LINKS}/env-gpu/proxy${LINKS}`] = { links: [] }
+    let finishDelete = () => {}
+    backend.replies[`DELETE ${LINKS}/env-build`] = () => new Promise<undefined>((resolve) => { finishDelete = () => resolve(undefined) })
+    render(<WorkspaceLikeApp />)
+    await screen.findByText('env-local-1')
+
+    // The local removal is sent, then the user switches to GPU before it completes.
+    await user.click(await screen.findByRole('button', { name: 'Remove link Build box' }))
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`]))
+    await user.click(screen.getByTestId('environment-tab-env-gpu'))
+    expect(await screen.findByRole('button', { name: 'Revoke GPU runner' })).toBeInTheDocument()
+    const requests = vi.mocked(fetch).mock.calls.length
+
+    await act(async () => finishDelete())
+    await waitFor(() => expect(screen.queryByTestId('environment-tab-env-build')).not.toBeInTheDocument())
+    // Only the switcher reloads this machine's links; GPU's card and the removed card send nothing.
+    expect(vi.mocked(fetch).mock.calls.slice(requests).map(([url]) => url)).toEqual(['/environment', LINKS])
+    expect(screen.getByRole('button', { name: 'Revoke GPU runner' })).toBeInTheDocument()
 })
 
 it('keeps a replacement saved at the same origin in the same second under another label, and shows it for review', async () => {

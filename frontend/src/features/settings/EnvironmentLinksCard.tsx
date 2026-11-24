@@ -44,6 +44,13 @@ const sameLink = (a: EnvironmentLink, b: EnvironmentLink) =>
 
 const firstEnabledIn = (scope: Element | null) => scope?.querySelector<HTMLElement>('button:enabled, input:enabled') ?? null
 
+// Leaving Settings unmounts the card and switching environments remounts it, so a request can settle after its card
+// is gone. It then reaches the cards mounted now: those for its environment refresh after a mutation, and a failure
+// shows in the current card, or in the next one to mount.
+type LiveCard = { environmentId: string | null; refresh: () => void; showError: (message: string) => void }
+const liveCards = new Set<LiveCard>()
+let undeliveredError: string | null = null
+
 const msLeft = (receipt: PairingCodeReceipt) => Date.parse(receipt.expires_at) - Date.now()
 
 /** Drops the code once the receipt expires; the expiry stays for the notice. An unreadable expiry counts as expired. */
@@ -69,22 +76,14 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const errorCountRef = useRef(0)
     // The Projects lookup, cached or in flight, per environment; removing or replacing its link drops it so its answer is ignored.
     const lookupsRef = useRef(new Map<string, EnvironmentLink>())
-    // Switching environments remounts the workspace, so an action can settle after this card is gone.
-    const mountedRef = useRef(false)
-    const { alert, confirm } = useDialogController()
+    const liveCardRef = useRef<LiveCard | null>(null)
+    const { confirm } = useDialogController()
 
-    useEffect(() => {
-        mountedRef.current = true
-        return () => {
-            mountedRef.current = false
-        }
-    }, [])
-
-    const showError = (message: string) => {
+    const showError = useCallback((message: string) => {
         errorCountRef.current += 1
         setStatus('')
         setError(message)
-    }
+    }, [])
 
     const forgetProjects = useCallback((environmentId: string) => {
         lookupsRef.current.delete(environmentId)
@@ -139,6 +138,25 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         void refresh()
     }, [active, refresh])
 
+    useEffect(() => {
+        // A hidden card refreshes once shown instead.
+        const card = {
+            environmentId: activeEnvironmentId,
+            refresh: () => {
+                if (active) void refresh()
+            },
+            showError,
+        }
+        liveCards.add(card)
+        liveCardRef.current = card
+        if (undeliveredError) showError(undeliveredError)
+        undeliveredError = null
+        return () => {
+            liveCards.delete(card)
+            liveCardRef.current = null
+        }
+    }, [active, activeEnvironmentId, refresh, showError])
+
     // Expire the receipt on time while mounted; refresh() re-checks it whenever the card becomes active.
     // A timer can fire before expires_at if the wall clock moves back, so it re-arms until the receipt has expired.
     useEffect(() => {
@@ -174,6 +192,13 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         else setPairingCode(current)
     }
 
+    // Shows an action's failure here, or, once this card is gone, in the card showing now or the next one to mount.
+    const reportError = (message: string) => {
+        const shown = liveCardRef.current ?? liveCards.values().next().value
+        if (shown) shown.showError(message)
+        else undeliveredError = [undeliveredError, message].filter(Boolean).join(' ')
+    }
+
     // Confirms, then runs an action with the card busy. The shared dialog has no trigger of its own to refocus, so focus
     // returns to the control that opened it once the dialog closes or the action settles, or, if that control is gone, to
     // the first enabled control in its section, else in the card. Focus the user has moved elsewhere meanwhile stays put.
@@ -194,10 +219,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         try {
             await action()
         } catch (err) {
-            const message = errorText(err, failure)
-            // The shared dialog outlives this card, so a failure landing after a switch of environments still shows.
-            if (mountedRef.current) showError(message)
-            else void alert({ title: failure, description: message })
+            reportError(errorText(err, failure))
         } finally {
             flushSync(() => setBusy(false))
             if (!document.activeElement || document.activeElement === document.body) {
@@ -212,7 +234,11 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         refreshSeqRef.current += 1
         apply()
         setStatus(message)
-        await refresh()
+        for (const card of liveCards) {
+            if (card !== liveCardRef.current && card.environmentId === activeEnvironmentId) card.refresh()
+        }
+        // A card that is gone would list whichever environment is active now.
+        if (liveCardRef.current) await refresh()
     }
 
     const handleCreateCode = async (event: FormEvent<HTMLFormElement>) => {
@@ -227,7 +253,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             setStatus('Created a single-use pairing code.')
             form.reset()
         } catch (err) {
-            showError(errorText(err, 'Could not create pairing code.'))
+            reportError(errorText(err, 'Could not create pairing code.'))
         } finally {
             setBusy(false)
         }
@@ -268,7 +294,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                 setLinks((prev) => [...prev.filter((row) => row.environment_id !== created.environment_id), created])
             })
         } catch (err) {
-            showError(errorText(err, 'Could not add environment link.'))
+            reportError(errorText(err, 'Could not add environment link.'))
         } finally {
             setBusy(false)
         }
