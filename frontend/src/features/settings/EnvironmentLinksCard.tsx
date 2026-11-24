@@ -29,6 +29,9 @@ import {
 
 type ProjectLookup = { loading?: boolean; projects?: string[]; error?: string }
 
+/** `revoked` marks a revoke the server confirmed before a listing supplied its time. */
+type TokenRow = PeerToken & { revoked?: boolean }
+
 const formField = (data: FormData, name: string) => String(data.get(name) ?? '').trim()
 
 const errorText = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback)
@@ -43,7 +46,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const { activeEnvironmentId } = useActiveEnvironment()
     const isLocalEnvironment = activeEnvironmentId === null
     const [descriptor, setDescriptor] = useState<EnvironmentDescriptor | null>(null)
-    const [tokens, setTokens] = useState<PeerToken[]>([])
+    const [tokens, setTokens] = useState<TokenRow[]>([])
     const [links, setLinks] = useState<EnvironmentLink[]>([])
     const [tokensLoaded, setTokensLoaded] = useState(false)
     const [linksLoaded, setLinksLoaded] = useState(false)
@@ -178,7 +181,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         try {
             await revokePeerToken(token.token_id)
             await settleMutation(`Revoked token ${token.label || token.token_id}.`, () => setTokens((prev) => prev.map((row) =>
-                row.token_id === token.token_id ? { ...row, revoked_at: row.revoked_at ?? new Date().toISOString() } : row)))
+                row.token_id === token.token_id ? { ...row, revoked: true } : row)))
         } catch (err) {
             showError(errorText(err, 'Could not revoke token.'))
         } finally {
@@ -230,6 +233,8 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             await settleMutation(`Removed link to ${link.label || link.environment_id}.`, () => {
                 forgetProjects(link.environment_id)
                 setLinks((prev) => prev.filter((row) => row.environment_id !== link.environment_id))
+                // Only a listing can say no links remain.
+                setLinksLoaded(false)
             })
         } catch (err) {
             showError(errorText(err, 'Could not remove link.'))
@@ -329,7 +334,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                                                     {token.revoked_at ? ` · revoked ${token.revoked_at}` : ''}
                                                 </div>
                                             </div>
-                                            {token.revoked_at ? (
+                                            {token.revoked_at || token.revoked ? (
                                                 <span className="text-xs text-muted-foreground">Revoked</span>
                                             ) : token.is_current ? (
                                                 <div className="flex items-center gap-2">

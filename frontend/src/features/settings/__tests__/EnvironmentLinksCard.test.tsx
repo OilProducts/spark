@@ -180,7 +180,26 @@ it.each(mutations)('shows a successful %s even when the follow-up listing fails'
     expect(alert).toHaveTextContent('Could not load peer tokens: Token listing failed')
     expect(alert).toHaveTextContent('Could not load linked environments: Link listing failed')
     postMutationRows()
+    expect(screen.queryByText(/· revoked/)).not.toBeInTheDocument()
     expect(backend.mutations).toHaveLength(1)
+})
+
+it('waits for a listing before saying no links remain after removing the last visible one', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box')] })
+    render(card())
+    await user.click(await screen.findByRole('button', { name: 'Remove link Build box' }))
+
+    // The follow-up listing is slow and finds a link added elsewhere meanwhile.
+    let release!: () => void
+    backend.replies[LINKS] = () => new Promise<Response>((resolve) => { release = () => resolve(json({ links: [link('env-gpu', 'GPU')] })) })
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove link Build box' })).not.toBeInTheDocument())
+    expect(screen.queryByText('No linked environments configured.')).not.toBeInTheDocument()
+
+    await act(async () => release())
+    expect(await screen.findByRole('button', { name: 'Remove link GPU' })).toBeInTheDocument()
+    expect(screen.queryByText('No linked environments configured.')).not.toBeInTheDocument()
 })
 
 it('confirms revoking a token and removing a link, naming each, and sends nothing on cancel', async () => {
@@ -201,6 +220,7 @@ it('confirms revoking a token and removing a link, naming each, and sends nothin
     await user.click(screen.getByRole('button', { name: 'Revoke CI runner' }))
     await user.click(await screen.findByRole('button', { name: 'Revoke token' }))
     expect(await screen.findByText('Revoked')).toBeInTheDocument()
+    expect(await screen.findByText(/· revoked 2026-11-24T00:00:00Z/)).toBeInTheDocument()
     expect(backend.mutations).toEqual([`POST ${TOKENS}/tok-ci/revoke`])
 
     backend.mutations.length = 0
