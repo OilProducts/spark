@@ -464,6 +464,30 @@ async fn a_bearer_peer_revokes_other_tokens_and_the_owner_revokes_its_token() {
     assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
 }
 
+#[tokio::test]
+async fn a_token_lookup_failure_is_an_error_not_local_owner_trust() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let app = crate::store_app_default(settings.clone());
+    let (_, secret) = pair_token(&app, "laptop").await;
+    let bearer = format!("Bearer {secret}");
+    // A directory where the state database was cannot be opened.
+    let database = settings.data_dir.join("state.sqlite3");
+    fs::remove_file(&database).expect("remove database");
+    fs::create_dir(&database).expect("database directory");
+
+    let response = send(
+        &app,
+        "GET",
+        "/attractor/status",
+        Some("127.0.0.1:40000"),
+        &[("authorization", bearer.as_str())],
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
 /// Pairs a token labelled `label` and returns its ID and secret.
 async fn pair_token(app: &Router, label: &str) -> (String, String) {
     let code = send(

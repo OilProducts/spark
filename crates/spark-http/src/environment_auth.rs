@@ -105,17 +105,17 @@ pub(crate) async fn require_trust(
     }
     // Resolved before the local check: a peer paired over loopback or the
     // bound host still presents its token and must not revoke it.
-    let token_id = bearer(request.headers()).and_then(|secret| {
-        EnvironmentRepository::new(&settings.data_dir)
-            .token_for_secret(secret)
-            .ok()
-            .flatten()
-    });
-    if let Some(token_id) = token_id {
-        request
-            .extensions_mut()
-            .insert(AuthenticatedPeerToken(token_id));
-        return next.run(request).await;
+    if let Some(secret) = bearer(request.headers()) {
+        match EnvironmentRepository::new(&settings.data_dir).token_for_secret(secret) {
+            Ok(Some(token_id)) => {
+                request
+                    .extensions_mut()
+                    .insert(AuthenticatedPeerToken(token_id));
+                return next.run(request).await;
+            }
+            Ok(None) => {}
+            Err(error) => return WorkspaceApiError(error.into()).into_response(),
+        }
     }
     if is_local(&request, &settings) {
         return next.run(request).await;
