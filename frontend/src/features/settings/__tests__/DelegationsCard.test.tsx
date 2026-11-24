@@ -445,6 +445,76 @@ it('keeps a Local reload that fails after the user opened a linked environment\'
     expect(screen.getByText('remote-task')).toBeInTheDocument()
 })
 
+it('keeps other delegations usable after an accepted reply while the reload after it stalls and another filter loads', async () => {
+    const reload = later()
+    const other = delegation('del-3', 'release-task', [approveGate()])
+    serve({
+        [LIST]: [ok(list(nightly, other)), reload.reply],
+        [`${LIST}?open=true`]: [ok(list(nightly, other))],
+        [answerRoute('del-1', 'q-approve')]: [ok({})],
+    })
+    const { user } = renderCard()
+    await user.click(within(await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' }))
+    expect(await screen.findByText('Sent answer for nightly-checks.')).toBeInTheDocument()
+    expect(localAnswers().drafts).toEqual({})
+
+    await user.click(screen.getByRole('button', { name: 'Open' }))
+    await settled()
+    expect(within(screen.getByRole('group', { name: asked('release-task', 'Ship this build?', 'del-3') })).getByRole('button', { name: 'Approve' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Cancel delegation release-task' })).toBeEnabled()
+    expect(screen.queryByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).not.toBeInTheDocument()
+})
+
+it('keeps other delegations usable after a cancel while the reload after it stalls and another filter loads', async () => {
+    const reload = later()
+    const other = delegation('del-3', 'release-task', [])
+    serve({
+        [LIST]: [ok(list(nightly, other)), reload.reply],
+        [`${LIST}?open=true`]: [ok(list({ ...nightly, ...requested }, other))],
+        [cancelRoute('del-1')]: [ok({ ...nightly, ...requested })],
+    })
+    const { user } = renderCard()
+    await confirmCancel(user, 'nightly-checks')
+    expect(await screen.findByText('Cancellation requested for nightly-checks.')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Open' }))
+    await settled()
+    expect(screen.getByRole('button', { name: 'Cancel delegation release-task' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Cancel delegation nightly-checks' })).toBeDisabled()
+})
+
+it('shows a reload that failed while Settings was closed when Settings next opens in that environment, and not in another', async () => {
+    const reload = later()
+    const remoteList = `GET ${REMOTE}/workspace/api/delegations`
+    const gate = asked('nightly-checks', 'Ship this build?', 'del-1')
+    serve({
+        ...ENVIRONMENTS,
+        [LIST]: [ok(list(nightly)), reload.reply, ok(list(nightly))],
+        [answerRoute('del-1', 'q-approve')]: [ok({})],
+        [remoteList]: [ok(list(delegation('del-9', 'remote-task', [])))],
+    })
+    const first = renderCard()
+    await first.user.click(within(await screen.findByRole('group', { name: gate })).getByRole('button', { name: 'Approve' }))
+    expect(await screen.findByText('Sent answer for nightly-checks.')).toBeInTheDocument()
+    first.unmount()
+    await reload.resolve({ detail: 'database is locked' }, 500)
+
+    await switchTo('env-x')
+    const remote = renderCard()
+    expect(await screen.findByText('remote-task')).toBeInTheDocument()
+    await settled()
+    expect(screen.queryByText(/Could not refresh delegations/)).not.toBeInTheDocument()
+    remote.unmount()
+
+    await switchTo(null)
+    renderCard()
+    expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
+    await settled()
+    expect(screen.getByText('Sent answer for nightly-checks. Could not refresh delegations: Database is locked')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: gate })).not.toBeInTheDocument()
+    expect(localAnswers().drafts).toEqual({})
+})
+
 it('keeps an unsent draft for a newer question when a refresh from before Settings was left returns late', async () => {
     const late = later()
     const newer = delegation('del-1', 'nightly-checks', [approveGate(), freeText('q-next', 'Anything else?')])
@@ -1119,6 +1189,27 @@ it('keeps a row the reopened list shows sealed when an older cancel response arr
     expect(screen.queryByRole('button', { name: 'Cancel delegation nightly-checks' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
     expect(sent(LIST)).toHaveLength(3)
+})
+
+it('keeps a newer paused row and its local seal on a reopened card when an older cancel response arrives and the reload after it fails', async () => {
+    const cancel = later()
+    const unlinked = { ...nightly, ...requested, paused: 'No link to this environment; link it again to resume.', updated_at: '2026-11-23T00:02:00Z' }
+    serve({
+        [LIST]: [ok(list(nightly)), ok(list(unlinked)), fail(500, 'database is locked')],
+        [cancelRoute('del-1')]: [cancel.reply],
+    })
+    const first = renderCard()
+    await confirmCancel(first.user, 'nightly-checks')
+    await waitFor(() => expect(sent(cancelRoute('del-1'))).toHaveLength(1))
+    first.unmount()
+
+    renderCard()
+    expect(await screen.findByRole('button', { name: 'Seal delegation nightly-checks as canceled' })).toBeInTheDocument()
+    await settled()
+    await cancel.resolve({ ...nightly, ...requested, updated_at: '2026-11-23T00:01:00Z' })
+    expect(await screen.findByText('Cancellation requested for nightly-checks. Could not refresh delegations: Database is locked')).toBeInTheDocument()
+    expect(screen.getByText('No link to this environment; link it again to resume.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Seal delegation nightly-checks as canceled' })).toBeEnabled()
 })
 
 it('leaves a linked environment\'s list requests and live refreshes alone when a cancel sent from Local completes there', async () => {

@@ -28,8 +28,11 @@ const EMPTY_DRAFT: AnswerDraft = { text: '', answers: {}, sending: false, error:
 /** A reply the linked environment refused. */
 type Failure = { requestKey: string; message: string }
 
-/** An environment's drafts, the questions answered there, and its refused replies, each by question. */
-type Answers = { drafts: Record<string, AnswerDraft>; acknowledged: ReadonlySet<string>; failures: Record<string, Failure> }
+/**
+ * An environment's drafts, the questions answered there, and its refused replies, each by question,
+ * and a reload after a change that failed while no card showed the environment, for the next one to show.
+ */
+type Answers = { drafts: Record<string, AnswerDraft>; acknowledged: ReadonlySet<string>; failures: Record<string, Failure>; missedReload?: string }
 
 const NO_ANSWERS: Answers = { drafts: {}, acknowledged: new Set(), failures: {} }
 
@@ -284,7 +287,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const [loadError, setLoadError] = useState<string | null>(null)
     // A failed cancel's error, by delegation, shown on its row until a refresh shows it canceling or sealed.
     const [cancelErrors, setCancelErrors] = useState<Record<string, string>>({})
-    const [status, setStatus] = useState('')
+    // The last change's outcome; a failed reload after it stays until the next one.
+    const [status, setStatus] = useState<{ text: string; failed?: boolean } | null>(null)
 
     // Loads the selected filter. A response to an older request, or for a filter no longer
     // selected, is dropped; a current failure, or any failure of a reload after a change, is thrown
@@ -326,20 +330,26 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
 
     const refresh = useCallback((polling = false) => load(polling).catch((err: unknown) => {
         setLoadError(errorText(err, 'Could not load delegations.'))
-        setStatus('')
+        setStatus(null)
     }), [load])
 
-    // After a change went through, a failed reload is reported in place of the change's status, on the
-    // card showing this environment when it fails, beside the rows of whichever filter is selected by then.
+    // After a change went through, a failed reload is reported in place of the change's status, beside
+    // the rows of whichever filter is selected by then, on the card showing this environment when it
+    // fails or, with Settings closed, the next one opened there.
     const reloadAfterChange = useCallback((done: string) => load(false, true).catch((err: unknown) => {
-        shownCards.get(env)?.fail(`${done} Could not refresh delegations: ${errorText(err, 'the request failed.')}`)
+        const message = `${done} Could not refresh delegations: ${errorText(err, 'the request failed.')}`
+        const card = shownCards.get(env)
+        if (card) card.fail(message)
+        else updateAnswers(env, () => ({ missedReload: message }))
     }), [env, load])
 
     useEffect(() => {
         const report: ShownCard['report'] = async (done, updated) => {
-            // The row shows the server's answer now, whether or not the reload below succeeds. One already
-            // seen sealed is final: an older answer never reopens it.
-            if (updated && seenRef.current[updated.delegation_id]?.phase !== 'sealed') {
+            // The row shows the server's answer now, whether or not the reload below succeeds, unless the
+            // card already shows a newer record: one sealed is final.
+            // ponytail: updated_at has whole seconds, so a change in the answer's second loses to it until the next refresh.
+            const shown = updated && seenRef.current[updated.delegation_id]
+            if (updated && !(shown && (shown.phase === 'sealed' || Date.parse(shown.updated_at) > Date.parse(updated.updated_at)))) {
                 seenRef.current = { ...seenRef.current, [updated.delegation_id]: updated }
                 setSeen(seenRef.current)
                 setLoaded((current) => current && {
@@ -349,17 +359,16 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                     )),
                 })
             }
-            setStatus(done)
+            setStatus({ text: done })
             await reloadAfterChange(done)
         }
-        const card: ShownCard = {
-            report,
-            fail: (message) => {
-                setLoadError(message)
-                setStatus('')
-            },
-        }
+        const card: ShownCard = { report, fail: (message) => setStatus({ text: message, failed: true }) }
         shownCards.set(env, card)
+        const missed = useDelegationAnswers.getState()[env]?.missedReload
+        if (missed) {
+            updateAnswers(env, () => ({ missedReload: undefined }))
+            card.fail(missed)
+        }
         return () => {
             if (shownCards.get(env) === card) shownCards.delete(env)
         }
@@ -402,7 +411,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             const latest = seenRef.current[record.delegation_id] ?? record
             // A remote cancel already pending needs no second request; a paused one can still be sealed locally.
             if (latest.cancel_requested_at && !latest.paused) {
-                setStatus(`Cancellation was already requested for ${record.request_key}.`)
+                setStatus({ text: `Cancellation was already requested for ${record.request_key}.` })
                 return
             }
             if ((latest.paused !== null) === paused) break
@@ -426,7 +435,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             updated = await cancelDelegation(record.delegation_id)
         } catch (err) {
             setCancelErrors((errors) => ({ ...errors, [record.delegation_id]: errorText(err, 'Could not cancel delegation.') }))
-            setStatus('')
+            setStatus(null)
             setBusy(false)
             return
         }
@@ -438,9 +447,10 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                 ? `Canceled delegation ${record.request_key}.`
                 : `Delegation ${record.request_key} had already ended: ${outcome}.`
         // The card showing this environment, which Settings may have reopened meanwhile, shows the result
-        // and reloads; a card since closed never touches the environment shown now.
-        await shownCards.get(env)?.report(done, updated)
+        // and reloads; a card since closed never touches the environment shown now. A stalled reload
+        // locks no controls.
         setBusy(false)
+        void shownCards.get(env)?.report(done, updated)
     }
 
     const handleAnswer = async (record: DelegationOut, questionId: string, body: DelegationAnswerBody) => {
@@ -458,14 +468,16 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                 drafts: Object.hasOwn(drafts, key) ? { ...drafts, [key]: { ...drafts[key], sending: false } } : drafts,
                 failures: { ...failures, [key]: failure },
             }))
-            setStatus('')
+            setStatus(null)
             setBusy(false)
             return false
         }
         updateAnswers(env, ({ drafts: { [key]: _sent, ...drafts }, acknowledged }) => ({ drafts, acknowledged: new Set(acknowledged).add(key) }))
-        // The reply is in, so the caller releases its draft now. The card showing this environment, which
-        // Settings may have reopened meanwhile, reports it and reloads; a failed reload is reported on its own.
-        void shownCards.get(env)?.report(`Sent answer for ${record.request_key}.`).then(() => setBusy(false))
+        // The reply is in, so the caller releases its draft and the card its controls now. The card showing
+        // this environment, which Settings may have reopened meanwhile, reports it and reloads; a failed
+        // reload is reported on its own.
+        setBusy(false)
+        void shownCards.get(env)?.report(`Sent answer for ${record.request_key}.`)
         return true
     }
 
@@ -586,7 +598,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                         })}
                     </ul>
                 )}
-                {status ? <p role="status" className="text-xs text-muted-foreground">{status}</p> : null}
+                {status?.failed ? <InlineError>{status.text}</InlineError> : null}
+                {status && !status.failed ? <p role="status" className="text-xs text-muted-foreground">{status.text}</p> : null}
                 {Object.entries(failures).filter(([key]) => !shownKeys.has(key)).map(([key, failure]) => (
                     <InlineError key={key}>{`Could not answer ${failure.requestKey}: ${failure.message}`}</InlineError>
                 ))}
