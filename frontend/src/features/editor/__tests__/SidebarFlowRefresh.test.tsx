@@ -318,6 +318,35 @@ describe('Editor sidebar manual refresh', () => {
         expect(useStore.getState().activeFlow).toBe('beta.dot')
     })
 
+    it('shows a delete refused after a switch to another environment only in the workspace it was made in', async () => {
+        const user = userEvent.setup()
+        const deleted = createDeferred<undefined>()
+        deleteFlowMock.mockReturnValueOnce(deleted.promise)
+        fetchFlowListMock.mockResolvedValue(['alpha.dot', 'beta.dot'])
+        await switchEnvironment('env-r')
+        resetSidebarState('beta.dot')
+        renderWithFlowProvider(<FlowsPanelHarness />)
+        await waitFor(() => expect(fetchFlowListMock).toHaveBeenCalledTimes(1))
+
+        await user.click(screen.getByTitle('Delete beta.dot'))
+        await user.click(await screen.findByTestId('shared-dialog-confirm'))
+        await waitFor(() => expect(deleteFlowMock).toHaveBeenCalledOnce())
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+        act(() => useStore.setState({ activeFlow: 'beta.dot' }))
+        await act(async () => deleted.reject(new Error('The flow is running.')))
+
+        // Nothing opens over this machine's workspace.
+        expect(screen.queryByText('Flow not deleted')).not.toBeInTheDocument()
+        expect(useStore.getState().activeFlow).toBe('beta.dot')
+
+        // Back in the remote workspace, the refusal shows there.
+        await switchEnvironment('env-r')
+        act(() => resetStoreForEnvironmentSwitch(false))
+        expect(await screen.findByTestId('shared-dialog-title')).toHaveTextContent('Flow not deleted')
+        expect(screen.getByTestId('shared-dialog-description')).toHaveTextContent('The flow is running.')
+    })
+
     it('lists a flow opened from elsewhere that was made since the list loaded', async () => {
         fetchFlowListMock.mockResolvedValueOnce(['alpha.dot']).mockResolvedValueOnce(['alpha.dot', 'lint-only.dot'])
 

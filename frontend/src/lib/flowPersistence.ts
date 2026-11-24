@@ -72,25 +72,33 @@ export function resetFlowSaveBaselines(): void {
     unsavedByScope.clear()
 }
 
-// Structured edits a save refused after their environment was switched away from, by scope, with how
-// the refusal shows: the flow opens with them there again, unsaved, and Retry sends them.
+// The structured edits each flow's last save refused, by scope, with how the refusal shows. They outlive
+// the editor that made them, as a switch of environment or an interrupted load unmounts it: the flow
+// opens with them, unsaved, until a save of it lands or they are discarded.
 // ponytail: kept for this page's life; a reload drops them, as it drops any unsaved edit. A file view
-// save refused after a switch is not kept; keep its files as drafts if that matters.
+// save refused is not kept; keep its files as drafts if that matters.
 const unsavedByScope = new Map<string, { content: { flow: FlowDefinitionPayload }; show: (state: AppState) => void }>()
 
-/** Hands over, once, the edits a save refused after a switch away for this flow, showing that refusal. */
-export function takeUnsavedFlowEdits(
+/** The edits a save of this flow refused, if any, showing that refusal with Retry. */
+export function unsavedFlowEdits(
     name: string,
     projectPath = activeProjectPath(),
     environmentId = getActiveEnvironmentId(),
 ): FlowDefinitionPayload | null {
-    const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
-    const unsaved = unsavedByScope.get(scopeKey)
+    const unsaved = unsavedByScope.get(getSaveScopeKey(name, projectPath, environmentId))
     if (!unsaved) return null
-    unsavedByScope.delete(scopeKey)
     lastSaveRequest = { name, content: unsaved.content, projectPath, environmentId }
     unsaved.show(useStore.getState())
     return unsaved.content.flow
+}
+
+/** Drops the edits a save of this flow refused, as discarding its unsaved edits or deleting it does. */
+export function discardUnsavedFlowEdits(
+    name: string,
+    projectPath = activeProjectPath(),
+    environmentId = getActiveEnvironmentId(),
+): void {
+    unsavedByScope.delete(getSaveScopeKey(name, projectPath, environmentId))
 }
 
 // Saves in flight, with the environment each goes to.
@@ -164,14 +172,13 @@ async function persistFlowContent(
     const serialized = JSON.stringify(content)
     // The save state shown is the active environment's; a save that outlives a switch leaves it alone.
     const shown = () => (getActiveEnvironmentId() === environmentId ? useStore.getState() : null)
-    // Retry repeats the save whose failure is shown; refused after a switch away, the edits wait.
+    // Retry repeats the save whose failure is shown; refused structured edits are kept for the flow.
     const fail = (show: (state: AppState) => void) => {
+        if ('flow' in content) unsavedByScope.set(scopeKey, { content, show })
         const state = shown()
         if (state) {
             lastSaveRequest = { name, content, projectPath, environmentId }
             show(state)
-        } else if ('flow' in content) {
-            unsavedByScope.set(scopeKey, { content, show })
         }
         return false
     }

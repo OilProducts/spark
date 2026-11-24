@@ -143,8 +143,8 @@ it('applies a theme saved in another environment\'s Settings, saving it only the
     const settings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
     const user = userEvent.setup()
     const theme = await screen.findByLabelText('Theme')
-    // Settings shows the theme the remote environment keeps.
-    await waitFor(() => expect(theme).toHaveValue('system'))
+    // Settings shows the theme this browser uses, not the one the remote environment stored.
+    await waitFor(() => expect(theme).toHaveValue('light'))
 
     await user.selectOptions(theme, 'dark')
     await user.click(screen.getByLabelText('Show advanced controls'))
@@ -155,24 +155,48 @@ it('applies a theme saved in another environment\'s Settings, saving it only the
     expect(fetchClientPreferences).not.toHaveBeenCalledWith(null)
     expect(servers.local.revision).toBe('local-1')
 
-    // Back on this machine, the theme chosen remotely stays.
+    // Back on this machine, the theme chosen remotely stays, and its Settings shows it.
     settings.unmount()
     await switchEnvironment(null)
-    render(<ClientPreferencesController />)
-    await waitFor(() => expect(fetchClientPreferences).toHaveBeenLastCalledWith(null))
+    render(<DialogProvider><ClientPreferencesController /><ClientPreferencesEditor /></DialogProvider>)
+    await waitFor(() => expect(fetchClientPreferences).toHaveBeenCalledWith(null))
     await act(async () => {})
     expect(cachedAppearance()).toBe('dark')
     expect(document.documentElement).toHaveClass('dark')
+    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('dark'))
+    expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
 })
 
-it('saves another preference from another environment\'s Settings, leaving both themes as they were', async () => {
+it('saves a theme another environment already stores when this browser uses another', async () => {
     const servers = { local: prefs('local-1', 'light'), remote: prefs('remote-1', 'dark') }
     servePreferences(servers)
     applyTheme('light')
     await switchEnvironment('env-r')
     render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
     const user = userEvent.setup()
-    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('dark'))
+    const theme = await screen.findByLabelText('Theme')
+    await waitFor(() => expect(theme).toHaveValue('light'))
+    expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
+
+    await user.selectOptions(theme, 'dark')
+    expect(screen.getByRole('button', { name: /^Save/ })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await screen.findByText('Saved.')
+    expect(saveClientPreferences).toHaveBeenLastCalledWith(prefs('remote-1', 'dark'), expect.objectContaining({ appearance: 'dark' }), 'env-r')
+    expect(cachedAppearance()).toBe('dark')
+    expect(document.documentElement).toHaveClass('dark')
+    expect(theme).toHaveValue('dark')
+    expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
+})
+
+it('saves another preference from another environment\'s Settings, showing this browser\'s theme and leaving both themes as they were', async () => {
+    const servers = { local: prefs('local-1', 'light'), remote: prefs('remote-1', 'dark') }
+    servePreferences(servers)
+    applyTheme('light')
+    await switchEnvironment('env-r')
+    render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    const user = userEvent.setup()
+    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('light'))
     await user.click(screen.getByLabelText('Show advanced controls'))
     await user.click(screen.getByRole('button', { name: /^Save/ }))
     await screen.findByText('Saved.')
@@ -180,6 +204,7 @@ it('saves another preference from another environment\'s Settings, leaving both 
     expect(servers.remote.stored).toMatchObject({ appearance: 'dark', show_advanced_controls: true })
     expect(servers.local.revision).toBe('local-1')
     expect(cachedAppearance()).toBe('light')
+    expect(screen.getByLabelText('Theme')).toHaveValue('light')
 })
 
 it('keeps the theme chosen last when the save of a theme chosen before it answers late', async () => {

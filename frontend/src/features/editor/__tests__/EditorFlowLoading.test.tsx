@@ -6,7 +6,8 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { EditorPreviewResponse } from '@/features/editor/services/editorPreview'
-import { resetFlowSaveBaselines } from '@/lib/flowPersistence'
+import { resetFlowSaveBaselines, unsavedFlowEdits } from '@/lib/flowPersistence'
+import { requestNavigation } from '@/state/workspaceSlice'
 import { ApiHttpError } from '@/lib/attractorClient'
 import { switchEnvironment } from '@/test/environments'
 import {
@@ -463,7 +464,7 @@ describe('Editor structured metadata', () => {
     } finally { window.removeEventListener('spark:preferences-completed', completed) }
   })
 
-  it('opens the edits a save refused after a switch away, unsaved, where they were made, and Retry saves them there', async () => {
+  it('opens the edits a save refused after a switch away, unsaved, where they were made, even after a load cut short, and Retry saves them there', async () => {
     const user = userEvent.setup()
     const refused = createDeferred<Response>()
     const fetchMock = vi.fn((url: string, init?: RequestInit) => (String(url).endsWith('/api/flows') && init?.method === 'POST'
@@ -487,11 +488,24 @@ describe('Editor structured metadata', () => {
     await act(async () => refused.resolve(new Response(JSON.stringify({ detail: 'unavailable' }), { status: 503 })))
     expect(useStore.getState().saveState).toBe('idle')
 
-    await switchEnvironment('env-r')
-    resetStoreForEnvironmentSwitch(false)
-    useStore.setState({ viewMode: 'editor', activeProjectPath: '/tmp/project', activeFlow: 'bundled-flow', clientPreferencesLoaded: true })
-    renderEditor()
-    await waitFor(() => expect(vi.mocked(loadEditorPreview).mock.lastCall?.[0]).toMatchObject({ title: 'Unsaved title' }))
+    const openFlow = async () => {
+      await switchEnvironment('env-r')
+      resetStoreForEnvironmentSwitch(false)
+      useStore.setState({ viewMode: 'editor', activeProjectPath: '/tmp/project', activeFlow: 'bundled-flow', clientPreferencesLoaded: true })
+      vi.mocked(loadEditorPreview).mockClear()
+      const editor = renderEditor()
+      await waitFor(() => expect(vi.mocked(loadEditorPreview).mock.lastCall?.[0]).toMatchObject({ title: 'Unsaved title' }))
+      return editor
+    }
+    // Back there, a switch away again cuts the flow's load short while its preview is pending.
+    vi.mocked(loadEditorPreview).mockReturnValueOnce(createDeferred<EditorPreviewResponse>().promise)
+    const interrupted = await openFlow()
+    expect(screen.getByRole('button', { name: 'Files' })).toBeDisabled()
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    interrupted.unmount()
+
+    await openFlow()
     expect(await screen.findByTestId('editor-save-status')).toHaveTextContent('unavailable')
 
     fetchMock.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ status: 'saved', name: 'bundled-flow' }), { status: 200 })))
@@ -500,6 +514,30 @@ describe('Editor structured metadata', () => {
     const [url, init] = flowSaveRequests(fetchMock)[1]
     expect(String(url)).toBe('/workspace/api/environments/links/env-r/proxy/attractor/api/flows')
     expect(JSON.parse(String((init as RequestInit).body)).flow.title).toBe('Unsaved title')
+  })
+
+  it('drops the edits a save refused once leaving the flow discards them', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => Promise.resolve(String(url).endsWith('/api/flows') && init?.method === 'POST'
+      ? new Response(JSON.stringify({ detail: 'unavailable' }), { status: 503 })
+      : new Response(JSON.stringify({ status: 'ok' }), { status: 200 }))))
+    const discard = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderEditor()
+    const filesButton = screen.getByRole('button', { name: 'Files' })
+    await waitFor(() => expect(filesButton).toBeEnabled())
+    await user.click(filesButton)
+    await user.click(await screen.findByRole('button', { name: 'Structured' }))
+    await waitFor(() => expect(useStore.getState().editorMode).toBe('structured'))
+    act(() => useStore.getState().updateFlowMetadata('title', 'Unsaved title'))
+    await user.click(filesButton)
+    expect(await screen.findByTestId('editor-save-status')).toHaveTextContent('unavailable')
+    expect(unsavedFlowEdits('bundled-flow', '/tmp/project')).toMatchObject({ title: 'Unsaved title' })
+
+    const open = vi.fn()
+    act(() => requestNavigation(open))
+    await waitFor(() => expect(open).toHaveBeenCalledOnce())
+    expect(discard).toHaveBeenCalledOnce()
+    expect(unsavedFlowEdits('bundled-flow', '/tmp/project')).toBeNull()
   })
 })
 

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { ChevronDown, Plus, RefreshCw, Search } from 'lucide-react'
 
-import { captureShownWorkspace, useStore } from '@/store'
+import { captureShownWorkspace, useStore, whenEnvironmentShown } from '@/store'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { sanitizeFlowId } from '@/lib/canonicalFlowModel'
-import { saveFlowContent } from '@/lib/flowPersistence'
+import { discardUnsavedFlowEdits, saveFlowContent } from '@/lib/flowPersistence'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { Button } from '@/components/ui/button'
 import { InlineError } from '@/components/app/inline-error'
@@ -218,15 +219,17 @@ function useFlowCatalogPanel() {
 
         // Deleted after a switch of environment or project, the flow isn't the one shown: nothing here changes.
         const shown = captureShownWorkspace()
+        const environmentId = getActiveEnvironmentId()
         try {
             await deleteFlowCatalogEntry(fileName, activeProjectPath);
         } catch (error) {
-            await alert({
-                title: 'Flow not deleted',
-                description: error instanceof Error ? error.message : String(error),
-            })
+            // Refused after a switch, the error waits for its own workspace rather than opening over another.
+            const description = error instanceof Error ? error.message : String(error)
+            whenEnvironmentShown(environmentId, () => void alert({ title: 'Flow not deleted', description }))
             return;
         }
+        // Deleting it discarded its edits, those a save refused included.
+        discardUnsavedFlowEdits(fileName, activeProjectPath, environmentId)
         if (!shown()) return;
 
         if (activeFlow === fileName) {

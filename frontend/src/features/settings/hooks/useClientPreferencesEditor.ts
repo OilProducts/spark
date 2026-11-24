@@ -1,23 +1,28 @@
 import { useEffect, useState } from 'react'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
-import { applyTheme } from '@/lib/theme'
+import { applyTheme, cachedAppearance } from '@/lib/theme'
 import { fetchClientPreferences, saveClientPreferences, type ClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
 import { useSettingsNavigationProtection } from './useSettingsNavigationProtection'
 
-// The theme in use is this browser's, kept across switches: a theme saved in any environment's Settings
-// applies once the save succeeds, unless a theme chosen after it already has.
+// The theme is this browser's, kept across switches: every environment's Settings shows the one in use,
+// and a theme chosen there is saved to that environment and applies once the save succeeds, unless a
+// theme chosen after it already has.
 // ponytail: other open tabs take a theme change on reload; follow `storage` events if live sync matters.
 let appearanceChoice = 0
+const shownIn = (view: ClientPreferencesView): ClientPreferencesView =>
+    ({ ...view, stored: { ...view.stored, appearance: cachedAppearance() } })
 
 export function useClientPreferencesEditor() {
     // Saves go to the environment this Settings is, even after a switch.
     const [environmentId] = useState(getActiveEnvironmentId)
+    // As the server has it; `shown` puts this browser's theme in it.
     const [saved, setSaved] = useState<ClientPreferencesView | null>(null)
+    const shown = saved && shownIn(saved)
     const [draft, setDraft] = useState<ClientPreferences | null>(null)
     const [pending, setPending] = useState(false)
     const [error, setError] = useState('')
     const [message, setMessage] = useState('')
-    const dirty = !!saved && !!draft && JSON.stringify(saved.stored) !== JSON.stringify(draft)
+    const dirty = !!shown && !!draft && JSON.stringify(shown.stored) !== JSON.stringify(draft)
     useSettingsNavigationProtection(dirty, pending)
     useEffect(() => {
         let cancelled = false
@@ -27,7 +32,7 @@ export function useClientPreferencesEditor() {
                 if (cancelled || value.revision === saved?.revision) return
                 if (dirty || pending) {
                     setMessage('Settings changed elsewhere. Your draft is retained; Discard reloads the latest values.')
-                } else { setSaved(value); setDraft(value.stored) }
+                } else { setSaved(value); setDraft(shownIn(value).stored) }
             }).catch(() => { if (!cancelled) setError('Unable to refresh client preferences.') })
         }
         if (!saved?.revision) refresh()
@@ -39,13 +44,14 @@ export function useClientPreferencesEditor() {
     const graphHeight = draft?.run_presentation?.graph_height
     const invalidGraphHeight = graphHeight != null && (!Number.isInteger(graphHeight) || graphHeight < 280 || graphHeight > 960)
     const save = async () => {
-        if (!saved || !draft || pending || invalidWidth || invalidGraphHeight) return
+        if (!saved || !shown || !draft || pending || invalidWidth || invalidGraphHeight) return
         setPending(true); setError(''); setMessage('')
         try {
-            const choice = draft.appearance !== saved.stored.appearance ? ++appearanceChoice : null
-            const value = await saveClientPreferences(saved, draft, environmentId)
+            // A theme left as it is keeps the one this environment stored.
+            const choice = draft.appearance !== shown.stored.appearance ? ++appearanceChoice : null
+            const value = await saveClientPreferences(saved, { ...draft, appearance: choice ? draft.appearance : saved.stored.appearance }, environmentId)
             if (choice === appearanceChoice) applyTheme(draft.appearance ?? 'system')
-            setSaved(value); setDraft(value.stored); setMessage('Saved.')
+            setSaved(value); setDraft(shownIn(value).stored); setMessage('Saved.')
         } catch (error) {
             setError(error instanceof Error ? error.message : 'Unable to save client preferences.')
         } finally { setPending(false) }
@@ -54,9 +60,9 @@ export function useClientPreferencesEditor() {
         setPending(true)
         try {
             const value = await fetchClientPreferences()
-            setSaved(value); setDraft(value.stored); setError(''); setMessage('')
+            setSaved(value); setDraft(shownIn(value).stored); setError(''); setMessage('')
         } catch (error) { setError(error instanceof Error ? error.message : 'Unable to reload settings.') }
         finally { setPending(false) }
     }
-    return { saved, draft, setDraft, pending, error, message, setMessage, dirty, invalidWidth, invalidGraphHeight, save, discard }
+    return { saved: shown, draft, setDraft, pending, error, message, setMessage, dirty, invalidWidth, invalidGraphHeight, save, discard }
 }
