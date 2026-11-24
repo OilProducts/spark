@@ -1,20 +1,17 @@
 import { create } from 'zustand'
-import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
 import { isRemoteEnvironmentActive } from './lib/activeEnvironment'
-import { createEditorSlice } from './state/editorSlice'
-import { createHomeSessionSlice } from './state/homeSessionSlice'
-import { createRunsSessionSlice } from './state/runsSessionSlice'
+import { createEditorSlice, initialEditorSessionState } from './state/editorSlice'
+import { createHomeSessionSlice, initialHomeSessionState } from './state/homeSessionSlice'
+import { createRunsSessionSlice, initialRunsSessionState } from './state/runsSessionSlice'
 import {
-    DEFAULT_UI_DEFAULTS,
-    DEFAULT_WORKING_DIRECTORY,
+    DEFAULT_ROUTE_STATE,
     loadRouteState,
-    resolveProjectSessionState,
     saveRouteState,
     saveSessionViewMode,
 } from './state/store-helpers'
 import type { AppState, RouteState } from './state/store-types'
-import { createTriggersSessionSlice } from './state/triggersSessionSlice'
-import { createWorkspaceSlice } from './state/workspaceSlice'
+import { createTriggersSessionSlice, initialTriggersSessionState } from './state/triggersSessionSlice'
+import { createWorkspaceSlice, initialWorkspaceState } from './state/workspaceSlice'
 
 export * from './state/store-types'
 export * from './state/viewSessionTypes'
@@ -37,14 +34,18 @@ export const selectRouteState = (state: AppState): RouteState => ({
     settingsCategory: state.settingsCategory,
 })
 
+/** Reopens the route's run and trigger, which their sessions hold. */
+function restoreRouteSelections(route: RouteState) {
+    if (route.selectedRunId) {
+        useStore.getState().setRunsSelectedRunId(route.selectedRunId)
+    }
+    if (route.selectedTriggerId) {
+        useStore.getState().updateTriggersSession({ selectedTriggerId: route.selectedTriggerId })
+    }
+}
+
 // The app opens on the Overview, or the view you reloaded on; each view reopens on its last selection.
-const restoredRouteState = loadRouteState()
-if (restoredRouteState.selectedRunId) {
-    useStore.getState().setRunsSelectedRunId(restoredRouteState.selectedRunId)
-}
-if (restoredRouteState.selectedTriggerId) {
-    useStore.getState().updateTriggersSession({ selectedTriggerId: restoredRouteState.selectedTriggerId })
-}
+restoreRouteSelections(loadRouteState())
 let savedRouteState = JSON.stringify(selectRouteState(useStore.getState()))
 let suppressRouteSave = false
 useStore.subscribe((state, previous) => {
@@ -59,96 +60,22 @@ useStore.subscribe((state, previous) => {
     }
 })
 
-/** Clears environment-scoped session state so switching environments starts clean without leaking data. */
+/**
+ * Puts every environment-scoped slice back to its fresh state, so switching environments starts
+ * clean without leaking data. App-wide preferences, such as the appearance, are kept.
+ */
 export function resetStoreForEnvironmentSwitch(restoreLocalRoute: boolean) {
-    const route = restoreLocalRoute ? loadRouteState() : null
-    const activeProjectPath = route?.activeProjectPath ?? null
-    const projectSessionsByPath = activeProjectPath
-        ? { [activeProjectPath]: resolveProjectSessionState({}, activeProjectPath) }
-        : {}
-    const workingDir = activeProjectPath
-        ? projectSessionsByPath[activeProjectPath].workingDir
-        : DEFAULT_WORKING_DIRECTORY
+    const route = restoreLocalRoute ? loadRouteState() : DEFAULT_ROUTE_STATE
     suppressRouteSave = true
     try {
         useStore.setState({
-        activeProjectPath,
-        projectPagePath: route?.projectPagePath ?? null,
-        projectPageSettingsRequest: null,
-        selectedMission: route?.selectedMission ?? null,
-        selectedRole: null,
-        chatOriginProjectPath: null,
-        missionBoard: [],
-        missionBoardLoaded: false,
-        projectRegistry: {},
-        recentProjectPaths: activeProjectPath ? [activeProjectPath] : [],
-        projectSessionsByPath,
-        projectRegistrationError: null,
-        activeFlow: route?.activeFlow ?? null,
-        flowLoadFailure: null,
-        workingDir,
-        homeConversationCache: {
-            conversationsById: {},
-            summariesByProjectPath: {},
-        },
-        homeThreadSummariesStatusByProjectPath: {},
-        homeThreadSummariesErrorByProjectPath: {},
-        homeProjectSessionsByPath: {},
-        homeConversationSessionsById: {},
-        homeProjectGitMetadataByPath: {},
-        sendingChats: {},
-        runsListSession: {
-            selectedRunId: null,
-            projectFilter: null,
-            status: 'idle',
-            error: null,
-            runs: [],
-        },
-        runDetailSessionsByRunId: {},
-        triggersSession: {
-            status: 'idle',
-            error: null,
-            triggers: [],
-            selectedTriggerId: route?.selectedTriggerId ?? null,
-            revealedWebhookSecrets: {},
-            createFormOpen: false,
-            newTriggerDraft: {
-                form: createEmptyTriggerForm(null),
-            },
-            editTriggerDraftsByTriggerId: {},
-        },
-        clientPreferencesLoaded: false,
-        clientFlowNodePositions: {},
-        clientFlowEdgePorts: {},
-        chatProjectOrder: [],
-        clientRunPresentation: {},
-        selectedNodeId: null,
-        selectedEdgeId: null,
-        pendingEditorNodeSelection: null,
-        flowMetadata: {},
-        flowMetadataErrors: {},
-        graphAttrs: {},
-        graphAttrErrors: {},
-        diagnostics: [],
-        nodeDiagnostics: {},
-        edgeDiagnostics: {},
-        hasValidationErrors: false,
-        saveState: 'idle',
-        saveErrorMessage: null,
-        saveErrorKind: null,
-        saveErrorProblems: null,
-        uiDefaults: { ...DEFAULT_UI_DEFAULTS },
-        editorGraphSettingsPanelOpenByFlow: {},
-        editorExpandChildFlowsByFlow: {},
-        editorShowAdvancedFlowMetadataByFlow: {},
-        editorShowAdvancedGraphAttrsByFlow: {},
-        editorLaunchInputDraftsByFlow: {},
-        editorLaunchInputDraftErrorByFlow: {},
-        editorNodeInspectorSessionsByNodeId: {},
+            ...initialWorkspaceState(route),
+            ...initialHomeSessionState(),
+            ...initialRunsSessionState(),
+            ...initialTriggersSessionState(),
+            ...initialEditorSessionState(route),
         })
-        if (route?.selectedRunId) {
-            useStore.getState().setRunsSelectedRunId(route.selectedRunId)
-        }
+        restoreRouteSelections(route)
         savedRouteState = JSON.stringify(selectRouteState(useStore.getState()))
     } finally {
         suppressRouteSave = false

@@ -1,3 +1,4 @@
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { fetchWorkspaceJsonValidated } from '@/lib/api/apiClient'
 import { ApiSchemaError, expectObjectRecord, expectString } from '@/lib/api/shared'
 import type { Appearance } from '@/lib/theme'
@@ -118,15 +119,16 @@ export function parseClientPreferences(payload: unknown, endpoint: string): Clie
     return { client_id: expectString(record.client_id, endpoint, 'client_id'), revision: expectString(record.revision, endpoint, 'revision'),
         stored: preferences(record.stored), effective: { ...effective, editor_mode: effective.editor_mode ?? 'structured', editor_sidebar_width: effective.editor_sidebar_width } }
 }
-export async function fetchClientPreferences(): Promise<ClientPreferencesView> {
+// The environment defaults to the active one when called, before any await.
+export async function fetchClientPreferences(environmentId = getActiveEnvironmentId()): Promise<ClientPreferencesView> {
     const id = await clientIdentity()
-    return fetchWorkspaceJsonValidated(`/settings?client_id=${encodeURIComponent(id)}`, undefined, '/workspace/api/settings', parseClientPreferences)
+    return fetchWorkspaceJsonValidated(`/settings?client_id=${encodeURIComponent(id)}`, undefined, '/workspace/api/settings', parseClientPreferences, environmentId)
 }
-export async function saveClientPreferences(view: ClientPreferencesView, preferences: ClientPreferences): Promise<ClientPreferencesView> {
+export async function saveClientPreferences(view: ClientPreferencesView, preferences: ClientPreferences, environmentId = getActiveEnvironmentId()): Promise<ClientPreferencesView> {
     const result = await fetchWorkspaceJsonValidated('/settings', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expected_revision: view.revision, section: 'client_preferences', value: { client_id: view.client_id, preferences } }),
-    }, '/workspace/api/settings', parseClientPreferences)
+    }, '/workspace/api/settings', parseClientPreferences, environmentId)
     window.dispatchEvent(new Event('spark:settings-live-event'))
     return result
 }

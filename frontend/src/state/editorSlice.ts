@@ -2,16 +2,17 @@ import { completePreferenceInteraction } from '@/features/settings/services/clie
 import { type StateCreator } from 'zustand'
 import {
     buildDiagnosticMaps,
+    DEFAULT_ROUTE_STATE,
     DEFAULT_WORKING_DIRECTORY,
     deriveGraphAttrErrors,
     DEFAULT_UI_DEFAULTS,
+    loadRouteState,
     normalizeGraphAttrs,
     normalizeGraphAttrValue,
     resolveProjectSessionState,
     validateGraphAttrValue,
 } from './store-helpers'
-import type { AppState, EditorSlice } from './store-types'
-import { initialWorkspaceEditorState } from './workspaceSlice'
+import type { AppState, EditorSlice, RouteState } from './store-types'
 
 const DEFAULT_EDITOR_SIDEBAR_WIDTH = 336
 const MIN_EDITOR_SIDEBAR_WIDTH = 256
@@ -65,7 +66,44 @@ const deriveNextFlowMetadataState = (
     }
 }
 
+/**
+ * The editor's state in a fresh environment, open on `route`'s project: what that environment's
+ * flows and stored layouts put here. App-wide preferences (sidebar width, modes) stay out of it.
+ */
+export const initialEditorSessionState = (route: RouteState = DEFAULT_ROUTE_STATE) => ({
+    clientPreferencesLoaded: false,
+    clientFlowNodePositions: {},
+    clientFlowEdgePorts: {},
+    chatProjectOrder: [],
+    clientRunPresentation: {},
+    selectedNodeId: null,
+    selectedEdgeId: null,
+    pendingEditorNodeSelection: null,
+    workingDir: route.activeProjectPath || DEFAULT_WORKING_DIRECTORY,
+    editorGraphSettingsPanelOpenByFlow: {},
+    editorExpandChildFlowsByFlow: {},
+    editorShowAdvancedFlowMetadataByFlow: {},
+    editorShowAdvancedGraphAttrsByFlow: {},
+    editorLaunchInputDraftsByFlow: {},
+    editorLaunchInputDraftErrorByFlow: {},
+    editorNodeInspectorSessionsByNodeId: {},
+    flowMetadata: {},
+    flowMetadataErrors: {},
+    graphAttrs: {},
+    graphAttrErrors: {},
+    diagnostics: [],
+    nodeDiagnostics: {},
+    edgeDiagnostics: {},
+    hasValidationErrors: false,
+    uiDefaults: { ...DEFAULT_UI_DEFAULTS },
+    saveState: 'idle',
+    saveErrorMessage: null,
+    saveErrorKind: null,
+    saveErrorProblems: null,
+}) satisfies Partial<EditorSlice>
+
 export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (set, get) => ({
+    ...initialEditorSessionState(loadRouteState()),
     editorSidebarWidth: DEFAULT_EDITOR_SIDEBAR_WIDTH,
     setEditorSidebarWidth: (width) =>
         set((state) => {
@@ -80,11 +118,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
                 editorSidebarWidth: nextWidth,
             }
         }),
-    clientPreferencesLoaded: false,
-    clientFlowNodePositions: {},
-    clientFlowEdgePorts: {},
-    chatProjectOrder: [],
-    clientRunPresentation: {},
     setClientRunPresentation: (patch) => {
         const run_presentation = { ...get().clientRunPresentation, ...patch }
         set({ clientRunPresentation: run_presentation })
@@ -98,13 +131,9 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
     },
     editorMode: 'structured',
     setEditorMode: (mode) => set({ editorMode: mode }),
-    selectedNodeId: null,
     setSelectedNodeId: (id) => set({ selectedNodeId: id }),
-    selectedEdgeId: null,
     setSelectedEdgeId: (id) => set({ selectedEdgeId: id }),
-    pendingEditorNodeSelection: null,
     setPendingEditorNodeSelection: (selection) => set({ pendingEditorNodeSelection: selection }),
-    workingDir: initialWorkspaceEditorState.workingDir || DEFAULT_WORKING_DIRECTORY,
     setWorkingDir: (value) =>
         set((state) => {
             const nextProjectSessionStates = { ...state.projectSessionsByPath }
@@ -129,7 +158,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
     preferredExpandChildFlows: false,
     preferredGraphSettingsOpen: false,
     preferredHomeSidebarPrimarySplitRatio: null,
-    editorGraphSettingsPanelOpenByFlow: {},
     setEditorGraphSettingsPanelOpen: (flowName, isOpen) => {
         completePreferenceInteraction({ graph_settings_open: isOpen })
         set((state) => ({
@@ -140,7 +168,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
             },
         }))
     },
-    editorExpandChildFlowsByFlow: {},
     setEditorExpandChildFlows: (flowName, expandChildren) => {
         completePreferenceInteraction({ expand_child_flows: expandChildren })
         set((state) => ({
@@ -151,7 +178,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
             },
         }))
     },
-    editorShowAdvancedFlowMetadataByFlow: {},
     setEditorShowAdvancedFlowMetadata: (flowName, showAdvanced) => {
         completePreferenceInteraction({ show_advanced_controls: showAdvanced })
         set((state) => ({
@@ -162,7 +188,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
             },
         }))
     },
-    editorShowAdvancedGraphAttrsByFlow: {},
     setEditorShowAdvancedGraphAttrs: (flowName, showAdvanced) => {
         completePreferenceInteraction({ show_advanced_controls: showAdvanced })
         set((state) => ({
@@ -177,8 +202,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
             },
         }))
     },
-    editorLaunchInputDraftsByFlow: {},
-    editorLaunchInputDraftErrorByFlow: {},
     setEditorLaunchInputDraftState: (flowName, drafts, error) =>
         set((state) => ({
             editorLaunchInputDraftsByFlow: {
@@ -190,7 +213,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
                 [flowName]: error,
             },
         })),
-    editorNodeInspectorSessionsByNodeId: {},
     updateEditorNodeInspectorSession: (nodeId, patch) => {
         if (patch.showAdvanced !== undefined) completePreferenceInteraction({ show_advanced_controls: patch.showAdvanced })
         set((state) => ({
@@ -207,11 +229,7 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
             },
         }))
     },
-    flowMetadata: {},
-    flowMetadataErrors: {},
     flowMetadataUserEditVersion: 0,
-    graphAttrs: {},
-    graphAttrErrors: {},
     graphAttrsUserEditVersion: 0,
     setFlowMetadata: (metadata) =>
         set((state) => deriveNextFlowMetadataState(state, metadata, true)),
@@ -263,7 +281,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
                 true,
             )
         }),
-    diagnostics: [],
     setDiagnostics: (diagnostics) =>
         set(() => {
             const { nodeDiagnostics, edgeDiagnostics } = buildDiagnosticMaps(diagnostics)
@@ -281,22 +298,14 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
             edgeDiagnostics: {},
             hasValidationErrors: false,
         })),
-    nodeDiagnostics: {},
-    edgeDiagnostics: {},
-    hasValidationErrors: false,
     suppressPreview: false,
     setSuppressPreview: (value) => set({ suppressPreview: value }),
-    uiDefaults: { ...DEFAULT_UI_DEFAULTS },
     setUiDefaults: (values) =>
         set((state) => {
             const next = { ...state.uiDefaults, ...values }
             return { uiDefaults: next }
         }),
-    saveState: 'idle',
     saveStateVersion: 0,
-    saveErrorMessage: null,
-    saveErrorKind: null,
-    saveErrorProblems: null,
     markSaveInFlight: () =>
         set((state) => ({
             saveState: 'saving',

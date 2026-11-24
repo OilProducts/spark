@@ -1,4 +1,5 @@
 import { useStore } from '@/store'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { completePreferenceInteraction, fetchClientPreferences } from '@/features/settings/services/clientPreferences'
 import type { CanvasViewportState } from '@/state/store-types'
 
@@ -23,6 +24,8 @@ export type SavedFlowLayoutV1 = {
 }
 
 const LAYOUT_CACHE_PREFIX = 'spark.flow_layout_cache.v1:'
+// Environments can hold the same project path and flow name; each caches its own layouts.
+const layoutCacheKey = (key: string) => `${LAYOUT_CACHE_PREFIX}${getActiveEnvironmentId() ?? 'local'}:${key}`
 
 function isRouteSide(value: unknown): value is RouteSide {
     return value === 'top' || value === 'right' || value === 'bottom' || value === 'left'
@@ -158,15 +161,17 @@ export async function loadSavedFlowLayout(
 
     const key = buildFlowLayoutKey(projectPath, flowName, canvasKind)
     if (!useStore.getState().clientPreferencesLoaded && !useStore.getState().clientFlowNodePositions[key]) {
-        try {
-            const view = await fetchClientPreferences()
-            useStore.setState({ clientFlowNodePositions: view.effective.flow_node_positions ?? {}, clientFlowEdgePorts: view.effective.flow_edge_ports ?? {} })
-        } catch { /* The controller reports load failures. */ }
+        const environmentId = getActiveEnvironmentId()
+        // The controller reports load failures.
+        const view = await fetchClientPreferences(environmentId).catch(() => null)
+        // Loaded across a switch: these positions are the environment left, not the one shown.
+        if (getActiveEnvironmentId() !== environmentId) return null
+        if (view) useStore.setState({ clientFlowNodePositions: view.effective.flow_node_positions ?? {}, clientFlowEdgePorts: view.effective.flow_edge_ports ?? {} })
     }
     const nodePositions = useStore.getState().clientFlowNodePositions[key]
     if (!nodePositions) return null
     let cache = {}
-    try { cache = JSON.parse(window.localStorage.getItem(`${LAYOUT_CACHE_PREFIX}${key}`) ?? '{}') } catch { /* Recompute corrupt caches. */ }
+    try { cache = JSON.parse(window.localStorage.getItem(layoutCacheKey(key)) ?? '{}') } catch { /* Recompute corrupt caches. */ }
     const layout = normalizeSavedLayout({ version: 1, topologyStamp: '', edgeLayouts: {}, ...cache, nodePositions })
     if (!layout) return null
     const ports = useStore.getState().clientFlowEdgePorts[key]
@@ -199,7 +204,7 @@ export function saveSavedFlowLayout(
         completePreferenceInteraction({ flow_node_positions: positions, flow_edge_ports: ports })
     }
     const cache = { version: layout.version, topologyStamp: layout.topologyStamp, edgeLayouts: layout.edgeLayouts, viewport: layout.viewport }
-    try { window.localStorage.setItem(`${LAYOUT_CACHE_PREFIX}${key}`, JSON.stringify(cache)) } catch { /* Recomputable cache. */ }
+    try { window.localStorage.setItem(layoutCacheKey(key), JSON.stringify(cache)) } catch { /* Recomputable cache. */ }
 
 }
 
@@ -219,5 +224,5 @@ export function clearSavedFlowLayout(
     delete ports[key]
     useStore.setState({ clientFlowNodePositions: positions, clientFlowEdgePorts: ports })
     completePreferenceInteraction({ flow_node_positions: positions, flow_edge_ports: ports })
-    try { window.localStorage.removeItem(`${LAYOUT_CACHE_PREFIX}${key}`) } catch { /* Recomputable cache. */ }
+    try { window.localStorage.removeItem(layoutCacheKey(key)) } catch { /* Recomputable cache. */ }
 }

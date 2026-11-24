@@ -6,7 +6,9 @@ import { HistoryRoutingController } from '@/app/AppSessionControllers'
 import { addsEntry, buildRunsHash, missionKey, parsePlaceHash, placeHash, roleKey, type Place } from '@/app/runsRouting'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- triggerKey names a trigger; it calls no API
 import { triggerKey, type TriggerResponse } from '@/lib/workspaceClient'
-import { useStore } from '@/store'
+import { ROUTE_STATE_STORAGE_KEY, VIEW_MODE_SESSION_KEY } from '@/state/store-helpers'
+import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
+import { switchEnvironment } from '@/test/environments'
 
 // A fresh entry, so no Forward entries are left from an earlier test.
 const resetHash = () => {
@@ -68,6 +70,18 @@ describe('runsRouting helpers', () => {
         expect(addsEntry(state, runs('gone'), runs('next'))).toBe(false)
         expect(addsEntry(state, runs('other'), runs('next'))).toBe(true)
         expect(addsEntry(state, runs(null), runs('picked'))).toBe(true)
+    })
+
+    it('names a remote environment in its places\' links, and this machine in none', () => {
+        const places: Place[] = [
+            { envId: 'env-r', view: 'runs', runId: 'run-1', nodeId: 'build' },
+            { envId: 'env r', view: 'triggers', triggerId: triggerKey({ project_path: '/tmp/a', id: 'nightly' }) },
+            { envId: 'env-r', view: 'overview' },
+        ]
+        for (const place of places) expect(parsePlaceHash(placeHash(place))).toEqual(place)
+        expect(placeHash(places[1])).toBe('#/triggers/nightly?project=%2Ftmp%2Fa&env=env%20r')
+        expect(placeHash({ envId: null, view: 'runs', runId: 'run-1' })).toBe(buildRunsHash('run-1'))
+        expect(parsePlaceHash(buildRunsHash('run-1'))).not.toHaveProperty('envId')
     })
 
     it('names no place for unknown or malformed hashes', () => {
@@ -436,5 +450,89 @@ describe('HistoryRoutingController', () => {
             expect(useStore.getState().triggersSession.selectedTriggerId).toBeNull()
         })
         expect(window.location.hash).toBe('#/triggers')
+    })
+})
+
+describe('routing across environments', () => {
+    const savedRoute = () => JSON.parse(window.localStorage.getItem(ROUTE_STATE_STORAGE_KEY) ?? '{}')
+    const selectRun = (runId: string) => act(() => {
+        useStore.getState().setRunsSelectedRunId(runId)
+        useStore.getState().setViewMode('runs')
+    })
+    let unmount = () => {}
+    // As the app does: the workspace remounts in the environment switched to, with fresh state.
+    const showEnvironment = async (environmentId: string | null) => {
+        unmount()
+        await switchEnvironment(environmentId)
+        act(() => resetStoreForEnvironmentSwitch(environmentId === null))
+        unmount = render(<HistoryRoutingController />).unmount
+    }
+
+    beforeEach(() => {
+        resetHash()
+        useStore.setState(useStore.getInitialState(), true)
+        useStore.setState({ viewMode: 'home' })
+    })
+
+    afterEach(() => {
+        cleanup()
+        resetHash()
+    })
+
+    it('leaves this machine where it is on Back or Forward to a remote environment\'s entry', async () => {
+        unmount = render(<HistoryRoutingController />).unmount
+        selectRun('local-run')
+        await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run')))
+
+        await showEnvironment('env-r')
+        // The local entry the switch happened on opens nothing remotely.
+        expect(selectSelectedRunId(useStore.getState())).toBeNull()
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        act(() => window.history.back())
+        await waitFor(() => expect(useStore.getState().viewMode).toBe('overview'))
+
+        await showEnvironment(null)
+        expect(useStore.getState().viewMode).toBe('runs')
+        expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
+        expect(window.location.hash).toBe(buildRunsHash('local-run'))
+
+        // Forward reaches the remote run's entry: nothing here changes, and the entry says where it is.
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run')))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, runId: 'local-run' })
+        expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
+        expect(savedRoute()).toMatchObject({ selectedRunId: 'local-run' })
+
+        // Back past the switch reaches this machine's earlier entries.
+        act(() => window.history.go(-2))
+        await waitFor(() => expect(useStore.getState().viewMode).toBe('home'))
+        expect(savedRoute()).toMatchObject({ selectedRunId: 'local-run' })
+    })
+
+    it('opens nothing from a remote environment\'s link reloaded on this machine', async () => {
+        window.history.replaceState(null, '', `${buildRunsHash('remote-run')}?env=env-r`)
+        render(<HistoryRoutingController />)
+
+        expect(window.location.hash).toBe('#/chats')
+        expect(useStore.getState().viewMode).toBe('home')
+        expect(selectSelectedRunId(useStore.getState())).toBeNull()
+        expect(savedRoute()).not.toMatchObject({ selectedRunId: 'remote-run' })
+    })
+
+    it('keeps each environment\'s view across switches', async () => {
+        act(() => useStore.getState().setViewMode('runs'))
+        await switchEnvironment('env-r')
+        resetStoreForEnvironmentSwitch(false)
+        expect(useStore.getState().viewMode).toBe('overview')
+        act(() => useStore.getState().setViewMode('settings'))
+        expect(window.sessionStorage.getItem(`${VIEW_MODE_SESSION_KEY}:local`)).toBe('runs')
+
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+        expect(useStore.getState().viewMode).toBe('runs')
+        await switchEnvironment('env-r')
+        resetStoreForEnvironmentSwitch(false)
+        expect(useStore.getState().viewMode).toBe('settings')
     })
 })

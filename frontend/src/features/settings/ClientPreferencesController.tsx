@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { AppNotice } from '@/components/app/app-notice'
 import { Button } from '@/components/ui/button'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { applyTheme } from '@/lib/theme'
 import { fetchClientPreferences, saveClientPreferences, type ClientPreferences, type ClientPreferencesView } from './services/clientPreferences'
 
@@ -13,6 +14,10 @@ export function ClientPreferencesController() {
     const [error, setError] = useState<{ kind: 'load' | 'save'; message: string } | null>(null)
     useEffect(() => {
         let cancelled = false
+        // These preferences, their writes included, are the environment this mounted in; once it is
+        // left, late answers change nothing.
+        const environmentId = getActiveEnvironmentId()
+        const current = () => !cancelled && getActiveEnvironmentId() === environmentId
         const apply = (value: ClientPreferencesView) => {
             saved.current = value
             applyTheme(value.effective.appearance ?? 'system')
@@ -34,23 +39,23 @@ export function ClientPreferencesController() {
         const refresh = () => {
             if (pending.current || draft.current) return
             const base = saved.current
-            void fetchClientPreferences().then((value) => {
-                if (!cancelled && saved.current === base && !pending.current && !draft.current) { apply(value); setError(null) }
-            }).catch(() => { if (!cancelled && saved.current === base && !pending.current && !draft.current) setError({ kind: 'load', message: 'Couldn’t load your preferences, so Spark is using its defaults.' }) })
+            void fetchClientPreferences(environmentId).then((value) => {
+                if (current() && saved.current === base && !pending.current && !draft.current) { apply(value); setError(null) }
+            }).catch(() => { if (current() && saved.current === base && !pending.current && !draft.current) setError({ kind: 'load', message: 'Couldn’t load your preferences, so Spark is using its defaults.' }) })
         }
         const save = async () => {
-            if (!draft.current || pending.current || cancelled) return
+            if (!draft.current || pending.current || !current()) return
             const submitted = draft.current
             pending.current = true
             try {
-                const base = saved.current ?? await fetchClientPreferences()
+                const base = saved.current ?? await fetchClientPreferences(environmentId)
                 saved.current = base
-                const value = await saveClientPreferences(base, { ...base.stored, ...submitted })
+                const value = await saveClientPreferences(base, { ...base.stored, ...submitted }, environmentId)
                 saved.current = value
-                useStore.setState({ clientPreferencesLoaded: true })
-                if (draft.current === submitted) { draft.current = null; if (!cancelled) setError(null) }
+                if (current()) useStore.setState({ clientPreferencesLoaded: true })
+                if (draft.current === submitted) { draft.current = null; if (current()) setError(null) }
             } catch (error) {
-                if (!cancelled) setError({ kind: 'save', message: error instanceof Error ? error.message : 'Unable to save preferences. Your changes are retained.' })
+                if (current()) setError({ kind: 'save', message: error instanceof Error ? error.message : 'Unable to save preferences. Your changes are retained.' })
             } finally { pending.current = false }
             // A second completed interaction may arrive while the first save is pending.
             if (draft.current && draft.current !== submitted) void save()

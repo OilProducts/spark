@@ -8,6 +8,7 @@ import {
     selectModelSettings,
     type ModelDiscoveryState,
 } from '@/components/model-chooser/modelSelection'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import type { ModelSettings } from '@/lib/api/settingsApi'
 import type { LlmProfileMetadata } from '@/lib/llmSuggestions'
 import {
@@ -156,15 +157,20 @@ export function useConversationComposer({
         }
     }
 
+    // A request goes to the environment it started in, captured before any await; once another
+    // environment is shown, its answer changes nothing there.
+    const isShown = (environmentId: string | null) => getActiveEnvironmentId() === environmentId
+
     // The `/plan` and `/chat` commands and the header's mode control take the same path.
     const switchChatMode = async (conversationId: string, chatMode: ConversationChatMode) => {
         if (!activeProjectPath) {
             return
         }
+        const environmentId = getActiveEnvironmentId()
         if (!(await awaitSettingsReady(conversationId))) {
             return
         }
-        setPanelError(null)
+        if (isShown(environmentId)) setPanelError(null)
         try {
             // Changed and unchanged settings both answer with the conversation row; the reducer
             // keeps whichever of it and a live update is newer.
@@ -172,13 +178,14 @@ export function useConversationComposer({
                 project_path: activeProjectPath,
                 chat_mode: chatMode,
                 expected_revision: getConversationRecord(conversationId)?.settingsRevision ?? '0',
-            })
+            }, environmentId)
+            if (!isShown(environmentId)) return
             applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'settings-response', {
                 forceWorkspaceSync: true,
             })
         } catch (error) {
             const message = formatErrorMessage(error, 'Unable to switch the project chat mode.')
-            setPanelError(message)
+            if (isShown(environmentId)) setPanelError(message)
         }
     }
 
@@ -257,6 +264,7 @@ export function useConversationComposer({
         if (isChatInputDisabled || isUploadBlocking) {
             return
         }
+        const environmentId = getActiveEnvironmentId()
         const conversationId = ensureConversationId()
         if (!conversationId) {
             return
@@ -274,7 +282,8 @@ export function useConversationComposer({
         if (!(await awaitSettingsReady(conversationId))) {
             return
         }
-        setPanelError(null)
+        // Switched away while settings saved: the message still goes, but nothing here shows it.
+        if (isShown(environmentId)) setPanelError(null)
         const messageToSend = parsedCommand?.kind === 'switch_and_send'
             ? parsedCommand.message
             : parsedCommand?.kind === 'switch_mode' ? '' : trimmed
@@ -285,6 +294,7 @@ export function useConversationComposer({
         // replaced in place and a resent request cannot add a second turn.
         const clientTurnId = `turn-${randomHexId()}`
         const updatePendingMessages = (update: (messages: PendingUserMessage[]) => PendingUserMessage[]) => {
+            if (!isShown(environmentId)) return
             const store = useStore.getState()
             store.updateHomeConversationSession(conversationId, {
                 pendingMessages: update(store.homeConversationSessionsById[conversationId]?.pendingMessages ?? []),
@@ -302,17 +312,19 @@ export function useConversationComposer({
         // The message shows in the transcript now, so the composer clears now;
         // a failed send puts the text back ahead of anything typed meanwhile.
         const currentDraft = () => useStore.getState().homeProjectSessionsByPath[activeProjectPath]?.chatDraft ?? ''
-        const setDraft = (draft: string) => useStore.getState().updateHomeProjectSession(activeProjectPath, { chatDraft: draft })
+        const setDraft = (draft: string) => {
+            if (isShown(environmentId)) useStore.getState().updateHomeProjectSession(activeProjectPath, { chatDraft: draft })
+        }
         if (currentDraft() === chatDraft) {
             setDraft('')
         }
-        const accepted = await runTurn(conversationId, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
+        const accepted = await runTurn(conversationId, environmentId, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
             project_path: activeProjectPath,
             message: messageToSend,
             client_turn_id: clientTurnId,
             ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
             chat_mode: chatMode,
-        }), () => {
+        }, environmentId), () => {
             // Accepted: clear what was sent, keeping anything attached meanwhile.
             clearSentAttachments(conversationId, sending.map((entry) => entry.localId))
         })
@@ -328,22 +340,28 @@ export function useConversationComposer({
         if (!activeProjectPath || !conversationId || isChatInputDisabled) {
             return
         }
+        const environmentId = getActiveEnvironmentId()
         if (!(await awaitSettingsReady(conversationId))) {
             return
         }
-        setPanelError(null)
-        await runTurn(conversationId, 'Unable to retry the project chat turn.', () => retryConversationTurnValidated(conversationId, turnId, activeProjectPath))
+        if (isShown(environmentId)) setPanelError(null)
+        await runTurn(conversationId, environmentId, 'Unable to retry the project chat turn.', () => retryConversationTurnValidated(conversationId, turnId, activeProjectPath, environmentId))
     }
 
     /** Starts a turn through `start`, tracking it as running until the server answers. */
     const runTurn = async (
         conversationId: string,
+        environmentId: string | null,
         failure: string,
         start: () => Promise<ConversationAcceptance>,
         onAccepted?: () => void,
     ): Promise<boolean> => {
         if (!activeProjectPath) {
             return false
+        }
+        // Nothing here shows a turn from an environment switched away from.
+        if (!isShown(environmentId)) {
+            return start().then(() => true, () => false)
         }
         const afterRevision = getConversationRecord(conversationId)?.latestRevision ?? '0'
         setPendingConversationTurn({ conversationId, afterRevision })
@@ -352,6 +370,7 @@ export function useConversationComposer({
         setSendingChat(conversationId, true)
         try {
             const acceptance = await start()
+            if (!isShown(environmentId)) return true
             onAccepted?.()
             setPendingConversationTurn(null)
             const shouldKeepFocusOnReplyThread = getCurrentConversationId(activeProjectPath) === conversationId
@@ -363,11 +382,13 @@ export function useConversationComposer({
             return true
         } catch (error) {
             const message = formatErrorMessage(error, failure)
-            setPanelError(message)
+            if (isShown(environmentId)) setPanelError(message)
             return false
         } finally {
-            setPendingConversationTurn(null)
-            setSendingChat(conversationId, false)
+            if (isShown(environmentId)) {
+                setPendingConversationTurn(null)
+                setSendingChat(conversationId, false)
+            }
         }
     }
 

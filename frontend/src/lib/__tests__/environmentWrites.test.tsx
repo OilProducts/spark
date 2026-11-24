@@ -1,0 +1,186 @@
+import { render, renderHook, waitFor, act } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ClientPreferencesController } from '@/features/settings/ClientPreferencesController'
+import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
+import { useConversationComposer } from '@/features/projects/hooks/useConversationComposer'
+import { primeFlowSaveBaseline, resetFlowSaveBaselines, saveFlowContent } from '@/lib/flowPersistence'
+import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
+import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
+import { conversationMutationAck } from '@/test/conversationWire'
+import { deferred, switchEnvironment } from '@/test/environments'
+
+// Every write started in a remote environment reaches it, through its proxy, after a switch to local.
+const REMOTE = '/workspace/api/environments/links/env-r/proxy'
+const PROJECT = '/tmp/project'
+const flow = (title: string) => ({ flow: { schema_version: '2', id: 'demo', title, nodes: {} } })
+
+let sent: string[] = []
+let answer: (url: string, method: string) => unknown = () => ({})
+
+const json = (payload: unknown, status = 200) =>
+    new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } })
+
+beforeEach(() => {
+    useStore.setState(useStore.getInitialState(), true)
+    resetFlowSaveBaselines()
+    sent = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        sent.push(`${method} ${String(input)}`)
+        const payload = await answer(String(input), method)
+        return payload instanceof Response ? payload : json(payload)
+    }))
+})
+
+afterEach(() => {
+    vi.unstubAllGlobals()
+})
+
+describe('flow saves', () => {
+    beforeEach(() => {
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : { status: 'saved' })
+    })
+
+    it('sends a scheduled save from the cleanup flush to the environment it was scheduled in', async () => {
+        await switchEnvironment('env-r')
+        const { result, unmount } = renderHook(() => useFlowSaveScheduler({
+            flowName: 'demo',
+            debounceMs: 60_000,
+            buildContent: () => flow('Remote'),
+        }))
+        act(() => result.current.scheduleSave())
+        await switchEnvironment(null)
+        unmount()
+
+        await waitFor(() => expect(sent).toEqual([
+            `POST ${REMOTE}/attractor/preview`,
+            `POST ${REMOTE}/attractor/api/flows`,
+        ]))
+    })
+
+    it('saves after its preview in the environment the save started in, leaving the shown save state alone', async () => {
+        await switchEnvironment('env-r')
+        const preview = deferred<unknown>()
+        answer = (url) => (url.endsWith('/preview') ? preview.promise : { status: 'saved' })
+        const saving = saveFlowContent('demo', flow('Remote'), PROJECT)
+        await waitFor(() => expect(sent).toHaveLength(1))
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+
+        preview.resolve({ status: 'ok' })
+        await expect(saving).resolves.toBe(true)
+        expect(sent).toEqual([`POST ${REMOTE}/attractor/preview`, `POST ${REMOTE}/attractor/api/flows`])
+        expect(useStore.getState().saveState).toBe('idle')
+    })
+
+    it('keeps each environment its own baseline for the same project and flow', async () => {
+        primeFlowSaveBaseline('demo', flow('Local'), PROJECT)
+        await switchEnvironment('env-r')
+        const saved = deferred<unknown>()
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : saved.promise)
+        const remoteSave = saveFlowContent('demo', flow('Remote'), PROJECT)
+        await waitFor(() => expect(sent).toHaveLength(2))
+        await switchEnvironment(null)
+        saved.resolve({ status: 'saved' })
+        await expect(remoteSave).resolves.toBe(true)
+
+        sent = []
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : { status: 'saved' })
+        // The late remote ack left the local baseline as it was.
+        await expect(saveFlowContent('demo', flow('Local'), PROJECT)).resolves.toBe(true)
+        expect(sent).toEqual([])
+        // Local content matching what remote saved is still a change here.
+        await expect(saveFlowContent('demo', flow('Remote'), PROJECT)).resolves.toBe(true)
+        expect(sent).toEqual(['POST /attractor/preview', 'POST /attractor/api/flows'])
+    })
+})
+
+it('saves a preference change to the environment it was made in, even once its load answers after a switch', async () => {
+    const view = (revision: string) => ({ preferences: {
+        scope: 'client',
+        client_id: 'browser-one',
+        revision,
+        stored: { editor_mode: null, editor_sidebar_width: null },
+        effective: { editor_mode: 'files', editor_sidebar_width: 400 },
+    } })
+    localStorage.setItem('spark.client_id', 'browser-one')
+    const load = deferred<unknown>()
+    answer = (_url, method) => (method === 'GET' ? load.promise : view('second'))
+    await switchEnvironment('env-r')
+    render(<ClientPreferencesController />)
+    act(() => completePreferenceInteraction({ editor_sidebar_width: 450 }))
+    await switchEnvironment(null)
+    const local = useStore.getState()
+
+    load.resolve(view('first'))
+    await waitFor(() => expect(sent.filter((request) => request.startsWith('PATCH'))).toEqual([
+        `PATCH ${REMOTE}/workspace/api/settings`,
+    ]))
+    expect(sent.every((request) => request.includes(REMOTE))).toBe(true)
+    // The remote answers change nothing in the local view.
+    expect(useStore.getState().editorSidebarWidth).toBe(local.editorSidebarWidth)
+    expect(useStore.getState().preferredEditorMode).toBe(local.preferredEditorMode)
+    expect(useStore.getState().clientPreferencesLoaded).toBe(false)
+})
+
+it('sends a message and a mode switch delayed by a settings save to the environment they started in', async () => {
+    const thread = {
+        conversation_id: 'conversation-2',
+        project_path: PROJECT,
+        title: 'Thread',
+        created_at: '2026-09-01T00:00:00Z',
+        updated_at: '2026-09-01T00:00:00Z',
+        revision: 6,
+        chat_mode: 'plan',
+        turns: [],
+        segments: [],
+    }
+    const settingsSaved = deferred<boolean>()
+    // The send fails, so its draft restore would show if it reached the local view.
+    answer = (url) => (url.endsWith('/turns') ? json({ detail: 'busy' }, 500) : conversationMutationAck(thread))
+    const applyConversationBatch = vi.fn()
+    const setPanelError = vi.fn()
+    const setPendingConversationTurn = vi.fn()
+    const useComposer = (conversationId: string) => useConversationComposer({
+        activeProjectPath: PROJECT,
+        chatDraft: 'Hello there',
+        attachments: [],
+        isUploadBlocking: false,
+        isChatInputDisabled: false,
+        waitForPendingSettingsSave: () => settingsSaved.promise,
+        ensureConversationId: () => conversationId,
+        getCurrentConversationId: () => conversationId,
+        getConversationRecord: () => undefined,
+        applyConversationBatch,
+        formatErrorMessage: (_error, fallback) => fallback,
+        setChatDraft: vi.fn(),
+        setPanelError,
+        setPendingConversationTurn,
+    })
+
+    await switchEnvironment('env-r')
+    useStore.getState().updateHomeProjectSession(PROJECT, { chatDraft: 'Hello there' })
+    useComposer('conversation-1').onChatComposerSubmit()
+    const switching = useComposer('conversation-2').onSwitchChatMode('plan')
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    useStore.getState().updateHomeProjectSession(PROJECT, { chatDraft: 'Local draft' })
+
+    settingsSaved.resolve(true)
+    await switching
+    await waitFor(() => expect(sent).toHaveLength(2))
+    // Let the failed send's handling finish.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(sent).toEqual(expect.arrayContaining([
+        `POST ${REMOTE}/workspace/api/conversations/conversation-1/turns`,
+        `PUT ${REMOTE}/workspace/api/conversations/conversation-2/settings`,
+    ]))
+    expect(applyConversationBatch).not.toHaveBeenCalled()
+    expect(setPanelError).not.toHaveBeenCalled()
+    expect(setPendingConversationTurn).not.toHaveBeenCalled()
+    const state = useStore.getState()
+    expect(state.homeProjectSessionsByPath[PROJECT]?.chatDraft).toBe('Local draft')
+    expect(state.homeConversationSessionsById).toEqual({})
+    expect(state.sendingChats).toEqual({})
+})

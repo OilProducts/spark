@@ -16,8 +16,13 @@ const DEFAULT_TRIGGERS_SESSION_STATE: TriggersSessionState = {
     editTriggerDraftsByTriggerId: {},
 }
 
-export const createTriggersSessionSlice: StateCreator<AppState, [], [], TriggersSessionSlice> = (set) => ({
+/** The triggers' state in a fresh environment: all of it belongs to one environment. */
+export const initialTriggersSessionState = () => ({
     triggersSession: DEFAULT_TRIGGERS_SESSION_STATE,
+}) satisfies Partial<TriggersSessionSlice>
+
+export const createTriggersSessionSlice: StateCreator<AppState, [], [], TriggersSessionSlice> = (set) => ({
+    ...initialTriggersSessionState(),
     updateTriggersSession: (patch) =>
         set((state) => ({
             triggersSession: {

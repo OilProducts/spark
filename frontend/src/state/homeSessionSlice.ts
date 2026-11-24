@@ -44,7 +44,8 @@ const resolveHomeConversationSession = (
     ...(sessionsById[conversationId] ?? {}),
 })
 
-export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionSlice> = (set) => ({
+/** The chats' state in a fresh environment: all of it belongs to one environment. */
+export const initialHomeSessionState = () => ({
     homeConversationCache: {
         conversationsById: {},
         summariesByProjectPath: {},
@@ -55,6 +56,10 @@ export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionS
     homeConversationSessionsById: {},
     homeProjectGitMetadataByPath: {},
     sendingChats: {},
+}) satisfies Partial<HomeSessionSlice>
+
+export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionSlice> = (set) => ({
+    ...initialHomeSessionState(),
     setSendingChat: (conversationId, sending) =>
         set((state) => {
             const sendingChats = { ...state.sendingChats }

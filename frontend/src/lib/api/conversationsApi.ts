@@ -1236,6 +1236,7 @@ export async function uploadConversationAttachmentValidated(
     conversationId: string,
     projectPath: string,
     file: File,
+    environmentId?: string | null,
 ): Promise<ConversationAttachmentResponse> {
     const endpoint = '/workspace/api/conversations/{id}/attachments'
     return fetchWorkspaceJsonValidated(
@@ -1253,6 +1254,7 @@ export async function uploadConversationAttachmentValidated(
             }
             return attachment
         },
+        environmentId,
     )
 }
 
@@ -1260,12 +1262,14 @@ export async function deleteConversationAttachmentValidated(
     conversationId: string,
     attachmentId: string,
     projectPath: string,
+    environmentId?: string | null,
 ): Promise<void> {
     await fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(attachmentId)}?project_path=${encodeURIComponent(projectPath)}`,
         { method: 'DELETE' },
         '/workspace/api/conversations/{id}/attachments/{attachmentId}',
         () => undefined,
+        environmentId,
     )
 }
 
@@ -1282,6 +1286,7 @@ export async function sendConversationTurnValidated(
         reasoning_effort?: string | null
         chat_mode?: ConversationChatMode | null
     },
+    environmentId?: string | null,
 ): Promise<ConversationAcceptance> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/turns`,
@@ -1292,6 +1297,7 @@ export async function sendConversationTurnValidated(
         },
         '/workspace/api/conversations/{id}/turns',
         parseConversationAcceptanceResponse,
+        environmentId,
     )
 }
 
@@ -1300,6 +1306,7 @@ export async function retryConversationTurnValidated(
     conversationId: string,
     turnId: string,
     projectPath: string,
+    environmentId?: string | null,
 ): Promise<ConversationAcceptance> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/retry`,
@@ -1310,6 +1317,7 @@ export async function retryConversationTurnValidated(
         },
         '/workspace/api/conversations/{id}/turns/{turnId}/retry',
         parseConversationAcceptanceResponse,
+        environmentId,
     )
 }
 
@@ -1324,6 +1332,7 @@ export async function updateConversationSettingsValidated(
         model?: string | null
         reasoning_effort?: string | null
     },
+    environmentId?: string | null,
 ): Promise<ConversationMutationAck> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/settings`,
@@ -1334,6 +1343,7 @@ export async function updateConversationSettingsValidated(
         },
         '/workspace/api/conversations/{id}/settings',
         parseConversationMutationAckResponse,
+        environmentId,
     )
 }
 

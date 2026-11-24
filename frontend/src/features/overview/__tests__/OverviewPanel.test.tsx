@@ -244,7 +244,7 @@ describe('Overview finished since', () => {
         second.unmount()
 
         // After a long time away, the list reaches back to the last look.
-        window.localStorage.setItem('spark.overview_finished_watermark', String(Date.now() - 24 * 8 * 3_600_000))
+        window.localStorage.setItem('spark.overview_finished_watermark:local', String(Date.now() - 24 * 8 * 3_600_000))
         render(<OverviewPanel />)
         expect(screen.getByTestId('overview-finished').textContent).toContain('since you last looked')
         expect(finished()).toEqual(['run-after', 'run-live', 'run-hour', 'run-week'])

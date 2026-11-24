@@ -34,5 +34,5 @@ it('attaches a file in a new chat from a non-secure origin, where crypto.randomU
     expect(useStore.getState().homeConversationSessionsById[conversationId]?.attachments).toMatchObject([
         { localId: expect.stringMatching(/^[0-9a-f]{32}$/), file, status: 'uploading' },
     ])
-    expect(uploadConversationAttachmentValidated).toHaveBeenCalledWith(conversationId, projectPath, file)
+    expect(uploadConversationAttachmentValidated).toHaveBeenCalledWith(conversationId, projectPath, file, null)
 })

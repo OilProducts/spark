@@ -1,6 +1,7 @@
 import { useInheritedModelSettingsView } from '@/components/model-chooser/useInheritedModelSettings'
 import { useModelOptions } from '@/components/model-chooser/useModelOptions'
 import { useLlmProfiles } from '@/lib/useLlmProfiles'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -312,6 +313,9 @@ export function useProjectsHomeController() {
             values,
             promise: Promise.resolve(true),
         }
+        // Coalesced saves go to the environment the first started in; after a switch, their answers show nowhere.
+        const environmentId = getActiveEnvironmentId()
+        const shown = () => getActiveEnvironmentId() === environmentId
         const run = (async (): Promise<boolean> => {
             let revision = getConversationRecord(conversationId)?.settingsRevision ?? '0'
             try {
@@ -323,14 +327,14 @@ export function useProjectsHomeController() {
                         project_path: activeProjectPath,
                         expected_revision: revision,
                         model_settings: saving,
-                    })
+                    }, environmentId)
                     revision = ack.revision
-                    applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'chat-settings-response')
+                    if (shown()) applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'chat-settings-response')
                     if (save.values === saving) break
                 }
                 return true
             } catch (error) {
-                setPanelError(extractApiErrorMessage(error, 'Unable to update the project chat settings.'))
+                if (shown()) setPanelError(extractApiErrorMessage(error, 'Unable to update the project chat settings.'))
                 return false
             } finally {
                 if (chatSettingsSaves.current.get(conversationId) === save) {

@@ -1,4 +1,5 @@
 import { useStore, type SaveErrorKind } from '@/store'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { fetchPreviewValidated, saveFlowValidated, type FlowSaveContent } from '@/lib/attractorClient'
 import { recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 import { duplicateDecisionsInFlow } from '@/lib/canonicalFlowModel'
@@ -10,14 +11,14 @@ interface SaveFlowErrorDetail {
 }
 
 const FALLBACK_SAVE_FAILURE_MESSAGE = 'Flow save failed before confirmation from backend.'
-let lastSaveRequest: { name: string; content: FlowSaveContent; projectPath: string | null } | null = null
+let lastSaveRequest: { name: string; content: FlowSaveContent; projectPath: string | null; environmentId: string | null } | null = null
 const persistedBaselineByScope = new Map<string, string>()
 
-// Flows belong to a project; the same name in another project is a different flow.
+// Flows belong to a project in an environment; the same name elsewhere is a different flow.
 const activeProjectPath = () => useStore.getState().activeProjectPath
 
-function getSaveScopeKey(name: string, projectPath: string | null): string {
-    return `${projectPath ?? ''}\n${name}`
+function getSaveScopeKey(name: string, projectPath: string | null, environmentId: string | null): string {
+    return `${environmentId ?? 'local'}\n${projectPath ?? ''}\n${name}`
 }
 
 function parseErrorDetail(payload: unknown): SaveFlowErrorDetail {
@@ -52,11 +53,16 @@ function buildErrorMessage(status: string | undefined, error: string | undefined
 
 export async function retryLastSaveContent(): Promise<boolean> {
     if (!lastSaveRequest) return false
-    return saveFlowContent(lastSaveRequest.name, lastSaveRequest.content, lastSaveRequest.projectPath)
+    return saveFlowContent(lastSaveRequest.name, lastSaveRequest.content, lastSaveRequest.projectPath, lastSaveRequest.environmentId)
 }
 
-export function primeFlowSaveBaseline(name: string, content: FlowSaveContent, projectPath = activeProjectPath()): void {
-    persistedBaselineByScope.set(getSaveScopeKey(name, projectPath), JSON.stringify(content))
+export function primeFlowSaveBaseline(
+    name: string,
+    content: FlowSaveContent,
+    projectPath = activeProjectPath(),
+    environmentId = getActiveEnvironmentId(),
+): void {
+    persistedBaselineByScope.set(getSaveScopeKey(name, projectPath, environmentId), JSON.stringify(content))
 }
 
 export function resetFlowSaveBaselines(): void {
@@ -102,12 +108,18 @@ export function setInvalidDraft(id: string, message: string | null) {
 // flight together could land out of order and leave older content on disk.
 const lastSaveByScope = new Map<string, Promise<boolean>>()
 
-export function saveFlowContent(name: string, content: FlowSaveContent, projectPath = activeProjectPath()): Promise<boolean> {
-    const scopeKey = getSaveScopeKey(name, projectPath)
+/** Saves to the environment the save started in, by default the active one, even after a switch. */
+export function saveFlowContent(
+    name: string,
+    content: FlowSaveContent,
+    projectPath = activeProjectPath(),
+    environmentId = getActiveEnvironmentId(),
+): Promise<boolean> {
+    const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
     const previous = lastSaveByScope.get(scopeKey)
     const save = previous
-        ? previous.catch(() => false).then(() => persistFlowContent(name, content, projectPath))
-        : persistFlowContent(name, content, projectPath)
+        ? previous.catch(() => false).then(() => persistFlowContent(name, content, projectPath, environmentId))
+        : persistFlowContent(name, content, projectPath, environmentId)
     lastSaveByScope.set(scopeKey, save)
     inFlightSaves.add(save)
     void save.finally(() => {
@@ -117,52 +129,59 @@ export function saveFlowContent(name: string, content: FlowSaveContent, projectP
     return save
 }
 
-async function persistFlowContent(name: string, content: FlowSaveContent, projectPath: string | null): Promise<boolean> {
-    const scopeKey = getSaveScopeKey(name, projectPath)
+async function persistFlowContent(
+    name: string,
+    content: FlowSaveContent,
+    projectPath: string | null,
+    environmentId: string | null,
+): Promise<boolean> {
+    const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
     const serialized = JSON.stringify(content)
+    // The save state shown is the active environment's; a save that outlives a switch leaves it alone.
+    const shown = () => (getActiveEnvironmentId() === environmentId ? useStore.getState() : null)
     if (persistedBaselineByScope.get(scopeKey) === serialized) {
         recordFlowLoadDebug('save:skipped', name, {
             contentLength: serialized.length,
             reason: 'baseline_match',
         })
         // The edits a save refused are undone: nothing is left unsaved.
-        const { saveState, resetSaveState } = useStore.getState()
-        if (saveState === 'error' || saveState === 'conflict') resetSaveState()
+        const state = shown()
+        if (state?.saveState === 'error' || state?.saveState === 'conflict') state.resetSaveState()
         return true
     }
-    const { markSaveInFlight, markSaveSuccess, markSaveFailure, markSaveConflict } = useStore.getState()
     const draftErrors = [...invalidDrafts.values()]
     if (draftErrors.length > 0) {
-        markSaveFailure(`Fix the editor's invalid input before saving: ${draftErrors.join(' ')}`, 'validation_error')
+        shown()?.markSaveFailure(`Fix the editor's invalid input before saving: ${draftErrors.join(' ')}`, 'validation_error')
         return false
     }
     const duplicates = duplicateDecisionsInFlow('flow' in content ? content.flow : null)
     if (duplicates.length > 0) {
-        markSaveFailure(
+        shown()?.markSaveFailure(
             `Each decision may be declared once per node; duplicated: ${[...new Set(duplicates)].join(', ')}.`,
             'validation_error',
         )
         return false
     }
-    lastSaveRequest = { name, content, projectPath }
+    // Retry repeats the save whose failure is shown.
+    if (shown()) lastSaveRequest = { name, content, projectPath, environmentId }
     recordFlowLoadDebug('save:request', name, {
         contentLength: serialized.length,
     })
-    markSaveInFlight()
+    shown()?.markSaveInFlight()
 
     try {
         // The server refuses a flow that doesn't validate, as one mid-edit often is (a step just added,
         // a route not yet wired); its preview answers either way, so the edits wait without a refused
         // save. A preview that fails says nothing: the save still goes, and the server decides.
         const preview = 'flow' in content
-            ? await fetchPreviewValidated(content.flow, undefined, { flowName: name, projectPath }).catch(() => null)
+            ? await fetchPreviewValidated(content.flow, undefined, { flowName: name, projectPath, environmentId }).catch(() => null)
             : null
         if (preview?.status === 'validation_error') {
             const problems = flowProblemsFromDetail(preview)
-            markSaveFailure(buildErrorMessage('validation_error', problems?.map((problem) => problem.message).join(' ') ?? preview.error, 422), 'validation_error', problems)
+            shown()?.markSaveFailure(buildErrorMessage('validation_error', problems?.map((problem) => problem.message).join(' ') ?? preview.error, 422), 'validation_error', problems)
             return false
         }
-        const response = await saveFlowValidated(name, content, projectPath)
+        const response = await saveFlowValidated(name, content, projectPath, environmentId)
         if (!response.ok) {
             const detail = parseErrorDetail(response.payload)
             const message = buildErrorMessage(detail.status, detail.error, response.statusCode)
@@ -173,7 +192,7 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
                 message,
             })
             if (detail.status === 'conflict' || response.statusCode === 409) {
-                markSaveConflict(message)
+                shown()?.markSaveConflict(message)
                 return false
             }
             let errorKind: SaveErrorKind = 'http'
@@ -182,7 +201,7 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
             } else if (detail.status === 'validation_error') {
                 errorKind = 'validation_error'
             }
-            markSaveFailure(message, errorKind, flowProblemsFromDetail(detail))
+            shown()?.markSaveFailure(message, errorKind, flowProblemsFromDetail(detail))
             return false
         }
 
@@ -197,10 +216,10 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
                 message: FALLBACK_SAVE_FAILURE_MESSAGE,
             })
             if (status === 'conflict') {
-                markSaveConflict(buildErrorMessage(status, undefined, response.statusCode))
+                shown()?.markSaveConflict(buildErrorMessage(status, undefined, response.statusCode))
                 return false
             }
-            markSaveFailure(FALLBACK_SAVE_FAILURE_MESSAGE, 'unknown')
+            shown()?.markSaveFailure(FALLBACK_SAVE_FAILURE_MESSAGE, 'unknown')
             return false
         }
 
@@ -210,14 +229,14 @@ async function persistFlowContent(name: string, content: FlowSaveContent, projec
             saveStatus: status,
         })
         persistedBaselineByScope.set(scopeKey, serialized)
-        markSaveSuccess()
+        shown()?.markSaveSuccess()
         return true
     } catch (error) {
         const message = error instanceof Error ? error.message : 'network error while saving flow'
         recordFlowLoadDebug('save:error', name, {
             message,
         })
-        markSaveFailure(`Flow save failed: ${message}`, 'network')
+        shown()?.markSaveFailure(`Flow save failed: ${message}`, 'network')
         return false
     }
 }

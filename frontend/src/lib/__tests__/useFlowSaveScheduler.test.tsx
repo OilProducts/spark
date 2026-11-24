@@ -64,6 +64,7 @@ describe('useFlowSaveScheduler', () => {
       'demo.yaml',
       { flow: { id: 'demo.yaml', value: 1 } },
       '/tmp/project-a',
+      null,
     )
   })
 

@@ -1,4 +1,5 @@
 import { useCallback } from 'react'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import {
     CONVERSATION_ATTACHMENT_LIMITS,
     deleteConversationAttachmentValidated,
@@ -36,11 +37,13 @@ function setEntry(conversationId: string, localId: string, patch: Partial<Compos
 }
 
 async function upload(conversationId: string, entry: ComposerAttachment) {
+    // A switch to another environment mid-upload leaves the copy in the environment it went to.
+    const environmentId = getActiveEnvironmentId()
     try {
-        const attachment = await uploadConversationAttachmentValidated(conversationId, entry.projectPath, entry.file)
+        const attachment = await uploadConversationAttachmentValidated(conversationId, entry.projectPath, entry.file, environmentId)
         // Removed while uploading: the server copy is unwanted too.
         if (!setEntry(conversationId, entry.localId, { status: 'uploaded', attachment, error: null })) {
-            void deleteConversationAttachmentValidated(conversationId, attachment.id, entry.projectPath).catch(() => undefined)
+            void deleteConversationAttachmentValidated(conversationId, attachment.id, entry.projectPath, environmentId).catch(() => undefined)
         }
     } catch (error) {
         setEntry(conversationId, entry.localId, {

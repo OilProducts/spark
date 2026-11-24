@@ -22,6 +22,7 @@ import { useTriggersList } from '@/features/triggers/hooks/useTriggersList'
 import { buildWorkspaceLiveEventsUrl, dispatchConversationLiveEnvelope } from '@/features/workspace/services/liveEvents'
 import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { reportRunsTransportLost, requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { addsEntry, missionKey, parsePlaceHash, placeHash, placeOf, roleKey, type Place } from './runsRouting'
@@ -577,6 +578,12 @@ function projectInView() {
     return state.selectedRole?.projectPath ?? state.activeProjectPath ?? defaultProjectChoice(state.projectRegistry)
 }
 
+/**
+ * Whether a history entry's or a link's place is in another environment than the one shown: another
+ * environment's selections never move this one, nor its saved route.
+ */
+const isForeignPlace = (place: Place) => (place.envId ?? null) !== getActiveEnvironmentId()
+
 /** Moves the app to a place from a history entry or a link; returns whether it got there now. */
 function applyPlace(place: Place): boolean {
     const state = useStore.getState()
@@ -627,13 +634,15 @@ export function HistoryRoutingController() {
     useEffect(() => {
         const hash = window.location.hash
         const linked = parsePlaceHash(hash, projectInView())
-        if (linked) applyPlace(linked)
+        // Another environment's link (a reload while one was shown starts on this machine) opens nothing.
+        const foreign = linked !== null && isForeignPlace(linked)
+        if (linked && !foreign) applyPlace(linked)
         let current = placeOf(useStore.getState())
         window.history.replaceState({ sparkPlace: current }, '', placeHash(current))
         // A trigger, mission or role link without a project names its item in one once the projects load,
         // unless you have moved on by then.
         const opened = placeHash(current)
-        const stopWaiting: () => void = projectInView() ? () => {} : useStore.subscribe(() => {
+        const stopWaiting: () => void = projectInView() || foreign ? () => {} : useStore.subscribe(() => {
             const project = projectInView()
             if (!project) return
             stopWaiting()
@@ -660,12 +669,12 @@ export function HistoryRoutingController() {
         })
 
         // Back, Forward, or a followed link: the entry's place, or else the one its hash names.
-        // A link that names no place, or one it can't reach now, leaves the app where it is,
-        // and the link's entry then says where.
+        // A link that names no place, one in another environment, or one it can't reach now, leaves
+        // the app where it is, and the link's entry then says where.
         const onNavigate = () => {
             const entry = window.history.state?.sparkPlace as Place | undefined
             const place = entry ?? parsePlaceHash(window.location.hash, projectInView())
-            const held = place !== null && !applyPlace(place)
+            const held = place !== null && !isForeignPlace(place) && !applyPlace(place)
             current = placeOf(useStore.getState())
             // Back or Forward held is still where it was: put that entry back, so the URL and Back stay true.
             window.history[held && entry ? 'pushState' : 'replaceState']({ sparkPlace: current }, '', placeHash(current))

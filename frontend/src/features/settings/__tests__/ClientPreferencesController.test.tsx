@@ -22,12 +22,12 @@ it('applies persisted preferences and saves completed interactions with revision
     expect(saveClientPreferences).not.toHaveBeenCalled()
     act(() => window.dispatchEvent(new CustomEvent('spark:preferences-completed', { detail: { editor_sidebar_width: 450 } })))
     await screen.findByText('Preferences changed elsewhere.')
-    expect(saveClientPreferences).toHaveBeenLastCalledWith(view, { ...view.stored, editor_sidebar_width: 450 })
+    expect(saveClientPreferences).toHaveBeenLastCalledWith(view, { ...view.stored, editor_sidebar_width: 450 }, null)
     act(() => window.dispatchEvent(new Event('spark:settings-live-event')))
     expect(fetchClientPreferences).toHaveBeenCalledTimes(1)
     act(() => window.dispatchEvent(new Event('spark:preferences-retry')))
     await waitFor(() => expect(saveClientPreferences).toHaveBeenCalledTimes(2))
-    expect(saveClientPreferences).toHaveBeenLastCalledWith(view, { ...view.stored, editor_sidebar_width: 450 })
+    expect(saveClientPreferences).toHaveBeenLastCalledWith(view, { ...view.stored, editor_sidebar_width: 450 }, null)
 })
 
 it('ignores a refresh that started before a completed save and keeps the new revision', async () => {
@@ -51,7 +51,7 @@ it('ignores a refresh that started before a completed save and keeps the new rev
     expect(useStore.getState().editorSidebarWidth).toBe(450)
     act(() => window.dispatchEvent(new CustomEvent('spark:preferences-completed', { detail: { expand_child_flows: true } })))
     await waitFor(() => expect(saveClientPreferences).toHaveBeenCalledTimes(2))
-    expect(saveClientPreferences).toHaveBeenLastCalledWith(saved, { ...saved.stored, expand_child_flows: true })
+    expect(saveClientPreferences).toHaveBeenLastCalledWith(saved, { ...saved.stored, expand_child_flows: true }, null)
 })
 
 it('keeps Show thinking on by default, follows the saved setting and persists the toggle', async () => {
@@ -69,7 +69,7 @@ it('keeps Show thinking on by default, follows the saved setting and persists th
     expect(useStore.getState().preferredShowThinking).toBe(true)
     act(() => useStore.getState().setPreferredShowThinking(false))
     expect(useStore.getState().preferredShowThinking).toBe(false)
-    await waitFor(() => expect(saveClientPreferences).toHaveBeenCalledWith(view, { ...view.stored, show_thinking: false }))
+    await waitFor(() => expect(saveClientPreferences).toHaveBeenCalledWith(view, { ...view.stored, show_thinking: false }, null))
     // A change saved from the settings editor reaches every transcript through the same state.
     vi.mocked(fetchClientPreferences).mockResolvedValue({ ...off, revision: 'third', effective: { ...off.effective, show_thinking: true } })
     await act(async () => { window.dispatchEvent(new Event('spark:settings-live-event')) })

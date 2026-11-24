@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { registerPendingFlowSave, saveFlowContent, sendPendingFlowSaves } from '@/lib/flowPersistence'
 import { useStore } from '@/store'
 import type { FlowSaveContent } from '@/lib/attractorClient'
@@ -7,6 +8,7 @@ interface PendingFlowSaveRequest {
     flowName: string
     content: FlowSaveContent
     projectPath: string | null
+    environmentId: string | null
 }
 
 interface UseFlowSaveSchedulerArgs<T> {
@@ -38,7 +40,7 @@ export function useFlowSaveScheduler<T = void>({
         if (useStore.getState().editorMode === 'files') {
             return Promise.resolve(false)
         }
-        return saveFlowContent(request.flowName, request.content, request.projectPath)
+        return saveFlowContent(request.flowName, request.content, request.projectPath, request.environmentId)
     }, [])
 
     const createSaveRequest = useCallback((payload: T | undefined): PendingFlowSaveRequest | null => {
@@ -48,8 +50,9 @@ export function useFlowSaveScheduler<T = void>({
         return {
             flowName,
             content: buildContent(payload, flowName),
-            // Captured now so a debounced save cannot land in a project switched to meanwhile.
+            // Captured now so a debounced save cannot land in a project or environment switched to meanwhile.
             projectPath: useStore.getState().activeProjectPath,
+            environmentId: getActiveEnvironmentId(),
         }
     }, [buildContent, flowName])
 

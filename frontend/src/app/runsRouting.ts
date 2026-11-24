@@ -1,5 +1,6 @@
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- triggerKey names a trigger; it calls no API
 import { triggerKey } from '@/lib/workspaceClient'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { NARROW_VIEWPORT_MAX_WIDTH } from '@/lib/useNarrowViewport'
 import type { AppState, ViewMode } from '@/store'
 
@@ -24,6 +25,8 @@ const viewName = (view: ViewMode) => VIEW_LABELS[view] ?? view
  * Missions, the role in Roles. Other selections (a node) change in place. An absent field leaves that selection as it is.
  */
 export interface Place {
+    /** The environment the place is in: a remote one's id, or null (or absent) for this machine. */
+    envId?: string | null
     view: ViewMode
     runId?: string | null
     nodeId?: string | null
@@ -44,20 +47,21 @@ export const missionKey = (mission: { projectPath: string; id: string } | null) 
 export const roleKey = (role: { projectPath: string; name: string } | null) => (role ? JSON.stringify([role.projectPath, role.name]) : null)
 
 export function placeOf(state: AppState): Place {
+    const envId = getActiveEnvironmentId()
     const view = state.viewMode === 'projects' ? 'home' : state.viewMode
-    if (view === 'home') return { view, projectPagePath: state.projectPagePath }
-    if (view === 'editor') return { view, projectPath: state.activeProjectPath, flow: state.activeFlow }
-    if (view === 'triggers') return { view, triggerId: state.triggersSession.selectedTriggerId }
-    if (view === 'missions') return { view, missionId: missionKey(state.selectedMission) }
-    if (view === 'roles') return { view, roleId: roleKey(state.selectedRole) }
-    if (view !== 'runs') return { view }
+    if (view === 'home') return { envId, view, projectPagePath: state.projectPagePath }
+    if (view === 'editor') return { envId, view, projectPath: state.activeProjectPath, flow: state.activeFlow }
+    if (view === 'triggers') return { envId, view, triggerId: state.triggersSession.selectedTriggerId }
+    if (view === 'missions') return { envId, view, missionId: missionKey(state.selectedMission) }
+    if (view === 'roles') return { envId, view, roleId: roleKey(state.selectedRole) }
+    if (view !== 'runs') return { envId, view }
     const runId = state.runsListSession.selectedRunId
-    return { view, runId, nodeId: runId ? state.runDetailSessionsByRunId[runId]?.selectedNodeId ?? null : null }
+    return { envId, view, runId, nodeId: runId ? state.runDetailSessionsByRunId[runId]?.selectedNodeId ?? null : null }
 }
 
 /** Places with the same key are one history entry; a node change only rewrites the entry. */
 const placeKey = (place: Place) =>
-    [place.view, place.runId, place.projectPagePath, place.projectPath, place.flow, place.triggerId, place.missionId, place.roleId].join('\n')
+    [place.envId, place.view, place.runId, place.projectPagePath, place.projectPath, place.flow, place.triggerId, place.missionId, place.roleId].join('\n')
 
 /**
  * Whether moving between two places adds a history entry. In Runs, the run a desktop opens by itself
@@ -80,7 +84,9 @@ export function addsEntry(state: AppState, from: Place, to: Place): boolean {
 }
 
 export function placeHash(place: Place): string {
-    if (place.runId) return buildRunsHash(place.runId, place.nodeId)
+    // A remote environment's place names it; this machine's links stay as they were.
+    const env = place.envId ? `env=${encodeURIComponent(place.envId)}` : ''
+    if (place.runId) return `${buildRunsHash(place.runId, place.nodeId)}${env ? `?${env}` : ''}`
     // A trigger's, a mission's and a role's key is its [project, id]; the link names them as a flow's link does.
     const [triggerProject, trigger] = place.triggerId ? JSON.parse(place.triggerId) as [string, string] : []
     const [missionProject, mission] = place.missionId ? JSON.parse(place.missionId) as [string, string] : []
@@ -88,14 +94,22 @@ export function placeHash(place: Place): string {
     const item = place.flow ?? trigger ?? mission ?? role
     const project = place.projectPath ?? triggerProject ?? missionProject ?? roleProject
     const hash = `#/${viewName(place.view)}${item ? `/${encodeURIComponent(item)}` : ''}`
-    return project ? `${hash}?project=${encodeURIComponent(project)}` : hash
+    const query = [project ? `project=${encodeURIComponent(project)}` : '', env].filter(Boolean).join('&')
+    return query ? `${hash}?${query}` : hash
 }
 
 /**
  * The place a link names, or null when it names none. A trigger, mission or role link without a
  * project names it in `projectInView`, the project the app shows, as a flow link without one does.
+ * A link with no `env` names a place on this machine.
  */
 export function parsePlaceHash(hash: string, projectInView: string | null = null): Place | null {
+    const place = parseViewHash(hash, projectInView)
+    const envId = new URLSearchParams(hash.split('?')[1]).get('env')
+    return place && envId ? { ...place, envId } : place
+}
+
+function parseViewHash(hash: string, projectInView: string | null): Place | null {
     const [path, query] = hash.split('?')
     if (!path.startsWith('#/')) return null
     let segments: string[]
