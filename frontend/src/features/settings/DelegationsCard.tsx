@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { InlineError } from '@/components/app/inline-error'
 import { StatusDot, type StatusTone } from '@/components/app/status'
 import { Well } from '@/components/app/well'
+import type { FormQuestion, FormValue } from '@/lib/forms'
 import {
     answerDelegationQuestion,
     cancelDelegation,
@@ -18,6 +19,10 @@ import {
 
 type Filter = 'all' | 'open' | 'paused'
 
+/** A question's unsent answer and its last failure; `form` is what a refused form accept sent. */
+type AnswerDraft = { text: string; answers: Record<string, string>; form?: Record<string, FormValue>; error: string | null }
+
+const EMPTY_DRAFT: AnswerDraft = { text: '', answers: {}, error: null }
 const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
 // Delegations still in flight are re-read this often, so new questions and phases show up.
 const LIVE_REFRESH_MS = 4000
@@ -25,6 +30,27 @@ const LIVE_REFRESH_MS = 4000
 const errorText = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback)
 // Delegation IDs are UUIDs, so the first ':' ends the delegation part.
 const ackKey = (delegationId: string, questionId: string) => `${delegationId}:${questionId}`
+// Mirrors the server's list filter (spark-workspace delegations::list).
+const inFilter = (record: DelegationOut, filter: Filter) => (
+    filter === 'all' || (filter === 'open' ? record.phase !== 'sealed' : record.paused !== null)
+)
+// The row's visible location line; its target tells apart delegations sharing a request key.
+const whereText = (record: DelegationOut) => [
+    record.project_path,
+    `env ${record.environment_id}`,
+    record.target_id ? `target ${record.target_id}` : null,
+].filter(Boolean).join(' · ')
+
+// FormQuestionFields drops its draft when it replies, so a refused accept comes back as defaults.
+// ponytail: a whole number past f64's exact integers isn't restored; it would need the form's own draft.
+const withSentValues = (form: FormQuestion, content: Record<string, FormValue>): FormQuestion => ({
+    ...form,
+    schema: {
+        ...form.schema,
+        properties: Object.fromEntries(Object.entries((form.schema.properties ?? {}) as Record<string, Record<string, unknown>>)
+            .map(([name, property]) => [name, { ...property, default: content[name] }])),
+    },
+})
 
 function delegationStatus(record: DelegationOut): { label: string; tone: StatusTone } {
     if (record.phase === 'sealed') {
@@ -33,9 +59,9 @@ function delegationStatus(record: DelegationOut): { label: string; tone: StatusT
         if (resultStatus === 'canceled') return { label: 'canceled', tone: 'neutral' }
         return { label: resultStatus, tone: 'destructive' }
     }
-    if (record.paused) return { label: 'paused', tone: 'warning' }
-    // A requested cancellation outranks questions the last snapshot still lists.
+    // A requested cancellation outranks a pause and questions the last snapshot still lists.
     if (record.cancel_requested_at) return { label: 'canceling', tone: 'neutral' }
+    if (record.paused) return { label: 'paused', tone: 'warning' }
     if ((record.last_state?.questions?.length ?? 0) > 0) return { label: 'waiting on answer', tone: 'warning' }
     if (record.last_state?.status) return { label: record.last_state.status, tone: 'info' }
     return { label: record.phase, tone: 'info' }
@@ -44,38 +70,32 @@ function delegationStatus(record: DelegationOut): { label: string; tone: StatusT
 function QuestionResponder({
     draftKey,
     requestKey,
+    where,
     question,
     disabled,
+    draft,
+    onDraft,
     onAnswer,
 }: {
     draftKey: string
     requestKey: string
+    where: string
     question: DelegationQuestion
     disabled: boolean
-    /** Resolves to why the answer failed, or null once it was sent. */
-    onAnswer: (body: DelegationAnswerBody) => Promise<string | null>
+    draft: AnswerDraft
+    onDraft: (patch: Partial<AnswerDraft>) => void
+    onAnswer: (body: DelegationAnswerBody) => void
 }) {
-    const [text, setText] = useState('')
-    const [answers, setAnswers] = useState<Record<string, string>>({})
-    const [error, setError] = useState<string | null>(null)
     const label = question.prompt || question.form?.message || question.questions?.map((sub) => sub.question).join(' ') || 'Question'
 
-    // A failed answer keeps the draft beside its error; a sent one clears it.
-    const send = async (body: DelegationAnswerBody, clearDraft: () => void) => {
-        setError(null)
-        const failure = await onAnswer(body)
-        if (failure) setError(failure)
-        else clearDraft()
-    }
-
     const submitAnswers = (subs: NonNullable<DelegationQuestion['questions']>) => {
-        const trimmed = Object.fromEntries(subs.map((sub) => [sub.id, (answers[sub.id] ?? '').trim()]))
+        const trimmed = Object.fromEntries(subs.map((sub) => [sub.id, (draft.answers[sub.id] ?? '').trim()]))
         const missing = subs.find((sub) => !trimmed[sub.id])
         if (missing) {
-            setError(`Answer "${missing.question}" before submitting.`)
+            onDraft({ error: `Answer "${missing.question}" before submitting.` })
             return
         }
-        void send({ answers: trimmed }, () => setAnswers({}))
+        onAnswer({ answers: trimmed })
     }
 
     const options = question.options ?? []
@@ -83,26 +103,23 @@ function QuestionResponder({
     const restricted = options.length > 0 && question.origin !== 'agent_clarification' && question.question_type !== 'FREEFORM'
 
     return (
-        <div role="group" aria-label={`${requestKey}: ${label}`} className="space-y-2 border-t border-border pt-2">
+        <div role="group" aria-label={`${requestKey}: ${label} (${where})`} className="space-y-2 border-t border-border pt-2">
             {question.form ? (
                 <FormQuestionFields
-                    actionError={error}
+                    actionError={draft.error}
                     draftKey={`delegation:${draftKey}`}
-                    form={question.form}
+                    form={draft.form ? withSentValues(question.form, draft.form) : question.form}
                     isSubmitting={disabled}
                     testId={`delegation-form-${question.question_id}`}
-                    onReply={(reply) => void send({ form: reply }, () => undefined)}
+                    onReply={(reply) => onAnswer({ form: reply })}
                 />
             ) : question.questions ? (
                 <>
                     {question.questions.map((sub) => {
-                        const value = answers[sub.id] ?? ''
+                        const value = draft.answers[sub.id] ?? ''
                         const subOptions = sub.options ?? []
-                        const picked = subOptions.some((option) => (option.value ?? option.label) === value)
-                        const setAnswer = (next: string) => {
-                            setError(null)
-                            setAnswers((current) => ({ ...current, [sub.id]: next }))
-                        }
+                        // The field holds the answer as is: a click fills in its choice, typing keeps every character.
+                        const setAnswer = (next: string) => onDraft({ answers: { ...draft.answers, [sub.id]: next }, error: null })
                         return (
                             <div key={sub.id} className="space-y-1">
                                 <div className="text-xs font-medium text-foreground">{sub.question}</div>
@@ -131,7 +148,7 @@ function QuestionResponder({
                                         type={sub.is_secret ? 'password' : 'text'}
                                         autoComplete="off"
                                         aria-label={sub.question}
-                                        value={picked ? '' : value}
+                                        value={value}
                                         disabled={disabled}
                                         onChange={(event) => setAnswer(event.target.value)}
                                         placeholder={subOptions.length > 0 ? 'Or enter another answer' : 'Answer'}
@@ -157,7 +174,7 @@ function QuestionResponder({
                                         size="sm"
                                         variant="outline"
                                         disabled={disabled}
-                                        onClick={() => void send({ selected_value: value }, () => undefined)}
+                                        onClick={() => onAnswer({ selected_value: value })}
                                     >
                                         {option.label}
                                     </Button>
@@ -169,20 +186,17 @@ function QuestionResponder({
                         <div className="flex flex-wrap gap-2">
                             <Input
                                 aria-label="Free-text answer"
-                                value={text}
+                                value={draft.text}
                                 disabled={disabled}
-                                onChange={(event) => {
-                                    setError(null)
-                                    setText(event.target.value)
-                                }}
+                                onChange={(event) => onDraft({ text: event.target.value, error: null })}
                                 placeholder="Free-text answer"
                                 className="min-w-[12rem] flex-1"
                             />
                             <Button
                                 size="sm"
                                 variant="outline"
-                                disabled={disabled || !text.trim()}
-                                onClick={() => void send({ selected_value: text.trim() }, () => setText(''))}
+                                disabled={disabled || !draft.text.trim()}
+                                onClick={() => onAnswer({ selected_value: draft.text.trim() })}
                             >
                                 Answer
                             </Button>
@@ -190,7 +204,7 @@ function QuestionResponder({
                     )}
                 </>
             )}
-            {error && !question.form ? <InlineError>{error}</InlineError> : null}
+            {draft.error && !question.form ? <InlineError>{draft.error}</InlineError> : null}
         </div>
     )
 }
@@ -205,6 +219,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const [loaded, setLoaded] = useState<{ filter: Filter; records: DelegationOut[] } | null>(null)
     // Answered questions stay hidden until a snapshot of their delegation no longer lists them.
     const [acknowledged, setAcknowledged] = useState<ReadonlySet<string>>(() => new Set())
+    // Drafts live here, by question, so a filter switch while an answer is in flight keeps them and its failure.
+    const [drafts, setDrafts] = useState<Record<string, AnswerDraft>>({})
     const [loading, setLoading] = useState(false)
     const [busy, setBusy] = useState(false)
     const [loadError, setLoadError] = useState<string | null>(null)
@@ -246,9 +262,10 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         setStatus('')
     }), [load])
 
-    // After a change went through, a failed reload is its own error: the change's fresh status stays.
-    const reloadAfterChange = () => load().catch((err: unknown) => {
-        setLoadError(`Could not refresh delegations: ${errorText(err, 'the request failed.')}`)
+    // After a change went through, a failed reload is reported in place of the change's status.
+    const reloadAfterChange = (done: string) => load().catch((err: unknown) => {
+        setLoadError(`${done} Could not refresh delegations: ${errorText(err, 'the request failed.')}`)
+        setStatus('')
     })
 
     useEffect(() => {
@@ -256,7 +273,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     }, [active, filter, refresh])
 
     const rows = loaded?.filter === filter ? loaded.records : null
-    const live = rows?.some((record) => record.phase !== 'sealed') ?? false
+    // The Paused view can't see the open delegations that may pause, so it keeps polling.
+    const live = rows !== null && (filter === 'paused' || rows.some((record) => record.phase !== 'sealed'))
     useEffect(() => {
         if (!active || !live) return
         const timer = window.setInterval(() => {
@@ -272,6 +290,10 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         setFilter(choice)
     }
 
+    const editDraft = (key: string, patch: Partial<AnswerDraft>) => {
+        setDrafts((all) => ({ ...all, [key]: { ...(all[key] ?? EMPTY_DRAFT), ...patch } }))
+    }
+
     const handleCancel = async (record: DelegationOut) => {
         const confirmed = await dialogs.confirm({
             title: `Cancel delegation ${record.request_key}?`,
@@ -285,37 +307,59 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         if (!confirmed) return
         setBusy(true)
         setCancelError(null)
+        let updated: DelegationOut
         try {
-            const updated = await cancelDelegation(record.delegation_id)
-            setStatus(
-                updated.phase === 'sealed'
-                    ? `Canceled delegation ${record.request_key}.`
-                    : `Cancellation requested for ${record.request_key}.`,
-            )
+            updated = await cancelDelegation(record.delegation_id)
         } catch (err) {
             setCancelError(errorText(err, 'Could not cancel delegation.'))
             setStatus('')
             setBusy(false)
             return
         }
-        await reloadAfterChange()
+        // The row shows the server's answer now, whether or not the reload below succeeds.
+        setLoaded((current) => current && {
+            ...current,
+            records: current.records.flatMap((row) => (
+                row.delegation_id !== updated.delegation_id ? [row] : inFilter(updated, current.filter) ? [updated] : []
+            )),
+        })
+        const outcome = delegationStatus(updated).label
+        const done = updated.phase !== 'sealed'
+            ? `Cancellation requested for ${record.request_key}.`
+            : outcome === 'canceled'
+                ? `Canceled delegation ${record.request_key}.`
+                : `Delegation ${record.request_key} had already ended: ${outcome}.`
+        setStatus(done)
+        await reloadAfterChange(done)
         setBusy(false)
     }
 
-    const handleAnswer = async (record: DelegationOut, questionId: string, body: DelegationAnswerBody): Promise<string | null> => {
+    const handleAnswer = async (record: DelegationOut, questionId: string, body: DelegationAnswerBody) => {
+        const key = ackKey(record.delegation_id, questionId)
+        editDraft(key, { error: null })
         setBusy(true)
         try {
             await answerDelegationQuestion(record.delegation_id, questionId, body)
         } catch (err) {
+            // The draft stays beside the error, with a form's sent values, to fix and resend.
+            editDraft(key, {
+                error: errorText(err, 'Could not submit answer.'),
+                ...(body.form?.action === 'accept' ? { form: body.form.content } : {}),
+            })
             setStatus('')
             setBusy(false)
-            return errorText(err, 'Could not submit answer.')
+            return
         }
-        setAcknowledged((keys) => new Set(keys).add(ackKey(record.delegation_id, questionId)))
-        setStatus(`Sent answer for ${record.request_key}.`)
-        await reloadAfterChange()
+        setAcknowledged((keys) => new Set(keys).add(key))
+        setDrafts((all) => {
+            const next = { ...all }
+            delete next[key]
+            return next
+        })
+        const done = `Sent answer for ${record.request_key}.`
+        setStatus(done)
+        await reloadAfterChange(done)
         setBusy(false)
-        return null
     }
 
     return (
@@ -353,6 +397,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                     <ul className="space-y-2">
                         {rows.map((record) => {
                             const badge = delegationStatus(record)
+                            const where = whereText(record)
                             const questions = record.phase === 'accepted'
                                 ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))
                                 : []
@@ -361,7 +406,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                             const answerable = !record.paused && !record.cancel_requested_at
                             return (
                                 <li key={record.delegation_id}>
-                                    <Well role="group" aria-label={`Delegation ${record.request_key}`} className="space-y-2 px-3 py-2">
+                                    <Well role="group" aria-label={`Delegation ${record.request_key} (${where})`} className="space-y-2 px-3 py-2">
                                         <div className="flex flex-wrap items-start justify-between gap-2">
                                             <div className="min-w-0 space-y-0.5">
                                                 <div className="flex flex-wrap items-center gap-2 font-medium text-foreground">
@@ -371,19 +416,14 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                                         {record.kind} · {badge.label}
                                                     </span>
                                                 </div>
-                                                <div className="break-all text-xs text-muted-foreground">
-                                                    {record.project_path} · env {record.environment_id}
-                                                    {record.target_id ? ` · target ${record.target_id}` : ''}
-                                                </div>
+                                                <div className="break-all text-xs text-muted-foreground">{where}</div>
                                             </div>
                                             {record.phase !== 'sealed' ? (
                                                 <Button
                                                     size="sm"
                                                     variant="ghost"
                                                     aria-label={`Cancel delegation ${record.request_key}`}
-                                                    // A requested cancel can't reach a paused delegation's environment; canceling
-                                                    // again seals it locally (spark-workspace delegations::cancel), so it stays offered.
-                                                    disabled={busy || (Boolean(record.cancel_requested_at) && !record.paused)}
+                                                    disabled={busy || Boolean(record.cancel_requested_at)}
                                                     onClick={() => void handleCancel(record)}
                                                 >
                                                     Cancel delegation
@@ -395,21 +435,27 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                         ) : null}
                                         {questions.length > 0 && !answerable ? (
                                             <p className="text-xs text-muted-foreground">
-                                                {record.paused
-                                                    ? 'Answering is unavailable while this delegation is paused or its link is missing.'
-                                                    : 'Answering is unavailable while cancellation is pending.'}
+                                                {record.cancel_requested_at
+                                                    ? 'Answering is unavailable while cancellation is pending.'
+                                                    : 'Answering is unavailable while this delegation is paused or its link is missing.'}
                                             </p>
                                         ) : null}
-                                        {questions.map((question) => (
-                                            <QuestionResponder
-                                                key={question.question_id}
-                                                draftKey={ackKey(record.delegation_id, question.question_id)}
-                                                requestKey={record.request_key}
-                                                question={question}
-                                                disabled={busy || !answerable}
-                                                onAnswer={(body) => handleAnswer(record, question.question_id, body)}
-                                            />
-                                        ))}
+                                        {questions.map((question) => {
+                                            const key = ackKey(record.delegation_id, question.question_id)
+                                            return (
+                                                <QuestionResponder
+                                                    key={question.question_id}
+                                                    draftKey={key}
+                                                    requestKey={record.request_key}
+                                                    where={where}
+                                                    question={question}
+                                                    disabled={busy || !answerable}
+                                                    draft={drafts[key] ?? EMPTY_DRAFT}
+                                                    onDraft={(patch) => editDraft(key, patch)}
+                                                    onAnswer={(body) => void handleAnswer(record, question.question_id, body)}
+                                                />
+                                            )
+                                        })}
                                     </Well>
                                 </li>
                             )

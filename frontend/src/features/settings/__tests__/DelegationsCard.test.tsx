@@ -6,6 +6,7 @@ import { DelegationsCard } from '../DelegationsCard'
 
 // Requests go through the real environmentsApi client and parser to a stubbed fetch.
 type Reply = () => Response | Promise<Response>
+type User = ReturnType<typeof userEvent.setup>
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 const ok = (body: unknown): Reply => () => json(body)
@@ -15,8 +16,8 @@ function later() {
     const pending = new Promise<Response>((resolve) => { settle = resolve })
     return {
         reply: (() => pending) as Reply,
-        resolve: (body: unknown) => act(async () => {
-            settle(json(body))
+        resolve: (body: unknown, status = 200) => act(async () => {
+            settle(json(body, status))
             await new Promise((resolve) => setTimeout(resolve, 0))
         }),
     }
@@ -59,7 +60,7 @@ function delegation(id: string, requestKey: string, questions: unknown[], extra:
         kind: 'flow',
         request_key: requestKey,
         phase: 'accepted',
-        target_id: 'run-9',
+        target_id: `run-${id}`,
         paused: null,
         cancel_requested_at: null,
         created_at: '2026-11-23T00:00:00Z',
@@ -94,6 +95,10 @@ const deployForm = (questionId: string, message: string) => ({
 })
 const nightly = delegation('del-1', 'nightly-checks', [approveGate()])
 const pausedTask = delegation('del-2', 'paused-task', [], { paused: 'The link to this environment was removed.', last_state: null })
+const requested = { cancel_requested_at: '2026-11-23T00:01:00Z' }
+
+// A responder's group name: request key and prompt, then the row's location line.
+const asked = (requestKey: string, prompt: string, delegationId: string) => `${requestKey}: ${prompt} (/srv/repo · env env-b · target run-${delegationId})`
 
 function renderCard() {
     const user = userEvent.setup()
@@ -101,30 +106,47 @@ function renderCard() {
     return { user, ...view }
 }
 const settled = () => waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+// Switches to an empty Paused view while an answer is in flight, lets it fail with a 409, and comes back.
+async function failWhileAway(user: User, answer: ReturnType<typeof later>, detail: string, responderName: string) {
+    await user.click(screen.getByRole('button', { name: 'Paused' }))
+    expect(await screen.findByText('No matching delegations.')).toBeInTheDocument()
+    await answer.resolve({ detail }, 409)
+    await user.click(screen.getByRole('button', { name: 'All' }))
+    return screen.findByRole('group', { name: responderName })
+}
+const confirmCancel = async (user: User, requestKey: string) => {
+    await user.click(await screen.findByRole('button', { name: `Cancel delegation ${requestKey}` }))
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel delegation' }))
+}
 
-it('keeps a free-text draft beside a 409, clears it on a sent retry, and reports a failed refresh separately', async () => {
+it('keeps a free-text draft and its 409 across a filter switch, clears it on a sent retry, and reports a failed refresh separately', async () => {
+    const row = delegation('del-1', 'nightly-checks', [freeText('q-note', 'Any release notes?')])
+    const answer = later()
     serve({
-        [LIST]: [ok(list(delegation('del-1', 'nightly-checks', [freeText('q-note', 'Any release notes?')]))), fail(500, 'database is locked')],
-        [answerRoute('del-1', 'q-note')]: [fail(409, 'Question q-note is not open in delegation del-1.'), ok({ status: 'ok' })],
+        [LIST]: [ok(list(row)), ok(list(row)), fail(500, 'database is locked')],
+        [`${LIST}?paused=true`]: [ok(list())],
+        [answerRoute('del-1', 'q-note')]: [answer.reply, ok({ status: 'ok' })],
     })
     const { user } = renderCard()
-    const responder = await screen.findByRole('group', { name: 'nightly-checks: Any release notes?' })
-    await user.type(within(responder).getByRole('textbox', { name: 'Free-text answer' }), 'ship it')
-    await user.click(within(responder).getByRole('button', { name: 'Answer' }))
+    const name = asked('nightly-checks', 'Any release notes?', 'del-1')
+    const before = await screen.findByRole('group', { name })
+    await user.type(within(before).getByRole('textbox', { name: 'Free-text answer' }), 'ship it')
+    await user.click(within(before).getByRole('button', { name: 'Answer' }))
 
-    expect(await within(responder).findByText('Question q-note is not open in delegation del-1.')).toBeInTheDocument()
+    const responder = await failWhileAway(user, answer, 'Question q-note is not open in delegation del-1.', name)
+    expect(within(responder).getByText('Question q-note is not open in delegation del-1.')).toBeInTheDocument()
     expect(within(responder).getByRole('textbox', { name: 'Free-text answer' })).toHaveValue('ship it')
     expect(within(responder).getByRole('textbox', { name: 'Free-text answer' })).toBeEnabled()
 
     await user.click(within(responder).getByRole('button', { name: 'Answer' }))
-    expect(await screen.findByText('Could not refresh delegations: Database is locked')).toBeInTheDocument()
-    expect(screen.getByText('Sent answer for nightly-checks.')).toBeInTheDocument()
-    expect(screen.queryByRole('group', { name: 'nightly-checks: Any release notes?' })).not.toBeInTheDocument()
+    expect(await screen.findByText('Sent answer for nightly-checks. Could not refresh delegations: Database is locked')).toBeInTheDocument()
+    expect(screen.queryByText('Sent answer for nightly-checks.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name })).not.toBeInTheDocument()
     expect(screen.queryByText(/is not open in delegation/)).not.toBeInTheDocument()
     expect(sent(answerRoute('del-1', 'q-note'))).toEqual([{ selected_value: 'ship it' }, { selected_value: 'ship it' }])
 })
 
-it('keeps conversation answers after a 409 and clears them once a retry is sent', async () => {
+it('keeps conversation answers and their 409 across a filter switch and clears them once a retry is sent', async () => {
     const request = {
         question_id: 'req-multi',
         questions: [
@@ -132,53 +154,62 @@ it('keeps conversation answers after a 409 and clears them once a retry is sent'
             { id: 'notes', header: 'Notes', question: 'Release notes?', question_type: 'FREEFORM', options: [] },
         ],
     }
+    const answer = later()
     serve({
-        // The snapshot read after the answer is stale: it still lists the request.
+        // Every snapshot still lists the request, including the stale one read after the answer.
         [LIST]: [ok(list(delegation('del-c', 'chat-task', [request], { kind: 'conversation' })))],
-        [answerRoute('del-c', 'req-multi')]: [fail(409, 'Request req-multi is not open.'), ok({})],
+        [`${LIST}?paused=true`]: [ok(list())],
+        [answerRoute('del-c', 'req-multi')]: [answer.reply, ok({})],
     })
     const { user } = renderCard()
-    const responder = await screen.findByRole('group', { name: 'chat-task: Release name? Release notes?' })
-    await user.type(within(responder).getByRole('textbox', { name: 'Release name?' }), ' v2 ')
-    await user.type(within(responder).getByRole('textbox', { name: 'Release notes?' }), 'fixes')
-    await user.click(within(responder).getByRole('button', { name: 'Submit answers' }))
+    const name = asked('chat-task', 'Release name? Release notes?', 'del-c')
+    const before = await screen.findByRole('group', { name })
+    await user.type(within(before).getByRole('textbox', { name: 'Release name?' }), ' v2 ')
+    await user.type(within(before).getByRole('textbox', { name: 'Release notes?' }), 'fixes')
+    await user.click(within(before).getByRole('button', { name: 'Submit answers' }))
 
-    expect(await within(responder).findByText('Request req-multi is not open.')).toBeInTheDocument()
+    const responder = await failWhileAway(user, answer, 'Request req-multi is not open.', name)
+    expect(within(responder).getByText('Request req-multi is not open.')).toBeInTheDocument()
     expect(within(responder).getByRole('textbox', { name: 'Release name?' })).toHaveValue(' v2 ')
     expect(within(responder).getByRole('textbox', { name: 'Release notes?' })).toHaveValue('fixes')
 
     await user.click(within(responder).getByRole('button', { name: 'Submit answers' }))
     expect(await screen.findByText('Sent answer for chat-task.')).toBeInTheDocument()
     await settled()
-    expect(screen.queryByRole('group', { name: 'chat-task: Release name? Release notes?' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name })).not.toBeInTheDocument()
     expect(sent(answerRoute('del-c', 'req-multi'))).toEqual([
         { answers: { name: 'v2', notes: 'fixes' } },
         { answers: { name: 'v2', notes: 'fixes' } },
     ])
 })
 
-it('validates a form with FormQuestionFields, keeps it after a 409 and sends a content map', async () => {
+it('validates a form with FormQuestionFields, keeps it and its 409 across a filter switch and sends a content map', async () => {
+    const answer = later()
     serve({
         [LIST]: [ok(list(delegation('del-f', 'deploy-task', [deployForm('form-retry', 'Deployment details')])))],
-        [answerRoute('del-f', 'form-retry')]: [fail(409, 'The form was already answered elsewhere.'), ok({})],
+        [`${LIST}?paused=true`]: [ok(list())],
+        [answerRoute('del-f', 'form-retry')]: [answer.reply, ok({})],
     })
     const { user } = renderCard()
-    const responder = await screen.findByRole('group', { name: 'deploy-task: Deployment details' })
-    await user.click(within(responder).getByRole('button', { name: 'Submit' }))
-    expect(await within(responder).findByText('Replicas is required.')).toBeInTheDocument()
+    const name = asked('deploy-task', 'Deployment details', 'del-f')
+    const before = await screen.findByRole('group', { name })
+    await user.click(within(before).getByRole('button', { name: 'Submit' }))
+    expect(await within(before).findByText('Replicas is required.')).toBeInTheDocument()
     expect(sent(answerRoute('del-f', 'form-retry'))).toEqual([])
 
-    await user.type(within(responder).getByRole('textbox', { name: 'Region' }), 'eu-west')
-    await user.type(within(responder).getByRole('textbox', { name: 'Replicas' }), '3')
-    await user.click(within(responder).getByRole('button', { name: 'Submit' }))
-    expect(await within(responder).findByText('The form was already answered elsewhere.')).toBeInTheDocument()
+    await user.type(within(before).getByRole('textbox', { name: 'Region' }), 'eu-west')
+    await user.type(within(before).getByRole('textbox', { name: 'Replicas' }), '3')
+    await user.click(within(before).getByRole('button', { name: 'Submit' }))
+
+    const responder = await failWhileAway(user, answer, 'The form was already answered elsewhere.', name)
+    expect(within(responder).getByText('The form was already answered elsewhere.')).toBeInTheDocument()
     expect(within(responder).getByRole('textbox', { name: 'Region' })).toHaveValue('eu-west')
     expect(within(responder).getByRole('textbox', { name: 'Replicas' })).toHaveValue('3')
 
     await user.click(within(responder).getByRole('button', { name: 'Submit' }))
     expect(await screen.findByText('Sent answer for deploy-task.')).toBeInTheDocument()
     await settled()
-    expect(screen.queryByRole('group', { name: 'deploy-task: Deployment details' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name })).not.toBeInTheDocument()
     const accept = { form: { action: 'accept', content: { region: 'eu-west', replicas: 3 } } }
     expect(sent(answerRoute('del-f', 'form-retry'))).toEqual([accept, accept])
 })
@@ -190,9 +221,9 @@ it('sends a form Cancel and Decline as their actions', async () => {
         [answerRoute('del-f', 'form-b')]: [ok({})],
     })
     const { user } = renderCard()
-    await user.click(within(await screen.findByRole('group', { name: 'deploy-task: First form' })).getByRole('button', { name: 'Cancel' }))
+    await user.click(within(await screen.findByRole('group', { name: asked('deploy-task', 'First form', 'del-f') })).getByRole('button', { name: 'Cancel' }))
     await settled()
-    await user.click(within(screen.getByRole('group', { name: 'deploy-task: Second form' })).getByRole('button', { name: 'Decline' }))
+    await user.click(within(screen.getByRole('group', { name: asked('deploy-task', 'Second form', 'del-f') })).getByRole('button', { name: 'Decline' }))
     await settled()
     expect(sent(answerRoute('del-f', 'form-a'))).toEqual([{ form: { action: 'cancel' } }])
     expect(sent(answerRoute('del-f', 'form-b'))).toEqual([{ form: { action: 'decline' } }])
@@ -205,14 +236,15 @@ it('hides an answered question across a stale snapshot and picks up a new one on
         [answerRoute('del-1', 'q-approve')]: [ok({})],
     })
     const { user, rerender } = renderCard()
-    await user.click(within(await screen.findByRole('group', { name: 'nightly-checks: Ship this build?' })).getByRole('button', { name: 'Approve' }))
+    const gate = asked('nightly-checks', 'Ship this build?', 'del-1')
+    await user.click(within(await screen.findByRole('group', { name: gate })).getByRole('button', { name: 'Approve' }))
     expect(await screen.findByText('Sent answer for nightly-checks.')).toBeInTheDocument()
     await settled()
     expect(sent(LIST)).toHaveLength(2)
-    expect(screen.queryByRole('group', { name: 'nightly-checks: Ship this build?' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: gate })).not.toBeInTheDocument()
 
     await act(async () => { vi.advanceTimersByTime(4000) })
-    expect(await screen.findByRole('group', { name: 'nightly-checks: Anything else?' })).toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: asked('nightly-checks', 'Anything else?', 'del-1') })).toBeInTheDocument()
 
     // A tick while a refresh is still in flight is skipped.
     const pending = later()
@@ -226,6 +258,21 @@ it('hides an answered question across a stale snapshot and picks up a new one on
     expect(vi.getTimerCount()).toBe(0)
 })
 
+it('keeps an empty Paused view polling so a delegation that loses its link shows up', async () => {
+    serve({
+        [LIST]: [ok(list(nightly))],
+        [`${LIST}?paused=true`]: [ok(list()), ok(list({ ...nightly, paused: 'No link to this environment; link it again to resume.' }))],
+    })
+    const { user } = renderCard()
+    expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Paused' }))
+    expect(await screen.findByText('No matching delegations.')).toBeInTheDocument()
+
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(await screen.findByText('No link to this environment; link it again to resume.')).toBeInTheDocument()
+    expect(screen.getByText('nightly-checks')).toBeInTheDocument()
+})
+
 it('disables answering on a delegation whose link is missing', async () => {
     serve({
         [LIST]: [ok(list(delegation('del-2', 'paused-task', [approveGate(), freeText('q-why', 'Why?')], { paused: 'The link to this environment was removed.' })))],
@@ -234,19 +281,17 @@ it('disables answering on a delegation whose link is missing', async () => {
     expect(await screen.findByText('Answering is unavailable while this delegation is paused or its link is missing.')).toBeInTheDocument()
     expect(screen.getByText('The link to this environment was removed.')).toBeInTheDocument()
     expect(screen.getByText('flow · paused')).toBeInTheDocument()
-    expect(within(screen.getByRole('group', { name: 'paused-task: Ship this build?' })).getByRole('button', { name: 'Approve' })).toBeDisabled()
-    expect(within(screen.getByRole('group', { name: 'paused-task: Why?' })).getByRole('textbox', { name: 'Free-text answer' })).toBeDisabled()
+    expect(within(screen.getByRole('group', { name: asked('paused-task', 'Ship this build?', 'del-2') })).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    expect(within(screen.getByRole('group', { name: asked('paused-task', 'Why?', 'del-2') })).getByRole('textbox', { name: 'Free-text answer' })).toBeDisabled()
 })
 
-it('shows a pending cancellation over stale questions and disables a duplicate Cancel', async () => {
-    const requested = { cancel_requested_at: '2026-11-23T00:01:00Z' }
+it('shows a pending cancellation over stale questions and a pause, and disables a duplicate Cancel', async () => {
     serve({ [LIST]: [ok(list(delegation('del-1', 'nightly-checks', [approveGate()], requested), { ...pausedTask, ...requested }))] })
     renderCard()
-    expect(await screen.findByText('flow · canceling')).toBeInTheDocument()
+    expect(await screen.findAllByText('flow · canceling')).toHaveLength(2)
     expect(screen.getByRole('button', { name: 'Cancel delegation nightly-checks' })).toBeDisabled()
-    // A paused one never got the request; canceling it again seals it locally.
-    expect(screen.getByRole('button', { name: 'Cancel delegation paused-task' })).toBeEnabled()
-    expect(within(screen.getByRole('group', { name: 'nightly-checks: Ship this build?' })).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Cancel delegation paused-task' })).toBeDisabled()
+    expect(within(screen.getByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' })).toBeDisabled()
     expect(screen.getByText('Answering is unavailable while cancellation is pending.')).toBeInTheDocument()
 })
 
@@ -277,12 +322,11 @@ it('refreshes a cancel started under All with the filter selected when it comple
         [cancelRoute('del-1')]: [cancel.reply],
     })
     const { user } = renderCard()
-    await user.click(await screen.findByRole('button', { name: 'Cancel delegation nightly-checks' }))
-    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel delegation' }))
+    await confirmCancel(user, 'nightly-checks')
     await user.click(screen.getByRole('button', { name: 'Paused' }))
     expect(await screen.findByText('paused-task')).toBeInTheDocument()
 
-    await cancel.resolve({ ...nightly, cancel_requested_at: '2026-11-23T00:01:00Z' })
+    await cancel.resolve({ ...nightly, ...requested })
     expect(await screen.findByText('Cancellation requested for nightly-checks.')).toBeInTheDocument()
     await settled()
     expect(requests.at(-1)?.key).toBe(`${LIST}?paused=true`)
@@ -290,7 +334,35 @@ it('refreshes a cancel started under All with the filter selected when it comple
     expect(screen.getByText('paused-task')).toBeInTheDocument()
 })
 
-it('masks secret sub-questions, submits chosen option values and blocks a blank submit', async () => {
+it('applies a cancel result to its row even when the reload after it fails', async () => {
+    serve({
+        [LIST]: [ok(list(nightly)), fail(500, 'database is locked')],
+        [cancelRoute('del-1')]: [ok({ ...nightly, ...requested })],
+    })
+    const { user } = renderCard()
+    await confirmCancel(user, 'nightly-checks')
+    expect(await screen.findByText('Cancellation requested for nightly-checks. Could not refresh delegations: Database is locked')).toBeInTheDocument()
+    expect(screen.queryByText('Cancellation requested for nightly-checks.')).not.toBeInTheDocument()
+    expect(screen.getByText('flow · canceling')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancel delegation nightly-checks' })).toBeDisabled()
+    expect(within(screen.getByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' })).toBeDisabled()
+    expect(sent(cancelRoute('del-1'))).toHaveLength(1)
+})
+
+it('reports the outcome of a delegation that had already completed when canceled', async () => {
+    const completed = { ...nightly, phase: 'sealed', result: { status: 'completed' } }
+    serve({
+        [LIST]: [ok(list(nightly)), ok(list(completed))],
+        [cancelRoute('del-1')]: [ok(completed)],
+    })
+    const { user } = renderCard()
+    await confirmCancel(user, 'nightly-checks')
+    expect(await screen.findByText('Delegation nightly-checks had already ended: completed.')).toBeInTheDocument()
+    expect(screen.getByText('flow · completed')).toBeInTheDocument()
+    expect(screen.queryByText(/Canceled delegation/)).not.toBeInTheDocument()
+})
+
+it('masks secret sub-questions, keeps typed custom answers, submits chosen option values and blocks a blank submit', async () => {
     const request = {
         question_id: 'req-env',
         questions: [
@@ -304,7 +376,7 @@ it('masks secret sub-questions, submits chosen option values and blocks a blank 
         [answerRoute('del-c', 'req-env')]: [ok({})],
     })
     const { user } = renderCard()
-    const responder = await screen.findByRole('group', { name: 'chat-task: Which environment? Which region? Deploy token?' })
+    const responder = await screen.findByRole('group', { name: asked('chat-task', 'Which environment? Which region? Deploy token?', 'del-c') })
     await user.click(within(responder).getByRole('button', { name: 'Submit answers' }))
     expect(within(responder).getByText('Answer "Which environment?" before submitting.')).toBeInTheDocument()
     expect(sent(answerRoute('del-c', 'req-env'))).toEqual([])
@@ -316,11 +388,23 @@ it('masks secret sub-questions, submits chosen option values and blocks a blank 
 
     await user.click(within(responder).getByRole('button', { name: 'Production' }))
     expect(within(responder).getByRole('button', { name: 'Production' })).toHaveAttribute('aria-pressed', 'true')
-    await user.type(within(responder).getByRole('textbox', { name: 'Which region?' }), 'us-east')
+
+    // A click fills in the choice; typing past a choice's text keeps every character.
+    const region = within(responder).getByRole('textbox', { name: 'Which region?' })
+    await user.click(within(responder).getByRole('button', { name: 'eu' }))
+    expect(region).toHaveValue('eu')
+    expect(within(responder).getByRole('button', { name: 'eu' })).toHaveAttribute('aria-pressed', 'true')
+    await user.type(region, '-west')
+    expect(region).toHaveValue('eu-west')
+    expect(within(responder).getByRole('button', { name: 'eu' })).toHaveAttribute('aria-pressed', 'false')
+    await user.clear(region)
+    await user.type(region, 'eu-west')
+    expect(region).toHaveValue('eu-west')
+
     await user.type(token, ' s3cret ')
     await user.click(within(responder).getByRole('button', { name: 'Submit answers' }))
     await settled()
-    expect(sent(answerRoute('del-c', 'req-env'))).toEqual([{ answers: { env: 'prod', region: 'us-east', token: 's3cret' } }])
+    expect(sent(answerRoute('del-c', 'req-env'))).toEqual([{ answers: { env: 'prod', region: 'eu-west', token: 's3cret' } }])
 })
 
 it('offers no free text on a restricted run gate but keeps it for an agent clarification', async () => {
@@ -337,27 +421,27 @@ it('offers no free text on a restricted run gate but keeps it for an agent clari
         ))],
     })
     renderCard()
-    const gate = await screen.findByRole('group', { name: 'nightly-checks: Ship this build?' })
+    const gate = await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })
     expect(within(gate).getByRole('button', { name: 'Approve' })).toBeInTheDocument()
     expect(within(gate).queryByRole('textbox')).not.toBeInTheDocument()
-    const clarification = screen.getByRole('group', { name: 'clarify-task: Which branch?' })
+    const clarification = screen.getByRole('group', { name: asked('clarify-task', 'Which branch?', 'del-3') })
     expect(within(clarification).getByRole('button', { name: 'main' })).toBeInTheDocument()
     expect(within(clarification).getByRole('textbox', { name: 'Free-text answer' })).toBeInTheDocument()
 })
 
-it('tells two delegations’ Approve buttons apart by their groups', async () => {
+it('tells apart Approve buttons of delegations sharing a request key and prompt', async () => {
     serve({
-        [LIST]: [ok(list(nightly, delegation('del-3', 'weekly-release', [approveGate()])))],
-        [answerRoute('del-3', 'q-approve')]: [ok({})],
+        [LIST]: [ok(list(nightly, delegation('del-4', 'nightly-checks', [approveGate()])))],
+        [answerRoute('del-4', 'q-approve')]: [ok({})],
     })
     const { user } = renderCard()
     expect(await screen.findAllByRole('button', { name: 'Approve' })).toHaveLength(2)
-    expect(screen.getByRole('group', { name: 'Delegation nightly-checks' })).toBeInTheDocument()
-    expect(screen.getByRole('group', { name: 'Delegation weekly-release' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Delegation nightly-checks (/srv/repo · env env-b · target run-del-1)' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Delegation nightly-checks (/srv/repo · env env-b · target run-del-4)' })).toBeInTheDocument()
 
-    await user.click(within(screen.getByRole('group', { name: 'weekly-release: Ship this build?' })).getByRole('button', { name: 'Approve' }))
+    await user.click(within(screen.getByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-4') })).getByRole('button', { name: 'Approve' }))
     await settled()
-    expect(sent(answerRoute('del-3', 'q-approve'))).toEqual([{ selected_value: 'approve' }])
+    expect(sent(answerRoute('del-4', 'q-approve'))).toEqual([{ selected_value: 'approve' }])
     expect(sent(answerRoute('del-1', 'q-approve'))).toEqual([])
 })
 
@@ -376,8 +460,7 @@ it('asks before canceling: dismissing sends nothing, confirming sends one reques
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(sent(cancelRoute('del-2'))).toEqual([])
 
-    await user.click(screen.getByRole('button', { name: 'Cancel delegation paused-task' }))
-    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel delegation' }))
+    await confirmCancel(user, 'paused-task')
     expect(await screen.findByText('flow · canceled')).toBeInTheDocument()
     expect(screen.getByText('Canceled delegation paused-task.')).toBeInTheDocument()
     expect(sent(cancelRoute('del-2'))).toHaveLength(1)
@@ -387,11 +470,10 @@ it('shows only the error when the first load for a filter fails, clearing the pr
     serve({
         [LIST]: [ok(list(nightly))],
         [`${LIST}?paused=true`]: [fail(500, 'database is locked')],
-        [cancelRoute('del-1')]: [ok({ ...nightly, cancel_requested_at: '2026-11-23T00:01:00Z' })],
+        [cancelRoute('del-1')]: [ok({ ...nightly, ...requested })],
     })
     const { user } = renderCard()
-    await user.click(await screen.findByRole('button', { name: 'Cancel delegation nightly-checks' }))
-    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel delegation' }))
+    await confirmCancel(user, 'nightly-checks')
     expect(await screen.findByText('Cancellation requested for nightly-checks.')).toBeInTheDocument()
     await settled()
 
