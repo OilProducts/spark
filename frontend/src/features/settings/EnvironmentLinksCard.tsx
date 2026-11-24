@@ -31,15 +31,18 @@ import {
 
 type ProjectLookup = { loading?: boolean; projects?: string[]; error?: string }
 
-/** The link a Projects lookup was made for. */
-type ProjectsTicket = Pick<EnvironmentLink, 'origin' | 'created_at'>
-
 /** `revoked` marks a revoke the server confirmed before a listing supplied its time. */
 type TokenRow = PeerToken & { revoked?: boolean }
 
 const formField = (data: FormData, name: string) => String(data.get(name) ?? '').trim()
 
 const errorText = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback)
+
+/** Relinking an environment ID rewrites its row, but can keep its origin and, within a second, its created_at. */
+const sameLink = (a: EnvironmentLink, b: EnvironmentLink) =>
+    a.environment_id === b.environment_id && a.origin === b.origin && a.label === b.label && a.created_at === b.created_at
+
+const firstEnabledIn = (scope: Element | null) => scope?.querySelector<HTMLElement>('button:enabled, input:enabled') ?? null
 
 const msLeft = (receipt: PairingCodeReceipt) => Date.parse(receipt.expires_at) - Date.now()
 
@@ -65,8 +68,17 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     // Counts errors shown by actions, so a refresh leaves visible any error reported after it started.
     const errorCountRef = useRef(0)
     // The Projects lookup, cached or in flight, per environment; removing or replacing its link drops it so its answer is ignored.
-    const lookupsRef = useRef(new Map<string, ProjectsTicket>())
-    const { confirm } = useDialogController()
+    const lookupsRef = useRef(new Map<string, EnvironmentLink>())
+    // Switching environments remounts the workspace, so an action can settle after this card is gone.
+    const mountedRef = useRef(false)
+    const { alert, confirm } = useDialogController()
+
+    useEffect(() => {
+        mountedRef.current = true
+        return () => {
+            mountedRef.current = false
+        }
+    }, [])
 
     const showError = (message: string) => {
         errorCountRef.current += 1
@@ -86,9 +98,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     // Shows a link listing and drops Projects results for links it no longer has as they were when looked up.
     const showListedLinks = useCallback((listed: EnvironmentLink[]) => {
         for (const [environmentId, ticket] of lookupsRef.current) {
-            const kept = listed.some((row) =>
-                row.environment_id === environmentId && row.origin === ticket.origin && row.created_at === ticket.created_at)
-            if (!kept) forgetProjects(environmentId)
+            if (!listed.some((row) => sameLink(row, ticket))) forgetProjects(environmentId)
         }
         setLinks(listed)
     }, [forgetProjects])
@@ -166,7 +176,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
 
     // Confirms, then runs an action with the card busy. The shared dialog has no trigger of its own to refocus, so focus
     // returns to the control that opened it once the dialog closes or the action settles, or, if that control is gone, to
-    // the first enabled control in its section. Focus the user has moved elsewhere meanwhile stays put.
+    // the first enabled control in its section, else in the card. Focus the user has moved elsewhere meanwhile stays put.
     const confirmThenRun = async (
         trigger: HTMLElement,
         options: Parameters<typeof confirm>[0],
@@ -174,6 +184,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         action: () => Promise<void>,
     ) => {
         const section = trigger.closest('section')
+        const card = trigger.closest('[data-slot="card"]')
         if (!(await confirm(options))) {
             window.setTimeout(() => trigger.focus(), 0)
             return
@@ -183,11 +194,14 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         try {
             await action()
         } catch (err) {
-            showError(errorText(err, failure))
+            const message = errorText(err, failure)
+            // The shared dialog outlives this card, so a failure landing after a switch of environments still shows.
+            if (mountedRef.current) showError(message)
+            else void alert({ title: failure, description: message })
         } finally {
             flushSync(() => setBusy(false))
             if (!document.activeElement || document.activeElement === document.body) {
-                const target = trigger.isConnected ? trigger : section?.querySelector<HTMLElement>('button:enabled, input:enabled')
+                const target = trigger.isConnected ? trigger : firstEnabledIn(section) ?? firstEnabledIn(card)
                 target?.focus()
             }
         }
@@ -269,18 +283,19 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             cancelLabel: 'Cancel',
             confirmVariant: 'destructive',
         }, 'Could not remove link.', async () => {
-            // DELETE goes by environment ID alone, and relinking that ID (here or in another tab) replaces its origin and
-            // created_at, so only delete the link the user confirmed if the server still has it.
-            // ponytail: a relink landing between this check and the DELETE still loses; closing that needs a conditional
-            // DELETE on the server, which this change leaves out of scope.
+            // DELETE goes by environment ID alone, and relinking that ID (here or in another tab) replaces its row, so only
+            // delete the link the user confirmed if the server still has it as it was.
+            // ponytail: a relink landing between this check and the DELETE, or one matching the row's origin, label and
+            // second, still loses; closing that needs a conditional DELETE on the server, which this change leaves out of scope.
             const refreshesBefore = refreshSeqRef.current
             const latest = await fetchEnvironmentLinks()
             // Requests go to whichever environment is active when sent, and the user can switch while the check runs.
             if (getActiveEnvironmentId() !== activeEnvironmentId) {
-                throw new Error(`Switched environments before removing the link to ${name}, so nothing was removed.`)
+                const from = descriptor?.display_name || 'the previous environment'
+                throw new Error(`You switched environments before the link to ${name} on ${from} was removed, so nothing was removed.`)
             }
             const current = latest.find((row) => row.environment_id === link.environment_id)
-            if (current?.origin !== link.origin || current.created_at !== link.created_at) {
+            if (!current || !sameLink(current, link)) {
                 // A refresh started during the check has a newer listing. Otherwise show this one, retiring older refreshes
                 // so their listings cannot replace it, which also ends their loading state.
                 if (refreshSeqRef.current === refreshesBefore) {
@@ -289,8 +304,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                     setLinksLoaded(true)
                     setLoading(false)
                 }
-                showError(`The link to ${name} changed since you chose to remove it, so nothing was removed. Review the current link before removing it again.`)
-                return
+                throw new Error(`The link to ${name} changed since you chose to remove it, so nothing was removed. Review the current link before removing it again.`)
             }
             await removeEnvironmentLink(link.environment_id)
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
@@ -309,7 +323,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             forgetProjects(link.environment_id)
             return
         }
-        const lookup = { origin: link.origin, created_at: link.created_at }
+        const lookup = { ...link }
         lookupsRef.current.set(link.environment_id, lookup)
         setProjectsByEnv((prev) => ({ ...prev, [link.environment_id]: { loading: true } }))
         try {

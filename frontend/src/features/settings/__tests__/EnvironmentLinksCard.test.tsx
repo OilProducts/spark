@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { EnvironmentBootstrap, EnvironmentSwitcherBar } from '@/app/EnvironmentSwitcher'
 import { DialogProvider } from '@/components/app/dialog-controller'
-import { getActiveEnvironmentId, resetActiveEnvironmentForTests } from '@/lib/activeEnvironment'
+import { getActiveEnvironmentId, resetActiveEnvironmentForTests, useActiveEnvironment } from '@/lib/activeEnvironment'
 import { EnvironmentLinksCard } from '../EnvironmentLinksCard'
 
 const TOKENS = '/workspace/api/environment/tokens'
@@ -320,6 +320,19 @@ it.each([
     expect(backend.mutations).toEqual([])
 })
 
+/** App's workspace lifecycle (App.tsx): the card unmounts while a switch verifies and remounts for the new environment. */
+function WorkspaceLikeApp() {
+    const { activeEnvironmentId, selectedEnvironmentId, status } = useActiveEnvironment()
+    const workspaceReady = selectedEnvironmentId === null || (status === 'ready' && activeEnvironmentId === selectedEnvironmentId)
+    return (
+        <DialogProvider>
+            <EnvironmentBootstrap />
+            <EnvironmentSwitcherBar />
+            {workspaceReady ? <EnvironmentLinksCard key={activeEnvironmentId ?? 'local'} /> : null}
+        </DialogProvider>
+    )
+}
+
 it.each([
     ['completes', true],
     ['is still verifying', false],
@@ -327,15 +340,20 @@ it.each([
     const user = userEvent.setup()
     const backend = stubBackend({ links: [link('env-build', 'Build box'), link('env-gpu', 'GPU')] })
     // Switching to GPU waits on its descriptor, relayed through its proxy.
+    const gpuDescriptor = `${LINKS}/env-gpu/proxy/environment`
+    const gpu = { ...descriptor, environment_id: 'env-gpu', display_name: 'gpu-box' }
     let finishSwitch = () => {}
-    backend.replies[`${LINKS}/env-gpu/proxy/environment`] = () => new Promise<Response>((resolve) => {
-        finishSwitch = () => resolve(json({ ...descriptor, environment_id: 'env-gpu', display_name: 'gpu-box' }))
-    })
-    render(<DialogProvider><EnvironmentBootstrap /><EnvironmentSwitcherBar /><EnvironmentLinksCard /></DialogProvider>)
+    backend.replies[gpuDescriptor] = () => {
+        backend.replies[gpuDescriptor] = gpu
+        return new Promise<Response>((resolve) => { finishSwitch = () => resolve(json(gpu)) })
+    }
+    render(<WorkspaceLikeApp />)
     const gpuTab = await screen.findByTestId('environment-tab-env-gpu')
+    // The card names its environment, as in the notice below, once its descriptor loads.
+    await screen.findByText('env-local-1')
     await user.click(await screen.findByRole('button', { name: 'Remove link Build box' }))
 
-    // The removal's link check is held while the user switches to GPU.
+    // The removal's link check is held while the user switches to GPU, which unmounts this card.
     let finishCheck = () => {}
     backend.replies[LINKS] = () => {
         delete backend.replies[LINKS]
@@ -345,11 +363,14 @@ it.each([
     await user.click(await screen.findByRole('button', { name: 'Remove link' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     await user.click(gpuTab)
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument())
     if (switchFirst) {
         await act(async () => finishSwitch())
         await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-gpu'))
         await act(async () => finishCheck())
-        expect(await screen.findByRole('alert')).toHaveTextContent('Switched environments before removing the link to Build box, so nothing was removed.')
+        const notice = await screen.findByRole('alertdialog')
+        expect(notice).toHaveTextContent('Could not remove link.')
+        expect(notice).toHaveTextContent('You switched environments before the link to Build box on mac-studio was removed, so nothing was removed.')
         expect(backend.mutations).toEqual([])
     } else {
         await act(async () => finishCheck())
@@ -357,7 +378,33 @@ it.each([
         await act(async () => finishSwitch())
         await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-gpu'))
         expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-build`])
+        expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     }
+})
+
+it('keeps a replacement saved at the same origin in the same second under another label, and shows it for review', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box')] })
+    render(card())
+    await user.click(await screen.findByRole('button', { name: 'Remove link Build box' }))
+
+    // Another tab relinks env-build at the same origin, within the same second, as Build box 2.
+    backend.links = [link('env-build', 'Build box 2')]
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The link to Build box changed since you chose to remove it, so nothing was removed.')
+    expect(backend.mutations).toEqual([])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove link Build box 2' })).toHaveFocus())
+})
+
+it('leaves focus on a usable control in the card after revoking the last token that can be revoked', async () => {
+    const user = userEvent.setup()
+    stubBackend({ tokens: [token('tok-self', 'This laptop', true), token('tok-ci', 'CI runner')] })
+    render(card())
+
+    await user.click(await screen.findByRole('button', { name: 'Revoke CI runner' }))
+    await user.click(await screen.findByRole('button', { name: 'Revoke token' }))
+    await waitFor(() => expect(statusText()).toBe('Revoked token CI runner.'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toHaveFocus())
 })
 
 it('keeps focus on the control behind a failed revoke or removal, or in its section once that control is gone', async () => {
