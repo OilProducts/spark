@@ -1,3 +1,5 @@
+import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
+
 export interface RunInitiationFormState {
     projectPath: string
     flowSource: string
@@ -39,53 +41,19 @@ export interface PipelineContinuePayload {
     reasoning_effort?: string | null
 }
 
-const normalizePath = (value: string): string => {
-    const trimmed = value.trim()
-    if (!trimmed) return ''
-
-    const slashNormalized = trimmed.replace(/\\/g, '/').replace(/\/{2,}/g, '/')
-    const windowsPrefixMatch = slashNormalized.match(/^[A-Za-z]:\//)
-    const prefix = slashNormalized.startsWith('/') ? '/' : windowsPrefixMatch ? windowsPrefixMatch[0] : ''
-    const rawBody = prefix ? slashNormalized.slice(prefix.length) : slashNormalized
-    const parts = rawBody.split('/').filter((part) => part.length > 0)
-    const segments: string[] = []
-    for (const part of parts) {
-        if (part === '.') {
-            continue
-        }
-        if (part === '..') {
-            if (segments.length > 0) {
-                segments.pop()
-            }
-            continue
-        }
-        segments.push(part)
-    }
-    const normalizedBody = segments.join('/')
-    if (!normalizedBody) {
-        if (prefix === '/') {
-            return '/'
-        }
-        return prefix || normalizedBody
-    }
-    return `${prefix}${normalizedBody}`
-}
-
-const isAbsolutePath = (value: string): boolean => value.startsWith('/') || /^[A-Za-z]:\//.test(value)
-
 export const resolveExecutionWorkingDirectory = (form: Pick<RunInitiationFormState, 'projectPath' | 'workingDirectory'>): string => {
-    const normalizedProjectPath = normalizePath(form.projectPath)
-    const normalizedWorkingDirectory = normalizePath(form.workingDirectory)
+    const normalizedProjectPath = normalizeProjectPath(form.projectPath)
+    const normalizedWorkingDirectory = normalizeProjectPath(form.workingDirectory)
 
     if (!normalizedWorkingDirectory) {
         return normalizedProjectPath
     }
-    if (isAbsolutePath(normalizedWorkingDirectory) || !normalizedProjectPath) {
+    if (isAbsoluteProjectPath(normalizedWorkingDirectory) || !normalizedProjectPath) {
         return normalizedWorkingDirectory
     }
 
     const separator = normalizedProjectPath.endsWith('/') ? '' : '/'
-    return normalizePath(`${normalizedProjectPath}${separator}${normalizedWorkingDirectory}`)
+    return normalizeProjectPath(`${normalizedProjectPath}${separator}${normalizedWorkingDirectory}`)
 }
 
 export function buildPipelineStartPayload(
@@ -93,7 +61,7 @@ export function buildPipelineStartPayload(
 ): PipelineStartPayload {
     const workingDirectory = resolveExecutionWorkingDirectory(form)
     const payload: PipelineStartPayload = {
-        project_path: normalizePath(form.projectPath),
+        project_path: normalizeProjectPath(form.projectPath),
         working_directory: workingDirectory,
         model: form.model,
         flow_name: form.flowSource,
@@ -139,7 +107,7 @@ export function buildPipelineContinuePayload(
         working_directory: resolveExecutionWorkingDirectory(form),
         model: form.model,
     }
-    const projectPath = normalizePath(form.projectPath)
+    const projectPath = normalizeProjectPath(form.projectPath)
     if (projectPath) {
         payload.project_path = projectPath
     }

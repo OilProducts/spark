@@ -295,6 +295,27 @@ describe('project scope store behavior', () => {
     expect(next.runDetailSessionsByRunId['run-child']).toBeDefined()
   })
 
+  it('keeps another project\'s run that worked inside the removed project, and drops the removed project\'s own runs', () => {
+    const store = useStore.getState()
+    store.registerProject('/tmp/project-a')
+    store.registerProject('/tmp/project-b')
+    const crossRun = { ...buildRunRecord('run-b', '/tmp/project-b', 'b.dot'), working_directory: '/tmp/project-a/scratch' }
+    const ownRun = { ...buildRunRecord('run-a', '/tmp/project-a', 'a.dot'), working_directory: '/tmp/elsewhere/worktree' }
+    const unownedRun = { ...buildRunRecord('run-loose', '/tmp/project-a', 'loose.dot'), project_path: null }
+    store.updateRunsListSession({ runs: [crossRun, ownRun, unownedRun] })
+    store.updateRunDetailSession('run-b', { record: crossRun })
+    store.updateRunDetailSession('run-a', { record: ownRun })
+    store.setRunsSelectedRunId('run-b')
+
+    store.removeProject('/tmp/project-a', '/tmp/project-b')
+
+    const next = useStore.getState()
+    expect(next.runsListSession.runs.map((run) => run.run_id)).toEqual(['run-b'])
+    expect(selectSelectedRunId(next)).toBe('run-b')
+    expect(next.runDetailSessionsByRunId['run-b']).toBeDefined()
+    expect(next.runDetailSessionsByRunId['run-a']).toBeUndefined()
+  })
+
   it('drops the removed project missions and selection but keeps other projects', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')
