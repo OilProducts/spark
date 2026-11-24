@@ -1083,8 +1083,18 @@ async fn attractor_dispatch(
             &response.body,
         );
     }
+    if let Some((disposition, content)) = response.download {
+        return (
+            [
+                (header::CONTENT_TYPE, response.content_type),
+                (header::CONTENT_DISPOSITION, disposition),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            ],
+            content,
+        )
+            .into_response();
+    }
     let content_type = response.content_type.clone();
-    let content_disposition = response.content_disposition.clone();
     let status =
         StatusCode::from_u16(response.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut response = if content_type.starts_with("application/json") {
@@ -1101,14 +1111,6 @@ async fn attractor_dispatch(
         response
             .headers_mut()
             .insert(header::CONTENT_TYPE, content_type);
-    }
-    if let Some(Ok(disposition)) = content_disposition.as_deref().map(HeaderValue::from_str) {
-        let headers = response.headers_mut();
-        headers.insert(header::CONTENT_DISPOSITION, disposition);
-        headers.insert(
-            header::X_CONTENT_TYPE_OPTIONS,
-            HeaderValue::from_static("nosniff"),
-        );
     }
     if response
         .headers()

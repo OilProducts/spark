@@ -244,6 +244,12 @@ fn percent_decoded(segment: &str) -> Option<Vec<u8>> {
 /// Only Spark's own API surfaces may be proxied through a link. The raw path
 /// and each decoded segment are checked, so no encoding smuggles in a
 /// traversal, backslash or control byte.
+///
+/// `http::Uri` (http/src/uri/path.rs, `PathAndQuery::from_shared`) drops a
+/// literal `#fragment` while hyper parses the request line, before any
+/// middleware runs. So no path seen here holds a raw `#` or `?`, and the URL
+/// built from it carries no fragment to the peer; this check and the URL
+/// check below keep that true for whatever the parser hands over.
 fn allowed_proxy_path(raw: &str) -> bool {
     let surface = raw == "environment"
         || raw == "workspace/api"

@@ -170,40 +170,66 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
         serde_json::from_str(source.body.as_str().expect("source")).expect("definition JSON");
     assert_eq!(definition["id"], json!("api_inspect"));
 
-    assert_eq!(source.content_disposition, None);
+    assert_eq!(source.download, None);
 
-    // A download names the file by its last segment, in a safe quoted form.
+    // A download is the file's exact bytes, named by its last segment in a
+    // safe quoted form, whether the file is text or binary.
     let bundle = RunStore::for_settings(&settings)
         .read_run_bundle("run-inspect")
         .expect("read")
         .expect("run");
+    let binary = vec![0x89, b'P', b'N', b'G', 0x00, 0xff, 0xfe];
     fs::write(
-        bundle.paths.artifacts_dir().join("my \"report\";v1.html"),
-        "<p>report</p>",
+        bundle.paths.artifacts_dir().join("my \"capture\";v1.bin"),
+        &binary,
     )
-    .expect("html artifact");
-    for (query, expected) in [
+    .expect("binary artifact");
+    let definition_bytes = fs::read(
+        bundle
+            .paths
+            .artifacts_dir()
+            .join("flow/flow-definition.json"),
+    )
+    .expect("source");
+    for (encoded, name, content_type, bytes) in [
         (
-            "?download=1",
-            Some(r#"attachment; filename="my__report__v1.html""#),
+            "artifacts/my%20%22capture%22%3Bv1.bin",
+            "my__capture__v1.bin",
+            "application/octet-stream",
+            &binary,
         ),
         (
-            "?download=true",
-            Some(r#"attachment; filename="my__report__v1.html""#),
+            "artifacts/flow/flow-definition.json",
+            "flow-definition.json",
+            "application/json",
+            &definition_bytes,
         ),
-        ("?download=0", None),
-        ("", None),
     ] {
-        let download = handle_attractor_request(
-            "GET",
-            &format!("/attractor/pipelines/run-inspect/artifacts/artifacts/my%20%22report%22%3Bv1.html{query}"),
-            "",
-            settings.clone(),
-        );
-        assert_eq!(download.status_code, 200, "{query}");
-        assert_eq!(download.body, json!("<p>report</p>"), "{query}");
-        assert_eq!(download.content_disposition.as_deref(), expected, "{query}");
+        for query in ["?download=1", "?download=true"] {
+            let download = handle_attractor_request(
+                "GET",
+                &format!("/attractor/pipelines/run-inspect/artifacts/{encoded}{query}"),
+                "",
+                settings.clone(),
+            );
+            assert_eq!(download.status_code, 200, "{encoded}{query}");
+            assert_eq!(download.content_type, content_type);
+            assert_eq!(
+                download.download,
+                Some((format!("attachment; filename=\"{name}\""), bytes.clone())),
+                "{encoded}{query}"
+            );
+        }
     }
+    // Anything else is the ordinary preview, which shows text only.
+    let preview = handle_attractor_request(
+        "GET",
+        "/attractor/pipelines/run-inspect/artifacts/artifacts/my%20%22capture%22%3Bv1.bin?download=0",
+        "",
+        settings.clone(),
+    );
+    assert_eq!(preview.status_code, 415);
+    assert_eq!(preview.download, None);
     let missing_download = handle_attractor_request(
         "GET",
         "/attractor/pipelines/run-inspect/artifacts/artifacts/missing.txt?download=1",
@@ -211,7 +237,7 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
         settings.clone(),
     );
     assert_eq!(missing_download.status_code, 404);
-    assert_eq!(missing_download.content_disposition, None);
+    assert_eq!(missing_download.download, None);
 
     let traversal = service.get_pipeline_artifact_file("run-inspect", "../run.json");
     assert_eq!(traversal.status_code, 400);

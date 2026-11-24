@@ -884,6 +884,54 @@ async fn linked_environment_proxy_forwards_raw_targets_and_refuses_unsafe_paths(
 }
 
 #[tokio::test]
+async fn linked_environment_proxy_never_sends_a_literal_fragment_over_the_wire() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cfg = settings(temp.path());
+    let origin = serve(crate::store_app_default(cfg.clone())).await;
+    let (peer, _) = fake_peer(&cfg).await;
+    let address = origin.trim_start_matches("http://");
+
+    // The HTTP parser drops `#…` from the request line before routing; the
+    // peer gets the path without it, and encoded `%23` and `%3F` unchanged.
+    for target in [
+        "workspace/api/projects#../../environment",
+        "attractor/pipelines/run-1/artifacts/notes%23draft%3F.txt#x",
+    ] {
+        let mut socket = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("connect");
+        socket
+            .write_all(
+                format!(
+                    "GET {PROXY}{target} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("request");
+        let mut response = Vec::new();
+        socket.read_to_end(&mut response).await.expect("response");
+        assert!(
+            response.starts_with(b"HTTP/1.1 200 "),
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
+    }
+    assert_eq!(
+        peer.seen()
+            .iter()
+            .map(|seen| seen.target.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "/workspace/api/projects",
+            "/attractor/pipelines/run-1/artifacts/notes%23draft%3F.txt"
+        ]
+    );
+}
+
+#[tokio::test]
 async fn linked_environment_proxy_keeps_methods_bodies_redirects_and_errors() {
     let temp = tempfile::tempdir().expect("tempdir");
     let cfg = settings(temp.path());
@@ -1238,7 +1286,7 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
 }
 
 #[tokio::test]
-async fn artifact_downloads_are_attachments_the_browser_does_not_sniff() {
+async fn artifact_downloads_are_exact_attachments_the_browser_does_not_sniff() {
     let temp = tempfile::tempdir().expect("tempdir");
     let cfg = settings(temp.path());
     let app = crate::store_app_default(cfg.clone());
@@ -1252,22 +1300,44 @@ async fn artifact_downloads_are_attachments_the_browser_does_not_sniff() {
         })
         .expect("run");
     fs::create_dir_all(paths.artifacts_dir()).expect("artifacts");
-    fs::write(paths.artifacts_dir().join("report.html"), "<p>report</p>").expect("artifact");
-    let uri = "/attractor/pipelines/run-download/artifacts/artifacts/report.html";
+    let json_bytes = b"{\"ok\": true}\n".to_vec();
+    let binary = vec![0x89, b'P', b'N', b'G', 0x00, 0xff, 0xfe, b'\n'];
+    fs::write(paths.artifacts_dir().join("result.json"), &json_bytes).expect("json");
+    fs::write(paths.artifacts_dir().join("capture.bin"), &binary).expect("binary");
+    let uri = |name: &str| format!("/attractor/pipelines/run-download/artifacts/artifacts/{name}");
 
-    for query in ["?download=1", "?download=true"] {
-        let download = send(&app, "GET", &format!("{uri}{query}"), None, &[], None).await;
-        assert_eq!(download.status(), StatusCode::OK);
-        assert_eq!(
-            header(&download, "content-disposition"),
-            Some(r#"attachment; filename="report.html""#)
-        );
-        assert_eq!(header(&download, "x-content-type-options"), Some("nosniff"));
-        assert_eq!(text(download).await, "<p>report</p>");
+    for (name, content_type, content) in [
+        ("result.json", "application/json", &json_bytes),
+        ("capture.bin", "application/octet-stream", &binary),
+    ] {
+        for query in ["?download=1", "?download=true"] {
+            let download = send(
+                &app,
+                "GET",
+                &format!("{}{query}", uri(name)),
+                None,
+                &[],
+                None,
+            )
+            .await;
+            assert_eq!(download.status(), StatusCode::OK, "{name}{query}");
+            assert_eq!(header(&download, "content-type"), Some(content_type));
+            assert_eq!(
+                header(&download, "content-disposition"),
+                Some(format!("attachment; filename=\"{name}\"").as_str())
+            );
+            assert_eq!(header(&download, "x-content-type-options"), Some("nosniff"));
+            assert_eq!(&bytes(download).await, content, "{name}{query}");
+        }
     }
-    let preview = send(&app, "GET", uri, None, &[], None).await;
+
+    // Previews are unchanged: text as before, binary refused.
+    let preview = send(&app, "GET", &uri("result.json"), None, &[], None).await;
     assert_eq!(preview.status(), StatusCode::OK);
     assert_eq!(header(&preview, "content-disposition"), None);
+    assert_eq!(json(preview).await, json!("{\"ok\": true}\n"));
+    let binary_preview = send(&app, "GET", &uri("capture.bin"), None, &[], None).await;
+    assert_eq!(binary_preview.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
 
 fn request(
