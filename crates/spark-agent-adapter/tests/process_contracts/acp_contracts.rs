@@ -230,7 +230,7 @@ fn acp_turn_streams_updates_while_the_prompt_is_open_and_returns_them_once() {
     assert!(new.get("systemPrompt").is_none());
     assert_eq!(
         new["cwd"],
-        json!(std::fs::canonicalize(dir.path()).unwrap())
+        json!(spark_common::paths::canonicalize_clean(dir.path()).unwrap())
     );
     let prompt = &received(dir.path(), "session/prompt")[0];
     assert_eq!(
@@ -739,7 +739,7 @@ fn saved(dir: &Path, request: &AgentTurnRequest, session_id: &str) -> AcpSession
     AcpSessionRecord {
         harness: "fake".to_string(),
         session_id: session_id.to_string(),
-        cwd: std::fs::canonicalize(dir)
+        cwd: spark_common::paths::canonicalize_clean(dir)
             .unwrap()
             .to_string_lossy()
             .into_owned(),

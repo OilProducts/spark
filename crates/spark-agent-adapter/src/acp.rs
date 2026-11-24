@@ -111,6 +111,19 @@ impl AcpSessionRecord {
     pub fn to_metadata(&self) -> BTreeMap<String, Value> {
         BTreeMap::from([(ACP_SESSION_METADATA_KEY.to_string(), json!(self))])
     }
+
+    /// Whether this saved session may continue as `current`: every field
+    /// matches exactly, except that the saved work area may carry a Windows
+    /// `\\?\` prefix. Its path is never resolved again, so a checkout
+    /// replaced by a symlink to another directory doesn't continue.
+    fn continues_as(&self, current: &Self) -> bool {
+        let cwd = spark_common::paths::strip_verbatim_prefix(PathBuf::from(&self.cwd));
+        Self {
+            session_id: current.session_id.clone(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            ..self.clone()
+        } == *current
+    }
 }
 
 /// A turn that failed. Once its primary prompt was sent, the harness may
@@ -2583,16 +2596,7 @@ impl Turn {
         let mut reset = None;
         let mut restored = None;
         if let Some(saved) = &self.plan.saved {
-            // The same directory, however the saved record spells it, such
-            // as with a `\\?\` prefix; every other field matches exactly.
-            let matches = AcpSessionRecord {
-                session_id: saved.session_id.clone(),
-                cwd: saved.cwd.clone(),
-                ..current.clone()
-            } == *saved
-                && spark_common::paths::canonicalize_clean(&saved.cwd)
-                    .is_ok_and(|cwd| cwd == self.plan.cwd);
-            let restore = if !matches {
+            let restore = if !saved.continues_as(&current) {
                 Err("its harness, work area, configuration or instructions changed".to_string())
             } else if capabilities.session_capabilities.resume.is_some() {
                 let request = ResumeSessionRequest::new(saved.session_id.clone(), &self.plan.cwd)
@@ -3917,9 +3921,11 @@ mod tests {
     }
 
     /// A probe and every live session request name the work area alike: its
-    /// conventional canonical path, whatever spelling the caller or a saved
-    /// session used, and options a live session acknowledges reach the
-    /// chooser asking under another spelling. The agent is a shell script.
+    /// conventional canonical path, whatever spelling the caller used, and
+    /// options a live session acknowledges reach the chooser asking under
+    /// another spelling. A saved session continues in the same directory, and
+    /// resets once the checkout path is replaced by a symlink to another one.
+    /// The agent is a shell script.
     #[cfg(unix)]
     #[test]
     fn probe_and_live_sessions_send_one_conventional_work_area() {
@@ -3997,19 +4003,21 @@ done
             &launch_generation(&shell, Default::default())
         )
         .is_some());
-        // Saved under another spelling of the same directory, it continues.
-        let saved = AcpSessionRecord {
-            cwd: alias.to_string_lossy().into_owned(),
-            ..fresh.clone()
-        };
-        for agent_capabilities in [
-            r#"{"sessionCapabilities":{"resume":{}}}"#,
-            r#"{"loadSession":true}"#,
-        ] {
-            let turn = run(Some(&saved), agent_capabilities);
+        let resume = r#"{"sessionCapabilities":{"resume":{}}}"#;
+        for agent_capabilities in [resume, r#"{"loadSession":true}"#] {
+            let turn = run(Some(&fresh), agent_capabilities);
             assert!(turn.output.thread_resume_failure.is_none());
             assert_eq!(turn.record.as_ref(), Some(&fresh));
         }
+        // The checkout becomes a symlink to another one: a fresh session.
+        let other = temp.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::remove_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&other, &real).unwrap();
+        let other = spark_common::paths::canonicalize_clean(&other).unwrap();
+        let moved = run(Some(&fresh), resume);
+        assert!(moved.output.thread_resume_failure.is_some());
+        assert_eq!(Path::new(&moved.record.unwrap().cwd), other);
 
         let sent = std::fs::read_to_string(&log)
             .unwrap()
@@ -4023,12 +4031,45 @@ done
             .map(|message| (message["method"].clone(), message["params"]["cwd"].clone()))
             .collect::<Vec<_>>();
         let expected = [
-            "session/new",
-            "session/new",
-            "session/resume",
-            "session/load",
+            ("session/new", &cwd),
+            ("session/new", &cwd),
+            ("session/resume", &cwd),
+            ("session/load", &cwd),
+            ("session/new", &other),
         ]
-        .map(|method| (json!(method), json!(cwd)));
+        .map(|(method, cwd)| (json!(method), json!(cwd)));
         assert_eq!(sent, expected);
+    }
+
+    /// Only a Windows `\\?\` prefix may differ between a saved session's
+    /// work area and the current one; every other field must match.
+    #[test]
+    fn a_saved_session_continues_only_where_a_verbatim_prefix_differs() {
+        let current = AcpSessionRecord {
+            harness: "shell".into(),
+            session_id: String::new(),
+            cwd: r"C:\proj".into(),
+            configuration_generation: "1".into(),
+            instructions_sha256: None,
+        };
+        let saved = |cwd: &str| AcpSessionRecord {
+            session_id: "session".into(),
+            cwd: cwd.into(),
+            ..current.clone()
+        };
+        assert!(saved(r"C:\proj").continues_as(&current));
+        assert!(saved(r"\\?\C:\proj").continues_as(&current));
+        assert!(!saved(r"\\?\C:\other").continues_as(&current));
+        let kept = AcpSessionRecord {
+            cwd: r"\\?\C:\proj.".into(),
+            ..current.clone()
+        };
+        assert!(saved(r"\\?\C:\proj.").continues_as(&kept));
+        assert!(!saved(r"C:\proj.").continues_as(&kept));
+        let regenerated = AcpSessionRecord {
+            configuration_generation: "2".into(),
+            ..current.clone()
+        };
+        assert!(!saved(r"\\?\C:\proj").continues_as(&regenerated));
     }
 }
