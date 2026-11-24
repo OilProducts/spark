@@ -5,6 +5,7 @@ import { requestNavigation } from '@/state/workspaceSlice'
 import { revealSelection } from '@/components/app/view-layout'
 import { ATTENTION_CHANGED_EVENT, fetchPendingAttention, type AttentionItem } from '@/lib/api/attentionApi'
 import { triggerKey } from '@/lib/api/triggersApi'
+import { normalizeProjectPath } from '@/lib/projectPaths'
 import { flowTitle, formatRunDate, formatRunTime, runFlowTitle, runTitle } from '@/features/runs/model/runOverviewModel'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { focusRunHeading } from '@/features/runs/components/RunHeaderBar'
@@ -171,9 +172,19 @@ export function openTrigger(projectPath: string, triggerId: string) {
     useStore.getState().setViewMode('triggers')
 }
 
+/**
+ * Selects a mission by its normalized project. A selection already naming it keeps its spelling of the project
+ * (a link may carry C:\repo), so reopening it from the list or the Inbox keeps its route and history entry.
+ */
+export function selectMission(id: string, projectPath: string) {
+    const selected = useStore.getState().selectedMission
+    if (selected?.id === id && normalizeProjectPath(selected.projectPath) === normalizeProjectPath(projectPath)) return
+    useStore.getState().setSelectedMission({ id, projectPath: normalizeProjectPath(projectPath) })
+}
+
 export function openMission(id: string, projectPath: string) {
     revealSelection()
-    useStore.getState().setSelectedMission({ id, projectPath })
+    selectMission(id, projectPath)
     useStore.getState().setViewMode('missions')
 }
 

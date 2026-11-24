@@ -17,6 +17,7 @@ import { SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState'
+import { selectMission } from '@/app/useAttention'
 
 export type Budget = { concurrent_runs: number; total_runs: number }
 export type Fields = { title: string; description: string; archived: boolean; budget?: Budget; playbook?: string | null }
@@ -132,17 +133,12 @@ export function MissionsPanel({ active }: { active: boolean }) {
         if (unsaved || conflict) drafts.current.set(key, { editing, fields: draft, conflict })
         else drafts.current.delete(key)
     }
-    // A selection already naming the mission keeps its spelling of the project (a link may carry C:\repo), so its route and history entry stay.
-    function select(mission: Mission | null) {
-        const selected = useStore.getState().selectedMission
-        if (mission && selected?.id === mission.id && sameProjectPath(selected.projectPath, mission.project_path)) return
-        useStore.getState().setSelectedMission(mission ? { id: mission.id, projectPath: normalizeProjectPath(mission.project_path) } : null)
-    }
     function open(mission: Mission | null, trigger: HTMLElement | null, project: string | null = null) {
         if (busy) return
         origin.current = trigger
         setNewProject(mission ? null : project)
-        select(mission)
+        if (mission) selectMission(mission.id, mission.project_path)
+        else useStore.getState().setSelectedMission(null)
         setFocusRequest(value => value + 1)
         preserveDraft()
         const cached = drafts.current.get(mission?.id ?? `new:${project ?? ''}`)
@@ -181,7 +177,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
             drafts.current.delete(editing?.id ?? newKey)
             upsert(saved)
             if (!editing) void markProjectUsed(saved.project_path)
-            if (archive === undefined) { reset(saved); setMode('read'); select(saved) }
+            if (archive === undefined) { reset(saved); setMode('read'); selectMission(saved.id, saved.project_path) }
             else { setEditing(saved); setDraft(current => ({ ...current, archived: saved.fields.archived })) }
             await refresh()
         } catch (e) { setError((e as Error).message); if (e instanceof MissionConflict) { setConflict(true); await refresh() } } finally { setBusy(false) }
