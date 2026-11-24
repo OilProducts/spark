@@ -1,7 +1,6 @@
 import { fetchWorkspaceJsonValidated } from './apiClient'
 import {
     activeApiPrefix,
-    environmentProxyPrefix,
     parseEnvironmentDescriptor,
     parseEnvironmentLink,
     parseEnvironmentLinks,
@@ -18,7 +17,7 @@ import {
     fetchJsonWithValidation,
 } from './shared'
 
-export { environmentProxyPrefix, type EnvironmentDescriptor, type EnvironmentLink }
+export { type EnvironmentDescriptor, type EnvironmentLink }
 
 export type PairingCodeReceipt = {
     environment_id: string
@@ -198,8 +197,8 @@ function parseDelegations(payload: unknown, endpoint: string): DelegationOut[] {
     return items.map((item) => parseDelegation(item, endpoint))
 }
 
-export function fetchEnvironmentDescriptor(environmentId?: string | null): Promise<EnvironmentDescriptor> {
-    const prefix = environmentId === undefined ? activeApiPrefix() : environmentProxyPrefix(environmentId)
+export function fetchEnvironmentDescriptor(): Promise<EnvironmentDescriptor> {
+    const prefix = activeApiPrefix()
     return fetchJsonWithValidation(`${prefix}/environment`, undefined, `GET ${prefix}/environment`, parseEnvironmentDescriptor)
 }
 
@@ -269,11 +268,10 @@ export function fetchLinkProjects(environmentId: string): Promise<string[]> {
     )
 }
 
-export function fetchDelegations(filter?: { open?: boolean; paused?: boolean; environment_id?: string }): Promise<DelegationOut[]> {
+export function fetchDelegations(filter?: { open?: boolean; paused?: boolean }): Promise<DelegationOut[]> {
     const params = new URLSearchParams()
     if (filter?.open) params.set('open', 'true')
     if (filter?.paused) params.set('paused', 'true')
-    if (filter?.environment_id) params.set('environment_id', filter.environment_id)
     const suffix = params.toString() ? `?${params.toString()}` : ''
     return fetchWorkspaceJsonValidated(`/delegations${suffix}`, undefined, 'GET /workspace/api/delegations', parseDelegations)
 }

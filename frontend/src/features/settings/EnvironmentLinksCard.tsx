@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { useDialogController } from '@/components/app/dialog-controller'
 import { InlineError } from '@/components/app/inline-error'
 import { Well } from '@/components/app/well'
 import {
@@ -28,36 +29,59 @@ import {
 
 type ProjectLookup = { loading?: boolean; projects?: string[]; error?: string }
 
+const formField = (data: FormData, name: string) => String(data.get(name) ?? '').trim()
+
+const errorText = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback)
+
+/** Drops the code once the receipt expires; the expiry stays for the notice. An unreadable expiry counts as expired. */
+const expireReceipt = (receipt: PairingCodeReceipt | null) =>
+    receipt?.code && !(Date.parse(receipt.expires_at) > Date.now()) ? { ...receipt, code: '' } : receipt
+
 export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const { activeEnvironmentId } = useActiveEnvironment()
     const isLocalEnvironment = activeEnvironmentId === null
     const [descriptor, setDescriptor] = useState<EnvironmentDescriptor | null>(null)
     const [tokens, setTokens] = useState<PeerToken[]>([])
     const [links, setLinks] = useState<EnvironmentLink[]>([])
+    const [tokensLoaded, setTokensLoaded] = useState(false)
+    const [linksLoaded, setLinksLoaded] = useState(false)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [status, setStatus] = useState('')
     const [pairingCode, setPairingCode] = useState<PairingCodeReceipt | null>(null)
     const [busy, setBusy] = useState(false)
     const [projectsByEnv, setProjectsByEnv] = useState<Record<string, ProjectLookup>>({})
+    const refreshSeqRef = useRef(0)
+    const { confirm } = useDialogController()
+
+    const showError = (message: string) => {
+        setStatus('')
+        setError(message)
+    }
 
     const refresh = useCallback(async () => {
+        // Mutations call refresh() as soon as they succeed, so this also retires refreshes started before them.
+        const seq = ++refreshSeqRef.current
+        setPairingCode(expireReceipt)
         setLoading(true)
-        try {
-            const [nextDescriptor, nextTokens, nextLinks] = await Promise.all([
-                fetchEnvironmentDescriptor(),
-                fetchPeerTokens(),
-                fetchEnvironmentLinks(),
-            ])
-            setDescriptor(nextDescriptor)
-            setTokens(nextTokens)
-            setLinks(nextLinks)
-            setError(null)
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Could not load environment links.')
-        } finally {
-            setLoading(false)
-        }
+        const [descriptorResult, tokensResult, linksResult] = await Promise.allSettled([
+            fetchEnvironmentDescriptor(),
+            fetchPeerTokens(),
+            fetchEnvironmentLinks(),
+        ])
+        if (seq !== refreshSeqRef.current) return
+        const errors: string[] = []
+        if (descriptorResult.status === 'fulfilled') setDescriptor(descriptorResult.value)
+        else errors.push(`Could not load this environment: ${errorText(descriptorResult.reason, 'unknown error.')}`)
+        if (tokensResult.status === 'fulfilled') setTokens(tokensResult.value)
+        else errors.push(`Could not load peer tokens: ${errorText(tokensResult.reason, 'unknown error.')}`)
+        if (linksResult.status === 'fulfilled') setLinks(linksResult.value)
+        else errors.push(`Could not load linked environments: ${errorText(linksResult.reason, 'unknown error.')}`)
+        setTokensLoaded(tokensResult.status === 'fulfilled')
+        setLinksLoaded(linksResult.status === 'fulfilled')
+        if (errors.length > 0) setStatus('')
+        setError(errors.length > 0 ? errors.join(' ') : null)
+        setLoading(false)
     }, [])
 
     useEffect(() => {
@@ -65,19 +89,43 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         void refresh()
     }, [active, refresh])
 
+    // Expire the receipt on time while mounted; refresh() re-checks it whenever the card becomes active.
+    useEffect(() => {
+        if (!pairingCode?.code) return
+        const timer = window.setTimeout(() => setPairingCode(expireReceipt), Date.parse(pairingCode.expires_at) - Date.now())
+        return () => window.clearTimeout(timer)
+    }, [pairingCode])
+
     const copyText = async (label: string, value: string) => {
+        if (!navigator.clipboard?.writeText) {
+            showError(`Clipboard is unavailable; could not copy ${label}.`)
+            return
+        }
         try {
-            await navigator.clipboard?.writeText(value)
+            await navigator.clipboard.writeText(value)
             setStatus(`Copied ${label}.`)
+            setError(null)
         } catch {
-            setStatus(`Could not copy ${label}.`)
+            showError(`Could not copy ${label}.`)
         }
     }
+
+    const copyPairingCode = (receipt: PairingCodeReceipt) => {
+        const current = expireReceipt(receipt)
+        if (current?.code) void copyText('pairing code', current.code)
+        else setPairingCode(current)
+    }
+
+    const forgetProjects = (environmentId: string) => setProjectsByEnv((prev) => {
+        const next = { ...prev }
+        delete next[environmentId]
+        return next
+    })
 
     const handleCreateCode = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault()
         const form = event.currentTarget
-        const label = String(new FormData(form).get('code_label') ?? '').trim()
+        const label = formField(new FormData(form), 'code_label')
         setBusy(true)
         setError(null)
         try {
@@ -86,13 +134,21 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             setStatus('Created a single-use pairing code.')
             form.reset()
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Could not create pairing code.')
+            showError(errorText(err, 'Could not create pairing code.'))
         } finally {
             setBusy(false)
         }
     }
 
     const handleRevoke = async (token: PeerToken) => {
+        const confirmed = await confirm({
+            title: 'Revoke peer token?',
+            description: `${token.label ? `${token.label} (${token.token_id})` : token.token_id} will stop authenticating requests to this environment.`,
+            confirmLabel: 'Revoke token',
+            cancelLabel: 'Cancel',
+            confirmVariant: 'destructive',
+        })
+        if (!confirmed) return
         setBusy(true)
         setError(null)
         try {
@@ -100,7 +156,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             setStatus(`Revoked token ${token.label || token.token_id}.`)
             await refresh()
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Could not revoke token.')
+            showError(errorText(err, 'Could not revoke token.'))
         } finally {
             setBusy(false)
         }
@@ -110,12 +166,12 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         event.preventDefault()
         const form = event.currentTarget
         const data = new FormData(form)
-        const origin = String(data.get('link_origin') ?? '').trim()
-        const expected_id = String(data.get('link_expected_id') ?? '').trim()
-        const code = String(data.get('link_code') ?? '').trim()
-        const label = String(data.get('link_label') ?? '').trim()
+        const origin = formField(data, 'link_origin')
+        const expected_id = formField(data, 'link_expected_id')
+        const code = formField(data, 'link_code')
+        const label = formField(data, 'link_label')
         if (!origin || !expected_id || !code) {
-            setError('Enter the remote origin, expected environment ID, and pairing code.')
+            showError('Enter the remote origin, expected environment ID, and pairing code.')
             return
         }
         setBusy(true)
@@ -127,27 +183,31 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
             await refresh()
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Could not add environment link.')
+            showError(errorText(err, 'Could not add environment link.'))
         } finally {
             setBusy(false)
         }
     }
 
     const handleRemoveLink = async (link: EnvironmentLink) => {
+        const confirmed = await confirm({
+            title: 'Remove environment link?',
+            description: `${link.label || link.environment_id} (${link.origin}) will be unlinked. Its open delegations pause until you link it again.`,
+            confirmLabel: 'Remove link',
+            cancelLabel: 'Cancel',
+            confirmVariant: 'destructive',
+        })
+        if (!confirmed) return
         setBusy(true)
         setError(null)
         try {
             await removeEnvironmentLink(link.environment_id)
-            setProjectsByEnv((prev) => {
-                const next = { ...prev }
-                delete next[link.environment_id]
-                return next
-            })
+            forgetProjects(link.environment_id)
             setStatus(`Removed link to ${link.label || link.environment_id}.`)
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
             await refresh()
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Could not remove link.')
+            showError(errorText(err, 'Could not remove link.'))
         } finally {
             setBusy(false)
         }
@@ -156,11 +216,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     const handleInspectProjects = async (link: EnvironmentLink) => {
         const existing = projectsByEnv[link.environment_id]
         if (existing?.projects) {
-            setProjectsByEnv((prev) => {
-                const next = { ...prev }
-                delete next[link.environment_id]
-                return next
-            })
+            forgetProjects(link.environment_id)
             return
         }
         setProjectsByEnv((prev) => ({ ...prev, [link.environment_id]: { loading: true } }))
@@ -170,7 +226,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         } catch (err) {
             setProjectsByEnv((prev) => ({
                 ...prev,
-                [link.environment_id]: { error: err instanceof Error ? err.message : 'Could not list projects.' },
+                [link.environment_id]: { error: errorText(err, 'Could not list projects.') },
             }))
         }
     }
@@ -215,22 +271,24 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                         </Field>
                         <Button type="submit" size="sm" variant="outline" disabled={busy}>Create pairing code</Button>
                     </form>
-                    {pairingCode ? (
+                    {pairingCode?.code ? (
                         <Well className="space-y-1.5 px-3 py-2">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                                 <span className="text-xs font-medium text-foreground">Single-use pairing code (shown once)</span>
-                                <Button size="sm" variant="outline" onClick={() => void copyText('pairing code', pairingCode.code)}>Copy code</Button>
+                                <Button size="sm" variant="outline" onClick={() => copyPairingCode(pairingCode)}>Copy code</Button>
                             </div>
                             <div className="break-all font-mono text-xs text-foreground" data-testid="pairing-code-value">{pairingCode.code}</div>
                             <div className="text-xs text-muted-foreground">Expires at {pairingCode.expires_at}</div>
                         </Well>
+                    ) : pairingCode ? (
+                        <p className="text-xs text-muted-foreground">The pairing code expired at {pairingCode.expires_at}. Create a new one to pair.</p>
                     ) : null}
                 </div>
 
                 <div className="space-y-2">
                     <h3 className="text-sm font-medium text-foreground">Issued peer tokens</h3>
                     {tokens.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">No peer tokens issued yet.</p>
+                        tokensLoaded ? <p className="text-xs text-muted-foreground">No peer tokens issued yet.</p> : null
                     ) : (
                         <ul className="space-y-2">
                             {tokens.map((token) => {
@@ -276,7 +334,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                 <div className="space-y-3">
                     <h3 className="text-sm font-medium text-foreground">Linked environments</h3>
                     {links.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">No linked environments configured.</p>
+                        linksLoaded ? <p className="text-xs text-muted-foreground">No linked environments configured.</p> : null
                     ) : (
                         <ul className="space-y-2">
                             {links.map((link) => {
