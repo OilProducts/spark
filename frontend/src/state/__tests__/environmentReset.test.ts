@@ -42,6 +42,7 @@ it('starts a switched-to environment from fresh state, its preferences included,
         editorSidebarWidth: 400,
         preferredEditorMode: 'files',
         preferredShowThinking: false,
+        model: 'local-model',
     })
     store.updateHomeProjectSession('/local/project', { chatDraft: 'Local draft' })
     store.setSendingChat('conversation-1', true)
@@ -56,7 +57,7 @@ it('starts a switched-to environment from fresh state, its preferences included,
     const fresh = freshEnvironmentState()
     expect(Object.fromEntries(Object.keys(fresh).map((key) => [key, state[key as keyof typeof state]]))).toEqual(fresh)
     expect(state).toMatchObject({ editorMode: 'structured', flowMetadataUserEditVersion: 0, graphAttrsUserEditVersion: 0, saveStateVersion: 0 })
-    expect(state).toMatchObject({ editorSidebarWidth: 336, preferredEditorMode: 'structured', preferredShowThinking: true })
+    expect(state).toMatchObject({ editorSidebarWidth: 336, preferredEditorMode: 'structured', preferredShowThinking: true, model: '' })
     expect(cachedAppearance()).toBe('dark')
 
     // The remote environment's preferences load.

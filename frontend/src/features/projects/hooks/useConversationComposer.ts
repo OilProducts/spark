@@ -20,7 +20,7 @@ import {
     updateConversationSettingsValidated,
 } from '@/lib/workspaceClient'
 import { randomHexId } from '@/lib/utils'
-import { useStore } from '@/store'
+import { useStore, whenEnvironmentShown } from '@/store'
 import type { PendingConversationTurnState, PendingUserMessage } from '../model/conversationState'
 import type { NormalizedConversationRecord } from '../model/projectsHomeState'
 import type { ComposerAttachment } from '../model/types'
@@ -319,8 +319,8 @@ export function useConversationComposer({
             status: 'pending',
             ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
         }])
-        // The message shows in the transcript now, so the composer clears now;
-        // a failed send puts the text back ahead of anything typed meanwhile.
+        // The message shows in the transcript now, so the composer clears now; a failed send puts the
+        // text back ahead of anything typed meanwhile, in its environment once that is shown again.
         const currentDraft = () => useStore.getState().homeProjectSessionsByPath[activeProjectPath]?.chatDraft ?? ''
         const setDraft = (draft: string) => {
             if (isShown(environmentId)) useStore.getState().updateHomeProjectSession(activeProjectPath, { chatDraft: draft })
@@ -340,7 +340,7 @@ export function useConversationComposer({
         })
         if (!accepted) {
             updatePendingMessages((messages) => messages.filter((message) => message.id !== clientTurnId))
-            setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n'))
+            whenEnvironmentShown(environmentId, () => setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n')))
         }
     }
 
@@ -369,9 +369,15 @@ export function useConversationComposer({
         if (!activeProjectPath) {
             return false
         }
+        // A refused turn's error shows in its environment, now or once it is shown again.
+        const report = (error: unknown) => {
+            const message = formatErrorMessage(error, failure)
+            whenEnvironmentShown(environmentId, () => setPanelError(message))
+            return false
+        }
         // Nothing here shows a turn from an environment switched away from.
         if (!isShown(environmentId)) {
-            return start().then(() => true, () => false)
+            return start().then(() => true, report)
         }
         const afterRevision = getConversationRecord(conversationId)?.latestRevision ?? '0'
         setPendingConversationTurn({ conversationId, afterRevision })
@@ -391,9 +397,7 @@ export function useConversationComposer({
             })
             return true
         } catch (error) {
-            const message = formatErrorMessage(error, failure)
-            if (isShown(environmentId)) setPanelError(message)
-            return false
+            return report(error)
         } finally {
             if (isShown(environmentId)) {
                 setPendingConversationTurn(null)

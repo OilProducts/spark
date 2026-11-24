@@ -11,7 +11,9 @@ import type { NormalizedConversationRecord } from '@/features/projects/model/pro
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { cachedAppearance, applyTheme } from '@/lib/theme'
 import { requestNavigation } from '@/state/workspaceSlice'
-import { primeFlowSaveBaseline, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, waitForFlowSaves } from '@/lib/flowPersistence'
+import { ATTENTION_CHANGED_EVENT } from '@/lib/api/attentionApi'
+import { reviewProposedPlanValidated } from '@/lib/api/conversationsApi'
+import { primeFlowSaveBaseline, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, takeUnsavedFlowEdits, waitForFlowSaves } from '@/lib/flowPersistence'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { conversationMutationAck } from '@/test/conversationWire'
@@ -150,6 +152,53 @@ describe('flow saves', () => {
         }
     })
 
+    it('keeps a remote edit whose save fails after a switch away, to open there again unsaved, with Retry', async () => {
+        await switchEnvironment('env-r')
+        const remoteSaved = deferred<unknown>()
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : url.startsWith(REMOTE) ? remoteSaved.promise : { status: 'saved' })
+        const remote = saveFlowContent('demo', flow('Remote'), PROJECT)
+        await waitFor(() => expect(sent).toContain(`POST ${REMOTE}/attractor/api/flows`))
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+        const local = useStore.getState()
+
+        remoteSaved.resolve(json({ detail: 'unavailable' }, 503))
+        await expect(remote).resolves.toBe(false)
+        // This environment's flow of the same name is untouched.
+        expect(useStore.getState()).toBe(local)
+        expect(takeUnsavedFlowEdits('demo', PROJECT)).toBeNull()
+        await expect(retryLastSaveContent()).resolves.toBe(false)
+
+        await switchEnvironment('env-r')
+        resetStoreForEnvironmentSwitch(false)
+        expect(useStore.getState().saveState).toBe('idle')
+        expect(takeUnsavedFlowEdits('demo', PROJECT)).toEqual(flow('Remote').flow)
+        expect(useStore.getState()).toMatchObject({ saveState: 'error', saveErrorKind: 'http', saveErrorMessage: 'unavailable' })
+        expect(takeUnsavedFlowEdits('demo', PROJECT)).toBeNull()
+        sent = []
+        bodies = []
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : { status: 'saved' })
+        await expect(retryLastSaveContent()).resolves.toBe(true)
+        expect(sent).toEqual([`POST ${REMOTE}/attractor/preview`, `POST ${REMOTE}/attractor/api/flows`])
+        expect(bodies[1]).toMatchObject({ flow: { title: 'Remote' } })
+    })
+
+    it('drops a remote edit kept from a refused save once a later save of the flow lands', async () => {
+        await switchEnvironment('env-r')
+        const refused = deferred<unknown>()
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : refused.promise)
+        const first = saveFlowContent('demo', flow('Remote'), PROJECT)
+        await waitFor(() => expect(sent).toContain(`POST ${REMOTE}/attractor/api/flows`))
+        await switchEnvironment(null)
+        refused.resolve(json({ detail: 'unavailable' }, 503))
+        await expect(first).resolves.toBe(false)
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : { status: 'saved' })
+        await expect(saveFlowContent('demo', flow('Remote again'), PROJECT, 'env-r')).resolves.toBe(true)
+
+        await switchEnvironment('env-r')
+        expect(takeUnsavedFlowEdits('demo', PROJECT)).toBeNull()
+    })
+
     it('retries the save whose failure is shown, after a switch away and back', async () => {
         await switchEnvironment('env-r')
         const remoteSaved = deferred<unknown>()
@@ -239,7 +288,7 @@ it('saves a change queued behind a save in flight after the workspace unmounts, 
     } finally { window.removeEventListener('spark:settings-live-event', live) }
 })
 
-it('sends a message and a mode switch delayed by a settings save to the environment they started in', async () => {
+it('sends a message and a mode switch delayed by a settings save to the environment they started in, putting a refused message back there', async () => {
     const thread = {
         conversation_id: 'conversation-2',
         project_path: PROJECT,
@@ -253,7 +302,7 @@ it('sends a message and a mode switch delayed by a settings save to the environm
     }
     const settingsSaved = deferred<boolean | string>()
     // The send fails, so its draft restore would show if it reached the local view.
-    answer = (url) => (url.endsWith('/turns') ? json({ detail: 'busy' }, 500) : conversationMutationAck(thread))
+    answer = (url) => (url.endsWith('/turns') ? json({ detail: 'unavailable' }, 503) : conversationMutationAck(thread))
     const applyConversationBatch = vi.fn()
     const setPanelError = vi.fn()
     const setPendingConversationTurn = vi.fn()
@@ -302,6 +351,15 @@ it('sends a message and a mode switch delayed by a settings save to the environm
     expect(state.homeProjectSessionsByPath[PROJECT]?.chatDraft).toBe('Local draft')
     expect(state.homeConversationSessionsById).toEqual({})
     expect(state.sendingChats).toEqual({})
+
+    // Back in the remote environment, the refused message is its draft again, with the error.
+    await switchEnvironment('env-r')
+    resetStoreForEnvironmentSwitch(false)
+    expect(useStore.getState().homeProjectSessionsByPath[PROJECT]?.chatDraft).toBe('Hello there')
+    expect(setPanelError).toHaveBeenCalledExactlyOnceWith('Unable to send the project chat turn.')
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    expect(useStore.getState().homeProjectSessionsByPath).toEqual({})
 })
 
 it('writes nothing from a chat reply or deferred navigation that lands after a switch', async () => {
@@ -423,4 +481,26 @@ it('leaves this environment\'s chats and selection as they are when a chat delet
     expect(sent).toEqual([])
     expect(useStore.getState().projectSessionsByPath).toEqual(local.projectSessionsByPath)
     expect(useStore.getState().homeConversationCache).toBe(local.homeConversationCache)
+})
+
+it('refreshes the Inbox only in the environment a plan approval was made in', async () => {
+    const thread = { conversation_id: 'conversation-1', project_path: PROJECT, title: 'Thread', created_at: '2026-09-01T00:00:00Z',
+        updated_at: '2026-09-01T00:00:00Z', revision: 3, chat_mode: 'plan', turns: [], segments: [] }
+    const approved = deferred<unknown>()
+    answer = () => approved.promise
+    const refreshed = vi.fn()
+    window.addEventListener(ATTENTION_CHANGED_EVENT, refreshed)
+    try {
+        await switchEnvironment('env-r')
+        const approval = { project_path: PROJECT, disposition: 'approved' as const }
+        const remote = reviewProposedPlanValidated('conversation-1', 'plan-1', approval)
+        await switchEnvironment(null)
+        approved.resolve(conversationMutationAck(thread))
+        await remote
+        expect(sent).toEqual([`POST ${REMOTE}/workspace/api/conversations/conversation-1/proposed-plans/plan-1/review`])
+        expect(refreshed).not.toHaveBeenCalled()
+
+        await reviewProposedPlanValidated('conversation-1', 'plan-1', approval)
+        expect(refreshed).toHaveBeenCalledTimes(1)
+    } finally { window.removeEventListener(ATTENTION_CHANGED_EVENT, refreshed) }
 })

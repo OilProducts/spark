@@ -102,7 +102,7 @@ export function useProjectThreadActions({
         setPendingDeleteConversationId(conversationId)
         const environmentId = getActiveEnvironmentId()
         try {
-            await deleteConversationValidated(conversationId, projectPath)
+            await deleteConversationValidated(conversationId, projectPath, environmentId)
             // Deleted, or refreshed, after a switch: the chats shown are another environment's, and stay as they are.
             if (getActiveEnvironmentId() !== environmentId) return
             commitConversationCache((current) => removeConversationFromCache({

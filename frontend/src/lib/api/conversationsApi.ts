@@ -13,6 +13,7 @@ import {
 } from './shared'
 import { notifyAttentionChanged } from './attentionApi'
 import { fetchWorkspaceJsonValidated, workspaceUrl } from './apiClient'
+import { getActiveEnvironmentId } from '../activeEnvironment'
 import { parseFormQuestion, parseFormReply, type FormQuestion, type FormReply } from '@/lib/forms'
 
 /** An uploaded conversation file; sent user turns carry these references. */
@@ -1214,6 +1215,7 @@ export async function fetchConversationSegmentToolOutputValidated(
 export async function deleteConversationValidated(
     conversationId: string,
     projectPath: string,
+    environmentId?: string | null,
 ): Promise<ConversationDeleteResponse> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}?project_path=${encodeURIComponent(projectPath)}`,
@@ -1222,6 +1224,7 @@ export async function deleteConversationValidated(
         },
         '/workspace/api/conversations/{id}',
         parseConversationDeleteResponse,
+        environmentId,
     )
 }
 
@@ -1355,6 +1358,7 @@ export async function submitConversationRequestUserInputValidated(
         answers: Record<string, string>
         form?: FormReply
     },
+    environmentId: string | null = getActiveEnvironmentId(),
 ): Promise<ConversationMutationAck> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/request-user-input/${encodeURIComponent(requestId)}/answer`,
@@ -1365,7 +1369,8 @@ export async function submitConversationRequestUserInputValidated(
         },
         '/workspace/api/conversations/{id}/request-user-input/{requestId}/answer',
         parseConversationMutationAckResponse,
-    ).then(notifyAttentionChanged)
+        environmentId,
+    ).then(notifyAttentionChanged(environmentId))
 }
 
 export async function reviewFlowRunRequestValidated(
@@ -1381,6 +1386,7 @@ export async function reviewFlowRunRequestValidated(
         llm_profile?: string | null
         reasoning_effort?: string | null
     },
+    environmentId: string | null = getActiveEnvironmentId(),
 ): Promise<ConversationMutationAck> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/flow-run-requests/${encodeURIComponent(requestId)}/review`,
@@ -1391,7 +1397,8 @@ export async function reviewFlowRunRequestValidated(
         },
         '/workspace/api/conversations/{id}/flow-run-requests/{requestId}/review',
         parseConversationMutationAckResponse,
-    ).then(notifyAttentionChanged)
+        environmentId,
+    ).then(notifyAttentionChanged(environmentId))
 }
 
 export async function reviewProposedPlanValidated(
@@ -1402,6 +1409,7 @@ export async function reviewProposedPlanValidated(
         disposition: 'approved' | 'rejected'
         review_note?: string | null
     },
+    environmentId: string | null = getActiveEnvironmentId(),
 ): Promise<ConversationMutationAck> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/proposed-plans/${encodeURIComponent(planId)}/review`,
@@ -1412,10 +1420,15 @@ export async function reviewProposedPlanValidated(
         },
         '/workspace/api/conversations/{id}/proposed-plans/{planId}/review',
         parseConversationMutationAckResponse,
-    ).then(notifyAttentionChanged)
+        environmentId,
+    ).then(notifyAttentionChanged(environmentId))
 }
 
-export async function interruptConversationTurnValidated(conversationId: string, projectPath: string): Promise<boolean> {
+export async function interruptConversationTurnValidated(
+    conversationId: string,
+    projectPath: string,
+    environmentId?: string | null,
+): Promise<boolean> {
     return fetchWorkspaceJsonValidated(
         `/conversations/${encodeURIComponent(conversationId)}/interrupt`,
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_path: projectPath }) },
@@ -1425,5 +1438,6 @@ export async function interruptConversationTurnValidated(conversationId: string,
             if (typeof record?.interrupted !== 'boolean') throw new Error('Invalid interrupt response')
             return record.interrupted
         },
+        environmentId,
     )
 }

@@ -32,6 +32,7 @@ import {
     primeFlowSaveBaseline,
     saveFlowContent,
     sendPendingFlowSaves,
+    takeUnsavedFlowEdits,
     waitForFlowSaves,
 } from '@/lib/flowPersistence';
 import { requestNavigation } from '@/state/workspaceSlice';
@@ -983,9 +984,11 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                     loadId,
                     fileCount: data.files.length,
                 });
+                // Edits a save refused after a switch away open in place of the flow as saved, unsaved, with Retry.
+                const unsaved = isReload ? null : takeUnsavedFlowEdits(flowName, activeProjectPath);
 
                 const { preview, elapsedMs } = await requestPreview(
-                    data.flow,
+                    unsaved ?? data.flow,
                     {
                         loadId,
                         source: 'flow-load',
@@ -1033,9 +1036,11 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 if (!expandChildFlowsRef.current) {
                     persistLayoutState(hydrated.layout, false);
                 }
-                primeFlowSaveBaseline(flowName, {
-                    flow: buildAuthoredFlow(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow),
-                });
+                if (!unsaved) {
+                    primeFlowSaveBaseline(flowName, {
+                        flow: buildAuthoredFlow(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow),
+                    });
+                }
                 hydratedRef.current = true;
                 setIsHydrated(true);
                 useStore.getState().setFlowLoadFailure(null);

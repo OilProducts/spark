@@ -46,11 +46,13 @@ export function readChatReadState(): ReadState {
 }
 
 function write(key: string, state: ReadState): ReadState {
-    const raw = JSON.stringify(state)
+    let raw: string | null = JSON.stringify(state)
     try {
         window.localStorage.setItem(key, raw)
     } catch {
-        // Ignore storage failures (private mode, quota, etc.); read state then lasts the session.
+        // Storage refuses the write (private mode, quota, etc.): read state lasts the session, cached
+        // against what storage still holds, so the snapshot stays the same until storage changes.
+        raw = readRaw(key)
     }
     cache.set(key, { raw, state })
     return state

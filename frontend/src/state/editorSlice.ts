@@ -88,6 +88,7 @@ export const initialEditorSessionState = (route: RouteState = DEFAULT_ROUTE_STAT
     selectedEdgeId: null,
     pendingEditorNodeSelection: null,
     workingDir: route.activeProjectPath || DEFAULT_WORKING_DIRECTORY,
+    model: '',
     editorGraphSettingsPanelOpenByFlow: {},
     editorExpandChildFlowsByFlow: {},
     editorShowAdvancedFlowMetadataByFlow: {},
@@ -159,7 +160,6 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
                 projectSessionsByPath: nextProjectSessionStates,
             }
         }),
-    model: '',
     setModel: (value) => set({ model: value }),
     setEditorGraphSettingsPanelOpen: (flowName, isOpen) => {
         completePreferenceInteraction({ graph_settings_open: isOpen })

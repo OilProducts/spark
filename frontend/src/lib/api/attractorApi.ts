@@ -1138,8 +1138,9 @@ export async function fetchPipelineAnswerValidated(
     selectedValue: string,
     note?: string,
     form?: FormReply,
+    environmentId: string | null = getActiveEnvironmentId(),
 ): Promise<PipelineAnswerResponse> {
-    const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/questions/${encodeURIComponent(questionId)}/answer`)
+    const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/questions/${encodeURIComponent(questionId)}/answer`, environmentId)
     const trimmedNote = note?.trim() ?? ''
     return fetchJsonWithValidation(
         url,
@@ -1155,7 +1156,7 @@ export async function fetchPipelineAnswerValidated(
         },
         '/attractor/pipelines/{id}/questions/{qid}/answer',
         parsePipelineAnswerResponse,
-    ).then(notifyAttentionChanged)
+    ).then(notifyAttentionChanged(environmentId))
 }
 
 export async function fetchPipelineGraphValidated(pipelineId: string): Promise<PipelineGraphResponse> {

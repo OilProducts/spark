@@ -70,9 +70,22 @@ useStore.subscribe((state, previous) => {
     }
 })
 
+// What a write refused in an environment while another was shown puts back, such as a message's
+// draft: it waits for that environment's next fresh start.
+// ponytail: kept for this page's life; a reload drops it, as it drops the environment's other unsaved state.
+const heldUntilShown = new Map<string, Array<() => void>>()
+
+/** Applies `apply` now if `environmentId` is shown, or once it is shown again. */
+export function whenEnvironmentShown(environmentId: string | null, apply: () => void) {
+    if (getActiveEnvironmentId() === environmentId) return apply()
+    const key = environmentId ?? 'local'
+    heldUntilShown.set(key, [...(heldUntilShown.get(key) ?? []), apply])
+}
+
 /**
  * Puts every environment-scoped slice back to its fresh state, so switching environments starts
- * clean without leaking data. App-wide preferences, such as the appearance, are kept.
+ * clean without leaking data. App-wide preferences, such as the appearance, are kept; what writes
+ * refused while the environment was hidden held for it comes back.
  */
 export function resetStoreForEnvironmentSwitch(restoreLocalRoute: boolean) {
     const route = restoreLocalRoute ? loadRouteState() : DEFAULT_ROUTE_STATE
@@ -90,4 +103,9 @@ export function resetStoreForEnvironmentSwitch(restoreLocalRoute: boolean) {
     } finally {
         suppressRouteSave = false
     }
+    const shown = getActiveEnvironmentId() ?? 'local'
+    const held = heldUntilShown.get(shown) ?? []
+    heldUntilShown.delete(shown)
+    held.forEach((apply) => apply())
 }
+

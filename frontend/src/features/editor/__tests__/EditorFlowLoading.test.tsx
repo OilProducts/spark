@@ -462,6 +462,45 @@ describe('Editor structured metadata', () => {
       expect(completed).not.toHaveBeenCalled()
     } finally { window.removeEventListener('spark:preferences-completed', completed) }
   })
+
+  it('opens the edits a save refused after a switch away, unsaved, where they were made, and Retry saves them there', async () => {
+    const user = userEvent.setup()
+    const refused = createDeferred<Response>()
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => (String(url).endsWith('/api/flows') && init?.method === 'POST'
+      ? refused.promise
+      : Promise.resolve(new Response(JSON.stringify({ status: 'ok' }), { status: 200 }))))
+    vi.stubGlobal('fetch', fetchMock)
+    await switchEnvironment('env-r')
+    const remote = renderEditor()
+    const filesButton = screen.getByRole('button', { name: 'Files' })
+    await waitFor(() => expect(filesButton).toBeEnabled())
+    await user.click(filesButton)
+    await user.click(await screen.findByRole('button', { name: 'Structured' }))
+    await waitFor(() => expect(useStore.getState().editorMode).toBe('structured'))
+    act(() => useStore.getState().updateFlowMetadata('title', 'Unsaved title'))
+    // Leaving for the files saves the edit; it is refused after a switch away.
+    await user.click(filesButton)
+    await waitFor(() => expect(flowSaveRequests(fetchMock)).toHaveLength(1))
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    remote.unmount()
+    await act(async () => refused.resolve(new Response(JSON.stringify({ detail: 'unavailable' }), { status: 503 })))
+    expect(useStore.getState().saveState).toBe('idle')
+
+    await switchEnvironment('env-r')
+    resetStoreForEnvironmentSwitch(false)
+    useStore.setState({ viewMode: 'editor', activeProjectPath: '/tmp/project', activeFlow: 'bundled-flow', clientPreferencesLoaded: true })
+    renderEditor()
+    await waitFor(() => expect(vi.mocked(loadEditorPreview).mock.lastCall?.[0]).toMatchObject({ title: 'Unsaved title' }))
+    expect(await screen.findByTestId('editor-save-status')).toHaveTextContent('unavailable')
+
+    fetchMock.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ status: 'saved', name: 'bundled-flow' }), { status: 200 })))
+    await user.click(screen.getByTestId('editor-save-retry'))
+    await waitFor(() => expect(flowSaveRequests(fetchMock)).toHaveLength(2))
+    const [url, init] = flowSaveRequests(fetchMock)[1]
+    expect(String(url)).toBe('/workspace/api/environments/links/env-r/proxy/attractor/api/flows')
+    expect(JSON.parse(String((init as RequestInit).body)).flow.title).toBe('Unsaved title')
+  })
 })
 
 describe('Editor file view', () => {

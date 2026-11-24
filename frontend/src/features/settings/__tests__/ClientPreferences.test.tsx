@@ -100,7 +100,42 @@ it('defaults Show thinking on and toggles it as a switch in the settings editor'
     expect(toggle).not.toBeChecked()
 })
 
-it('changes this browser\'s theme with another preference from another environment\'s Settings, saving only there, and keeps it across switches', async () => {
+it('saves a theme with another preference to this machine, applying it only once the save succeeds, and Discard restores both', async () => {
+    const servers = { local: prefs('local-1', 'light'), remote: prefs('remote-1', 'system') }
+    servePreferences(servers)
+    applyTheme('light')
+    render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    const user = userEvent.setup()
+    const theme = await screen.findByLabelText('Theme')
+    await waitFor(() => expect(theme).toHaveValue('light'))
+    await user.selectOptions(theme, 'dark')
+    await user.click(screen.getByLabelText('Show advanced controls'))
+
+    // A refused save changes neither the theme in use nor the draft.
+    vi.mocked(saveClientPreferences).mockRejectedValueOnce(new Error('Conflict: reload before saving.'))
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await screen.findByText('Conflict: reload before saving.')
+    expect(screen.queryByText('Saved.')).not.toBeInTheDocument()
+    expect(document.documentElement).not.toHaveClass('dark')
+    expect(cachedAppearance()).toBe('light')
+    expect(theme).toHaveValue('dark')
+    expect(screen.getByLabelText('Show advanced controls')).toBeChecked()
+    await user.click(screen.getByRole('button', { name: /^Discard/ }))
+    await waitFor(() => expect(theme).toHaveValue('light'))
+    expect(screen.getByLabelText('Show advanced controls')).not.toBeChecked()
+
+    await user.selectOptions(theme, 'dark')
+    await user.click(screen.getByLabelText('Show advanced controls'))
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await screen.findByText('Saved.')
+    expect(saveClientPreferences).toHaveBeenLastCalledWith(prefs('local-1', 'light'), expect.objectContaining({ appearance: 'dark', show_advanced_controls: true }), null)
+    expect(servers.local.stored).toMatchObject({ appearance: 'dark', show_advanced_controls: true })
+    expect(servers.remote.revision).toBe('remote-1')
+    expect(document.documentElement).toHaveClass('dark')
+    expect(theme).toHaveValue('dark')
+})
+
+it('applies a theme saved in another environment\'s Settings, saving it only there, and keeps it across switches', async () => {
     const servers = { local: prefs('local-1', 'light'), remote: prefs('remote-1', 'system') }
     servePreferences(servers)
     applyTheme('light')
@@ -108,15 +143,15 @@ it('changes this browser\'s theme with another preference from another environme
     const settings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
     const user = userEvent.setup()
     const theme = await screen.findByLabelText('Theme')
-    // The theme in use shows, not the one the remote environment keeps.
-    await waitFor(() => expect(theme).toHaveValue('light'))
+    // Settings shows the theme the remote environment keeps.
+    await waitFor(() => expect(theme).toHaveValue('system'))
 
     await user.selectOptions(theme, 'dark')
     await user.click(screen.getByLabelText('Show advanced controls'))
     await user.click(screen.getByRole('button', { name: /^Save/ }))
     await screen.findByText('Saved.')
     expect(document.documentElement).toHaveClass('dark')
-    expect(servers.remote.stored).toMatchObject({ appearance: 'system', show_advanced_controls: true })
+    expect(servers.remote.stored).toMatchObject({ appearance: 'dark', show_advanced_controls: true })
     expect(fetchClientPreferences).not.toHaveBeenCalledWith(null)
     expect(servers.local.revision).toBe('local-1')
 
@@ -137,7 +172,7 @@ it('saves another preference from another environment\'s Settings, leaving both 
     await switchEnvironment('env-r')
     render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
     const user = userEvent.setup()
-    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('light'))
+    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('dark'))
     await user.click(screen.getByLabelText('Show advanced controls'))
     await user.click(screen.getByRole('button', { name: /^Save/ }))
     await screen.findByText('Saved.')
@@ -169,10 +204,11 @@ it('keeps the theme chosen last when the save of a theme chosen before it answer
     // Back here, System is chosen after.
     await switchEnvironment(null)
     const localSettings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
-    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('dark'))
+    await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('light'))
     await user.selectOptions(screen.getByLabelText('Theme'), 'system')
     await user.click(screen.getByRole('button', { name: /^Save/ }))
     await screen.findByText('Saved.')
+    expect(cachedAppearance()).toBe('system')
     localSettings.unmount()
     render(<ClientPreferencesController />)
     await act(async () => {})
@@ -181,7 +217,7 @@ it('keeps the theme chosen last when the save of a theme chosen before it answer
     await act(async () => {})
     expect(cachedAppearance()).toBe('system')
     expect(document.documentElement).not.toHaveClass('dark')
-    // Each environment's stored theme stays its own.
-    expect(servers.local.stored.appearance).toBe('light')
-    expect(servers.remote.stored.appearance).toBe('light')
+    // Each environment keeps the theme saved in its own Settings.
+    expect(servers.local.stored.appearance).toBe('system')
+    expect(servers.remote.stored.appearance).toBe('dark')
 })

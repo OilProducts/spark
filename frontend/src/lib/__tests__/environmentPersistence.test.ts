@@ -81,3 +81,29 @@ it('keeps chat read state per environment', async () => {
     await switchEnvironment('env-r')
     expect(readChatReadState()).toEqual({ since: 2_000, revisions: { 'conversation-1': '9' } })
 })
+
+it("keeps an environment's chat read state steady when storage refuses writes", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(1_000)
+    const local = readChatReadState()
+    const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => { throw new DOMException('Full', 'QuotaExceededError') })
+    try {
+        // A new environment's first read cannot be stored; its snapshot is still one object.
+        await switchEnvironment('env-full')
+        vi.setSystemTime(2_000)
+        const fresh = readChatReadState()
+        vi.setSystemTime(3_000)
+        expect(readChatReadState()).toBe(fresh)
+        expect(fresh).toEqual({ since: 2_000, revisions: {} })
+
+        markChatRead('conversation-1', '9')
+        const read = readChatReadState()
+        expect(read).toEqual({ since: 2_000, revisions: { 'conversation-1': '9' } })
+        expect(readChatReadState()).toBe(read)
+
+        await switchEnvironment(null)
+        expect(readChatReadState()).toBe(local)
+    } finally {
+        setItem.mockRestore()
+    }
+})

@@ -7,6 +7,7 @@ import {
     type ProposedPlanArtifactResponse,
 } from '@/lib/workspaceClient'
 import { useDialogController } from '@/components/app/dialog-controller'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 type UseConversationReviewsArgs = {
     activeConversationId: string | null
     activeProjectPath: string | null
@@ -41,6 +42,8 @@ export function useConversationReviews({
         if (!activeProjectPath || !activeConversationId) {
             return
         }
+        // The review goes to the environment it was started in, even if the prompt is answered after a switch.
+        const environmentId = getActiveEnvironmentId()
 
         const reviewMessage = disposition === 'approved'
             ? 'Approved for launch.'
@@ -66,7 +69,7 @@ export function useConversationReviews({
                 disposition,
                 message: reviewMessage,
                 model: model.trim() || null,
-            })
+            }, environmentId)
             applyConversationBatch(activeProjectPath, activeConversationId, ack.changes, 'mutation', 'flow-run-request-review')
         } catch (error) {
             const message = formatErrorMessage(error, 'Unable to review the flow run request.')
