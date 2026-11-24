@@ -63,7 +63,8 @@ const pathBelongsToProject = (path: string | null | undefined, projectPath: stri
     return holds(projectPath) && !Object.keys(registry).some((other) => other.length > projectPath.length && holds(other))
 }
 
-// A run's project owns it; only a run recorded without one goes by where it worked.
+// A run's explicit project owns it, matched exactly: removing C:/work keeps a run started with --project C:\work\child.
+// Only a run recorded without a project goes by where it worked.
 const runBelongsToProject = (
     run:
         | {
@@ -74,7 +75,9 @@ const runBelongsToProject = (
         | undefined,
     projectPath: string,
     registry: AppState['projectRegistry'],
-) => Boolean(run) && pathBelongsToProject(run?.project_path || run?.working_directory, projectPath, registry)
+) => Boolean(run) && (run?.project_path
+    ? normalizeProjectPath(run.project_path) === projectPath
+    : pathBelongsToProject(run?.working_directory, projectPath, registry))
 
 const pruneRunsSessionsForProject = (
     state: Pick<AppState, 'runsListSession' | 'runDetailSessionsByRunId' | 'projectRegistry'>,

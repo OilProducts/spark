@@ -316,6 +316,27 @@ describe('project scope store behavior', () => {
     expect(next.runDetailSessionsByRunId['run-a']).toBeUndefined()
   })
 
+  it('keeps a run started in an unregistered child folder when its parent C:/work is removed', () => {
+    const store = useStore.getState()
+    store.registerProject('C:\\work')
+    store.registerProject('C:\\other')
+    // Started with `spark run start --project C:\\work\\child`; that folder has no registry entry.
+    const childRun = { ...buildRunRecord('run-child', 'C:\\work\\child', 'child.dot'), working_directory: 'C:\\work\\child' }
+    const ownRun = buildRunRecord('run-work', 'C:\\work', 'work.dot')
+    store.updateRunsListSession({ runs: [childRun, ownRun] })
+    store.updateRunDetailSession('run-child', { record: childRun })
+    store.updateRunDetailSession('run-work', { record: ownRun })
+    store.setRunsSelectedRunId('run-child')
+
+    store.removeProject('C:/work', 'C:/other')
+
+    const next = useStore.getState()
+    expect(next.runsListSession.runs.map((run) => run.run_id)).toEqual(['run-child'])
+    expect(selectSelectedRunId(next)).toBe('run-child')
+    expect(next.runDetailSessionsByRunId['run-child']).toBeDefined()
+    expect(next.runDetailSessionsByRunId['run-work']).toBeUndefined()
+  })
+
   it('drops the removed project missions and selection but keeps other projects', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')
