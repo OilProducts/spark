@@ -511,8 +511,8 @@ it('keeps an empty Paused view polling so a delegation that loses its link shows
     const unlinked = { ...nightly, paused: 'No link to this environment; link it again to resume.' }
     serve({
         [LIST]: [ok(list(nightly))],
-        [`${LIST}?paused=true`]: [ok(list()), ok(list(unlinked))],
-        // Paused's live refresh also reads the Open list.
+        [`${LIST}?paused=true`]: [ok(list())],
+        // Paused's live refresh reads the Open list alone and keeps the paused ones.
         [`${LIST}?open=true`]: [ok(list(unlinked, delegation('del-3', 'release-task', [])))],
     })
     const { user } = renderCard()
@@ -525,7 +525,40 @@ it('keeps an empty Paused view polling so a delegation that loses its link shows
     expect(screen.getByText('nightly-checks')).toBeInTheDocument()
     expect(screen.queryByText('release-task')).not.toBeInTheDocument()
     expect(sent(LIST)).toHaveLength(1)
+    expect(sent(`${LIST}?paused=true`)).toHaveLength(1)
     expect(sent(`${LIST}?open=true`)).toHaveLength(1)
+})
+
+it('sends one request per Paused live refresh, skips ticks while it is out, and keeps its failure shown until one succeeds', async () => {
+    const poll = later()
+    const retry = later()
+    const unlinked = { ...nightly, paused: 'No link to this environment; link it again to resume.' }
+    serve({
+        [LIST]: [ok(list(nightly))],
+        [`${LIST}?paused=true`]: [ok(list())],
+        [`${LIST}?open=true`]: [poll.reply, retry.reply],
+    })
+    const { user } = renderCard()
+    expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Paused' }))
+    expect(await screen.findByText('No matching delegations.')).toBeInTheDocument()
+    await settled()
+
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(sent(`${LIST}?open=true`)).toHaveLength(1)
+    await poll.resolve({ detail: 'database is locked' }, 500)
+    expect(await screen.findByText('Database is locked')).toBeInTheDocument()
+
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(sent(`${LIST}?open=true`)).toHaveLength(2)
+    expect(screen.getByText('Database is locked')).toBeInTheDocument()
+    await retry.resolve(list(unlinked))
+    expect(await screen.findByText('No link to this environment; link it again to resume.')).toBeInTheDocument()
+    expect(screen.queryByText('Database is locked')).not.toBeInTheDocument()
+    expect(sent(LIST)).toHaveLength(1)
+    expect(sent(`${LIST}?paused=true`)).toHaveLength(1)
 })
 
 it('stops polling Paused once the last active delegation seals while it stays selected', async () => {
@@ -904,15 +937,16 @@ it('drops an Open response that resolves after Paused is selected, and polls onl
     await settled()
     // The superseded Open request is still out, so the live refresh skips its tick.
     await act(async () => { vi.advanceTimersByTime(4000) })
-    expect(sent(`${LIST}?paused=true`)).toHaveLength(1)
+    expect(sent(`${LIST}?open=true`)).toHaveLength(1)
 
     await open.resolve(list(nightly))
     expect(screen.queryByText('nightly-checks')).not.toBeInTheDocument()
     expect(screen.getByText('paused-task')).toBeInTheDocument()
+    // Paused's live refresh reads the Open list and keeps the paused ones.
     await act(async () => { vi.advanceTimersByTime(4000) })
-    await waitFor(() => expect(sent(`${LIST}?paused=true`)).toHaveLength(2))
+    await waitFor(() => expect(sent(`${LIST}?open=true`)).toHaveLength(2))
     await settled()
-    expect(sent(`${LIST}?open=true`)).toHaveLength(2)
+    expect(sent(`${LIST}?paused=true`)).toHaveLength(1)
     expect(sent(LIST)).toHaveLength(1)
     expect(screen.getByText('paused-task')).toBeInTheDocument()
     expect(screen.queryByText('nightly-checks')).not.toBeInTheDocument()

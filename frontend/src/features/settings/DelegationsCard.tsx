@@ -51,7 +51,8 @@ const editDraft = (env: string, key: string, patch: Partial<AnswerDraft>) => upd
 // The environment a request goes to, read when it is sent.
 const activeEnv = () => getActiveEnvironmentId() ?? ''
 // List requests still out, by environment, superseded ones and those of a card since closed included:
-// a live refresh waits for those of the environment shown, never for another environment's.
+// a live refresh waits for those of the environment shown, never for another environment's, so one
+// stalled in an environment left behind doesn't stop live updates in the one shown now.
 const inFlightCounts: Record<string, number> = {}
 // The card showing each environment, so a reply sent from a card since closed reports and reloads where it is seen.
 const shownCards = new Map<string, (done: string) => Promise<void>>()
@@ -286,34 +287,31 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     // selected, is dropped; a current failure is thrown for the caller to report.
     const load = useCallback(async (polling = false) => {
         const requested = filterRef.current
+        // Sealing clears a pause (spark-storage seal_out_on), so the Open list holds every paused
+        // delegation: Paused's live refresh reads it alone, for its rows and to see one pause or seal.
+        const fetched = polling && requested === 'paused' ? 'open' : requested
         const env = activeEnv()
         const seq = ++requestSeqRef.current
         const current = () => mountedRef.current && seq === requestSeqRef.current && requested === filterRef.current
         inFlightCounts[env] = (inFlightCounts[env] ?? 0) + 1
         setLoading(true)
         try {
-            const [records, open] = await Promise.all([
-                fetchDelegations(FILTER_QUERY[requested]),
-                // A Paused list can't show an active delegation sealing or pausing, so Paused's live
-                // refresh also reads the Open list.
-                polling && requested === 'paused' ? fetchDelegations(FILTER_QUERY.open) : null,
-            ])
+            const records = await fetchDelegations(FILTER_QUERY[fetched])
             if (!current()) return
-            setLoaded({ filter: requested, records })
-            const known = open ? [...open, ...records] : records
+            setLoaded({ filter: requested, records: fetched === requested ? records : records.filter((row) => inFilter(row, requested)) })
             // A list of every open delegation (All, Open) shows that one seen open but left out has sealed since.
-            const coversOpen = requested !== 'paused' || open !== null
+            const coversOpen = fetched !== 'paused'
             const kept = coversOpen
                 ? Object.fromEntries(Object.entries(seenRef.current).filter(([, row]) => row.phase === 'sealed'))
                 : seenRef.current
-            seenRef.current = { ...kept, ...Object.fromEntries(known.map((row) => [row.delegation_id, row])) }
+            seenRef.current = { ...kept, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }
             setSeen(seenRef.current)
             setLoadError(null)
             setCancelErrors((errors) => Object.fromEntries(Object.entries(errors).filter(([id]) => {
-                const record = known.find((row) => row.delegation_id === id)
+                const record = records.find((row) => row.delegation_id === id)
                 return !record || (!record.cancel_requested_at && record.phase !== 'sealed')
             })))
-            forgetUnasked(env, known, coversOpen)
+            forgetUnasked(env, records, coversOpen)
         } catch (err) {
             if (current()) throw err
         } finally {
