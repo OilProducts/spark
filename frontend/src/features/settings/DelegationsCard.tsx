@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useDialogController } from '@/components/app/dialog-controller'
+import { FormQuestionFields } from '@/components/app/form-question'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -16,6 +18,14 @@ import {
 
 type Filter = 'all' | 'open' | 'paused'
 
+const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
+// Delegations still in flight are re-read this often, so new questions and phases show up.
+const LIVE_REFRESH_MS = 4000
+
+const errorText = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback)
+// Delegation IDs are UUIDs, so the first ':' ends the delegation part.
+const ackKey = (delegationId: string, questionId: string) => `${delegationId}:${questionId}`
+
 function delegationStatus(record: DelegationOut): { label: string; tone: StatusTone } {
     if (record.phase === 'sealed') {
         const resultStatus = typeof record.result?.status === 'string' ? record.result.status : 'sealed'
@@ -24,157 +34,257 @@ function delegationStatus(record: DelegationOut): { label: string; tone: StatusT
         return { label: resultStatus, tone: 'destructive' }
     }
     if (record.paused) return { label: 'paused', tone: 'warning' }
-    if ((record.last_state?.questions?.length ?? 0) > 0) return { label: 'waiting on answer', tone: 'warning' }
+    // A requested cancellation outranks questions the last snapshot still lists.
     if (record.cancel_requested_at) return { label: 'canceling', tone: 'neutral' }
+    if ((record.last_state?.questions?.length ?? 0) > 0) return { label: 'waiting on answer', tone: 'warning' }
     if (record.last_state?.status) return { label: record.last_state.status, tone: 'info' }
     return { label: record.phase, tone: 'info' }
 }
 
 function QuestionResponder({
-    delegationId,
+    draftKey,
+    requestKey,
     question,
-    busy,
+    disabled,
     onAnswer,
 }: {
-    delegationId: string
+    draftKey: string
+    requestKey: string
     question: DelegationQuestion
-    busy: boolean
-    onAnswer: (delegationId: string, questionId: string, body: DelegationAnswerBody) => Promise<void>
+    disabled: boolean
+    /** Resolves to why the answer failed, or null once it was sent. */
+    onAnswer: (body: DelegationAnswerBody) => Promise<string | null>
 }) {
     const [text, setText] = useState('')
     const [answers, setAnswers] = useState<Record<string, string>>({})
-    const [formJson, setFormJson] = useState('')
-    const [localError, setLocalError] = useState<string | null>(null)
+    const [error, setError] = useState<string | null>(null)
+    const label = question.prompt || question.form?.message || question.questions?.map((sub) => sub.question).join(' ') || 'Question'
 
-    if (question.form) {
-        const message = typeof question.form.message === 'string' ? question.form.message : 'Form response requested.'
-        const submitForm = async () => {
-            try {
-                const content = JSON.parse(formJson || '{}') as Record<string, unknown>
-                setLocalError(null)
-                await onAnswer(delegationId, question.question_id, { form: { action: 'accept', content } })
-                setFormJson('')
-            } catch (err) {
-                setLocalError(err instanceof Error ? err.message : 'Enter valid JSON for form content.')
-            }
-        }
-        return (
-            <div className="space-y-2 border-t border-border pt-2">
-                <div className="text-xs font-medium text-foreground">{message}</div>
-                <div className="flex flex-wrap gap-2">
-                    <Input
-                        aria-label={`Form JSON for ${question.question_id}`}
-                        placeholder='{"field": "value"}'
-                        value={formJson}
-                        onChange={(event) => setFormJson(event.target.value)}
-                        className="min-w-[12rem] flex-1 font-mono text-xs"
-                    />
-                    <Button size="sm" variant="outline" disabled={busy} onClick={() => void submitForm()}>Accept JSON</Button>
-                    <Button size="sm" variant="ghost" disabled={busy} onClick={() => void onAnswer(delegationId, question.question_id, { form: { action: 'decline' } })}>Decline</Button>
-                </div>
-                {localError ? <InlineError>{localError}</InlineError> : null}
-            </div>
-        )
+    // A failed answer keeps the draft beside its error; a sent one clears it.
+    const send = async (body: DelegationAnswerBody, clearDraft: () => void) => {
+        setError(null)
+        const failure = await onAnswer(body)
+        if (failure) setError(failure)
+        else clearDraft()
     }
 
-    if (question.questions && question.questions.length > 0) {
-        const submitMulti = async () => {
-            await onAnswer(delegationId, question.question_id, { answers })
-            setAnswers({})
+    const submitAnswers = (subs: NonNullable<DelegationQuestion['questions']>) => {
+        const trimmed = Object.fromEntries(subs.map((sub) => [sub.id, (answers[sub.id] ?? '').trim()]))
+        const missing = subs.find((sub) => !trimmed[sub.id])
+        if (missing) {
+            setError(`Answer "${missing.question}" before submitting.`)
+            return
         }
-        return (
-            <div className="space-y-2 border-t border-border pt-2">
-                {question.questions.map((sub) => (
-                    <div key={sub.id} className="space-y-1">
-                        <div className="text-xs font-medium text-foreground">{sub.question}</div>
-                        <Input
-                            aria-label={sub.question}
-                            value={answers[sub.id] ?? ''}
-                            onChange={(event) => setAnswers((prev) => ({ ...prev, [sub.id]: event.target.value }))}
-                            placeholder={sub.options?.map((o) => o.label).join(' / ') || 'Answer'}
-                        />
-                    </div>
-                ))}
-                <Button size="sm" variant="outline" disabled={busy} onClick={() => void submitMulti()}>
-                    Submit answers
-                </Button>
-            </div>
-        )
+        void send({ answers: trimmed }, () => setAnswers({}))
     }
+
+    const options = question.options ?? []
+    // A run gate with declared choices takes only one of them (attractor-api's answer check).
+    const restricted = options.length > 0 && question.origin !== 'agent_clarification' && question.question_type !== 'FREEFORM'
 
     return (
-        <div className="space-y-2 border-t border-border pt-2">
-            {question.prompt ? <div className="text-xs font-medium text-foreground">{question.prompt}</div> : null}
-            {question.options && question.options.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                    {question.options.map((option) => {
-                        const value = option.value ?? option.label
+        <div role="group" aria-label={`${requestKey}: ${label}`} className="space-y-2 border-t border-border pt-2">
+            {question.form ? (
+                <FormQuestionFields
+                    actionError={error}
+                    draftKey={`delegation:${draftKey}`}
+                    form={question.form}
+                    isSubmitting={disabled}
+                    testId={`delegation-form-${question.question_id}`}
+                    onReply={(reply) => void send({ form: reply }, () => undefined)}
+                />
+            ) : question.questions ? (
+                <>
+                    {question.questions.map((sub) => {
+                        const value = answers[sub.id] ?? ''
+                        const subOptions = sub.options ?? []
+                        const picked = subOptions.some((option) => (option.value ?? option.label) === value)
+                        const setAnswer = (next: string) => {
+                            setError(null)
+                            setAnswers((current) => ({ ...current, [sub.id]: next }))
+                        }
                         return (
-                            <Button
-                                key={value}
-                                size="sm"
-                                variant="outline"
-                                disabled={busy}
-                                onClick={() => void onAnswer(delegationId, question.question_id, { selected_value: value })}
-                            >
-                                {option.label}
-                            </Button>
+                            <div key={sub.id} className="space-y-1">
+                                <div className="text-xs font-medium text-foreground">{sub.question}</div>
+                                {subOptions.length > 0 ? (
+                                    <div role="group" aria-label={sub.question} className="flex flex-wrap gap-2">
+                                        {subOptions.map((option) => {
+                                            const optionValue = option.value ?? option.label
+                                            return (
+                                                <Button
+                                                    key={optionValue}
+                                                    type="button"
+                                                    size="sm"
+                                                    variant={value === optionValue ? 'secondary' : 'outline'}
+                                                    aria-pressed={value === optionValue}
+                                                    disabled={disabled}
+                                                    onClick={() => setAnswer(optionValue)}
+                                                >
+                                                    {option.label}
+                                                </Button>
+                                            )
+                                        })}
+                                    </div>
+                                ) : null}
+                                {subOptions.length === 0 || sub.allow_other || sub.question_type === 'FREEFORM' ? (
+                                    <Input
+                                        type={sub.is_secret ? 'password' : 'text'}
+                                        autoComplete="off"
+                                        aria-label={sub.question}
+                                        value={picked ? '' : value}
+                                        disabled={disabled}
+                                        onChange={(event) => setAnswer(event.target.value)}
+                                        placeholder={subOptions.length > 0 ? 'Or enter another answer' : 'Answer'}
+                                    />
+                                ) : null}
+                            </div>
                         )
                     })}
-                </div>
-            ) : null}
-            <div className="flex flex-wrap gap-2">
-                <Input
-                    aria-label={`Answer for ${question.question_id}`}
-                    value={text}
-                    onChange={(event) => setText(event.target.value)}
-                    placeholder="Free-text answer"
-                    className="min-w-[12rem] flex-1"
-                />
-                <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy || !text.trim()}
-                    onClick={() => void onAnswer(delegationId, question.question_id, { selected_value: text.trim() }).then(() => setText(''))}
-                >
-                    Answer
-                </Button>
-            </div>
+                    <Button size="sm" variant="outline" disabled={disabled} onClick={() => submitAnswers(question.questions ?? [])}>
+                        Submit answers
+                    </Button>
+                </>
+            ) : (
+                <>
+                    {question.prompt ? <div className="text-xs font-medium text-foreground">{question.prompt}</div> : null}
+                    {options.length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                            {options.map((option) => {
+                                const value = option.value ?? option.label
+                                return (
+                                    <Button
+                                        key={value}
+                                        size="sm"
+                                        variant="outline"
+                                        disabled={disabled}
+                                        onClick={() => void send({ selected_value: value }, () => undefined)}
+                                    >
+                                        {option.label}
+                                    </Button>
+                                )
+                            })}
+                        </div>
+                    ) : null}
+                    {restricted ? null : (
+                        <div className="flex flex-wrap gap-2">
+                            <Input
+                                aria-label="Free-text answer"
+                                value={text}
+                                disabled={disabled}
+                                onChange={(event) => {
+                                    setError(null)
+                                    setText(event.target.value)
+                                }}
+                                placeholder="Free-text answer"
+                                className="min-w-[12rem] flex-1"
+                            />
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={disabled || !text.trim()}
+                                onClick={() => void send({ selected_value: text.trim() }, () => setText(''))}
+                            >
+                                Answer
+                            </Button>
+                        </div>
+                    )}
+                </>
+            )}
+            {error && !question.form ? <InlineError>{error}</InlineError> : null}
         </div>
     )
 }
 
 export function DelegationsCard({ active = true }: { active?: boolean }) {
+    const dialogs = useDialogController()
     const [filter, setFilter] = useState<Filter>('all')
-    const [records, setRecords] = useState<DelegationOut[]>([])
+    const filterRef = useRef<Filter>('all')
+    const requestSeqRef = useRef(0)
+    const loadingRef = useRef(false)
+    // The last rows loaded and the filter they answer: another filter's rows are never shown.
+    const [loaded, setLoaded] = useState<{ filter: Filter; records: DelegationOut[] } | null>(null)
+    // Answered questions stay hidden until a snapshot of their delegation no longer lists them.
+    const [acknowledged, setAcknowledged] = useState<ReadonlySet<string>>(() => new Set())
     const [loading, setLoading] = useState(false)
     const [busy, setBusy] = useState(false)
-    const [error, setError] = useState<string | null>(null)
+    const [loadError, setLoadError] = useState<string | null>(null)
+    const [cancelError, setCancelError] = useState<string | null>(null)
     const [status, setStatus] = useState('')
 
-    const refresh = useCallback(async (nextFilter: Filter = filter) => {
+    // Loads the selected filter. A response to an older request, or for a filter no longer
+    // selected, is dropped; a current failure is thrown for the caller to report.
+    const load = useCallback(async () => {
+        const requested = filterRef.current
+        const seq = ++requestSeqRef.current
+        const current = () => seq === requestSeqRef.current && requested === filterRef.current
+        loadingRef.current = true
         setLoading(true)
         try {
-            const list = await fetchDelegations(
-                nextFilter === 'open' ? { open: true } : nextFilter === 'paused' ? { paused: true } : undefined,
-            )
-            setRecords(list)
-            setError(null)
+            const records = await fetchDelegations(FILTER_QUERY[requested])
+            if (!current()) return
+            setLoaded({ filter: requested, records })
+            setLoadError(null)
+            setAcknowledged((keys) => {
+                const kept = [...keys].filter((key) => {
+                    const record = records.find((row) => key.startsWith(`${row.delegation_id}:`))
+                    return !record || (record.last_state?.questions ?? []).some((question) => ackKey(record.delegation_id, question.question_id) === key)
+                })
+                return kept.length === keys.size ? keys : new Set(kept)
+            })
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Could not load delegations.')
+            if (current()) throw err
         } finally {
-            setLoading(false)
+            if (seq === requestSeqRef.current) {
+                loadingRef.current = false
+                setLoading(false)
+            }
         }
-    }, [filter])
+    }, [])
+
+    const refresh = useCallback(() => load().catch((err: unknown) => {
+        setLoadError(errorText(err, 'Could not load delegations.'))
+        setStatus('')
+    }), [load])
+
+    // After a change went through, a failed reload is its own error: the change's fresh status stays.
+    const reloadAfterChange = () => load().catch((err: unknown) => {
+        setLoadError(`Could not refresh delegations: ${errorText(err, 'the request failed.')}`)
+    })
 
     useEffect(() => {
-        if (!active) return
-        void refresh(filter)
+        if (active) void refresh()
     }, [active, filter, refresh])
 
+    const rows = loaded?.filter === filter ? loaded.records : null
+    const live = rows?.some((record) => record.phase !== 'sealed') ?? false
+    useEffect(() => {
+        if (!active || !live) return
+        const timer = window.setInterval(() => {
+            if (!loadingRef.current) void refresh()
+        }, LIVE_REFRESH_MS)
+        return () => window.clearInterval(timer)
+    }, [active, live, refresh])
+
+    const selectFilter = (choice: Filter) => {
+        if (choice === filterRef.current) return
+        filterRef.current = choice
+        setLoadError(null)
+        setFilter(choice)
+    }
+
     const handleCancel = async (record: DelegationOut) => {
+        const confirmed = await dialogs.confirm({
+            title: `Cancel delegation ${record.request_key}?`,
+            description: record.paused
+                ? `${record.request_key} is paused, so it will be sealed locally as canceled.`
+                : `Spark asks the linked environment to stop ${record.request_key}.`,
+            confirmLabel: 'Cancel delegation',
+            cancelLabel: 'Keep delegation',
+            confirmVariant: 'destructive',
+        })
+        if (!confirmed) return
         setBusy(true)
-        setError(null)
+        setCancelError(null)
         try {
             const updated = await cancelDelegation(record.delegation_id)
             setStatus(
@@ -182,26 +292,30 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                     ? `Canceled delegation ${record.request_key}.`
                     : `Cancellation requested for ${record.request_key}.`,
             )
-            await refresh(filter)
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Could not cancel delegation.')
-        } finally {
+            setCancelError(errorText(err, 'Could not cancel delegation.'))
+            setStatus('')
             setBusy(false)
+            return
         }
+        await reloadAfterChange()
+        setBusy(false)
     }
 
-    const handleAnswer = async (delegationId: string, questionId: string, body: DelegationAnswerBody) => {
+    const handleAnswer = async (record: DelegationOut, questionId: string, body: DelegationAnswerBody): Promise<string | null> => {
         setBusy(true)
-        setError(null)
         try {
-            await answerDelegationQuestion(delegationId, questionId, body)
-            setStatus(`Sent answer for question ${questionId}.`)
-            await refresh(filter)
+            await answerDelegationQuestion(record.delegation_id, questionId, body)
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Could not submit answer.')
-        } finally {
+            setStatus('')
             setBusy(false)
+            return errorText(err, 'Could not submit answer.')
         }
+        setAcknowledged((keys) => new Set(keys).add(ackKey(record.delegation_id, questionId)))
+        setStatus(`Sent answer for ${record.request_key}.`)
+        await reloadAfterChange()
+        setBusy(false)
+        return null
     }
 
     return (
@@ -216,12 +330,12 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                 size="sm"
                                 variant={filter === choice ? 'secondary' : 'ghost'}
                                 aria-pressed={filter === choice}
-                                onClick={() => setFilter(choice)}
+                                onClick={() => selectFilter(choice)}
                             >
                                 {choice === 'all' ? 'All' : choice === 'open' ? 'Open' : 'Paused'}
                             </Button>
                         ))}
-                        <Button size="sm" variant="ghost" disabled={loading || busy} onClick={() => void refresh(filter)}>
+                        <Button size="sm" variant="ghost" disabled={loading || busy} onClick={() => void refresh()}>
                             Refresh
                         </Button>
                     </div>
@@ -231,18 +345,23 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                 <p className="text-muted-foreground">
                     Tasks handed off from this environment to linked Spark machines. Paused delegations can be canceled locally or resumed by re-linking.
                 </p>
-                {loading && records.length === 0 ? (
-                    <p role="status" className="text-muted-foreground">Loading delegations…</p>
-                ) : records.length === 0 ? (
+                {rows === null ? (
+                    loadError ? null : <p role="status" className="text-muted-foreground">Loading delegations…</p>
+                ) : rows.length === 0 ? (
                     <p className="text-xs text-muted-foreground">No matching delegations.</p>
                 ) : (
                     <ul className="space-y-2">
-                        {records.map((record) => {
+                        {rows.map((record) => {
                             const badge = delegationStatus(record)
-                            const questions = record.phase === 'accepted' ? (record.last_state?.questions ?? []) : []
+                            const questions = record.phase === 'accepted'
+                                ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))
+                                : []
+                            // Answers go through the link to the other environment, which a paused
+                            // delegation has lost, and a delegation being canceled no longer waits on them.
+                            const answerable = !record.paused && !record.cancel_requested_at
                             return (
                                 <li key={record.delegation_id}>
-                                    <Well className="space-y-2 px-3 py-2">
+                                    <Well role="group" aria-label={`Delegation ${record.request_key}`} className="space-y-2 px-3 py-2">
                                         <div className="flex flex-wrap items-start justify-between gap-2">
                                             <div className="min-w-0 space-y-0.5">
                                                 <div className="flex flex-wrap items-center gap-2 font-medium text-foreground">
@@ -262,7 +381,9 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                                     size="sm"
                                                     variant="ghost"
                                                     aria-label={`Cancel delegation ${record.request_key}`}
-                                                    disabled={busy}
+                                                    // A requested cancel can't reach a paused delegation's environment; canceling
+                                                    // again seals it locally (spark-workspace delegations::cancel), so it stays offered.
+                                                    disabled={busy || (Boolean(record.cancel_requested_at) && !record.paused)}
                                                     onClick={() => void handleCancel(record)}
                                                 >
                                                     Cancel delegation
@@ -272,13 +393,21 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                         {record.paused ? (
                                             <div className="text-xs text-warning">{record.paused}</div>
                                         ) : null}
+                                        {questions.length > 0 && !answerable ? (
+                                            <p className="text-xs text-muted-foreground">
+                                                {record.paused
+                                                    ? 'Answering is unavailable while this delegation is paused or its link is missing.'
+                                                    : 'Answering is unavailable while cancellation is pending.'}
+                                            </p>
+                                        ) : null}
                                         {questions.map((question) => (
                                             <QuestionResponder
                                                 key={question.question_id}
-                                                delegationId={record.delegation_id}
+                                                draftKey={ackKey(record.delegation_id, question.question_id)}
+                                                requestKey={record.request_key}
                                                 question={question}
-                                                busy={busy}
-                                                onAnswer={handleAnswer}
+                                                disabled={busy || !answerable}
+                                                onAnswer={(body) => handleAnswer(record, question.question_id, body)}
                                             />
                                         ))}
                                     </Well>
@@ -288,7 +417,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                     </ul>
                 )}
                 {status ? <p role="status" className="text-xs text-muted-foreground">{status}</p> : null}
-                {error ? <InlineError>{error}</InlineError> : null}
+                {loadError ? <InlineError>{loadError}</InlineError> : null}
+                {cancelError ? <InlineError>{cancelError}</InlineError> : null}
             </CardContent>
         </Card>
     )
