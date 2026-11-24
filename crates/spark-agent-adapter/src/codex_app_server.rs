@@ -18,6 +18,7 @@ use spark_common::debug::{codex_jsonrpc_trace_enabled, CODEX_JSONRPC_TRACE_PATH_
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
+use spark_common::paths::Environment;
 use time::OffsetDateTime;
 use unified_llm_adapter::Usage;
 
@@ -551,7 +552,7 @@ impl CodexAppServerClient {
         working_dir: PathBuf,
         trace_path: Option<PathBuf>,
         native: Option<&spark_common::agent_settings::NativeAgentSettings>,
-        turn_env: BTreeMap<String, String>,
+        turn_env: BTreeMap<String, OsString>,
         controls: Option<Arc<TurnStop>>,
         clarification_handler: Option<crate::codergen::ClarificationHandler>,
     ) -> Result<Self, CodexAppServerError> {
@@ -2993,14 +2994,15 @@ impl EventBuilder {
     }
 }
 
-pub fn build_codex_runtime_environment() -> Result<BTreeMap<String, String>, CodexAppServerError> {
+pub fn build_codex_runtime_environment() -> Result<BTreeMap<String, OsString>, CodexAppServerError>
+{
     build_codex_runtime_environment_with_settings(None)
 }
 
 pub(crate) fn build_codex_runtime_environment_with_settings(
     native: Option<&spark_common::agent_settings::NativeAgentSettings>,
-) -> Result<BTreeMap<String, String>, CodexAppServerError> {
-    let mut env_map = spark_common::paths::utf8_env_vars();
+) -> Result<BTreeMap<String, OsString>, CodexAppServerError> {
+    let mut env_map = process_environment();
     if let Some(native) = native {
         for (key, value) in [
             (CODEX_RUNTIME_ROOT_ENV, &native.codex_runtime_root),
@@ -3008,7 +3010,7 @@ pub(crate) fn build_codex_runtime_environment_with_settings(
         ] {
             env_map.remove(key);
             if let Some(value) = value {
-                env_map.insert(key.into(), value.clone());
+                env_map.insert(key.into(), value.into());
             }
         }
     }
@@ -3019,7 +3021,9 @@ pub(crate) fn build_codex_runtime_environment_with_settings(
     let path = existing_path_key
         .as_deref()
         .and_then(|key| env_map.remove(key));
-    env_map.extend(spark_agent_environment(path.as_deref()));
+    env_map.extend(spark_agent_environment(
+        path.as_deref().and_then(OsStr::to_str),
+    ));
     let runtime_root = runtime_root(&env_map);
     ensure_dir(&runtime_root)?;
     let codex_home = runtime_root.join(".codex");
@@ -3056,37 +3060,37 @@ pub(crate) fn build_codex_runtime_environment_with_settings(
         ))
     })?;
 
-    let runtime_root_text = runtime_root.to_string_lossy().into_owned();
-    env_map.insert("HOME".to_string(), runtime_root_text.clone());
-    env_map.insert("USERPROFILE".to_string(), runtime_root_text);
-    env_map.insert(
-        "CODEX_HOME".to_string(),
-        codex_home.to_string_lossy().into_owned(),
-    );
-    env_map.insert(
-        "XDG_CONFIG_HOME".to_string(),
-        xdg_config_home.to_string_lossy().into_owned(),
-    );
-    env_map.insert(
-        "XDG_DATA_HOME".to_string(),
-        xdg_data_home.to_string_lossy().into_owned(),
-    );
+    for (key, path) in [
+        ("HOME", runtime_root.clone()),
+        ("USERPROFILE", runtime_root),
+        ("CODEX_HOME", codex_home),
+        ("XDG_CONFIG_HOME", xdg_config_home),
+        ("XDG_DATA_HOME", xdg_data_home),
+    ] {
+        env_map.insert(key.to_string(), path.into_os_string());
+    }
     Ok(env_map)
 }
 
-fn runtime_root(env_map: &BTreeMap<String, String>) -> PathBuf {
-    env_map
-        .get(CODEX_RUNTIME_ROOT_ENV)
-        .filter(|value| !value.trim().is_empty())
+/// This process's environment with every value byte for byte, such as a
+/// non-UTF-8 HOME. A variable whose name is not UTF-8 is left out.
+pub(crate) fn process_environment() -> BTreeMap<String, OsString> {
+    env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value)))
+        .collect()
+}
+
+fn runtime_root(env_map: &BTreeMap<String, OsString>) -> PathBuf {
+    AgentEnvironment(env_map)
+        .get_var_os(CODEX_RUNTIME_ROOT_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| spark_runtime_dir(env_map, "codex"))
 }
 
 /// An agent's own home under Spark's: `<SPARK_HOME>/runtime/<agent>`, else
 /// `<home>/.spark/runtime/<agent>`, else `.spark/runtime/<agent>`.
-pub(crate) fn spark_runtime_dir(env_map: &BTreeMap<String, String>, agent: &str) -> PathBuf {
-    use spark_common::paths::Environment;
-    let env = CollectedEnvironment(env_map);
+pub(crate) fn spark_runtime_dir(env_map: &BTreeMap<String, OsString>, agent: &str) -> PathBuf {
+    let env = AgentEnvironment(env_map);
     env.get_var_os("SPARK_HOME")
         .map(PathBuf::from)
         .or_else(|| {
@@ -3097,26 +3101,17 @@ pub(crate) fn spark_runtime_dir(env_map: &BTreeMap<String, String>, agent: &str)
         .join(agent)
 }
 
-/// An env map collected from this process, plus Spark's overrides. It cannot
-/// hold a non-UTF-8 value such as a HOME, so a variable the map lacks is read
-/// from the process. Blank values count as unset.
-struct CollectedEnvironment<'a>(&'a BTreeMap<String, String>);
+/// An agent's environment map, in which a blank value counts as unset.
+struct AgentEnvironment<'a>(&'a BTreeMap<String, OsString>);
 
-impl spark_common::paths::Environment for CollectedEnvironment<'_> {
+impl Environment for AgentEnvironment<'_> {
     fn get_var(&self, key: &str) -> Option<String> {
         self.get_var_os(key)?.into_string().ok()
     }
 
     fn get_var_os(&self, key: &str) -> Option<OsString> {
-        let value = self
-            .0
-            .get(key)
-            .map(OsString::from)
-            .or_else(|| env::var_os(key))?;
-        value
-            .to_str()
-            .is_none_or(|text| !text.trim().is_empty())
-            .then_some(value)
+        let value = self.0.get(key)?;
+        (!value.to_string_lossy().trim().is_empty()).then(|| value.clone())
     }
 }
 
@@ -3448,16 +3443,13 @@ fn copy_tree_contents(source: &Path, destination: &Path) -> std::io::Result<()> 
 /// What every agent shell needs for the `spark` CLI to reach this Spark: its
 /// home, its API, and the app's own binaries (the CLI among them) first on
 /// PATH. Codex and Claude Code sessions get the same, as do flow tool commands.
-pub fn spark_agent_environment(path: Option<&str>) -> Vec<(String, String)> {
+pub fn spark_agent_environment(path: Option<&str>) -> Vec<(String, OsString)> {
     let mut vars = Vec::new();
     if let Some(spark_home) = CODEX_SPARK_HOME.get() {
-        vars.push((
-            "SPARK_HOME".to_string(),
-            spark_home.to_string_lossy().into_owned(),
-        ));
+        vars.push(("SPARK_HOME".to_string(), spark_home.into()));
     }
     if let Some(base_url) = CODEX_API_BASE_URL.get() {
-        vars.push(("SPARK_API_BASE_URL".to_string(), base_url.clone()));
+        vars.push(("SPARK_API_BASE_URL".to_string(), base_url.into()));
     }
     let mut path_entries = first_party_tool_bin_dirs()
         .into_iter()
@@ -3465,7 +3457,10 @@ pub fn spark_agent_environment(path: Option<&str>) -> Vec<(String, String)> {
         .collect::<Vec<_>>();
     if !path_entries.is_empty() {
         path_entries.extend(path.and_then(non_empty).map(str::to_string));
-        vars.push(("PATH".to_string(), path_entries.join(path_separator())));
+        vars.push((
+            "PATH".to_string(),
+            path_entries.join(path_separator()).into(),
+        ));
     }
     vars
 }
@@ -4107,18 +4102,11 @@ mod tests {
 
     #[test]
     fn runtime_dirs_skip_blank_home_values() {
-        // Every key is present, so none is read from this process.
         let vars = |pairs: &[(&str, &str)]| {
-            let mut vars = ["SPARK_HOME", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"]
-                .map(|key| (key.to_string(), String::new()))
-                .into_iter()
-                .collect::<BTreeMap<_, _>>();
-            vars.extend(
-                pairs
-                    .iter()
-                    .map(|(key, value)| (key.to_string(), value.to_string())),
-            );
-            vars
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), OsString::from(value)))
+                .collect::<BTreeMap<_, _>>()
         };
         let runtime = |home: &str, agent: &str| {
             PathBuf::from(home)
@@ -4156,25 +4144,27 @@ mod tests {
         );
     }
 
-    /// Runs in a child process: HOME is process-wide.
+    /// Runs in a child process: HOME and the configured Spark home are
+    /// process-wide.
     #[cfg(unix)]
     #[test]
-    fn agent_runtime_dirs_keep_a_non_utf8_home() {
+    fn agents_launch_with_the_exact_non_utf8_paths_spark_prepares() {
         use std::os::unix::ffi::OsStrExt;
 
         const CHILD: &str = "SPARK_AGENT_NON_UTF8_HOME_TEST";
         if env::var_os(CHILD).is_none() {
             let temp = tempfile::tempdir().expect("tempdir");
+            let root = temp.path().canonicalize().expect("canonical tempdir");
             let output = std::process::Command::new(env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "codex_app_server::tests::agent_runtime_dirs_keep_a_non_utf8_home",
+                    "codex_app_server::tests::agents_launch_with_the_exact_non_utf8_paths_spark_prepares",
                     "--nocapture",
                 ])
-                // No SPARK_HOME: the runtime dirs fall back to `~/.spark`.
+                // No SPARK_HOME: Spark's home is `~/.spark`.
                 .env_clear()
                 .env(CHILD, "1")
-                .env("HOME", temp.path().join(OsStr::from_bytes(b"home-\xff")))
+                .env("HOME", root.join(OsStr::from_bytes(b"home-\xff")))
                 .output()
                 .unwrap();
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -4187,17 +4177,52 @@ mod tests {
         }
         let home = PathBuf::from(env::var_os("HOME").unwrap());
         assert!(home.to_str().is_none());
-        let runtime = home.join(".spark").join("runtime");
-        // Must not panic. Creating the dirs may still fail on a filesystem
-        // that rejects non-UTF-8 names, such as APFS.
-        let _ = build_codex_runtime_environment();
+        // As spark-server configures it at startup.
+        let spark_home =
+            spark_common::settings::resolve_data_dir(&spark_common::paths::ProcessEnvironment)
+                .unwrap();
+        assert_eq!(spark_home, home.join(".spark"));
+        configure_codex_spark_home(&spark_home).unwrap();
+        let runtime = spark_home.join("runtime");
+        let exact = |path: &Path| Some(path.as_os_str().to_owned());
+
+        // Every turn binds the Spark home for its agent processes.
+        let turn = crate::agent::agent_turn_env(&BTreeMap::new());
+        assert_eq!(turn.get("SPARK_HOME").cloned(), exact(&spark_home));
+
+        // Claude Code's command, as launched.
+        let (_, command) = crate::claude_code::claude_command(None);
+        let claude = command
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(OsStr::to_owned)))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(claude[OsStr::new("SPARK_HOME")], exact(&spark_home));
         assert_eq!(
-            runtime_root(&spark_common::paths::utf8_env_vars()),
-            runtime.join("codex")
+            claude[OsStr::new("CLAUDE_CONFIG_DIR")],
+            exact(&runtime.join("claude"))
         );
-        assert_eq!(
-            crate::claude_code::claude_config_dir(None),
-            runtime.join("claude")
-        );
+
+        // Codex's launch environment, and the dirs prepared for it.
+        let codex = runtime.join("codex");
+        match build_codex_runtime_environment() {
+            Ok(env) => {
+                for (key, path) in [
+                    ("SPARK_HOME", spark_home.clone()),
+                    ("HOME", codex.clone()),
+                    ("USERPROFILE", codex.clone()),
+                    ("CODEX_HOME", codex.join(".codex")),
+                    ("XDG_CONFIG_HOME", codex.join(".config")),
+                    ("XDG_DATA_HOME", codex.join(".local/share")),
+                ] {
+                    assert_eq!(env.get(key).cloned(), exact(&path), "{key}");
+                }
+                assert!(codex.join(".codex/config.toml").is_file());
+            }
+            // APFS stores only UTF-8 names, so no such home can exist there.
+            Err(error) if cfg!(target_os = "macos") => {
+                assert!(error.message.contains("could not be created"), "{error:?}")
+            }
+            Err(error) => panic!("{error:?}"),
+        }
     }
 }

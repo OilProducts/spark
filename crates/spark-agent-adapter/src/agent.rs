@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -21,7 +22,7 @@ pub const PROJECT_WORK_DIR_METADATA_KEY: &str = "spark.runtime.project_work_dir"
 /// The environment a turn binds for its agent processes: this Spark's home
 /// and API, so `spark` reaches it from every backend, and the metadata's
 /// work area.
-pub(crate) fn agent_turn_env(metadata: &BTreeMap<String, Value>) -> BTreeMap<String, String> {
+pub(crate) fn agent_turn_env(metadata: &BTreeMap<String, Value>) -> BTreeMap<String, OsString> {
     crate::codex_app_server::spark_agent_environment(None)
         .into_iter()
         .filter(|(key, _)| key != "PATH")
@@ -32,7 +33,7 @@ pub(crate) fn agent_turn_env(metadata: &BTreeMap<String, Value>) -> BTreeMap<Str
                 .map(|work| {
                     (
                         spark_common::project::PROJECT_WORK_DIR_ENV.to_string(),
-                        work.to_string(),
+                        work.into(),
                     )
                 }),
         )

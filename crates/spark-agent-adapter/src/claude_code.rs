@@ -1625,7 +1625,7 @@ pub(crate) fn claude_code_executable() -> PathBuf {
 
 /// The CLI as every Spark launch sees it: the configured binary and config
 /// dir, which is where Claude Code keeps its sign-in.
-fn claude_command(native: Option<&NativeAgentSettings>) -> (PathBuf, Command) {
+pub(crate) fn claude_command(native: Option<&NativeAgentSettings>) -> (PathBuf, Command) {
     let executable = native
         .and_then(|config| config.claude_binary.as_ref())
         .map(PathBuf::from)
@@ -1653,7 +1653,7 @@ pub(crate) fn claude_config_dir(native: Option<&NativeAgentSettings>) -> PathBuf
             .and_then(|value| non_empty(&value).map(str::to_string)),
     };
     configured.map(PathBuf::from).unwrap_or_else(|| {
-        let mut env_map = spark_common::paths::utf8_env_vars();
+        let mut env_map = crate::codex_app_server::process_environment();
         env_map.extend(crate::codex_app_server::spark_agent_environment(None));
         let dir = crate::codex_app_server::spark_runtime_dir(&env_map, "claude");
         let _ = std::fs::create_dir_all(&dir);

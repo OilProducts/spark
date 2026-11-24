@@ -160,9 +160,8 @@ pub fn user_home_dir() -> Option<PathBuf> {
     user_home_dir_with_env(&ProcessEnvironment)
 }
 
-/// Expands `~`, `~/...`, and `~\...` using `env`, keeping both the home and
-/// the rest of the path byte for byte.
-pub fn expand_tilde_with_env(path: &Path, env: &impl Environment) -> PathBuf {
+/// What follows the `~` of a `~`, `~/...` or `~\...` path, byte for byte.
+pub(crate) fn tilde_rest(path: &Path) -> Option<&Path> {
     // `~\` only separates on Windows; elsewhere it is split off as bytes.
     #[cfg(unix)]
     let backslash_rest = || {
@@ -172,7 +171,13 @@ pub fn expand_tilde_with_env(path: &Path, env: &impl Environment) -> PathBuf {
     };
     #[cfg(not(unix))]
     let backslash_rest = || path.to_str()?.strip_prefix(r"~\").map(Path::new);
-    let Some(rest) = path.strip_prefix("~").ok().or_else(backslash_rest) else {
+    path.strip_prefix("~").ok().or_else(backslash_rest)
+}
+
+/// Expands `~`, `~/...`, and `~\...` using `env`, keeping both the home and
+/// the rest of the path byte for byte.
+pub fn expand_tilde_with_env(path: &Path, env: &impl Environment) -> PathBuf {
+    let Some(rest) = tilde_rest(path) else {
         return path.to_path_buf();
     };
     match user_home_dir_with_env(env) {

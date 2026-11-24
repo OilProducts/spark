@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use crate::error::{Result, SparkCommonError};
 use crate::paths::{
-    detect_project_root, ensure_directory, expand_tilde, expand_tilde_with_env,
-    normalize_path_with_env, Environment, ProcessEnvironment,
+    detect_project_root, ensure_directory, expand_tilde_with_env, normalize_path_with_env,
+    tilde_rest, Environment, ProcessEnvironment,
 };
 
 pub const ENV_HOME_DIR: &str = "SPARK_HOME";
@@ -295,7 +295,11 @@ pub struct RuntimeSettings {
     pub project_roots: Vec<PathBuf>,
 }
 
+const PROJECT_ROOTS_ABSOLUTE: &str = "Runtime project_roots must contain absolute paths.";
+
 impl RuntimeSettings {
+    /// Checks what needs no environment, so stored settings read the same
+    /// anywhere. `validate_with_env` also checks where `~` roots resolve.
     pub fn validate(&self) -> Result<()> {
         if [&self.runs_dir, &self.ui_dir]
             .into_iter()
@@ -310,10 +314,26 @@ impl RuntimeSettings {
         if self
             .project_roots
             .iter()
-            .any(|path| !expand_tilde(path).is_absolute())
+            .any(|path| !path.is_absolute() && tilde_rest(path).is_none())
         {
             return Err(SparkCommonError::SettingsValidation(
-                "Runtime project_roots must contain absolute paths.".into(),
+                PROJECT_ROOTS_ABSOLUTE.into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `validate`, plus every project root must be absolute once `~` expands
+    /// with `env`'s home.
+    pub fn validate_with_env(&self, env: &impl Environment) -> Result<()> {
+        self.validate()?;
+        if self
+            .project_roots
+            .iter()
+            .any(|root| !expand_tilde_with_env(root, env).is_absolute())
+        {
+            return Err(SparkCommonError::SettingsValidation(
+                PROJECT_ROOTS_ABSOLUTE.into(),
             ));
         }
         Ok(())
@@ -578,7 +598,7 @@ pub fn resolve_settings_with_persisted(
     env: &impl Environment,
     persisted: &RuntimeSettings,
 ) -> Result<SparkSettings> {
-    persisted.validate()?;
+    persisted.validate_with_env(env)?;
     let project_root = detect_project_root();
     let data_dir = match overrides.data_dir.as_ref() {
         Some(value) => normalize_path_with_env(value, env)?,

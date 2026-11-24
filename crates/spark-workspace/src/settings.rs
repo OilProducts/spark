@@ -599,8 +599,9 @@ pub fn validate_workspace_settings_update(
             .map(|value| validate_model_settings(settings, value))
             .transpose()
             .map(|_| ()),
+        // The server resolves saved roots with its own environment on restart.
         WorkspaceSettingsSection::Runtime(value) => value
-            .validate()
+            .validate_with_env(&spark_common::paths::ProcessEnvironment)
             .map_err(|error| WorkspaceError::Validation(error.to_string())),
     }
 }

@@ -867,6 +867,58 @@ fn core_runtime_paths_are_loaded_again_on_restart_and_keep_override_precedence()
     assert!(resolve_server_settings_with_executable_path(&overrides, &env, None).is_err());
 }
 
+/// Runs in a child process without home variables: they are process-wide.
+#[cfg(unix)]
+#[test]
+fn saved_project_roots_load_with_the_supplied_environment_home() {
+    const CHILD: &str = "SPARK_SERVER_NO_PROCESS_HOME_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "server_shell_contracts::saved_project_roots_load_with_the_supplied_environment_home",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("SPARK_TEST_ENV_ISOLATED", "1")
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let home = root.join("home");
+    fs::create_dir_all(home.join("config")).unwrap();
+    let path = home.join("config/spark.toml");
+    let profile = root.join("profile");
+    let overrides = SettingsOverrides {
+        data_dir: Some(home),
+        ..Default::default()
+    };
+    let supplied = BTreeMap::from([("USERPROFILE".to_string(), profile.display().to_string())]);
+    let load = |env: &BTreeMap<String, String>| {
+        resolve_server_settings_with_executable_path(&overrides, env, None)
+    };
+    fs::write(&path, "[runtime]\nproject_roots = ['~/projects']\n").unwrap();
+    assert_eq!(
+        load(&supplied).unwrap().project_roots,
+        vec![profile.join("projects")]
+    );
+    // A root that stays relative after expansion is still rejected.
+    let error = load(&BTreeMap::new()).unwrap_err().to_string();
+    assert!(error.contains("absolute"), "{error}");
+    fs::write(&path, "[runtime]\nproject_roots = ['relative/projects']\n").unwrap();
+    let error = load(&supplied).unwrap_err().to_string();
+    assert!(error.contains("absolute"), "{error}");
+}
+
 #[test]
 fn persisted_connections_apply_on_restart_with_cli_and_environment_precedence() {
     let temp = tempfile::tempdir().unwrap();

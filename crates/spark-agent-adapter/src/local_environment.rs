@@ -954,7 +954,7 @@ fn is_executable(path: &Path) -> bool {
 }
 
 fn absolutize(path: &Path) -> PathBuf {
-    let expanded = expand_home(path);
+    let expanded = expand_home(path, spark_common::paths::user_home_dir());
     if expanded.is_absolute() {
         normalize_path(expanded)
     } else {
@@ -966,11 +966,11 @@ fn absolutize(path: &Path) -> PathBuf {
     }
 }
 
-/// Expands a leading `~` component. `\` separates only on Windows, so
-/// elsewhere `~\repo` is a literal relative name.
-fn expand_home(path: &Path) -> PathBuf {
+/// Expands a leading `~` component with `home`. `\` separates only on
+/// Windows, so elsewhere `~\repo` is a literal relative name.
+fn expand_home(path: &Path, home: Option<PathBuf>) -> PathBuf {
     let mut components = path.components();
-    match (components.next(), spark_common::paths::user_home_dir()) {
+    match (components.next(), home) {
         (Some(Component::Normal(first)), Some(home)) if first == "~" => home.join(components),
         _ => path.to_path_buf(),
     }
@@ -1110,19 +1110,20 @@ mod tests {
 
     #[test]
     fn only_a_leading_tilde_component_is_the_home() {
-        let home = spark_common::paths::user_home_dir().expect("home");
-        let cwd = env::current_dir().expect("cwd");
-        assert_eq!(
-            absolutize(Path::new("~/repo")),
-            normalize_path(home.join("repo"))
-        );
+        let home = env::temp_dir().join("home");
+        let expand = |path: &str| expand_home(Path::new(path), Some(home.clone()));
+        assert_eq!(expand("~/repo"), home.join("repo"));
         // `\` separates only on Windows.
         let backslash = if cfg!(windows) {
-            normalize_path(home.join("repo"))
+            home.join("repo")
         } else {
-            cwd.join(r"~\repo")
+            PathBuf::from(r"~\repo")
         };
-        assert_eq!(absolutize(Path::new(r"~\repo")), backslash);
-        assert_eq!(absolutize(Path::new("~repo")), cwd.join("~repo"));
+        assert_eq!(expand(r"~\repo"), backslash);
+        assert_eq!(expand("~repo"), PathBuf::from("~repo"));
+        assert_eq!(
+            expand_home(Path::new("~/repo"), None),
+            PathBuf::from("~/repo")
+        );
     }
 }

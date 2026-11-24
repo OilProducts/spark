@@ -2602,7 +2602,14 @@ fn build_agent_session_for_source(
             config.environment_inheritance,
         ),
     )
-    .with_env(crate::agent::agent_turn_env(&llm_request.request.metadata))
+    // ponytail: tool commands take a UTF-8 env, so a non-UTF-8 Spark home
+    // reaches them lossily; widen `ExecutionEnvironment::env` if that matters.
+    .with_env(
+        crate::agent::agent_turn_env(&llm_request.request.metadata)
+            .into_iter()
+            .map(|(key, value)| (key, value.to_string_lossy().into_owned()))
+            .collect(),
+    )
     .with_metadata(llm_request.request.metadata);
 
     let plan_mode = metadata_chat_mode

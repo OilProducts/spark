@@ -849,7 +849,9 @@ fn home_resolution_skips_empty_values_before_each_fallback() {
 fn settings_expand_tilde_with_the_environment_they_resolve_from() {
     use spark_common::settings::{resolve_data_dir, ENV_PROJECT_ROOTS, ENV_UI_DIR};
 
-    let (_temp, root) = canonical_tempdir();
+    // Resolved paths are conventional: no `\\?\` prefix on Windows.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = spark_common::paths::canonicalize_clean(temp.path()).expect("canonical tempdir");
     let profile = root.join("profile");
     let vars = env(&[
         ("HOME", Path::new("")),
@@ -875,6 +877,58 @@ fn settings_expand_tilde_with_the_environment_they_resolve_from() {
         resolve_data_dir(&drive).unwrap(),
         root.join("drive").join(".spark")
     );
+}
+
+/// Runs in a child process without home variables: they are process-wide.
+#[cfg(unix)]
+#[test]
+fn saved_project_roots_validate_and_resolve_with_the_supplied_environment() {
+    use spark_common::settings::{resolve_settings_with_persisted, RuntimeSettings};
+
+    const CHILD: &str = "SPARK_NO_PROCESS_HOME_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "common_contracts::saved_project_roots_validate_and_resolve_with_the_supplied_environment",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("SPARK_TEST_ENV_ISOLATED", "1")
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    assert_eq!(spark_common::paths::user_home_dir(), None);
+    let (_temp, root) = canonical_tempdir();
+    let profile = root.join("profile");
+    let overrides = SettingsOverrides {
+        data_dir: Some(root.join("data")),
+        ..Default::default()
+    };
+    let saved = |path: &str| RuntimeSettings {
+        project_roots: vec![path.into()],
+        ..Default::default()
+    };
+    let supplied = env(&[("HOME", Path::new("")), ("USERPROFILE", &profile)]);
+    let settings =
+        resolve_settings_with_persisted(&overrides, &supplied, &saved("~/projects")).unwrap();
+    assert_eq!(settings.project_roots, vec![profile.join("projects")]);
+    // A root that stays relative after expansion is still rejected.
+    for (vars, path) in [
+        (&BTreeMap::new(), "~/projects"),
+        (&supplied, "relative/projects"),
+    ] {
+        let error = resolve_settings_with_persisted(&overrides, vars, &saved(path)).unwrap_err();
+        assert!(error.to_string().contains("absolute"), "{path}: {error}");
+    }
 }
 
 #[cfg(unix)]
