@@ -9,6 +9,7 @@ import {
     type EnvironmentLink,
 } from '../activeEnvironment'
 import {
+    ApiSchemaError,
     asOptionalNullableString,
     asOptionalString,
     asUnknownRecord,
@@ -30,6 +31,8 @@ export type PeerToken = {
     label: string
     created_at: string
     revoked_at: string | null
+    /** The token authenticating the request that listed it. */
+    is_current: boolean
 }
 
 export type DelegationQuestionOption = {
@@ -102,17 +105,17 @@ function parsePeerTokens(payload: unknown, endpoint: string): PeerToken[] {
             label: asOptionalString(row.label) ?? '',
             created_at: asOptionalString(row.created_at) ?? '',
             revoked_at: asOptionalNullableString(row.revoked_at) ?? null,
+            is_current: row.is_current === true,
         }
     })
 }
 
+/** A peer relays its `GET /workspace/api/projects`: an array of project records. */
 function parseLinkProjects(payload: unknown, endpoint: string): string[] {
-    const record = expectObjectRecord(payload, endpoint)
-    const items = Array.isArray(record.projects) ? record.projects : []
-    return items
-        .map((item) => asUnknownRecord(item))
-        .map((row) => asOptionalString(row?.project_path))
-        .filter((path): path is string => Boolean(path))
+    if (!Array.isArray(payload)) {
+        throw new ApiSchemaError(endpoint, 'Expected an array of projects.')
+    }
+    return payload.map((item) => expectString(expectObjectRecord(item, endpoint).project_path, endpoint, 'project_path'))
 }
 
 function parseOptions(value: unknown): DelegationQuestionOption[] | undefined {

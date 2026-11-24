@@ -1238,7 +1238,7 @@ fn a_proxies_project_and_flow_discovery_to_a_linked_environment() {
     let server = std::thread::spawn(move || {
         let mut seen = Vec::new();
         for body in [
-            r#"{"projects":[{"project_path":"/b/repo"}]}"#,
+            r#"[{"project_path":"/b/repo"}]"#,
             r#"[{"name":"ops/run"}]"#,
             r#"{"name":"ops/run","files":[{"name":"flow.md","content":"---\nid: run\n---\n"}]}"#,
         ] {
@@ -1269,7 +1269,7 @@ fn a_proxies_project_and_flow_discovery_to_a_linked_environment() {
         .unwrap();
 
     let projects = delegations::link_projects(&home.settings, "env-b").unwrap();
-    assert_eq!(projects["projects"][0]["project_path"], "/b/repo");
+    assert_eq!(projects[0]["project_path"], "/b/repo");
     let flows = delegations::link_flows(&home.settings, "env-b", Some("/b/repo")).unwrap();
     assert_eq!(flows[0]["name"], "ops/run");
     let files =

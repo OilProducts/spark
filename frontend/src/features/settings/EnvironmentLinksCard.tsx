@@ -247,6 +247,19 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                                             </div>
                                             {token.revoked_at ? (
                                                 <span className="text-xs text-muted-foreground">Revoked</span>
+                                            ) : token.is_current ? (
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-xs text-muted-foreground">Current connection</span>
+                                                    <Button
+                                                        size="sm"
+                                                        variant="ghost"
+                                                        aria-label={`Cannot revoke ${name}: it authenticates this connection`}
+                                                        title="This token authenticates this connection; revoke it from another environment or this machine."
+                                                        disabled
+                                                    >
+                                                        Revoke
+                                                    </Button>
+                                                </div>
                                             ) : (
                                                 <Button size="sm" variant="ghost" aria-label={`Revoke ${name}`} disabled={busy} onClick={() => void handleRevoke(token)}>
                                                     Revoke
