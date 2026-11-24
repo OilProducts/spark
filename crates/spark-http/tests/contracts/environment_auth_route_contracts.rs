@@ -712,10 +712,8 @@ async fn fake_peer_route(State(peer): State<FakePeer>, request: Request<Body>) -
             let events = async_stream::stream! {
                 let _closed = closed;
                 yield chunk("data: first\n\n".into());
-                loop {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                    yield chunk(": keepalive\n\n".into());
-                }
+                // Silent from here: only a hang-up can end the stream soon.
+                std::future::pending::<()>().await;
             };
             (
                 [(header::CONTENT_TYPE, "text/event-stream")],
@@ -1072,6 +1070,9 @@ async fn linked_environment_proxy_times_out_silent_and_stalled_peers() {
     let cfg = settings(temp.path());
     let app = crate::store_app_default(cfg.clone());
     let _peer = fake_peer(&cfg).await;
+    // A delegation `wait` holds up to MAX_WAIT before answering; the default
+    // deadline must outlast it, so a pending poll gets its 200, not a 504.
+    assert!(ProxyTimeouts::default().headers > spark_workspace::delegations::MAX_WAIT);
     let short = ProxyTimeouts {
         headers: Duration::from_millis(200),
         idle: Duration::from_millis(200),
@@ -1117,34 +1118,40 @@ async fn linked_environment_proxy_times_out_silent_and_stalled_peers() {
 
 #[tokio::test]
 async fn linked_environment_proxy_streams_sse_and_hangs_up_with_the_client() {
-    use futures_util::StreamExt;
-
     let temp = tempfile::tempdir().expect("tempdir");
     let cfg = settings(temp.path());
-    let app = crate::store_app_default(cfg.clone());
+    let origin = serve(crate::store_app_default(cfg.clone())).await;
     let (peer, stream_closed) = fake_peer(&cfg).await;
 
-    let sse = proxy(&app, "workspace/api/live/events").await;
+    // A real HTTP client on a served Spark router: the event arrives while
+    // the peer's stream is still open.
+    let client = reqwest::Client::new();
+    let mut sse = client
+        .get(format!("{origin}{PROXY}workspace/api/live/events"))
+        .header("accept", "text/event-stream")
+        .send()
+        .await
+        .expect("connect");
     assert_eq!(sse.status(), StatusCode::OK);
-    assert_eq!(header(&sse, "content-type"), Some("text/event-stream"));
-    let mut stream = sse.into_body().into_data_stream();
-    let first = tokio::time::timeout(Duration::from_secs(5), stream.next())
+    assert_eq!(
+        sse.headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let first = tokio::time::timeout(Duration::from_secs(5), sse.chunk())
         .await
         .expect("first event")
-        .expect("chunk")
-        .expect("bytes");
-    assert!(first.starts_with(b"data: first\n\n"), "{first:?}");
-    let more = tokio::time::timeout(Duration::from_secs(5), stream.next())
-        .await
-        .expect("keepalive")
-        .expect("chunk")
-        .expect("bytes");
-    assert!(more.starts_with(b": keepalive"), "{more:?}");
+        .expect("read")
+        .expect("chunk");
+    assert_eq!(&first[..], b"data: first\n\n");
 
-    drop(stream);
-    tokio::time::timeout(Duration::from_secs(5), stream_closed)
+    // Closing the client's socket drops the upstream connection right away,
+    // though the peer has nothing more to send.
+    drop((sse, client));
+    tokio::time::timeout(Duration::from_secs(2), stream_closed)
         .await
-        .expect("the peer's stream is dropped")
+        .expect("the peer's stream is dropped promptly")
         .expect_err("dropped, not sent");
     let seen = peer.seen().pop().expect("seen");
     assert_eq!(seen.target, "/workspace/api/live/events");
@@ -1247,6 +1254,48 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
     )
     .await;
     assert_eq!(projects.status(), StatusCode::OK);
+
+    // Polling a pending delegation through the link answers normally.
+    let pending = EnvironmentRepository::new(&b.data_dir)
+        .create_out(&spark_storage::environment::DelegationOut {
+            delegation_id: "delegation-pending".into(),
+            environment_id: c_id.clone(),
+            project_path: "/srv/repo".into(),
+            kind: "flow".into(),
+            request: json!({}),
+            request_sha256: "sha".into(),
+            caller: "test".into(),
+            request_key: "pending".into(),
+            owner_conversation_id: None,
+            phase: "created".into(),
+            target_id: None,
+            last_state: None,
+            result: None,
+            paused: None,
+            cancel_requested_at: None,
+            cancel_acknowledged_at: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        })
+        .expect("pending delegation");
+    let polled = send(
+        &app_a,
+        "GET",
+        &via(&format!(
+            "workspace/api/delegations/{}/wait?timeout_ms=50",
+            pending.delegation_id
+        )),
+        None,
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(polled.status(), StatusCode::OK);
+    let polled = json(polled).await;
+    assert_eq!(
+        (&polled["delegation_id"], &polled["timed_out"]),
+        (&json!("delegation-pending"), &json!(true))
+    );
 
     // Another environment now at B's link cannot answer for B.
     link(&a, &b_id, &c_origin, &c_token);

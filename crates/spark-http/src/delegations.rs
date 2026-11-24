@@ -202,7 +202,8 @@ fn proxy_client() -> Result<&'static reqwest::Client, WorkspaceError> {
 /// one as a request extension to shorten them; a network client cannot.
 #[derive(Clone, Copy, Debug)]
 pub struct ProxyTimeouts {
-    /// Until the response headers arrive.
+    /// Until the response headers arrive; longer than the longest a Spark
+    /// route holds before answering, a delegation `wait` (`MAX_WAIT`).
     pub headers: Duration,
     /// Between body chunks; above the live stream's 15 s keepalive.
     pub idle: Duration,
@@ -211,7 +212,7 @@ pub struct ProxyTimeouts {
 impl Default for ProxyTimeouts {
     fn default() -> Self {
         Self {
-            headers: Duration::from_secs(30),
+            headers: MAX_WAIT + Duration::from_secs(15),
             idle: Duration::from_secs(45),
         }
     }
