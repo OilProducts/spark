@@ -195,6 +195,16 @@ describe('flow saves', () => {
         expect(unsavedFlowEdits('demo', PROJECT)).toBeNull()
     })
 
+    it('keeps no edits refused as invalid, by the preview or by the server', async () => {
+        answer = (url) => (url.endsWith('/preview') ? { status: 'validation_error', error: 'Step "review" has no route in.' } : { status: 'saved' })
+        await expect(saveFlowContent('demo', flow('Unwired'), PROJECT)).resolves.toBe(false)
+        expect(sent).toEqual(['POST /attractor/preview'])
+        expect(unsavedFlowEdits('demo', PROJECT)).toBeNull()
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : json({ detail: { status: 'validation_error', error: 'Step "review" has no route in.' } }, 422))
+        await expect(saveFlowContent('demo', flow('Unwired'), PROJECT)).resolves.toBe(false)
+        expect(unsavedFlowEdits('demo', PROJECT)).toBeNull()
+    })
+
     it('drops a remote edit kept from a refused save once a later save of the flow lands', async () => {
         await switchEnvironment('env-r')
         const refused = deferred<unknown>()

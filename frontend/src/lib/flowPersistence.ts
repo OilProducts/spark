@@ -72,9 +72,11 @@ export function resetFlowSaveBaselines(): void {
     unsavedByScope.clear()
 }
 
-// The structured edits each flow's last save refused, by scope, with how the refusal shows. They outlive
-// the editor that made them, as a switch of environment or an interrupted load unmounts it: the flow
-// opens with them, unsaved, until a save of it lands or they are discarded.
+// The structured edits each flow's last save refused for a reason Retry can get past (the server
+// unreachable, failing or changed), by scope, with how the refusal shows. They outlive the editor that
+// made them, as a switch of environment or an interrupted load unmounts it: the flow opens with them,
+// unsaved, until a save of it lands or they are discarded. Edits refused as invalid aren't kept: the
+// flow may not open with them, so it opens as saved.
 // ponytail: kept for this page's life; a reload drops them, as it drops any unsaved edit. A file view
 // save refused is not kept; keep its files as drafts if that matters.
 const unsavedByScope = new Map<string, { content: { flow: FlowDefinitionPayload }; show: (state: AppState) => void }>()
@@ -172,9 +174,9 @@ async function persistFlowContent(
     const serialized = JSON.stringify(content)
     // The save state shown is the active environment's; a save that outlives a switch leaves it alone.
     const shown = () => (getActiveEnvironmentId() === environmentId ? useStore.getState() : null)
-    // Retry repeats the save whose failure is shown; refused structured edits are kept for the flow.
-    const fail = (show: (state: AppState) => void) => {
-        if ('flow' in content) unsavedByScope.set(scopeKey, { content, show })
+    // Retry repeats the save whose failure is shown; structured edits it can save are kept for the flow.
+    const fail = (show: (state: AppState) => void, retryable = true) => {
+        if (retryable && 'flow' in content) unsavedByScope.set(scopeKey, { content, show })
         const state = shown()
         if (state) {
             lastSaveRequest = { name, content, projectPath, environmentId }
@@ -195,14 +197,14 @@ async function persistFlowContent(
     }
     const draftErrors = [...invalidDrafts.values()].filter((draft) => draft.environmentId === environmentId).map((draft) => draft.message)
     if (draftErrors.length > 0) {
-        return fail((state) => state.markSaveFailure(`Fix the editor's invalid input before saving: ${draftErrors.join(' ')}`, 'validation_error'))
+        return fail((state) => state.markSaveFailure(`Fix the editor's invalid input before saving: ${draftErrors.join(' ')}`, 'validation_error'), false)
     }
     const duplicates = duplicateDecisionsInFlow('flow' in content ? content.flow : null)
     if (duplicates.length > 0) {
         return fail((state) => state.markSaveFailure(
             `Each decision may be declared once per node; duplicated: ${[...new Set(duplicates)].join(', ')}.`,
             'validation_error',
-        ))
+        ), false)
     }
     recordFlowLoadDebug('save:request', name, {
         contentLength: serialized.length,
@@ -218,7 +220,7 @@ async function persistFlowContent(
             : null
         if (preview?.status === 'validation_error') {
             const problems = flowProblemsFromDetail(preview)
-            return fail((state) => state.markSaveFailure(buildErrorMessage('validation_error', problems?.map((problem) => problem.message).join(' ') ?? preview.error, 422), 'validation_error', problems))
+            return fail((state) => state.markSaveFailure(buildErrorMessage('validation_error', problems?.map((problem) => problem.message).join(' ') ?? preview.error, 422), 'validation_error', problems), false)
         }
         const response = await saveFlowValidated(name, content, projectPath, environmentId)
         if (!response.ok) {
@@ -239,7 +241,7 @@ async function persistFlowContent(
             } else if (detail.status === 'validation_error') {
                 errorKind = 'validation_error'
             }
-            return fail((state) => state.markSaveFailure(message, errorKind, flowProblemsFromDetail(detail)))
+            return fail((state) => state.markSaveFailure(message, errorKind, flowProblemsFromDetail(detail)), errorKind === 'http')
         }
 
         const status = typeof (response.payload as { status?: unknown } | null)?.status === 'string'

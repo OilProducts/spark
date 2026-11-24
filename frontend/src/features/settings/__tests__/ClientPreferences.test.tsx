@@ -208,47 +208,41 @@ it('saves another preference from another environment\'s Settings, showing this 
     expect(screen.getByLabelText('Theme')).toHaveValue('light')
 })
 
-it('keeps the theme chosen last when the save of a theme chosen before it answers late', async () => {
+it('keeps the theme chosen last in an environment when the save of a theme chosen before it there answers late', async () => {
     const servers = { local: prefs('local-1', 'light'), remote: prefs('remote-1', 'light') }
     const held = deferred<void>()
     let reached = false
     servePreferences(servers, (server, request) => {
-        if (server !== 'remote' || request !== 'save') return
+        if (server !== 'remote' || request !== 'save' || reached) return
         reached = true
         return held.promise
     })
     applyTheme('light')
     await switchEnvironment('env-r')
-    const remoteSettings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    const first = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
     const user = userEvent.setup()
     await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('light'))
     await user.selectOptions(screen.getByLabelText('Theme'), 'dark')
     await user.click(screen.getByRole('button', { name: /^Save/ }))
     await waitFor(() => expect(reached).toBe(true))
-    remoteSettings.unmount()
+    first.unmount()
 
-    // Back here, System is chosen after.
-    await switchEnvironment(null)
-    const localSettings = render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    // Reopened there, System is chosen after, and saves first.
+    render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
     await waitFor(() => expect(screen.getByLabelText('Theme')).toHaveValue('light'))
     await user.selectOptions(screen.getByLabelText('Theme'), 'system')
     await user.click(screen.getByRole('button', { name: /^Save/ }))
     await screen.findByText('Saved.')
     expect(cachedAppearance()).toBe('system')
-    localSettings.unmount()
-    render(<ClientPreferencesController />)
-    await act(async () => {})
 
     await act(async () => held.resolve())
     await act(async () => {})
     expect(cachedAppearance()).toBe('system')
     expect(document.documentElement).not.toHaveClass('dark')
-    // Each environment keeps the theme saved in its own Settings.
-    expect(servers.local.stored.appearance).toBe('system')
-    expect(servers.remote.stored.appearance).toBe('dark')
+    expect(screen.getByLabelText('Theme')).toHaveValue('system')
 })
 
-it('follows the browser theme in an open Settings when a theme saved elsewhere applies, and saves another preference without changing it', async () => {
+it('saves a theme to another environment that answers after a switch here, leaving this machine\'s theme and open Settings as they are', async () => {
     const servers = { local: prefs('local-1', 'light'), remote: prefs('remote-1', 'light') }
     const held = deferred<void>()
     servePreferences(servers, (server, request) => server === 'remote' && request === 'save' ? held.promise : undefined)
@@ -263,22 +257,26 @@ it('follows the browser theme in an open Settings when a theme saved elsewhere a
     remoteSettings.unmount()
 
     await switchEnvironment(null)
-    render(<DialogProvider><ClientPreferencesEditor /></DialogProvider>)
+    render(<DialogProvider><ClientPreferencesController /><ClientPreferencesEditor /></DialogProvider>)
     const theme = await screen.findByLabelText('Theme')
     await waitFor(() => expect(theme).toHaveValue('light'))
     await act(async () => held.resolve())
-    // The remote save applied Dark; the open local Settings shows it, with nothing to save.
-    expect(cachedAppearance()).toBe('dark')
-    expect(theme).toHaveValue('dark')
+    await act(async () => {})
+    // The remote environment stored Dark; this machine's document and open Settings stay Light.
+    expect(saveClientPreferences).toHaveBeenLastCalledWith(prefs('remote-1', 'light'), expect.objectContaining({ appearance: 'dark' }), 'env-r')
+    expect(servers.remote.stored.appearance).toBe('dark')
+    expect(cachedAppearance()).toBe('light')
+    expect(document.documentElement).not.toHaveClass('dark')
+    expect(theme).toHaveValue('light')
     expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
 
     await user.selectOptions(screen.getByLabelText('Editor mode'), 'files')
     await user.click(screen.getByRole('button', { name: /^Save/ }))
     await screen.findByText('Saved.')
     expect(saveClientPreferences).toHaveBeenLastCalledWith(prefs('local-1', 'light'), expect.objectContaining({ editor_mode: 'files', appearance: 'light' }), null)
-    expect(cachedAppearance()).toBe('dark')
-    expect(document.documentElement).toHaveClass('dark')
-    expect(theme).toHaveValue('dark')
+    expect(cachedAppearance()).toBe('light')
+    expect(document.documentElement).not.toHaveClass('dark')
+    expect(servers.local.revision).toBe('local-1+')
 })
 
 it('keeps a remote save refused after a switch for that environment\'s Settings, with its error, to retry against the same revision', async () => {

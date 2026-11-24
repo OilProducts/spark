@@ -2,7 +2,9 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import { afterEach, expect, it, vi } from 'vitest'
 import { ClientPreferencesController } from '../ClientPreferencesController'
 import { completePreferenceInteraction, fetchClientPreferences, saveClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
-import { useStore } from '@/store'
+import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
+import { deferred, switchEnvironment } from '@/test/environments'
+import userEvent from '@testing-library/user-event'
 
 vi.mock('../services/clientPreferences', () => ({ fetchClientPreferences: vi.fn(), saveClientPreferences: vi.fn(), completePreferenceInteraction: vi.fn() }))
 const initial = useStore.getState()
@@ -28,6 +30,9 @@ it('applies persisted preferences and saves completed interactions with revision
     act(() => window.dispatchEvent(new Event('spark:preferences-retry')))
     await waitFor(() => expect(saveClientPreferences).toHaveBeenCalledTimes(2))
     expect(saveClientPreferences).toHaveBeenLastCalledWith(view, { ...view.stored, editor_sidebar_width: 450 }, null)
+    act(() => window.dispatchEvent(new Event('spark:preferences-discard')))
+    await waitFor(() => expect(screen.queryByTestId('client-preferences-error')).not.toBeInTheDocument())
+    expect(useStore.getState().editorSidebarWidth).toBe(400)
 })
 
 it('ignores a refresh that started before a completed save and keeps the new revision', async () => {
@@ -86,4 +91,60 @@ it('lets a load failure notice be dismissed, and shows a different problem again
     expect(screen.queryByTestId('client-preferences-error')).not.toBeInTheDocument()
     act(() => window.dispatchEvent(new CustomEvent('spark:preferences-completed', { detail: { editor_sidebar_width: 450 } })))
     expect(await screen.findByText('Preferences changed elsewhere.')).toBeVisible()
+    act(() => window.dispatchEvent(new Event('spark:preferences-discard')))
+    await waitFor(() => expect(screen.queryByTestId('client-preferences-error')).not.toBeInTheDocument())
+})
+
+it('keeps an automatic change refused after a switch away for its own workspace, to show and try again there, leaving this machine\'s as it was', async () => {
+    const at = (revision: string, graph_height: number): ClientPreferencesView => ({ client_id: 'browser-one', revision,
+        stored: { editor_mode: null, editor_sidebar_width: null, run_presentation: { sort: 'newest', graph_height } },
+        effective: { editor_mode: 'structured', editor_sidebar_width: 288, run_presentation: { sort: 'newest', graph_height } } })
+    const remote = at('remote-1', 400)
+    vi.mocked(fetchClientPreferences).mockImplementation(async (environmentId) => (environmentId === null ? at('local-1', 500) : remote))
+    const refused = deferred<ClientPreferencesView>()
+    vi.mocked(saveClientPreferences).mockReturnValueOnce(refused.promise)
+    const changed = { run_presentation: { sort: 'newest' as const, graph_height: 700 } }
+    const graphHeight = () => useStore.getState().clientRunPresentation.graph_height
+
+    await switchEnvironment('env-r')
+    const remoteShell = render(<ClientPreferencesController />)
+    await waitFor(() => expect(graphHeight()).toBe(400))
+    act(() => {
+        useStore.setState({ clientRunPresentation: changed.run_presentation })
+        window.dispatchEvent(new CustomEvent('spark:preferences-completed', { detail: changed }))
+    })
+    await waitFor(() => expect(saveClientPreferences).toHaveBeenCalledWith(remote, { ...remote.stored, ...changed }, 'env-r'))
+
+    // Refused once this machine shows: nothing of it here.
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    remoteShell.unmount()
+    const localShell = render(<ClientPreferencesController />)
+    await waitFor(() => expect(graphHeight()).toBe(500))
+    await act(async () => refused.reject(new Error('The server is unavailable.')))
+    expect(screen.queryByTestId('client-preferences-error')).not.toBeInTheDocument()
+    expect(graphHeight()).toBe(500)
+    expect(saveClientPreferences).toHaveBeenCalledOnce()
+    localShell.unmount()
+
+    // Back there, the change shows, unsaved, with why, and Try again saves it there.
+    await switchEnvironment('env-r')
+    resetStoreForEnvironmentSwitch(false)
+    const back = render(<ClientPreferencesController />)
+    const notice = await screen.findByTestId('client-preferences-error')
+    expect(notice).toHaveTextContent('Couldn’t save your preferences')
+    expect(notice).toHaveTextContent('The server is unavailable.')
+    await waitFor(() => expect(graphHeight()).toBe(700))
+    vi.mocked(saveClientPreferences).mockResolvedValueOnce(at('remote-2', 700))
+    await userEvent.setup().click(within(notice).getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(screen.queryByTestId('client-preferences-error')).not.toBeInTheDocument())
+    expect(saveClientPreferences).toHaveBeenLastCalledWith(remote, { ...remote.stored, ...changed }, 'env-r')
+    expect(vi.mocked(saveClientPreferences).mock.calls.map(([, , environmentId]) => environmentId)).toEqual(['env-r', 'env-r'])
+
+    // Saved, it is not offered again.
+    back.unmount()
+    render(<ClientPreferencesController />)
+    await waitFor(() => expect(fetchClientPreferences).toHaveBeenCalledTimes(4))
+    await act(async () => {})
+    expect(screen.queryByTestId('client-preferences-error')).not.toBeInTheDocument()
 })

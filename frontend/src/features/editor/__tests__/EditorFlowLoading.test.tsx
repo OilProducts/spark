@@ -517,6 +517,47 @@ describe('Editor structured metadata', () => {
     expect(JSON.parse(String((init as RequestInit).body)).flow.title).toBe('Unsaved title')
   })
 
+  it('opens the flow as saved after a switch away during which validation refused its edits, rather than edits its preview has no graph for', async () => {
+    const user = userEvent.setup()
+    const graphless = { status: 'validation_error', error: 'Step "review" has no route in.', diagnostics: [], errors: [] }
+    const check = createDeferred<Response>()
+    const fetchMock = vi.fn((url: string) => (String(url).endsWith('/preview')
+      ? check.promise
+      : Promise.resolve(new Response(JSON.stringify({ status: 'saved', name: 'bundled-flow' }), { status: 200 }))))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.mocked(loadEditorPreview).mockImplementation(async (previewFlow) => (previewFlow?.title === 'With an unwired step'
+      ? graphless as unknown as EditorPreviewResponse
+      : { status: 'ok', graph: { nodes: [], edges: [], metadata: previewFlow?.metadata ?? {} }, flow: previewFlow, diagnostics: [], errors: [] } as unknown as EditorPreviewResponse))
+    await switchEnvironment('env-r')
+    const remote = renderEditor()
+    const filesButton = screen.getByRole('button', { name: 'Files' })
+    await waitFor(() => expect(filesButton).toBeEnabled())
+    await user.click(filesButton)
+    await user.click(await screen.findByRole('button', { name: 'Structured' }))
+    await waitFor(() => expect(useStore.getState().editorMode).toBe('structured'))
+    act(() => useStore.getState().updateFlowMetadata('title', 'With an unwired step'))
+    // Its save's check answers, refusing the edits as invalid, after a switch away.
+    await user.click(filesButton)
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/preview'))).toBe(true))
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    remote.unmount()
+    await act(async () => check.resolve(new Response(JSON.stringify(graphless), { status: 200 })))
+    expect(flowSaveRequests(fetchMock)).toEqual([])
+
+    await switchEnvironment('env-r')
+    resetStoreForEnvironmentSwitch(false)
+    useStore.setState({ viewMode: 'editor', activeProjectPath: '/tmp/project', activeFlow: 'bundled-flow', clientPreferencesLoaded: true })
+    vi.mocked(loadEditorPreview).mockClear()
+    renderEditor()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
+    const previewed = vi.mocked(loadEditorPreview).mock.calls.map(([previewFlow]) => previewFlow?.title)
+    expect(previewed[0]).toBe('Bundled flow')
+    expect(previewed).not.toContain('With an unwired step')
+    expect(useStore.getState().saveState).toBe('idle')
+    expect(unsavedFlowEdits('bundled-flow', '/tmp/project')).toBeNull()
+  })
+
   it('drops the edits a save refused once leaving the flow discards them', async () => {
     const user = userEvent.setup()
     vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => Promise.resolve(String(url).endsWith('/api/flows') && init?.method === 'POST'
