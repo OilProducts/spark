@@ -668,6 +668,14 @@ async fn fake_peer_route(State(peer): State<FakePeer>, request: Request<Body>) -
             (page("text/html; charset=utf-8"), "<p>hi</p>").into_response()
         }
         "/workspace/api/badge.svg" => (page("image/svg+xml"), "<svg/>").into_response(),
+        "/workspace/api/latin1.html" => {
+            let mut response = (page("text/html"), "<p>hi</p>").into_response();
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_bytes(b"text/plain, TEXT/HTML ; charset=\xe9").expect("obs-text"),
+            );
+            response
+        }
         "/workspace/api/pixel.png" => (
             [(header::CONTENT_TYPE, "image/png")],
             b"\x89PNG\r\n\x1a\n".to_vec(),
@@ -787,6 +795,18 @@ fn header<'a>(response: &'a Response, name: &str) -> Option<&'a str> {
         .and_then(|value| value.to_str().ok())
 }
 
+/// The proxy's own headers, on everything it answers.
+#[track_caller]
+fn assert_sandboxed(response: &Response) {
+    assert_eq!(
+        (
+            header(response, "content-security-policy"),
+            header(response, "x-content-type-options")
+        ),
+        (Some("sandbox; default-src 'none'"), Some("nosniff"))
+    );
+}
+
 async fn bytes(response: Response) -> Vec<u8> {
     to_bytes(response.into_body(), usize::MAX)
         .await
@@ -833,6 +853,10 @@ async fn linked_environment_proxy_forwards_raw_targets_and_refuses_unsafe_paths(
     ] {
         let refused = proxy(&app, bad).await;
         assert_eq!(refused.status(), StatusCode::NOT_FOUND, "{bad:?}");
+        // An empty path never reaches the proxy route.
+        if !bad.is_empty() {
+            assert_sandboxed(&refused);
+        }
     }
     let missing = send(
         &app,
@@ -849,6 +873,17 @@ async fn linked_environment_proxy_forwards_raw_targets_and_refuses_unsafe_paths(
         let refused = proxy(&app, drifting).await;
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{drifting}");
     }
+    // The client would send a CONNECT to the peer's authority, not the path.
+    let connect = proxy_with(
+        &app,
+        "CONNECT",
+        "workspace/api/projects",
+        Vec::new(),
+        ProxyTimeouts::default(),
+    )
+    .await;
+    assert_eq!(connect.status(), StatusCode::BAD_REQUEST);
+    assert_sandboxed(&connect);
     assert!(peer.seen().is_empty(), "{:?}", peer.seen());
 
     // The peer gets exactly the raw target: encoded slashes, `#` and `?`
@@ -983,39 +1018,51 @@ async fn linked_environment_proxy_sandboxes_what_the_peer_serves() {
     for (target, content_type, disposition, body) in [
         (
             "workspace/api/page.html",
-            "text/html; charset=utf-8",
+            &b"text/html; charset=utf-8"[..],
             Some("attachment"),
             &b"<p>hi</p>"[..],
         ),
         (
+            "workspace/api/latin1.html",
+            b"text/plain, TEXT/HTML ; charset=\xe9",
+            Some("attachment"),
+            b"<p>hi</p>",
+        ),
+        (
             "workspace/api/badge.svg",
-            "image/svg+xml",
+            b"image/svg+xml",
             Some("attachment"),
             b"<svg/>",
         ),
         (
             "workspace/api/pixel.png",
-            "image/png",
+            b"image/png",
             None,
             b"\x89PNG\r\n\x1a\n",
         ),
         (
             "workspace/api/projects",
-            "application/json",
+            b"application/json",
             None,
             br#"{"ok":true}"#,
         ),
     ] {
         let response = proxy(&app, target).await;
         assert_eq!(response.status(), StatusCode::OK, "{target}");
-        assert_eq!(header(&response, "content-type"), Some(content_type));
-        assert_eq!(header(&response, "content-disposition"), disposition);
         assert_eq!(
-            header(&response, "content-security-policy"),
-            Some("sandbox; default-src 'none'"),
+            response
+                .headers()
+                .get("content-type")
+                .map(HeaderValue::as_bytes),
+            Some(content_type),
             "{target}"
         );
-        assert_eq!(header(&response, "x-content-type-options"), Some("nosniff"));
+        assert_eq!(
+            header(&response, "content-disposition"),
+            disposition,
+            "{target}"
+        );
+        assert_sandboxed(&response);
         assert_eq!(header(&response, "set-cookie"), None);
         assert_eq!(bytes(response).await, body, "{target}");
     }
@@ -1034,6 +1081,7 @@ async fn linked_environment_proxy_requires_the_peer_to_answer_as_the_link() {
     assert_eq!(descriptor.status(), StatusCode::OK);
     let anonymous = proxy(&app, "workspace/api/anonymous").await;
     assert_eq!(anonymous.status(), StatusCode::BAD_GATEWAY);
+    assert_sandboxed(&anonymous);
     assert!(json(anonymous).await["detail"]
         .as_str()
         .expect("detail")
@@ -1060,6 +1108,7 @@ async fn linked_environment_proxy_requires_the_peer_to_answer_as_the_link() {
         )
         .await;
         assert_eq!(swapped.status(), StatusCode::BAD_GATEWAY, "{target}");
+        assert_sandboxed(&swapped);
     }
 }
 
@@ -1083,6 +1132,7 @@ async fn linked_environment_proxy_times_out_silent_and_stalled_peers() {
     let silent = proxy_with(&app, "GET", "workspace/api/silent", Vec::new(), short).await;
     assert_eq!(silent.status(), StatusCode::GATEWAY_TIMEOUT);
     assert!(started.elapsed() < Duration::from_secs(5));
+    assert_sandboxed(&silent);
     assert!(json(silent).await["detail"]
         .as_str()
         .expect("detail")
@@ -1239,12 +1289,27 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
     assert_eq!(identity["environment_id"], b_id.as_str());
     assert_eq!(identity["protocol_version"], 1);
     assert_eq!(identity["ui_api_version"], 1);
-    for field in ["display_name", "spark_version", "build_id"] {
+    for field in ["display_name", "spark_version"] {
         assert!(
             !identity[field].as_str().expect(field).is_empty(),
             "{field}"
         );
     }
+    // The build id is the version plus a hash of the running executable's
+    // bytes, so two builds that differ in any byte announce different ids.
+    let mut executable = std::hash::DefaultHasher::new();
+    std::hash::Hasher::write(
+        &mut executable,
+        &std::fs::read(std::env::current_exe().expect("executable")).expect("read executable"),
+    );
+    assert_eq!(
+        identity["build_id"],
+        format!(
+            "{}+{:016x}",
+            env!("CARGO_PKG_VERSION"),
+            std::hash::Hasher::finish(&executable)
+        )
+    );
     let projects = send(
         &app_a,
         "GET",

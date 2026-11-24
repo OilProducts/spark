@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
@@ -48,7 +48,7 @@ pub(crate) fn router() -> Router<HttpAppState> {
         )
         .route(
             "/environments/links/{environment_id}/proxy/{*rest}",
-            any(proxy_linked_environment),
+            any(proxy_linked_environment).layer(axum::middleware::map_response(sandboxed)),
         )
         .route("/environment", get(environment))
         .route("/delegations", get(list_delegations).post(start))
@@ -278,27 +278,50 @@ fn allowed_proxy_path(raw: &str) -> bool {
         })
 }
 
+fn header_bytes(value: Option<&HeaderValue>) -> &[u8] {
+    value.map_or(b"", HeaderValue::as_bytes)
+}
+
+/// The part before any `;` parameters, trimmed and lowercased. Read from
+/// bytes, since a parameter may hold non-ASCII bytes.
+fn essence(value: &[u8]) -> String {
+    let essence = value.split(|&byte| byte == b';').next().unwrap_or_default();
+    String::from_utf8_lossy(essence).trim().to_ascii_lowercase()
+}
+
 /// Types a browser renders as a document that can run script: HTML, XML,
-/// SVG and every `+html` or `+xml` type.
+/// SVG and every `+html` or `+xml` type. A browser uses the last valid type
+/// of a comma-separated list, so any listed one counts.
 fn renders_as_markup(content_type: Option<&HeaderValue>) -> bool {
-    let essence = content_type
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    matches!(
-        essence.as_str(),
-        "text/html" | "text/xml" | "application/xml"
-    ) || essence.ends_with("+html")
-        || essence.ends_with("+xml")
+    header_bytes(content_type)
+        .split(|&byte| byte == b',')
+        .map(essence)
+        .any(|essence| {
+            matches!(
+                essence.as_str(),
+                "text/html" | "text/xml" | "application/xml"
+            ) || essence.ends_with("+html")
+                || essence.ends_with("+xml")
+        })
 }
 
 fn is_attachment(disposition: Option<&HeaderValue>) -> bool {
-    disposition
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("attachment"))
+    essence(header_bytes(disposition)) == "attachment"
+}
+
+/// Everything the proxy answers, the peer's content and the proxy's own
+/// errors, is sandboxed and never sniffed into another type.
+async fn sandboxed(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox; default-src 'none'"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response
 }
 
 fn detail(status: StatusCode, detail: String) -> Response {
@@ -348,8 +371,11 @@ async fn proxy_linked_environment(
     let mut url = origin.clone();
     url.set_path(&format!("/{path}"));
     url.set_query(query.as_deref());
-    // The token goes only to the linked origin, for exactly the path sent.
-    if url.scheme() != origin.scheme()
+    // The token goes only to the linked origin, for exactly the target sent.
+    // The client sends a CONNECT in authority form, without the path
+    // (hyper-util client/legacy/client.rs, `authority_form`).
+    if request.method() == Method::CONNECT
+        || url.scheme() != origin.scheme()
         || url.host_str() != origin.host_str()
         || url.port_or_known_default() != origin.port_or_known_default()
         || !url.username().is_empty()
@@ -359,7 +385,7 @@ async fn proxy_linked_environment(
         || url.query() != query.as_deref()
     {
         return Err(WorkspaceApiError(WorkspaceError::Validation(
-            "The proxied path cannot be forwarded exactly as sent.".to_string(),
+            "The proxied request cannot be forwarded exactly as sent.".to_string(),
         )));
     }
     let client = proxy_client().map_err(WorkspaceApiError)?;
@@ -429,14 +455,6 @@ async fn proxy_linked_environment(
             headers.insert(name, value.clone());
         }
     }
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("sandbox; default-src 'none'"),
-    );
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
     if renders_as_markup(headers.get(header::CONTENT_TYPE))
         && !is_attachment(headers.get(header::CONTENT_DISPOSITION))
     {
@@ -485,30 +503,39 @@ async fn environment(State(state): State<HttpAppState>) -> ApiResult<Value> {
     Ok(Json(descriptor))
 }
 
-/// Tells apart two builds that share `CARGO_PKG_VERSION`: the running
-/// binary's size and modification time, read once when the routes are built.
-// ponytail: a copy that resets the file time reads as a new build; embed a
-// build stamp if ids must match across installs of one build.
+/// Tells apart two builds that share `CARGO_PKG_VERSION`: a hash of the
+/// running executable's bytes, read once when the routes are built.
+// ponytail: reads the whole executable once at startup; stamp an id at build
+// time instead if that ever shows up in startup time.
 fn build_id() -> &'static str {
     static ID: OnceLock<String> = OnceLock::new();
-    ID.get_or_init(|| {
-        let version = env!("CARGO_PKG_VERSION");
-        let nanos = |time: SystemTime| {
-            time.duration_since(UNIX_EPOCH)
-                .map_or(0, |since| since.as_nanos())
-        };
-        match std::env::current_exe()
-            .and_then(std::fs::metadata)
-            .and_then(|metadata| Ok((metadata.len(), metadata.modified()?)))
-        {
-            Ok((len, modified)) => format!("{version}+{len:x}.{:x}", nanos(modified)),
-            // Still unique to this build, since a new build needs a new process.
-            Err(error) => {
-                eprintln!("Unable to stamp the build id from the executable: {error}");
-                format!("{version}+process.{:x}", nanos(SystemTime::now()))
-            }
+    ID.get_or_init(|| match executable_hash() {
+        Ok(hash) => format!("{}+{hash:016x}", env!("CARGO_PKG_VERSION")),
+        // Still unique to this build, since a new build needs a new process.
+        Err(error) => {
+            eprintln!("Unable to hash the executable for the build id: {error}");
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos());
+            format!("{}+process.{now:x}", env!("CARGO_PKG_VERSION"))
         }
     })
+}
+
+/// `DefaultHasher` (fixed keys) may change between Rust releases, but then so
+/// does every executable built with them.
+fn executable_hash() -> std::io::Result<u64> {
+    use std::hash::Hasher;
+    use std::io::Read;
+    let mut file = std::fs::File::open(std::env::current_exe()?)?;
+    let mut hasher = std::hash::DefaultHasher::new();
+    let mut chunk = vec![0; 1 << 20];
+    loop {
+        match file.read(&mut chunk)? {
+            0 => return Ok(hasher.finish()),
+            read => hasher.write(&chunk[..read]),
+        }
+    }
 }
 
 async fn start(
