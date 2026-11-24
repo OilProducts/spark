@@ -35,3 +35,16 @@ it('sends a UNC folder to the Git preflight and registration with its share pref
     expect(useStore.getState().projectRegistry['//fileserver/share/team/repo']).toBeDefined()
     expect(useStore.getState().projectRegistrationError).toBeNull()
 })
+
+it('keeps the UNC share prefix for a folder named with a line or paragraph separator', async () => {
+    for (const name of ['repo\u2028one', 'repo\u2029two']) {
+        vi.mocked(fetchProjectBrowseValidated).mockResolvedValue({ current_path: `\\\\fileserver\\share\\${name}`, parent_path: '\\\\fileserver\\share', roots: [], entries: [] })
+        // The preflight refusing keeps registration out of this check.
+        vi.mocked(fetchProjectMetadataValidated).mockRejectedValue(new Error('stop'))
+        const { result, unmount } = renderHook(() => useAddProject())
+        await act(() => result.current.onOpenProjectDirectoryChooser())
+        await act(() => result.current.onSelectProjectBrowserDirectory())
+        expect(fetchProjectMetadataValidated).toHaveBeenLastCalledWith(`//fileserver/share/${name}`)
+        unmount()
+    }
+})

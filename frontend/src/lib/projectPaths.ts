@@ -6,12 +6,13 @@ export const normalizeProjectPath = (path: string): string => {
   // ponytail: requests send this key, and the backend's normalize_path keeps a UNC prefix exactly as spelled
   // (crates/spark-common/src/paths.rs), so a project it registered as \\server\share is another identity.
   // The owner deferred this to a backend fix that writes the UNC prefix in one spelling, not a frontend rewrite of every request.
-  const unc = forwardSlashed.match(/^\/\/([^/]+)\/*([^/]*)(.*)$/)
+  // No `.` here: it skips line separators (U+2028/9), which are valid in folder names.
+  const unc = forwardSlashed.match(/^\/\/([^/]+)\/*([^/]*)/)
   const uncRoot = unc ? `//${unc[1]}${unc[2] ? `/${unc[2]}` : ""}` : null
   const slashNormalized = forwardSlashed.replace(/\/{2,}/g, "/")
   const windowsPrefixMatch = slashNormalized.match(/^[A-Za-z]:\//)
   const prefix = slashNormalized.startsWith("/") ? "/" : windowsPrefixMatch ? windowsPrefixMatch[0] : ""
-  const rawBody = unc ? unc[3] : prefix ? slashNormalized.slice(prefix.length) : slashNormalized
+  const rawBody = unc ? forwardSlashed.slice(unc[0].length) : prefix ? slashNormalized.slice(prefix.length) : slashNormalized
   const parts = rawBody.split("/").filter((part) => part.length > 0)
   const segments: string[] = []
   for (const part of parts) {
