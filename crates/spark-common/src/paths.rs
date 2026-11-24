@@ -7,6 +7,11 @@ use crate::error::{Result, SparkCommonError};
 /// Environment lookup abstraction used by path and settings resolution tests.
 pub trait Environment {
     fn get_var(&self, key: &str) -> Option<String>;
+
+    /// Like [`Environment::get_var`], keeping a value that is not UTF-8.
+    fn get_var_os(&self, key: &str) -> Option<OsString> {
+        self.get_var(key).map(OsString::from)
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -15,6 +20,10 @@ pub struct ProcessEnvironment;
 impl Environment for ProcessEnvironment {
     fn get_var(&self, key: &str) -> Option<String> {
         std::env::var(key).ok().filter(|value| !value.is_empty())
+    }
+
+    fn get_var_os(&self, key: &str) -> Option<OsString> {
+        std::env::var_os(key).filter(|value| !value.is_empty())
     }
 }
 
@@ -59,23 +68,65 @@ pub fn normalize_path(value: impl AsRef<Path>) -> Result<PathBuf> {
     )))
 }
 
-/// Removes Windows extended-length (`\\?\C:\...` and `\\?\UNC\server\share`)
+/// Removes Windows extended-length (`\\?\C:\...` and `\\?\UNC\server\share\...`)
 /// prefixes that `std::fs::canonicalize` produces on Windows, so paths compare
 /// equal to user-facing paths and work in `PATH` and child shells.
+///
+/// The prefix stays wherever the conventional Win32 form could name another
+/// target or be unusable: a non-UTF-8 path or one of another shape; a
+/// component that ends in a space or `.` (including `.` and `..`) or holds a
+/// `/`; a component whose stem (before the first `.` or `:`, trailing spaces
+/// trimmed) is a reserved device name such as `NUL` or `COM1`; or a result of
+/// 248 or more UTF-16 code units. 248 is the Win32 directory limit and keeps
+/// every file under `MAX_PATH` (260) without the long-path opt-in.
 pub fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     let Some(text) = path.to_str() else {
         return path;
     };
-    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{unc}"));
-    }
-    if let Some(rest) = text.strip_prefix(r"\\?\") {
-        let bytes = rest.as_bytes();
-        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-            return PathBuf::from(rest);
+    let (conventional, names) = if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        let mut parts = unc.split('\\');
+        if parts.next().unwrap_or_default().is_empty()
+            || parts.next().unwrap_or_default().is_empty()
+        {
+            return path;
         }
+        (format!(r"\\{unc}"), unc)
+    } else {
+        match text.strip_prefix(r"\\?\") {
+            Some(rest)
+                if rest.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                    && rest[1..].starts_with(r":\") =>
+            {
+                (rest.to_string(), &rest[3..])
+            }
+            _ => return path,
+        }
+    };
+    let ambiguous = |name: &str| {
+        name.ends_with([' ', '.']) || name.contains('/') || is_reserved_device_name(name)
+    };
+    if conventional.encode_utf16().count() >= 248 || names.split('\\').any(ambiguous) {
+        return path;
     }
-    path
+    PathBuf::from(conventional)
+}
+
+fn is_reserved_device_name(name: &str) -> bool {
+    let stem = name
+        .split(['.', ':'])
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].into_iter().any(|device| {
+            stem.strip_prefix(device).is_some_and(|number| {
+                matches!(
+                    number,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        })
 }
 
 /// Like [`std::fs::canonicalize`], without Windows `\\?\` verbatim prefixes.
@@ -84,38 +135,46 @@ pub fn canonicalize_clean(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
 }
 
 /// Resolves the user's home directory from `HOME`, falling back to Windows'
-/// `USERPROFILE` and `HOMEDRIVE` + `HOMEPATH`.
+/// `USERPROFILE` and `HOMEDRIVE` + `HOMEPATH`. Empty values are skipped, and
+/// a value that is not UTF-8 is kept as is.
 pub fn user_home_dir_with_env(env: &impl Environment) -> Option<PathBuf> {
-    env.get_var("HOME")
-        .or_else(|| env.get_var("USERPROFILE"))
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    let var = |key: &str| env.get_var_os(key).filter(|value| !value.is_empty());
+    var("HOME")
+        .or_else(|| var("USERPROFILE"))
         .or_else(|| {
-            let drive = env.get_var("HOMEDRIVE").filter(|v| !v.is_empty())?;
-            let path = env.get_var("HOMEPATH").filter(|v| !v.is_empty())?;
-            Some(PathBuf::from(format!("{drive}{path}")))
+            let mut home = var("HOMEDRIVE")?;
+            home.push(var("HOMEPATH")?);
+            Some(home)
         })
+        .map(PathBuf::from)
 }
 
 pub fn user_home_dir() -> Option<PathBuf> {
     user_home_dir_with_env(&ProcessEnvironment)
 }
 
-/// Expands `~`, `~/...`, and `~\...` using `env`.
+/// Expands `~`, `~/...`, and `~\...` using `env`, keeping both the home and
+/// the rest of the path byte for byte.
 pub fn expand_tilde_with_env(path: &Path, env: &impl Environment) -> PathBuf {
-    let path_text = path.to_string_lossy();
-    if path_text == "~" {
-        return user_home_dir_with_env(env).unwrap_or_else(|| path.to_path_buf());
+    // `~\` only separates on Windows; elsewhere it is split off as text.
+    // ponytail: a non-UTF-8 rest after `~\` off Windows stays unexpanded.
+    let Some(rest) = path
+        .strip_prefix("~")
+        .ok()
+        .or_else(|| path.to_str()?.strip_prefix(r"~\").map(Path::new))
+    else {
+        return path.to_path_buf();
+    };
+    match user_home_dir_with_env(env) {
+        Some(home) if rest.as_os_str().is_empty() => home,
+        Some(home) => home.join(rest),
+        None => path.to_path_buf(),
     }
-    if let Some(rest) = path_text
-        .strip_prefix("~/")
-        .or_else(|| path_text.strip_prefix(r"~\"))
-    {
-        if let Some(home) = user_home_dir_with_env(env) {
-            return home.join(rest);
-        }
-    }
-    path.to_path_buf()
+}
+
+/// [`expand_tilde_with_env`] with the process environment.
+pub fn expand_tilde(path: &Path) -> PathBuf {
+    expand_tilde_with_env(path, &ProcessEnvironment)
 }
 
 pub fn detect_project_root() -> PathBuf {
@@ -236,10 +295,6 @@ fn remap_by_matching_segment(
     }
 
     Ok(None)
-}
-
-fn expand_tilde(path: &Path) -> PathBuf {
-    expand_tilde_with_env(path, &ProcessEnvironment)
 }
 
 fn resolve_non_strict(path: &Path, symlink_count: &mut usize) -> PathBuf {

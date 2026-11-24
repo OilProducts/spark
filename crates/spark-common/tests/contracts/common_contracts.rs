@@ -719,3 +719,168 @@ fn windows_home_tilde_and_verbatim_prefix_helpers_normalize_cleanly() {
         PathBuf::from("/Users/chris/repo")
     );
 }
+
+#[test]
+fn verbatim_prefixes_are_kept_wherever_win32_would_name_another_target() {
+    use spark_common::paths::strip_verbatim_prefix;
+
+    let strip = |text: &str| strip_verbatim_prefix(PathBuf::from(text));
+    // 3 + 244 = 247 UTF-16 code units: one under the threshold.
+    let longest = format!(r"C:\{}", "a".repeat(244));
+    for (verbatim, conventional) in [
+        (r"\\?\C:\".to_string(), r"C:\".to_string()),
+        (
+            r"\\?\d:\Users\chris\notes.v2".into(),
+            r"d:\Users\chris\notes.v2".into(),
+        ),
+        (
+            r"\\?\UNC\fileserver\share".into(),
+            r"\\fileserver\share".into(),
+        ),
+        (
+            r"\\?\UNC\fileserver\share\repo".into(),
+            r"\\fileserver\share\repo".into(),
+        ),
+        // Only look like device names.
+        (
+            r"\\?\C:\console\com10\nullable\lpt.txt".into(),
+            r"C:\console\com10\nullable\lpt.txt".into(),
+        ),
+        (format!(r"\\?\{longest}"), longest.clone()),
+    ] {
+        assert_eq!(strip(&verbatim), PathBuf::from(conventional), "{verbatim}");
+    }
+
+    for kept in [
+        r"\\?\C:\repo\trailing.".to_string(),
+        r"\\?\C:\repo.\file".into(),
+        r"\\?\C:\repo\trailing ".into(),
+        r"\\?\UNC\fileserver\share \repo".into(),
+        r"\\?\C:\repo\nul".into(),
+        r"\\?\C:\repo\NUL.txt\file".into(),
+        r"\\?\C:\repo\nul .txt".into(),
+        r"\\?\C:\repo\con.tar.gz".into(),
+        r"\\?\C:\repo\Aux".into(),
+        r"\\?\C:\repo\prn.md".into(),
+        r"\\?\C:\repo\COM1".into(),
+        r"\\?\C:\repo\com9.log".into(),
+        r"\\?\C:\repo\LPT1".into(),
+        r"\\?\C:\repo\lpt9.txt".into(),
+        r"\\?\C:\repo\COM¹".into(),
+        r"\\?\UNC\fileserver\share\CON".into(),
+        r"\\?\C:\repo\.\file".into(),
+        r"\\?\C:\repo\..\file".into(),
+        r"\\?\C:\repo/file".into(),
+        // 248 UTF-16 code units, then well over.
+        format!(r"\\?\{longest}b"),
+        format!(r"\\?\UNC\fileserver\share\{}", "a".repeat(240)),
+        // Not the drive or UNC shape.
+        r"\\?\C:".into(),
+        r"\\?\C:relative".into(),
+        r"\\?\UNC\fileserver".into(),
+        r"\\?\Volume{0b1c}\repo".into(),
+        r"\\?\GLOBALROOT\Device\HarddiskVolume1".into(),
+    ] {
+        assert_eq!(strip(&kept), PathBuf::from(&kept), "{kept}");
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let non_utf8 = PathBuf::from(std::ffi::OsStr::from_bytes(b"\\\\?\\C:\\repo-\xff"));
+        assert_eq!(strip_verbatim_prefix(non_utf8.clone()), non_utf8);
+    }
+}
+
+#[test]
+fn home_resolution_skips_empty_values_before_each_fallback() {
+    use spark_common::paths::{expand_tilde_with_env, user_home_dir_with_env};
+
+    let vars = |pairs: &[(&str, &str)]| {
+        pairs
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let profile = vars(&[("HOME", ""), ("USERPROFILE", r"C:\Users\chris")]);
+    assert_eq!(
+        user_home_dir_with_env(&profile),
+        Some(PathBuf::from(r"C:\Users\chris"))
+    );
+    let drive = vars(&[
+        ("HOME", ""),
+        ("USERPROFILE", ""),
+        ("HOMEDRIVE", "D:"),
+        ("HOMEPATH", r"\Users\builder"),
+    ]);
+    assert_eq!(
+        user_home_dir_with_env(&drive),
+        Some(PathBuf::from(r"D:\Users\builder"))
+    );
+    assert_eq!(
+        expand_tilde_with_env(Path::new("~/.spark"), &drive),
+        PathBuf::from(r"D:\Users\builder").join(".spark")
+    );
+    // HOME still comes first when set.
+    let both = vars(&[("HOME", "/home/chris"), ("USERPROFILE", r"C:\Users\chris")]);
+    assert_eq!(
+        user_home_dir_with_env(&both),
+        Some(PathBuf::from("/home/chris"))
+    );
+    let none = vars(&[("HOME", ""), ("HOMEDRIVE", "D:"), ("HOMEPATH", "")]);
+    assert_eq!(user_home_dir_with_env(&none), None);
+    assert_eq!(
+        expand_tilde_with_env(Path::new("~/.spark"), &none),
+        PathBuf::from("~/.spark")
+    );
+}
+
+/// Runs in a child process: HOME is process-wide.
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_home_survives_tilde_expansion_and_settings() {
+    use spark_common::paths::{expand_tilde, normalize_path, user_home_dir, ProcessEnvironment};
+    use spark_common::settings::resolve_data_dir;
+    use std::os::unix::ffi::OsStrExt;
+
+    const EXPECTED_HOME: &str = "SPARK_NON_UTF8_HOME_TEST";
+    let Some(home) = std::env::var_os(EXPECTED_HOME) else {
+        let (_temp, root) = canonical_tempdir();
+        let home = root.join(std::ffi::OsStr::from_bytes(b"home-\xff"));
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "common_contracts::a_non_utf8_home_survives_tilde_expansion_and_settings",
+                "--nocapture",
+            ])
+            // No SPARK_HOME: the data dir falls back to `~/.spark`.
+            .env_clear()
+            .env("SPARK_TEST_ENV_ISOLATED", "1")
+            .env(EXPECTED_HOME, &home)
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    let home = PathBuf::from(home);
+    assert!(home.to_str().is_none());
+    assert_eq!(user_home_dir(), Some(home.clone()));
+    assert_eq!(expand_tilde(Path::new("~")), home);
+    assert_eq!(expand_tilde(Path::new("~/.spark")), home.join(".spark"));
+    let suffix = Path::new(std::ffi::OsStr::from_bytes(b"~/data-\xfe"));
+    assert_eq!(
+        expand_tilde(suffix),
+        home.join(std::ffi::OsStr::from_bytes(b"data-\xfe"))
+    );
+    assert_eq!(normalize_path("~/.spark").unwrap(), home.join(".spark"));
+    assert_eq!(
+        resolve_data_dir(&ProcessEnvironment).unwrap(),
+        home.join(".spark")
+    );
+}

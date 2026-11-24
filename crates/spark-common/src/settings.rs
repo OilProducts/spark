@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use crate::error::{Result, SparkCommonError};
 use crate::paths::{
-    detect_project_root, ensure_directory, normalize_path, Environment, ProcessEnvironment,
+    detect_project_root, ensure_directory, expand_tilde, normalize_path, Environment,
+    ProcessEnvironment,
 };
 
 pub const ENV_HOME_DIR: &str = "SPARK_HOME";
@@ -309,7 +310,7 @@ impl RuntimeSettings {
         if self
             .project_roots
             .iter()
-            .any(|path| !expand_for_absolute_check(path).is_absolute())
+            .any(|path| !expand_tilde(path).is_absolute())
         {
             return Err(SparkCommonError::SettingsValidation(
                 "Runtime project_roots must contain absolute paths.".into(),
@@ -680,7 +681,7 @@ pub fn parse_project_roots(value: Option<&str>) -> Result<Vec<PathBuf>> {
                 Some(PathBuf::from(text))
             }
         })
-        .filter(|entry| expand_for_absolute_check(entry).is_absolute())
+        .filter(|entry| expand_tilde(entry).is_absolute())
         .map(normalize_path)
         .collect::<Result<Vec<_>>>()?;
     Ok(roots)
@@ -721,10 +722,6 @@ fn coalesce_optional_path(
         return normalize_path(value).map(Some);
     }
     default_value.map(normalize_path).transpose()
-}
-
-fn expand_for_absolute_check(path: &std::path::Path) -> PathBuf {
-    crate::paths::expand_tilde_with_env(path, &ProcessEnvironment)
 }
 
 /// Non-secret resolved settings captured for an execution; profiles accompany this in their domain snapshots.

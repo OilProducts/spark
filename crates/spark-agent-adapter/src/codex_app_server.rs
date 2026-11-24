@@ -3089,11 +3089,7 @@ pub(crate) fn spark_runtime_dir(env_map: &BTreeMap<String, String>, agent: &str)
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from)
         .or_else(|| {
-            env_map
-                .get("HOME")
-                .or_else(|| env_map.get("USERPROFILE"))
-                .filter(|value| !value.trim().is_empty())
-                .map(|home| PathBuf::from(home).join(".spark"))
+            spark_common::paths::user_home_dir_with_env(env_map).map(|home| home.join(".spark"))
         })
         .unwrap_or_else(|| PathBuf::from(".spark"))
         .join("runtime")
@@ -4083,5 +4079,37 @@ mod tests {
         let resolved = resolve_codex_executable(None, Some(&path), &[]);
 
         assert_eq!(resolved, PathBuf::from(codex_binary_name()));
+    }
+
+    #[test]
+    fn runtime_dirs_skip_empty_home_values_like_the_shared_lookup() {
+        let vars = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let runtime = |home: &str, agent: &str| {
+            PathBuf::from(home)
+                .join(".spark")
+                .join("runtime")
+                .join(agent)
+        };
+        let profile = vars(&[("HOME", ""), ("USERPROFILE", r"C:\Users\chris")]);
+        assert_eq!(
+            spark_runtime_dir(&profile, "codex"),
+            runtime(r"C:\Users\chris", "codex")
+        );
+        let drive = vars(&[
+            ("SPARK_HOME", " "),
+            ("HOME", ""),
+            ("USERPROFILE", ""),
+            ("HOMEDRIVE", "D:"),
+            ("HOMEPATH", r"\Users\builder"),
+        ]);
+        assert_eq!(
+            spark_runtime_dir(&drive, "claude"),
+            runtime(r"D:\Users\builder", "claude")
+        );
     }
 }

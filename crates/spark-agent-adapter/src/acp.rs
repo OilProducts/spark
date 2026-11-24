@@ -1189,7 +1189,7 @@ static ACKNOWLEDGED: Mutex<BTreeMap<AcknowledgedKey, Vec<Value>>> = Mutex::new(B
 /// The options `harness_id` last acknowledged in `cwd` under `generation`.
 pub fn acknowledged_options(cwd: &Path, harness_id: &str, generation: &str) -> Option<Vec<Value>> {
     let key = (
-        std::fs::canonicalize(cwd).ok()?,
+        spark_common::paths::canonicalize_clean(cwd).ok()?,
         harness_id.to_string(),
         generation.to_string(),
     );
@@ -1380,7 +1380,7 @@ fn turn(
             "ACP harness {harness_id} has no {control} control, so {control} {value} cannot be applied; clear it or choose another harness."
         ));
     }
-    let cwd = std::fs::canonicalize(&request.project_path).map_err(|error| {
+    let cwd = spark_common::paths::canonicalize_clean(&request.project_path).map_err(|error| {
         format!(
             "ACP harness {harness_id} work area {} is unavailable: {error}",
             request.project_path
@@ -3908,6 +3908,40 @@ mod tests {
                 now
             ),
             DeferredEnd::WaitingForTools,
+        );
+    }
+
+    /// A live session's work area is the probe's conventional one, so the
+    /// options it acknowledges reach the chooser asking for that work area.
+    #[test]
+    fn live_sessions_and_choosers_share_one_conventional_work_area() {
+        let temp = tempfile::tempdir().unwrap();
+        let spelled = temp.path().join(".");
+        let cwd = spark_common::paths::canonicalize_clean(&spelled).unwrap();
+        assert!(!cwd.to_string_lossy().starts_with(r"\\?\"), "{cwd:?}");
+        let plan = Plan {
+            harness_id: "work-area-test".to_string(),
+            harness_label: "Work area test".to_string(),
+            clarification: None,
+            policy: Default::default(),
+            cwd,
+            generation: "generation".to_string(),
+            instructions: None,
+            instructions_sha256: None,
+            channel_rendered: false,
+            selections: Vec::new(),
+            saved: None,
+            prompt: String::new(),
+            fresh_context: None,
+        };
+        let option = json!({
+            "id": "model", "name": "Model", "type": "select", "currentValue": "small",
+            "options": [{"value": "small", "name": "Small"}],
+        });
+        plan.acknowledge(&[serde_json::from_value(option.clone()).unwrap()]);
+        assert_eq!(
+            acknowledged_options(&spelled, "work-area-test", "generation"),
+            Some(vec![option])
         );
     }
 }

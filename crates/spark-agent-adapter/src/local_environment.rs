@@ -954,7 +954,7 @@ fn is_executable(path: &Path) -> bool {
 }
 
 fn absolutize(path: &Path) -> PathBuf {
-    let expanded = expand_home(path);
+    let expanded = spark_common::paths::expand_tilde(path);
     if expanded.is_absolute() {
         normalize_path(expanded)
     } else {
@@ -964,24 +964,6 @@ fn absolutize(path: &Path) -> PathBuf {
                 .join(expanded),
         )
     }
-}
-
-fn expand_home(path: &Path) -> PathBuf {
-    let mut components = path.components();
-    let Some(Component::Normal(first)) = components.next() else {
-        return path.to_path_buf();
-    };
-    if first != "~" {
-        return path.to_path_buf();
-    }
-    let Some(home) = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")) else {
-        return path.to_path_buf();
-    };
-    let mut expanded = PathBuf::from(home);
-    for component in components {
-        expanded.push(component.as_os_str());
-    }
-    expanded
 }
 
 fn normalize_path(path: PathBuf) -> PathBuf {

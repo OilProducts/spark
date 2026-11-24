@@ -5549,8 +5549,9 @@ fn relative_project_path(project_root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
-fn absolute_path_string(path: &Path) -> String {
-    path.canonicalize()
+/// `path` as responses show it: canonical, without a needless `\\?\` prefix.
+pub(crate) fn absolute_path_string(path: &Path) -> String {
+    spark_common::paths::canonicalize_clean(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
         .into_owned()
@@ -5647,6 +5648,28 @@ fn snapshot_model_group(snapshot: &Value) -> WorkspaceResult<Option<ModelSetting
             .unwrap_or(Value::Null),
     )
     .map_err(|_| WorkspaceError::Validation("Invalid conversation model_settings group.".into()))
+}
+
+#[cfg(test)]
+mod response_path_tests {
+    use super::*;
+
+    /// Flow and change-request responses show the canonical path, without
+    /// the `\\?\` prefix Windows canonicalization adds to ordinary paths.
+    #[test]
+    fn response_paths_are_canonical_and_conventional() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("request.md");
+        std::fs::write(&file, "").unwrap();
+        let shown = absolute_path_string(&temp.path().join(".").join("request.md"));
+        assert_eq!(
+            Path::new(&shown),
+            spark_common::paths::canonicalize_clean(&file).unwrap()
+        );
+        assert!(!shown.starts_with(r"\\?\"), "{shown}");
+        let missing = temp.path().join("missing");
+        assert_eq!(absolute_path_string(&missing), missing.to_string_lossy());
+    }
 }
 
 #[cfg(test)]
