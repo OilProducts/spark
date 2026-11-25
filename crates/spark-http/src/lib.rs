@@ -209,26 +209,6 @@ pub fn build_app_with_rust_llm_client(
     )
 }
 
-/// Native settings writes share the HTTP app's existing live transport.
-pub fn build_app_with_rust_llm_client_and_settings_notifications(
-    settings: SparkSettings,
-    client: unified_llm_adapter::Client,
-) -> Result<(Router, impl Fn(&str) + Send + Sync + 'static), spark_storage::StorageError> {
-    let (app, publisher) = build_app_with_live_hub(
-        settings,
-        attractor_api::rust_llm_runtime_handler_runner_factory(client.clone()),
-        Arc::new(RustLlmAgentTurnBackend::new(client)),
-    )?;
-    Ok((app, move |revision: &str| {
-        publisher.publish_settings_change(
-            "workspace",
-            "desktop",
-            None,
-            serde_json::json!(revision),
-        );
-    }))
-}
-
 pub fn build_app_with_agent_turn_backend(
     settings: SparkSettings,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
