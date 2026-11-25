@@ -122,6 +122,13 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         })
     }, [])
 
+    // Shows `next`, if any, in place of the link `old` as it was, dropping a Projects result looked up for that version.
+    const replaceLink = useCallback((old: EnvironmentLink, next?: EnvironmentLink) => {
+        const lookup = lookupsRef.current.get(old.environment_id)
+        if (lookup && sameLink(lookup, old)) forgetProjects(old.environment_id)
+        showLinks([...linksRef.current.filter((row) => !sameLink(row, old)), ...(next ? [next] : [])])
+    }, [forgetProjects, showLinks])
+
     // Shows a link listing, unless it read before a removal check that found one of its links replaced, and drops Projects
     // results for links it no longer has as they were when looked up.
     const showListedLinks = useCallback((ticket: number, listed: EnvironmentLink[]) => {
@@ -199,14 +206,11 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             forgetProjects(created.environment_id)
             showLinks([...linksRef.current.filter((row) => row.environment_id !== created.environment_id), created])
         } else {
-            const removed = mutation.unlinked
-            const lookup = lookupsRef.current.get(removed.environment_id)
-            if (lookup && sameLink(lookup, removed)) forgetProjects(removed.environment_id)
-            showLinks(linksRef.current.filter((row) => !sameLink(row, removed)))
+            replaceLink(mutation.unlinked)
             // Only a listing can say no links remain.
             setLinksLoaded(false)
         }
-    }, [forgetProjects, showLinks])
+    }, [forgetProjects, replaceLink, showLinks])
 
     useEffect(() => {
         if (!active) return
@@ -399,13 +403,12 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             }
             const current = latest.find((row) => row.environment_id === link.environment_id)
             if (!current || !sameLink(current, link)) {
-                // Shown unless newer link state already is: links from a later listing, unless they still have the link
-                // this check found replaced. A refresh still in flight then drops only its links result if it started
-                // earlier or still lists that link.
+                // Shown unless newer link state already is: links from a later listing or a change confirmed since. Those stay,
+                // but if they still have the link this check found replaced, its row becomes what the check found. A refresh
+                // still in flight then drops only its links result if it started earlier or still lists that link.
                 supersededLinksRef.current.push({ link, until: lastTicket })
-                if (linksTicket > linksShownRef.current || linksRef.current.some((row) => sameLink(row, link))) {
-                    showListedLinks(linksTicket, latest)
-                }
+                if (linksTicket > linksShownRef.current) showListedLinks(linksTicket, latest)
+                else if (linksRef.current.some((row) => sameLink(row, link))) replaceLink(link, current)
                 throw new Error(`The link to ${name} changed since you chose to remove it, so nothing was removed. Review the current link before removing it again.`)
             }
             await removeEnvironmentLink(link.environment_id)

@@ -386,6 +386,50 @@ it.each([
     expect(screen.queryByRole('button', { name: `Remove link ${replaced}` })).not.toBeInTheDocument()
 })
 
+it.each(['add', 'removal'] as const)('keeps a pending %s confirmed in a reopened card when its removal check started earlier finds another link replaced, beside a failed follow-up listing', async (change) => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-build', 'Build box'), ...(change === 'removal' ? [link('env-gpu', 'GPU')] : [])] })
+    const settings = render(card())
+    let finishChange = () => {}
+    if (change === 'add') {
+        await screen.findByRole('button', { name: 'Remove link Build box' })
+        finishChange = await addGpuHeld(user, backend)
+    } else {
+        backend.replies[`DELETE ${LINKS}/env-gpu`] = () => new Promise<undefined>((resolve) => { finishChange = () => resolve(undefined) })
+        await user.click(await screen.findByRole('button', { name: 'Remove link GPU' }))
+        await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+        await waitFor(() => expect(backend.mutations).toEqual([`DELETE ${LINKS}/env-gpu`]))
+    }
+
+    // In the reopened card the user removes Build box, which another tab has relinked. Its check reads the server before
+    // the pending change is saved and is held; link listings fail from then on.
+    settings.unmount()
+    render(card())
+    await user.click(await screen.findByRole('button', { name: 'Remove link Build box' }))
+    backend.links = backend.links.map((row) => row.environment_id === 'env-build' ? relinked : row)
+    const held: Array<() => void> = []
+    backend.replies[LINKS] = () => {
+        const answer = json({ links: backend.links })
+        backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
+        return new Promise<Response>((resolve) => held.push(() => resolve(answer)))
+    }
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(held).toHaveLength(1))
+
+    // The pending change is saved and confirmed, and its follow-up listing fails; then the check returns.
+    await act(async () => finishChange())
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
+    await act(async () => held[0]())
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('The link to Build box changed since you chose to remove it, so nothing was removed.'))
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
+    expect(screen.getByText(/https:\/\/new-build\.example:8000/)).toBeInTheDocument()
+    expect(screen.queryByText(/https:\/\/env-build\.example:8000/)).not.toBeInTheDocument()
+    if (change === 'add') expect(screen.getByRole('button', { name: 'Remove link GPU' })).toBeInTheDocument()
+    else expect(screen.queryByRole('button', { name: 'Remove link GPU' })).not.toBeInTheDocument()
+    expect(backend.mutations).toEqual([change === 'add' ? `POST ${LINKS}` : `DELETE ${LINKS}/env-gpu`])
+})
+
 it('shows a failure that lands while Settings is closed in the next card to open', async () => {
     const user = userEvent.setup()
     const backend = stubBackend({ links: [link('env-build', 'Build box')] })
