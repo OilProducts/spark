@@ -593,7 +593,8 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                                                             aria-label={`Switch to ${name}`}
                                                             disabled={busy}
                                                             onClick={() => void selectEnvironment(link.environment_id, {
-                                                                onActivated: () => useStore.getState().setViewMode('overview'),
+                                                                // The switch already passed this workspace's guards, which still listen until it unmounts.
+                                                                onActivated: () => useStore.setState({ viewMode: 'overview' }),
                                                             })}
                                                         >
                                                             Switch

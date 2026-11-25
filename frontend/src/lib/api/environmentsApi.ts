@@ -33,13 +33,13 @@ export type PeerToken = {
     is_current: boolean
 }
 
-export type DelegationQuestionOption = {
+type DelegationQuestionOption = {
     label: string
     value?: string
     description?: string
 }
 
-export type DelegationSubQuestion = {
+type DelegationSubQuestion = {
     id: string
     header?: string
     question: string
@@ -63,7 +63,7 @@ export type DelegationQuestion = {
     flow_name?: string
 }
 
-export type DelegationLastState = {
+type DelegationLastState = {
     phase?: string
     status?: string
     target_kind?: string

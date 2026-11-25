@@ -14,7 +14,7 @@ import {
 } from '@/lib/activeEnvironment'
 import { workspaceLiveEventsUrl, workspaceUrl } from '@/lib/api/apiClient'
 import { attractorUrl } from '@/lib/api/attractorApi'
-import { DEFAULT_ROUTE_STATE, ROUTE_STATE_STORAGE_KEY, saveRouteState } from '@/state/store-helpers'
+import { DEFAULT_ROUTE_STATE, ROUTE_STATE_STORAGE_KEY, saveRouteState, saveSessionViewMode } from '@/state/store-helpers'
 import { useStore } from '@/store'
 import { deferred } from '@/test/environments'
 
@@ -125,7 +125,8 @@ function stubBackend(routes: Record<string, Route> = {}, links = [WIN_LINK]) {
         sentTo: (environmentId: string) => requests.filter((request) => request.url.startsWith(`${proxy(environmentId)}/`)).map((request) => request.url),
         /** Unprefixed requests, other than this machine's switcher bootstrap, sent while a linked environment was active. */
         leakedLocal: () => requests.filter((request) => request.environmentId !== null
-            && !request.url.startsWith(`${proxy(request.environmentId)}/`) && !LOCAL_BOOTSTRAP.includes(request.url)),
+            && !request.url.startsWith(`${proxy(request.environmentId)}/`)
+            && !(request.method === 'GET' && LOCAL_BOOTSTRAP.includes(request.url))),
     }
 }
 
@@ -336,13 +337,19 @@ describe('Same-window multi-environment switching', () => {
         expect(tab('local')).toHaveAttribute('aria-selected', 'true')
     })
 
-    it('refuses a stale UI bundle even when this machine and the remote were upgraded together', async () => {
+    it.each([
+        ['before this page loaded', 3, 3],
+        ['after this page loaded, against a remote still on this bundle\'s versions', 2, 2],
+    ])('refuses a stale UI bundle when this machine was upgraded %s', async (_when, bootstrapUi, remoteUi) => {
         const user = userEvent.setup()
-        stubBackend({
-            '/environment': () => json({ ...LOCAL_ENV, ui_api_version: 3 }),
-            [WIN_AUTH]: () => json(descriptor('env-win', { ui_api_version: 3 })),
-        })
+        const routes: Record<string, Route> = {
+            '/environment': () => json({ ...LOCAL_ENV, ui_api_version: bootstrapUi }),
+            [WIN_AUTH]: () => json(descriptor('env-win', { ui_api_version: remoteUi })),
+        }
+        stubBackend(routes)
         render(<App />)
+        await waitFor(() => expect(getActiveEnvironmentState().localDescriptor?.ui_api_version).toBe(bootstrapUi))
+        routes['/environment'] = () => json({ ...LOCAL_ENV, ui_api_version: 3 })
         await user.click(await screen.findByTestId('environment-tab-env-win'))
 
         const gate = await screen.findByTestId('remote-environment-gate')
@@ -372,30 +379,49 @@ describe('Same-window multi-environment switching', () => {
         expect(screen.getByTestId('remote-environment-indicator')).toBeVisible()
     })
 
+    const upgradedLocal = () => json({ ...LOCAL_ENV, ui_api_version: 3 })
     it.each([
-        ['upgraded past this bundle', () => json(descriptor('env-win', { ui_api_version: 3 })), 'Version mismatch with Windows Workstation'],
-        ['re-paired as another environment', () => json(descriptor('env-other')), 'answered as environment env-other'],
-        ['revoking this Spark\'s credential', () => json({ detail: 'Unauthorized' }, 401), 'refused this Spark’s credential'],
-    ])('leaves ready for the gate when the remote\'s live connection comes back %s', async (_name, answer, message) => {
+        // Restarted as an upgrade: down for one reconnect, which keeps the workspace, then open again.
+        ['comes back upgraded past this bundle', WIN_AUTH, () => json(descriptor('env-win', { ui_api_version: 3 })), true, 'Version mismatch with Windows Workstation'],
+        ['comes back re-paired as another environment', WIN_AUTH, () => json(descriptor('env-other')), true, 'answered as environment env-other'],
+        ['comes back after this Spark was upgraded under the page', '/environment', upgradedLocal, true, 'Reload the page'],
+        // A revoked credential refuses the reconnect's handshake itself, which never opens.
+        ['is refused for a revoked credential', WIN_AUTH, () => json({ detail: 'Unauthorized' }, 401), false, 'refused this Spark’s credential'],
+    ])('leaves ready for the gate when the remote\'s live connection %s', async (_name, route, answer, reopens, message) => {
         const user = userEvent.setup()
         const routes: Record<string, Route> = {}
-        stubBackend(routes)
+        const backend = stubBackend(routes)
         render(<App />)
         await user.click(await screen.findByTestId('environment-tab-env-win'))
         await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-win'))
         const remoteShell = workspaceMounted()
         const live = () => MockEventSource.instances.filter((source) => !source.closed && source.url.startsWith(`${WIN}/workspace/api/live/events`)).at(-1)
+        const checks = () => backend.requests.filter((request) => request.url === WIN_AUTH).length
         await waitFor(() => expect(live()).toBeDefined())
         // An open after no error checks nothing again.
-        const opened = live()!
-        act(() => opened.onopen?.(new Event('open')))
-        expect(getActiveEnvironmentState().status).toBe('ready')
+        let source = live()!
+        const before = checks()
+        act(() => source.onopen?.(new Event('open')))
+        expect(checks()).toBe(before)
 
-        routes[WIN_AUTH] = answer
-        act(() => opened.onerror?.(new Event('error')))
-        await waitFor(() => expect(live()).toBeDefined(), { timeout: 2000 })
-        expect(live()).not.toBe(opened)
-        act(() => live()!.onopen?.(new Event('open')))
+        if (reopens) {
+            // No answer while it restarts leaves the reconnects to retry, the workspace still shown.
+            routes[WIN_AUTH] = () => json({ detail: 'connection refused' }, 503)
+            act(() => source.onerror?.(new Event('error')))
+            await waitFor(() => expect(checks()).toBe(before + 1))
+            await act(async () => {})
+            expect(getActiveEnvironmentState().status).toBe('ready')
+            expect(remoteShell).toBeVisible()
+            await waitFor(() => expect(live()).toBeDefined(), { timeout: 2000 })
+            expect(live()).not.toBe(source)
+            source = live()!
+            delete routes[WIN_AUTH]
+            routes[route] = answer
+            act(() => source.onopen?.(new Event('open')))
+        } else {
+            routes[route] = answer
+            act(() => source.onerror?.(new Event('error')))
+        }
 
         expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent(message)
         expect(getActiveEnvironmentState().status).not.toBe('ready')
@@ -404,16 +430,50 @@ describe('Same-window multi-environment switching', () => {
         expect(remoteShell).not.toBeVisible()
 
         // Retry checks it again and shows the same workspace once it passes.
-        routes[WIN_AUTH] = () => json(WIN_ENV)
+        delete routes[route]
         await user.click(screen.getByRole('button', { name: 'Retry' }))
         await waitFor(() => expect(remoteShell).toBeVisible())
         expect(workspaceMounted()).toBe(remoteShell)
     })
 
+    it('keeps a mounted remote\'s failed re-check for a return from another environment\'s failed check', async () => {
+        const user = userEvent.setup()
+        const gpu = deferred<void>()
+        const routes: Record<string, Route> = { [GPU_AUTH]: () => gpu.promise.then(() => json({ detail: 'connection refused' }, 503)) }
+        const backend = stubBackend(routes, [WIN_LINK, GPU_LINK])
+        render(<App />)
+        await user.click(await screen.findByTestId('environment-tab-env-win'))
+        await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-win'))
+        const remoteShell = workspaceMounted()
+        const checks = () => backend.requests.filter((request) => request.url === WIN_AUTH).length
+        const live = () => MockEventSource.instances.filter((source) => !source.closed && source.url.startsWith(`${WIN}/workspace/api/live/events`)).at(-1)
+        await waitFor(() => expect(live()).toBeDefined())
+
+        // While the GPU's check is pending, Windows refuses its reconnect for a revoked credential.
+        await user.click(tab('env-gpu'))
+        routes[WIN_AUTH] = () => json({ detail: 'Unauthorized' }, 401)
+        const before = checks()
+        act(() => live()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+        await act(async () => {})
+        expect(getActiveEnvironmentState()).toMatchObject({ selectedEnvironmentId: 'env-gpu', status: 'checking' })
+
+        await act(async () => gpu.resolve())
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(gate).toHaveTextContent('Couldn’t connect to GPU')
+        await user.click(within(gate).getByRole('button', { name: 'Return to Windows Workstation' }))
+
+        expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent('refused this Spark’s credential')
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'unreachable' })
+        expect(workspaceMounted()).toBe(remoteShell)
+        expect(remoteShell).not.toBeVisible()
+    })
+
     describe.each([
-        ['the tab bar', (user: ReturnType<typeof userEvent.setup>) => user.click(tab('env-win'))],
-        ['Settings', (user: ReturnType<typeof userEvent.setup>) => user.click(screen.getByRole('button', { name: 'Switch to Windows Workstation' }))],
-    ])('switching from %s with unsaved settings', (_source, requestSwitch) => {
+        // The tab bar opens the environment on its own last view; Settings' Switch opens it on its Overview.
+        ['the tab bar', (user: ReturnType<typeof userEvent.setup>) => user.click(tab('env-win')), 'settings'],
+        ['Settings', (user: ReturnType<typeof userEvent.setup>) => user.click(screen.getByRole('button', { name: 'Switch to Windows Workstation' })), 'overview'],
+    ])('switching from %s with unsaved settings', (_source, requestSwitch, landsOn) => {
         const draftField = () => screen.getByLabelText('Command-line server URL')
         async function renderWithDraft(routes: Record<string, Route> = {}) {
             const user = userEvent.setup()
@@ -458,6 +518,8 @@ describe('Same-window multi-environment switching', () => {
             const check = deferred<void>()
             stubBackend({ [WIN_AUTH]: () => check.promise.then(() => json(WIN_ENV)) })
             vi.spyOn(useRunJournalStore, 'setState')
+            // Windows was last left in Settings.
+            saveSessionViewMode('settings', 'env-win')
             render(<App />)
             await screen.findByTestId('environment-tab-env-win')
             await openSystemSettings()
@@ -482,7 +544,37 @@ describe('Same-window multi-environment switching', () => {
             expect(tab('env-win')).toHaveAttribute('aria-selected', 'true')
             expect(workspaceMounted()).not.toBe(shell)
             expect(resets()).toBe(1)
+            await waitFor(() => expect(useStore.getState().viewMode).toBe(landsOn))
+            expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
         })
+    })
+
+    it('commits a switch approved after the mounted remote\'s live connection came back compatible during its dialog', async () => {
+        const user = userEvent.setup()
+        const backend = stubBackend()
+        render(<App />)
+        await user.click(await screen.findByTestId('environment-tab-env-win'))
+        await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-win'))
+        const live = () => MockEventSource.instances.filter((source) => !source.closed && source.url.startsWith(`${WIN}/workspace/api/live/events`)).at(-1)
+        await waitFor(() => expect(live()).toBeDefined())
+        await openSystemSettings()
+        await user.type(await screen.findByLabelText('Command-line server URL'), 'http://draft.example')
+
+        await user.click(tab('local'))
+        const dialog = await screen.findByRole('alertdialog')
+        const checks = () => backend.requests.filter((request) => request.url === WIN_AUTH).length
+        const before = checks()
+        const dropped = live()!
+        act(() => dropped.onerror?.(new Event('error')))
+        await waitFor(() => expect(live()).toBeDefined(), { timeout: 2000 })
+        act(() => live()!.onopen?.(new Event('open')))
+        await waitFor(() => expect(checks()).toBe(before + 2))
+        await act(async () => {})
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'ready' })
+
+        await user.click(within(dialog).getByRole('button', { name: 'Discard and leave' }))
+        await waitFor(() => expect(getActiveEnvironmentId()).toBeNull())
+        expect(tab('local')).toHaveAttribute('aria-selected', 'true')
     })
 
     it('updates the switcher tabs as soon as Settings adds or removes a link, before its links reload', async () => {

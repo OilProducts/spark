@@ -28,9 +28,9 @@ export type EnvironmentLink = {
     created_at: string
 }
 
-export type RemoteEnvironmentStatus = 'ready' | 'checking' | 'incompatible' | 'unreachable'
+type RemoteEnvironmentStatus = 'ready' | 'checking' | 'incompatible' | 'unreachable'
 
-export type ActiveEnvironmentState = {
+type ActiveEnvironmentState = {
     /** Environment currently mounted in the workspace (`null` = this local machine). */
     activeEnvironmentId: string | null
     /** Tab currently selected by the user; differs from activeEnvironmentId while checking or blocked. */
@@ -49,7 +49,7 @@ export function environmentProxyPrefix(environmentId: string | null | undefined)
     return environmentId ? `/workspace/api/environments/links/${encodeURIComponent(environmentId)}/proxy` : ''
 }
 
-export function parseEnvironmentDescriptor(payload: unknown, endpoint: string): EnvironmentDescriptor {
+function parseEnvironmentDescriptor(payload: unknown, endpoint: string): EnvironmentDescriptor {
     const record = expectObjectRecord(payload, endpoint)
     return {
         environment_id: expectString(record.environment_id, endpoint, 'environment_id'),
@@ -120,6 +120,8 @@ let refreshSequence = 0
 let resetHandler: ((targetEnvironmentId: string | null) => void) | null = null
 // What the mounted environment's own last check found; a switch that does not go through shows it again.
 let activeCheck: Check = READY_LOCAL
+// The mounted environment a re-check is running for.
+let reverifying: string | null = null
 
 function emit() {
     listeners.forEach((listener) => listener())
@@ -193,43 +195,41 @@ function describeCompatibilityMismatch(name: string, local: EnvironmentDescripto
     return `${name} runs ${describeEnvironmentVersion(remote)}, while this Spark runs ${describeEnvironmentVersion(local)}. Update Spark so both environments match.`
 }
 
+const unreachable = (error: string): Check => ({ status: 'unreachable', error, remoteDescriptor: null })
+
 /**
  * Checks a linked environment before its workspace shows: its authenticated descriptor must name it, and it and this
- * machine must both speak this bundle's versions. An older peer's public descriptor only explains a mismatch.
+ * machine, as each runs now, must both speak this bundle's versions. An older peer's public descriptor only explains a
+ * mismatch. It throws when this machine or the link's proxy gives no answer, such as while the peer restarts.
  */
 async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     const name = linkLabelFor(environmentId)
-    const failed = (error: string): Check => ({ status: 'unreachable', error, remoteDescriptor: null })
-    let local = state.localDescriptor
-    if (!local) {
-        try {
-            local = await fetchEnvironmentDescriptor(null)
-            updateState({ localDescriptor: local })
-        } catch (error) {
-            return failed(`Could not verify this Spark server’s version: ${errorText(error)}`)
-        }
+    const [localResult, remoteResult] = await Promise.allSettled([
+        fetchEnvironmentDescriptor(null),
+        fetchEnvironmentDescriptor(environmentId, '/workspace/api/environment'),
+    ])
+    if (localResult.status === 'rejected') {
+        throw new Error(`Could not verify this Spark server’s version: ${errorText(localResult.reason)}`)
     }
+    const local = localResult.value
+    updateState({ localDescriptor: local })
     const mismatch = (remote: EnvironmentDescriptor): Check | null => speaksThisBundle(local) && speaksThisBundle(remote)
         ? null
         : { status: 'incompatible', error: describeCompatibilityMismatch(name, local, remote), remoteDescriptor: remote }
-    let remote: EnvironmentDescriptor
-    try {
-        remote = await fetchEnvironmentDescriptor(environmentId, '/workspace/api/environment')
-    } catch (error) {
+    if (remoteResult.status === 'rejected') {
+        const error = remoteResult.reason
         const status = error instanceof ApiHttpError ? error.status : 0
         if (status === 401) {
-            return failed(`${name} refused this Spark’s credential (HTTP 401): its peer token was revoked or is invalid. Remove the link in Settings and pair again with a new pairing code from ${name}.`)
+            return unreachable(`${name} refused this Spark’s credential (HTTP 401): its peer token was revoked or is invalid. Remove the link in Settings and pair again with a new pairing code from ${name}.`)
         }
         // An older peer has no authenticated descriptor (404), or answers without its identity, which the proxy refuses (502).
-        if (status === 404 || status === 502) {
-            const older = await fetchEnvironmentDescriptor(environmentId).catch(() => null)
-            const explained = older?.environment_id === environmentId ? mismatch(older) : null
-            if (explained) return explained
-        }
-        return failed(errorText(error))
+        if (status !== 404 && status !== 502) throw error
+        const older = await fetchEnvironmentDescriptor(environmentId).catch(() => null)
+        return (older?.environment_id === environmentId ? mismatch(older) : null) ?? unreachable(errorText(error))
     }
+    const remote = remoteResult.value
     if (remote.environment_id !== environmentId) {
-        return failed(`${name} answered as environment ${remote.environment_id}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.`)
+        return unreachable(`${name} answered as environment ${remote.environment_id}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.`)
     }
     return mismatch(remote) ?? { status: 'ready', error: null, remoteDescriptor: remote }
 }
@@ -300,7 +300,7 @@ export async function selectEnvironment(
 
     // Retrying the mounted environment keeps it hidden behind its error until the check passes.
     if (environmentId !== active) updateState({ selectedEnvironmentId: environmentId, status: 'checking', error: null })
-    const check = await checkRemoteEnvironment(environmentId)
+    const check = await checkRemoteEnvironment(environmentId).catch((error: unknown) => unreachable(errorText(error)))
     if (seq !== switchSequence) return false
     if (environmentId === active || check.status !== 'ready') {
         if (environmentId === active) activeCheck = check
@@ -316,18 +316,27 @@ export function retrySelectedEnvironment(): Promise<boolean> {
 }
 
 /**
- * Checks the mounted linked environment again, as when its live connection comes back after an error: one that was
- * upgraded, re-paired as another environment or revoked this Spark's credential shows the gate's error instead.
+ * Checks the mounted linked environment again, as when its live connection fails or comes back after an error: one
+ * that was upgraded, re-paired as another environment or revoked this Spark's credential shows the gate's error, now
+ * or, while a switch elsewhere is pending, once that switch comes back to it. It leaves a pending switch alone, and
+ * no answer at all to the live connection's retries.
  */
 export async function reverifyActiveEnvironment(): Promise<void> {
     const environmentId = state.activeEnvironmentId
-    // A switch underway or an error already shown settles the selection itself.
-    if (environmentId === null || state.selectedEnvironmentId !== environmentId || state.status !== 'ready') return
-    const seq = ++switchSequence
-    const check = await checkRemoteEnvironment(environmentId)
-    if (seq !== switchSequence) return
+    // An error already found stays until Retry or Return; one check at a time.
+    if (environmentId === null || activeCheck.status !== 'ready' || reverifying === environmentId) return
+    reverifying = environmentId
+    let check: Check
+    try {
+        check = await checkRemoteEnvironment(environmentId)
+    } catch {
+        return
+    } finally {
+        if (reverifying === environmentId) reverifying = null
+    }
+    if (state.activeEnvironmentId !== environmentId) return
     activeCheck = check
-    updateState(check)
+    if (state.selectedEnvironmentId === environmentId) updateState(check)
 }
 
 function subscribe(listener: () => void) {
@@ -345,6 +354,7 @@ export function resetActiveEnvironmentForTests() {
     switchSequence += 1
     refreshSequence += 1
     activeCheck = READY_LOCAL
+    reverifying = null
     state = { ...INITIAL_STATE }
     emit()
 }

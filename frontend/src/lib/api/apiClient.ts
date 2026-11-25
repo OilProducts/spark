@@ -1,8 +1,8 @@
 import { environmentProxyPrefix, getActiveEnvironmentId } from '../activeEnvironment'
 import { fetchJsonWithValidation } from './shared'
 
-export const WORKSPACE_PREFIX = '/workspace'
-export const WORKSPACE_API_PREFIX = `${WORKSPACE_PREFIX}/api`
+const WORKSPACE_PREFIX = '/workspace'
+const WORKSPACE_API_PREFIX = `${WORKSPACE_PREFIX}/api`
 
 /** A workspace API URL in `environmentId` (`null`: this machine), by default the active environment. */
 export function workspaceUrl(path: string, environmentId: string | null = getActiveEnvironmentId()): string {

@@ -539,8 +539,7 @@ export function WorkspaceLiveEventsController() {
                 // This connection's first frames restore whatever is still thinking; the rest ended unseen.
                 useLiveThinkingStore.getState().clear()
                 window.dispatchEvent(new Event('spark:settings-live-event'))
-                // Back after an error: a linked environment may since have been upgraded, re-paired or revoked this
-                // Spark's credential, so check it again before going on.
+                // Back after an error: a linked environment may since have been upgraded or re-paired, so check it again.
                 if (failedConnects > 0) void reverifyActiveEnvironment()
                 // Back after an outage: reload what failed meanwhile, as Reconnect would.
                 if (failedConnects >= 2) {
@@ -557,6 +556,9 @@ export function WorkspaceLiveEventsController() {
                 source.close()
                 eventSource = null
                 failedConnects += 1
+                // A linked environment that revoked this Spark's credential refuses every reconnect and never opens.
+                // ponytail: a check per failed attempt while a peer is down; back off if that load matters.
+                void reverifyActiveEnvironment()
                 // Spark is unreachable: runs say so instead of looking live.
                 if (failedConnects === 2) reportRunsTransportLost()
                 if (reconnectTimer !== null) {
