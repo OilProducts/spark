@@ -199,6 +199,42 @@ describe('flow saves', () => {
         expect(sent).toEqual([])
     })
 
+    it('never sends an autosave whose preview answers after its flow opened anew with a newer version', async () => {
+        useStore.setState({ activeFlow: 'demo', activeProjectPath: PROJECT })
+        primeFlowSaveBaseline('demo', flow('Base'), PROJECT)
+        const preview = deferred<unknown>()
+        answer = (url) => (url.endsWith('/preview') ? preview.promise : { status: 'saved' })
+        const saving = saveFlowContent('demo', flow('Old'), PROJECT)
+        await waitFor(() => expect(sent).toEqual(['POST /attractor/preview']))
+        // The editor leaves the flow and opens it again, now as saved elsewhere, while the preview answers.
+        closeFlowOpening('demo', PROJECT, null)
+        primeFlowSaveBaseline('demo', flow('Newer'), PROJECT)
+
+        preview.resolve({ status: 'ok' })
+        await expect(saving).resolves.toBe(false)
+        expect(sent).toEqual(['POST /attractor/preview'])
+        expect(refusedFlowSaves()).toMatchObject([{ content: flow('Old'), message: 'These edits weren’t sent: the flow opened again first.' }])
+    })
+
+    it('keeps the baseline a newer opening loaded when an older save’s acknowledgment lands after it', async () => {
+        useStore.setState({ activeFlow: 'demo', activeProjectPath: PROJECT })
+        primeFlowSaveBaseline('demo', flow('Base'), PROJECT)
+        const saved = deferred<unknown>()
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : saved.promise)
+        const saving = saveFlowContent('demo', flow('Old'), PROJECT)
+        await waitFor(() => expect(sent).toHaveLength(2))
+        closeFlowOpening('demo', PROJECT, null)
+        primeFlowSaveBaseline('demo', flow('Newer'), PROJECT)
+        saved.resolve({ status: 'saved' })
+        await expect(saving).resolves.toBe(true)
+
+        // An edit back to the old snapshot is a change over the version this opening loaded.
+        sent = []
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : { status: 'saved' })
+        await expect(saveFlowContent('demo', flow('Old'), PROJECT)).resolves.toBe(true)
+        expect(sent).toEqual(['POST /attractor/preview', 'POST /attractor/api/flows'])
+    })
+
     it('never sends a save queued before its flow opened anew, keeping it for the flow’s notice', async () => {
         await switchEnvironment('env-r')
         useStore.setState({ activeFlow: 'demo', activeProjectPath: PROJECT })

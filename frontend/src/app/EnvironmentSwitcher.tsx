@@ -24,9 +24,6 @@ function ensureEnvironmentResetHandler() {
     if (resetHandlerRegistered) return
     resetHandlerRegistered = true
     registerEnvironmentResetHandler((targetEnvironmentId) => {
-        if (typeof window !== 'undefined') {
-            window.history.replaceState(null, '', window.location.pathname + window.location.search)
-        }
         resetStoreForEnvironmentSwitch(targetEnvironmentId === null)
         useRunJournalStore.setState({ byRunId: {} })
         useRunTranscriptStore.setState({ byRunId: {} })

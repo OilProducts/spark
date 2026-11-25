@@ -24,10 +24,15 @@ import { useStore, whenEnvironmentShown } from '@/store'
 import type { PendingConversationTurnState, PendingUserMessage } from '../model/conversationState'
 import type { NormalizedConversationRecord } from '../model/projectsHomeState'
 import type { ComposerAttachment } from '../model/types'
-import { clearSentAttachments } from './useComposerAttachments'
+import { clearSentAttachments, restoreRefusedAttachments } from './useComposerAttachments'
 
+// A chat is one in its environment: the same conversation ID elsewhere is another chat.
+const chatKey = (environmentId: string | null, conversationId: string) => `${environmentId ?? 'local'}\n${conversationId}`
 // Prevents duplicate turn submits while a turn waits for an in-flight settings save to commit.
 const awaitingSettingsTurn = new Set<string>()
+// The turn each chat last started while shown. Only it ends the chat's pending and sending state, so an
+// older turn's answer, even one from a workspace retired by a switch away and back, never ends a newer one's.
+const latestTurnByChat = new Map<string, object>()
 
 export type ConversationComposerCommand =
     | {
@@ -149,14 +154,15 @@ export function useConversationComposer({
     setPanelError,
     setPendingConversationTurn,
 }: UseConversationComposerArgs) {
-    const awaitSettingsReady = async (conversationId: string): Promise<boolean | string> => {
+    const awaitSettingsReady = async (conversationId: string, environmentId: string | null): Promise<boolean | string> => {
         if (!waitForPendingSettingsSave) return true
-        if (awaitingSettingsTurn.has(conversationId)) return false
-        awaitingSettingsTurn.add(conversationId)
+        const key = chatKey(environmentId, conversationId)
+        if (awaitingSettingsTurn.has(key)) return false
+        awaitingSettingsTurn.add(key)
         try {
             return await waitForPendingSettingsSave(conversationId)
         } finally {
-            awaitingSettingsTurn.delete(conversationId)
+            awaitingSettingsTurn.delete(key)
         }
     }
 
@@ -171,7 +177,7 @@ export function useConversationComposer({
         }
         const environmentId = getActiveEnvironmentId()
         const initialRevision = getConversationRecord(conversationId)?.settingsRevision
-        const ready = await awaitSettingsReady(conversationId)
+        const ready = await awaitSettingsReady(conversationId, environmentId)
         if (!ready) {
             return
         }
@@ -289,7 +295,7 @@ export function useConversationComposer({
             await switchChatMode(conversationId, parsedCommand.chatMode)
             return
         }
-        if (!(await awaitSettingsReady(conversationId))) {
+        if (!(await awaitSettingsReady(conversationId, environmentId))) {
             return
         }
         // Switched away while settings saved: the message still goes, but nothing here shows it.
@@ -320,7 +326,8 @@ export function useConversationComposer({
             ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
         }])
         // The message shows in the transcript now, so the composer clears now; a failed send puts the
-        // text back ahead of anything typed meanwhile, in its environment once that is shown again.
+        // text and attachments back ahead of anything added meanwhile, in its environment once that is
+        // shown again.
         const currentDraft = () => useStore.getState().homeProjectSessionsByPath[activeProjectPath]?.chatDraft ?? ''
         const setDraft = (draft: string) => {
             if (isShown(environmentId)) useStore.getState().updateHomeProjectSession(activeProjectPath, { chatDraft: draft })
@@ -340,7 +347,10 @@ export function useConversationComposer({
         })
         if (!accepted) {
             updatePendingMessages((messages) => messages.filter((message) => message.id !== clientTurnId))
-            whenEnvironmentShown(environmentId, () => setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n')))
+            whenEnvironmentShown(environmentId, () => {
+                setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n'))
+                if (sending.length > 0) restoreRefusedAttachments(conversationId, sending)
+            })
         }
     }
 
@@ -351,7 +361,7 @@ export function useConversationComposer({
             return
         }
         const environmentId = getActiveEnvironmentId()
-        if (!(await awaitSettingsReady(conversationId))) {
+        if (!(await awaitSettingsReady(conversationId, environmentId))) {
             return
         }
         if (isShown(environmentId)) setPanelError(null)
@@ -379,6 +389,10 @@ export function useConversationComposer({
         if (!isShown(environmentId)) {
             return start().then(() => true, report)
         }
+        const turn = {}
+        const key = chatKey(environmentId, conversationId)
+        latestTurnByChat.set(key, turn)
+        const isLatest = () => isShown(environmentId) && latestTurnByChat.get(key) === turn
         const afterRevision = getConversationRecord(conversationId)?.latestRevision ?? '0'
         setPendingConversationTurn({ conversationId, afterRevision })
         // The activity bar follows the turn even after the chat is left.
@@ -388,7 +402,7 @@ export function useConversationComposer({
             const acceptance = await start()
             if (!isShown(environmentId)) return true
             onAccepted?.()
-            setPendingConversationTurn(null)
+            if (isLatest()) setPendingConversationTurn(null)
             const shouldKeepFocusOnReplyThread = getCurrentConversationId(activeProjectPath) === conversationId
             // The accepted user turn carries the sent client_turn_id, so it replaces the pending
             // message in place; a resend of that id returns the same acceptance and rows.
@@ -399,7 +413,8 @@ export function useConversationComposer({
         } catch (error) {
             return report(error)
         } finally {
-            if (isShown(environmentId)) {
+            if (isLatest()) {
+                latestTurnByChat.delete(key)
                 setPendingConversationTurn(null)
                 setSendingChat(conversationId, false)
             }

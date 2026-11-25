@@ -152,6 +152,11 @@ export function useComposerAttachments({
     }
 }
 
+/** Puts a refused send's entries back in its chat's draft, ahead of any added since; a switch away drops them. */
+export function restoreRefusedAttachments(conversationId: string, entries: ComposerAttachment[]) {
+    updateDraft(conversationId, (draft) => [...entries.filter((entry) => !draft.some((item) => item.localId === entry.localId)), ...draft])
+}
+
 /** Drops sent entries from a chat's draft; their uploads now belong to the turn. */
 export function clearSentAttachments(conversationId: string, localIds: string[]) {
     const sent = readDraft(conversationId).filter((entry) => localIds.includes(entry.localId))

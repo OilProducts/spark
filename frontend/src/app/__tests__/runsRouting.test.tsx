@@ -480,38 +480,58 @@ describe('routing across environments', () => {
         vi.unstubAllGlobals()
     })
 
-    it('leaves this machine where it is on Back or Forward to a remote environment\'s entry, and switching adds none', async () => {
+    it('keeps the entry a switch leaves for Back and Forward, leaving this machine where it is on another environment\'s entry', async () => {
         render(<><EnvironmentBootstrap /><Workspace /></>)
         selectRun('local-run')
         await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run')))
         const entries = window.history.length
 
         await showEnvironment('env-r')
-        expect(window.history.length).toBe(entries)
+        expect(window.history.length).toBe(entries + 1)
         // The local entry the switch happened on opens nothing remotely.
         expect(selectSelectedRunId(useStore.getState())).toBeNull()
         selectRun('remote-run')
         await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
-        act(() => window.history.back())
-        await waitFor(() => expect(useStore.getState().viewMode).toBe('overview'))
 
         await showEnvironment(null)
-        expect(window.history.length).toBe(entries + 1)
+        expect(window.history.length).toBe(entries + 3)
         expect(useStore.getState().viewMode).toBe('runs')
         expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
         expect(window.location.hash).toBe(buildRunsHash('local-run'))
 
-        // Forward reaches the remote run's entry: nothing here changes, nor the entry.
-        act(() => window.history.forward())
+        // Back reaches the remote run's entry: nothing here changes, nor the entry.
+        act(() => window.history.back())
         await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
         expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
         expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
         expect(savedRoute()).toMatchObject({ selectedRunId: 'local-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run')))
 
-        // Back past the switch reaches this machine's earlier entries.
-        act(() => window.history.go(-2))
+        // Back past both switches reaches this machine's earlier entries.
+        act(() => window.history.go(-4))
         await waitFor(() => expect(useStore.getState().viewMode).toBe('home'))
         expect(savedRoute()).toMatchObject({ selectedRunId: 'local-run' })
+    })
+
+    it('adds an entry of this machine\'s own for a project page opened here while a remote environment\'s entry shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        expect(useStore.getState().viewMode).toBe('home')
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        // The project page's link names no more than Chats', yet the move still leaves the remote entry.
+        act(() => useStore.getState().openProjectPage('/tmp/project'))
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home', projectPagePath: '/tmp/project' })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        expect(useStore.getState().projectPagePath).toBe('/tmp/project')
     })
 
     it('keeps a remote environment\'s entries for Back and Forward to reach once it shows again', async () => {
@@ -525,7 +545,7 @@ describe('routing across environments', () => {
         const local = { hash: window.location.hash, route: savedRoute(), view: window.sessionStorage.getItem(`${VIEW_MODE_SESSION_KEY}:local`) }
 
         act(() => window.history.back())
-        await waitFor(() => expect(window.location.hash).toBe('#/triggers?env=env-r'))
+        await waitFor(() => expect(window.location.hash).toBe('#/settings?env=env-r'))
         expect(useStore.getState().viewMode).toBe('home')
         act(() => window.history.forward())
         await waitFor(() => expect(window.location.hash).toBe(local.hash))
@@ -535,7 +555,11 @@ describe('routing across environments', () => {
 
         await showEnvironment('env-r')
         expect(useStore.getState().viewMode).toBe('settings')
+        // This machine's entry, kept by the switch, moves nothing here; the remote entries before it do.
         act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(local.hash))
+        expect(useStore.getState().viewMode).toBe('settings')
+        act(() => window.history.go(-2))
         await waitFor(() => expect(useStore.getState().viewMode).toBe('triggers'))
         expect(window.location.hash).toBe('#/triggers?env=env-r')
     })
@@ -551,13 +575,13 @@ describe('routing across environments', () => {
         }
         await showEnvironment(null)
         act(() => window.history.back())
-        await waitFor(() => expect(window.location.hash).toBe('#/runs?env=env-r'))
+        await waitFor(() => expect(window.location.hash).toBe('#/triggers?env=env-r'))
 
         // A node change, which only rewrites its own entry, leaves the remote one as it is.
         act(() => useStore.getState().updateRunDetailSession('local-run', { selectedNodeId: 'build' }))
         await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run', 'build')))
         act(() => window.history.back())
-        await waitFor(() => expect(window.location.hash).toBe('#/runs?env=env-r'))
+        await waitFor(() => expect(window.location.hash).toBe('#/triggers?env=env-r'))
         expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
     })
 

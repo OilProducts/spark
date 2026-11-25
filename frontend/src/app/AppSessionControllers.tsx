@@ -644,7 +644,9 @@ export function HistoryRoutingController() {
         const foreign = linked !== null && isForeignPlace(linked)
         if (linked && !foreign) applyPlace(linked)
         let current = placeOf(useStore.getState())
-        window.history.replaceState({ sparkPlace: current }, '', placeHash(current))
+        // Switched here from another environment's entry: it stays for Back and Forward to reach.
+        const entry = window.history.state?.sparkPlace as Place | undefined
+        window.history[entry && isForeignPlace(entry) ? 'pushState' : 'replaceState']({ sparkPlace: current }, '', placeHash(current))
         // A trigger, mission or role link without a project names its item in one once the projects load,
         // unless you have moved on by then.
         const opened = placeHash(current)
@@ -662,10 +664,11 @@ export function HistoryRoutingController() {
             scheduled = false
             if (retired()) return
             const next = placeOf(useStore.getState())
+            const entry = window.history.state?.sparkPlace as Place | undefined
             const shown = parsePlaceHash(window.location.hash)
-            if (shown && isForeignPlace(shown)) {
-                // Back or Forward left another environment's entry showing: a move here follows it, never rewrites it.
-                if (placeHash(next) !== placeHash(current)) window.history.pushState({ sparkPlace: next }, '', placeHash(next))
+            if ((entry && isForeignPlace(entry)) || (shown && isForeignPlace(shown))) {
+                // Back or Forward left another environment's entry showing: any move here follows it, never rewrites it.
+                if (JSON.stringify(next) !== JSON.stringify(current)) window.history.pushState({ sparkPlace: next }, '', placeHash(next))
             } else if (addsEntry(useStore.getState(), current, next)) {
                 window.history.pushState({ sparkPlace: next }, '', placeHash(next))
             } else if (placeHash(next) !== window.location.hash) {

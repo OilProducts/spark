@@ -1,7 +1,8 @@
 import type { SetStateAction } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseConversationComposerCommand, useConversationComposer } from '@/features/projects/hooks/useConversationComposer'
 import type { PendingConversationTurnState } from '@/features/projects/model/conversationState'
+import type { ComposerAttachment } from '@/features/projects/model/types'
 import { applyConversationBatchToCache, applyConversationPageToCache } from '@/features/projects/model/projectsHomeState'
 import {
     parseConversationAcceptanceResponse,
@@ -12,7 +13,8 @@ import {
     type ConversationAcceptance,
     type ConversationBatch,
 } from '@/lib/workspaceClient'
-import { useStore } from '@/store'
+import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
+import { deferred, switchEnvironment } from '@/test/environments'
 import { conversationAcceptance, conversationBatch, conversationMutationAck, conversationPage, conversationRow, turnRow } from '@/test/conversationWire'
 
 vi.mock('@/lib/workspaceClient', async (original) => ({
@@ -203,6 +205,79 @@ describe('onChatComposerSubmit', () => {
         // The pending entry and the recorded turn share the id, so the transcript shows it once.
         expect(pendingMessages().map((message) => message.id)).toEqual([clientTurnId])
         expect(record()?.watermark).toBe('3')
+    })
+
+    describe('across environment switches', () => {
+        const show = async (environmentId: string | null) => {
+            await switchEnvironment(environmentId)
+            resetStoreForEnvironmentSwitch(environmentId === null)
+        }
+        const accept = (call: number) => parseConversationAcceptanceResponse(conversationAcceptance(
+            thread(4 + call), vi.mocked(sendConversationTurnValidated).mock.calls[call][1].client_turn_id!,
+        ))
+
+        afterEach(() => show(null))
+
+        it('puts a refused attachment-only send back, attachments and error, once its environment shows again', async () => {
+            const entry: ComposerAttachment = {
+                localId: 'local-1', projectPath, file: new File(['image'], 'shot.png', { type: 'image/png' }), previewUrl: null,
+                status: 'uploaded', error: null, attachment: { id: 'attachment-1', filename: 'shot.png', media_type: 'image/png', size_bytes: 5 },
+            }
+            await show('env-r')
+            useStore.getState().updateHomeConversationSession('conversation-1', { attachments: [entry] })
+            const sent = deferred<ConversationAcceptance>()
+            vi.mocked(sendConversationTurnValidated).mockReturnValue(sent.promise)
+            const setPanelError = vi.fn()
+            composer({ chatDraft: '', attachments: [entry], setPanelError }).onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalled())
+            expect(vi.mocked(sendConversationTurnValidated).mock.calls[0][1]).toMatchObject({ message: '', attachment_ids: ['attachment-1'] })
+
+            await show(null)
+            sent.reject(new Error('offline'))
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(useStore.getState().homeConversationSessionsById).toEqual({})
+            expect(setPanelError).not.toHaveBeenCalledWith('Unable to send the project chat turn.')
+
+            await show('env-r')
+            expect(useStore.getState().homeConversationSessionsById['conversation-1']?.attachments).toEqual([entry])
+            expect(setPanelError).toHaveBeenLastCalledWith('Unable to send the project chat turn.')
+        })
+
+        it('leaves a newer send its pending and sending state when an older one\'s answer lands after a switch away and back', async () => {
+            const first = deferred<ConversationAcceptance>()
+            const second = deferred<ConversationAcceptance>()
+            vi.mocked(sendConversationTurnValidated).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+            await show('env-r')
+            composer().onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalledTimes(1))
+            await show(null)
+            await show('env-r')
+
+            // The workspace mounted anew sends to the same chat.
+            composer({ chatDraft: 'Second' }).onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalledTimes(2))
+            first.resolve(accept(0))
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(pending).toMatchObject({ conversationId: 'conversation-1' })
+            expect(useStore.getState().sendingChats).toEqual({ 'conversation-1': true })
+
+            second.resolve(accept(1))
+            await vi.waitFor(() => expect(useStore.getState().sendingChats).toEqual({}))
+            expect(pending).toBeNull()
+        })
+
+        it('sends here while another environment\'s chat with the same ID waits on its settings save', async () => {
+            const remoteSettings = deferred<boolean>()
+            vi.mocked(sendConversationTurnValidated).mockReturnValue(new Promise(() => {}))
+            await show('env-r')
+            composer({ waitForPendingSettingsSave: () => remoteSettings.promise }).onChatComposerSubmit()
+            await show(null)
+            try {
+                composer({ waitForPendingSettingsSave: async () => true }).onChatComposerSubmit()
+                await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalledTimes(1))
+                expect(vi.mocked(sendConversationTurnValidated).mock.calls[0][2]).toBeNull()
+            } finally { remoteSettings.resolve(false) }
+        })
     })
 })
 

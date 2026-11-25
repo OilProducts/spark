@@ -718,6 +718,24 @@ describe('Editor structured metadata', () => {
     expect(screen.queryByTestId('refused-flow-save')).not.toBeInTheDocument()
   })
 
+  it('never retries a refused save once its flow closes and another opens', async () => {
+    const { server, fetchMock } = serveFlow()
+    renderEditor()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
+    server.held = createDeferred<Response>()
+    server.held.resolve(unavailable())
+    await act(async () => { await expect(saveFlowContent('bundled-flow', { flow: { ...flow, title: 'Refused title' } })).resolves.toBe(false) })
+    server.held = null
+    expect(useStore.getState()).toMatchObject({ saveState: 'error', saveErrorMessage: 'unavailable' })
+
+    act(() => useStore.setState({ activeFlow: 'other-flow' }))
+    await waitFor(() => expect(loadEditorFlowPayload).toHaveBeenLastCalledWith('other-flow', '/tmp/project', expect.anything()))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
+    await act(async () => { await expect(retryLastSaveContent()).resolves.toBe(false) })
+    expect(flowSaveRequests(fetchMock)).toHaveLength(1)
+    expect(server.flow.title).toBe('Bundled flow')
+  })
+
   it('names each refused save’s project, so the same flow’s notices in two projects each dismiss their own edits', async () => {
     const user = userEvent.setup()
     vi.stubGlobal('fetch', vi.fn(async (url: string) => (String(url).endsWith('/preview')
