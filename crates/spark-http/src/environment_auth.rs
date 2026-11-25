@@ -18,7 +18,7 @@ use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode}
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
@@ -188,18 +188,30 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
     (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
 }
 
+/// The ID of the peer token a bearer-authenticated request used. Never the
+/// secret.
+#[derive(Clone)]
+struct AuthenticatedPeerToken(String);
+
 /// The trust rule, applied before any handler reads the request body.
 pub(crate) async fn require_trust(
     State(settings): State<Arc<SparkSettings>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     if is_exempt(request.method(), request.uri().path()) {
         return next.run(request).await;
     }
+    // Resolved before the local check: a peer paired over loopback or the
+    // bound host still presents its token and must not revoke it.
     if let Some(secret) = bearer(request.headers()) {
         match EnvironmentRepository::new(&settings.data_dir).token_for_secret(secret) {
-            Ok(Some(_)) => return next.run(request).await,
+            Ok(Some(token_id)) => {
+                request
+                    .extensions_mut()
+                    .insert(AuthenticatedPeerToken(token_id));
+                return next.run(request).await;
+            }
             Ok(None) => {}
             Err(error) => return WorkspaceApiError(error.into()).into_response(),
         }
@@ -359,19 +371,39 @@ async fn create_pairing_code(
     .into_response())
 }
 
+/// Each token says whether it is the one authenticating this request.
 async fn list_tokens(
     State(settings): State<Arc<SparkSettings>>,
+    current: Option<Extension<AuthenticatedPeerToken>>,
 ) -> Result<Json<Value>, WorkspaceApiError> {
+    let current = current.map(|Extension(AuthenticatedPeerToken(id))| id);
     let tokens = EnvironmentRepository::new(&settings.data_dir)
         .tokens()
-        .map_err(spark_workspace::WorkspaceError::from)?;
+        .map_err(spark_workspace::WorkspaceError::from)?
+        .into_iter()
+        .map(|token| {
+            let is_current = current.as_deref() == Some(token.token_id.as_str());
+            let mut token = json!(token);
+            token["is_current"] = json!(is_current);
+            token
+        })
+        .collect::<Vec<_>>();
     Ok(Json(json!({"tokens": tokens})))
 }
 
+/// A peer cannot revoke the token its own connection uses; the owner, or
+/// another peer, can.
 async fn revoke_token(
     State(settings): State<Arc<SparkSettings>>,
+    current: Option<Extension<AuthenticatedPeerToken>>,
     Path(token_id): Path<String>,
 ) -> Result<Json<Value>, WorkspaceApiError> {
+    if current.is_some_and(|Extension(AuthenticatedPeerToken(id))| id == token_id) {
+        return Err(spark_workspace::WorkspaceError::Conflict(
+            "Cannot revoke the peer token authenticating this connection.".into(),
+        )
+        .into());
+    }
     let repository = EnvironmentRepository::new(&settings.data_dir);
     let revoked = repository
         .revoke_token(&token_id)
