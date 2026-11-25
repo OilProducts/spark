@@ -57,6 +57,12 @@ useStore.subscribe((state, previous) => {
     }
 })
 
+// Its environment's workspace is closed: another environment is chosen, or a connection is still being checked.
+const workspaceClosed = (environmentId: string | null) => {
+    const { selectedEnvironmentId, status } = getActiveEnvironmentState()
+    return selectedEnvironmentId !== environmentId || status !== 'ready'
+}
+
 /**
  * Applies what a refused turn puts back once its environment is shown and `ready`, such as with its project's
  * chats loaded. A switch away first holds it again for that environment's next showing, which starts its chats anew.
@@ -68,9 +74,7 @@ function whenShownAndReady(environmentId: string | null, ready: () => boolean, a
         const session = homeSessionStart()
         const attempt = () => {
             const restarted = homeSessionStart() !== session
-            const { selectedEnvironmentId, status } = getActiveEnvironmentState()
-            const closed = selectedEnvironmentId !== environmentId || status !== 'ready'
-            if (!restarted && (closed || !ready())) return
+            if (!restarted && (workspaceClosed(environmentId) || !ready())) return
             stop()
             if (restarted) whenShownAndReady(environmentId, ready, apply)
             else apply()
@@ -401,9 +405,14 @@ export function useConversationComposer({
             return
         }
         if (!(await awaitSettingsReady(conversationId, environmentId, true))) {
-            // Its settings didn't save, so it stays unsent. Shown still, its draft is as it was; once its chats
-            // were left, they no longer hold it.
-            if (!live()) putBack('The message was not sent: its chat settings did not save.')
+            // Its settings didn't save, so it stays unsent. Shown still, its draft is as it was. Once its chats were
+            // left, they no longer hold it; nor, if the switch goes through, does the store its workspace closed on for
+            // another environment's connection check. The send then holds its text, as a sent one does, and puts it
+            // back with why when they show again, or when its workspace does after the check fails.
+            if (!live() || workspaceClosed(environmentId)) {
+                if (live() && currentDraft() === chatDraft) setDraft('')
+                putBack('The message was not sent: its chat settings did not save.')
+            }
             return
         }
         const messageToSend = parsedCommand?.kind === 'switch_and_send'

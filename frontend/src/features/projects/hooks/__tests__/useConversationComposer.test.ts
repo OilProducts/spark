@@ -301,6 +301,49 @@ describe('onChatComposerSubmit', () => {
                 expect(panelError()).toBe('Unable to send the project chat turn.')
             })
 
+            // The send waits on its chat's settings save, which fails once its workspace closed for the check.
+            const settingsRefusedWhileChecking = async () => {
+                loadProjects('conversation-1')
+                useStore.getState().updateHomeConversationSession('conversation-1', { attachments: [entry] })
+                const settings = deferred<boolean | string>()
+                const waitForPendingSettingsSave = vi.fn(() => settings.promise)
+                composer({ attachments: [entry], setPanelError, waitForPendingSettingsSave }).onChatComposerSubmit()
+                await vi.waitFor(() => expect(waitForPendingSettingsSave).toHaveBeenCalled())
+                const checked = deferred<void>()
+                const switching = switchEnvironment('env-b', checked.promise)
+                settings.resolve(false)
+                await new Promise((resolve) => setTimeout(resolve, 0))
+                return { checked, switching }
+            }
+            const SETTINGS_REFUSAL = 'The message was not sent: its chat settings did not save.'
+
+            it('puts a send its settings failed back, text, attachment and why, on a return once the switch went through', async () => {
+                const { checked, switching } = await settingsRefusedWhileChecking()
+                checked.resolve()
+                await switching
+                resetStoreForEnvironmentSwitch(false)
+
+                await show(null)
+                loadProjects('conversation-1')
+                expect(draft()).toBe('Hello there')
+                expect(attachmentsOf('conversation-1')).toEqual([entry])
+                expect(panelError()).toBe(SETTINGS_REFUSAL)
+                expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+            })
+
+            it('keeps a send its settings failed as the draft, once, with why, when its workspace shows again after the connection failed', async () => {
+                const { checked, switching } = await settingsRefusedWhileChecking()
+                checked.reject(new Error('unreachable'))
+                await expect(switching).rejects.toThrow()
+                await switchEnvironment(null)
+
+                loadProjects('conversation-1')
+                expect(draft()).toBe('Hello there')
+                expect(attachmentsOf('conversation-1')).toEqual([entry])
+                expect(panelError()).toBe(SETTINGS_REFUSAL)
+                expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+            })
+
             it('puts it back once its workspace shows again after the connection failed', async () => {
                 const { checked, switching } = await refusedWhileChecking()
                 checked.reject(new Error('unreachable'))
