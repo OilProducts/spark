@@ -1022,6 +1022,33 @@ describe('Same-window multi-environment switching', () => {
         expect(backend.sentTo('env-win')).toEqual([WIN_AUTH])
     })
 
+    it('shows this Spark upgraded under the page on a switch from a mounted remote to another, with only the other\'s versions, though this Spark reports it again before the other answers', async () => {
+        const gpu = deferred<void>()
+        const routes: Record<string, Route> = { [GPU_AUTH]: () => gpu.promise.then(() => json(descriptor('env-gpu', { build_id: '0.3.0+gpu' }))) }
+        const { user, backend } = await mountWindows(routes, [WIN_LINK, GPU_LINK])
+        const localAsked = () => backend.requests.filter((request) => request.url === '/environment').length
+        routes['/environment'] = upgradedLocal
+        await user.click(tab('env-gpu'))
+        const gate = await screen.findByTestId('remote-environment-gate')
+        await waitFor(() => expect(gate).toHaveTextContent('Version mismatch with GPU'))
+        expect(gate).toHaveTextContent('Reload the page')
+        expect(gate).not.toHaveTextContent('build 0.3.0+00ff')
+
+        // This Spark reports its upgrade again before GPU answers.
+        const asked = localAsked()
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        await waitFor(() => expect(localAsked()).toBe(asked + 1))
+        await act(() => new Promise((resolve) => setTimeout(resolve, 20)))
+        expect(gate).toHaveTextContent('Version mismatch with GPU')
+        expect(gate).not.toHaveTextContent('build 0.3.0+00ff')
+
+        await act(async () => gpu.resolve())
+        await waitFor(() => expect(gate).toHaveTextContent('build 0.3.0+gpu'))
+        expect(gate).toHaveTextContent('Reload the page')
+        expect(gate).not.toHaveTextContent('build 0.3.0+00ff')
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-gpu', status: 'incompatible', remoteDescriptor: { environment_id: 'env-gpu' } })
+    })
+
     it('keeps a remote behind the reload guidance, its live connection closed, when this Spark answers a Retry sent before it reported its upgrade late, as it ran before', async () => {
         const routes: Record<string, Route> = {}
         const { user, remoteShell, checks } = await mountWindows(routes)

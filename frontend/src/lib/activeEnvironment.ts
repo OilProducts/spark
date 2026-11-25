@@ -295,8 +295,8 @@ let mismatchSeenAt = 0
  * Asks this Spark for its descriptor and records the answer. A mismatch always counts, whatever answered before it; a
  * compatible answer only to a request sent since the last mismatch was seen, as one sent before an upgrade can arrive
  * after it. A mismatch fails at once the linked environment mounted, its live connection closed, and the one chosen,
- * even awaiting approval, whatever their checks still running find; a check of the one chosen still running only fills
- * in its versions.
+ * whatever their checks still running find: a switch awaiting approval goes no further, and a check of the one chosen
+ * still running, though shown failed, only fills in its versions.
  */
 function fetchLocalDescriptor(): Promise<EnvironmentDescriptor> {
     const sent = ++localRequests
@@ -310,7 +310,7 @@ function fetchLocalDescriptor(): Promise<EnvironmentDescriptor> {
         const { activeEnvironmentId: active, selectedEnvironmentId: selected } = state
         if (active !== null) applyActiveCheck(stalePage(local, state.activeCheck.remoteDescriptor))
         if (selected !== null && selected !== active) {
-            if (state.status !== 'checking') switchSequence += 1
+            if (state.status === 'ready') switchSequence += 1
             updateState(stalePage(local, state.remoteDescriptor))
         }
     }, () => {})
@@ -491,7 +491,8 @@ export async function selectEnvironment(
     if (environmentId === null) return commitEnvironment(seq, null, READY_LOCAL, options?.onActivated)
 
     // Retrying the mounted environment keeps it hidden behind its error until the check passes.
-    if (environmentId !== active) updateState({ selectedEnvironmentId: environmentId, status: 'checking', error: null })
+    // The versions shown are the destination's own, once its check finds them, not those of the one mounted.
+    if (environmentId !== active) updateState({ selectedEnvironmentId: environmentId, status: 'checking', error: null, remoteDescriptor: null })
     const since = reverifySequence
     const found = await checkRemoteEnvironment(environmentId).catch((error: unknown) => unreachable(errorText(error)))
     await listingSettles(seq)
