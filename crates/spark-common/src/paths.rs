@@ -375,8 +375,12 @@ fn normalize_components(path: &Path) -> PathBuf {
             }
             // `//server/share` and `\\server\share` name one share; one
             // spelling keeps their project IDs equal, as `C:/` and `C:\` are.
+            // A server of `?` or `.` (`//?/C:/repo`) is a device path, which
+            // backslashes would make verbatim, so it keeps its spelling.
             Component::Prefix(prefix) => match prefix.kind() {
-                std::path::Prefix::UNC(server, share) => {
+                std::path::Prefix::UNC(server, share)
+                    if !matches!(server.to_str(), Some("" | "?" | ".")) && !share.is_empty() =>
+                {
                     let mut unc = OsString::from(r"\\");
                     unc.push(server);
                     unc.push(r"\");

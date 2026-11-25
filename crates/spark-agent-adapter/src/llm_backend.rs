@@ -2328,13 +2328,8 @@ pub fn utility_cli_command(
     let effort = call.reasoning_effort.as_deref().and_then(non_empty);
     let mut command;
     if is_codex_provider_selector(call.provider.as_deref().unwrap_or("")) {
-        command = std::process::Command::new(
-            native
-                .as_ref()
-                .and_then(|config| config.codex_binary.as_ref())
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(crate::codex_app_server::codex_executable),
-        );
+        command =
+            std::process::Command::new(crate::codex_app_server::codex_program(native.as_ref()));
         command
             .envs(
                 crate::codex_app_server::build_codex_runtime_environment_with_settings(

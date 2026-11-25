@@ -563,10 +563,7 @@ impl CodexAppServerClient {
                 working_dir.display()
             )));
         }
-        let executable = native
-            .and_then(|config| config.codex_binary.as_ref())
-            .map(PathBuf::from)
-            .unwrap_or_else(codex_executable);
+        let executable = codex_program(native);
         let mut command = std::process::Command::new(&executable);
         command
             // Models that return raw reasoning stream it as item/reasoning/textDelta.
@@ -3301,16 +3298,33 @@ fn resolve_codex_executable(
     {
         return codex;
     }
-    // An npm install on Windows has only shims, such as `codex.cmd`, which a
-    // launch of `codex.exe` never finds.
+    // An npm install on Windows has only shims, which a launch of `codex.exe`
+    // never finds, and they beat an incomplete `codex.exe` earlier on PATH.
     if cfg!(windows) {
-        if let Some(shim) = path
-            .and_then(|path| crate::local_environment::find_executable_on_path("codex", Some(path)))
-        {
+        if let Some(shim) = ["codex.cmd", "codex.bat"].into_iter().find_map(|shim| {
+            path.and_then(|path| {
+                crate::local_environment::find_executable_on_path(shim, Some(path))
+            })
+        }) {
             return shim;
         }
     }
     PathBuf::from(codex_binary_name())
+}
+
+/// The Codex program every launch runs: the configured one, else
+/// [`codex_executable`], named as discovery finds it, so a bare `codex` from
+/// Settings or `SPARK_CODEX_APP_SERVER_BIN` runs a Windows `codex.cmd` shim.
+pub(crate) fn codex_program(
+    native: Option<&spark_common::agent_settings::NativeAgentSettings>,
+) -> PathBuf {
+    crate::local_environment::launch_program(
+        native
+            .and_then(|config| config.codex_binary.as_ref())
+            .map(PathBuf::from)
+            .unwrap_or_else(codex_executable),
+        None,
+    )
 }
 
 fn find_complete_codex_on_path(path: Option<&OsStr>) -> Option<PathBuf> {
@@ -4106,39 +4120,29 @@ mod tests {
 
         let resolved = resolve_codex_executable(None, Some(&path), &[]);
 
-        // Windows names the `codex.exe` a launch of the bare name would run,
-        // spelled with PATHEXT's case.
-        if cfg!(windows) {
-            assert!(
-                resolved.as_os_str().eq_ignore_ascii_case(&path_codex),
-                "{resolved:?}"
-            );
-        } else {
-            assert_eq!(resolved, PathBuf::from(codex_binary_name()));
-        }
+        assert_eq!(resolved, PathBuf::from(codex_binary_name()));
     }
 
     #[cfg(windows)]
     #[test]
-    fn codex_resolution_falls_back_to_an_npm_shim_on_windows() {
+    fn codex_resolution_falls_back_to_an_npm_shim_over_an_incomplete_codex_on_windows() {
         let temp = tempfile::tempdir().expect("tempdir");
+        let incomplete = create_codex(&temp.path().join("incomplete"), false);
         let bin = temp.path().join("npm");
         fs::create_dir_all(&bin).expect("npm dir");
         // npm writes an extensionless sh script beside the shim.
         for name in ["codex", "codex.cmd"] {
             fs::write(bin.join(name), "").expect("shim");
         }
-        let path = env::join_paths([&bin]).expect("PATH");
+        let path = env::join_paths([incomplete.parent().unwrap(), &bin]).expect("PATH");
 
         let resolved = resolve_codex_executable(None, Some(&path), &[]);
 
-        assert!(
-            resolved
-                .file_name()
-                .is_some_and(|name| name.eq_ignore_ascii_case("codex.cmd")),
-            "{resolved:?}"
-        );
-        assert_eq!(resolved.parent(), Some(bin.as_path()));
+        assert_eq!(resolved, bin.join("codex.cmd"));
+        // A complete bundle still wins.
+        let complete = create_codex(&temp.path().join("complete"), true);
+        let path = env::join_paths([&bin, complete.parent().unwrap()]).expect("PATH");
+        assert_eq!(resolve_codex_executable(None, Some(&path), &[]), complete);
     }
 
     #[test]

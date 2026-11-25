@@ -416,18 +416,8 @@ fn acp_discoveries<'a>(
                 let (id, harness, work_area) =
                     (id.clone(), harness.clone(), work_area.to_path_buf());
                 let inheritance = agents.environment_inheritance;
-                move || {
-                    let mut discovery = acp::discover(&id, &harness, inheritance, &work_area);
-                    if discovery.setup_status == "unreachable"
-                        && !acp::program_found(
-                            &harness.executable,
-                            acp::launch_path(&harness, inheritance).as_deref(),
-                        )
-                    {
-                        discovery.setup_status = "not_installed".into();
-                    }
-                    discovery
-                }
+                // Its launch reports a program it cannot find as not installed.
+                move || acp::discover(&id, &harness, inheritance, &work_area)
             };
             let finished = {
                 let (finished, provider) = (finished.clone(), format!("acp:{id}"));

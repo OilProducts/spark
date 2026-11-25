@@ -244,6 +244,17 @@ fn unc_project_paths_normalize_to_backslashes_under_either_separator() {
         build_project_id("C:/repo").unwrap(),
         build_project_id(r"C:\repo").unwrap()
     );
+    // Device paths keep their namespace: backslashes would make them verbatim.
+    for device in ["//?/C:/repo", "//?/GLOBALROOT/Device"] {
+        let normalized = spark_common::paths::normalize_path(device).unwrap();
+        let text = normalized.to_str().unwrap();
+        assert!(text.starts_with("//?/"), "{device} -> {text}");
+        assert_ne!(
+            build_project_id(device).unwrap(),
+            build_project_id(text.replace('/', r"\")).unwrap(),
+            "{device}"
+        );
+    }
 }
 
 #[cfg(unix)]

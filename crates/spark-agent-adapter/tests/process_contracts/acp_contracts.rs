@@ -116,6 +116,43 @@ fn other(events: &[TurnStreamEvent], kind: &str) -> Vec<TurnStreamEvent> {
         .collect()
 }
 
+/// Elsewhere than Windows a launch searches PATH as the system does: an entry
+/// relative to the work area, such as `node_modules/.bin`, finds the project's
+/// program, and a file it cannot run earlier on PATH is passed over. A program
+/// on no PATH entry is not installed.
+#[cfg(unix)]
+#[test]
+fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    let bin = project.join("node_modules").join(".bin");
+    let blocker = temp.path().join("blocker");
+    for dir in [&bin, &blocker] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::os::unix::fs::symlink(FAKE, bin.join("agent")).unwrap();
+    std::fs::write(blocker.join("agent"), "not a program").unwrap();
+    let discover = |executable: &str| {
+        let harness = serde_json::from_value(json!({
+            "name": "Project agent",
+            "executable": executable,
+            "env": {"PATH": format!("{}:node_modules/.bin", blocker.display())},
+        }))
+        .unwrap();
+        acp::discover(
+            "project",
+            &harness,
+            spark_agent_adapter::EnvironmentInheritancePolicy::InheritNone,
+            &project,
+        )
+    };
+
+    let found = discover("agent");
+    assert_eq!(found.setup_status, "ready", "{:?}", found.error);
+    let missing = discover("missing-agent");
+    assert_eq!(missing.setup_status, "not_installed", "{:?}", missing.error);
+}
+
 #[test]
 fn acp_turn_streams_updates_while_the_prompt_is_open_and_returns_them_once() {
     let dir = tempfile::tempdir().unwrap();

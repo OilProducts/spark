@@ -961,6 +961,24 @@ pub fn find_executable_on_path(
     find_executable_in(name, path_var.as_deref(), pathext.as_deref())
 }
 
+/// `program` as a launch with `path` (else Spark's own `PATH`) should name it.
+/// On Windows, where launching a bare name tries only `.exe`, the match
+/// [`find_executable_on_path`] finds, such as an npm `.cmd` shim. Elsewhere,
+/// and when nothing matches, `program` as given: the system's own search
+/// resolves relative `PATH` entries from the child's directory and skips files
+/// it cannot run, and a failure names `program`.
+pub fn launch_program(program: PathBuf, path: Option<&std::ffi::OsStr>) -> PathBuf {
+    if cfg!(windows) {
+        if let Some(found) = program
+            .to_str()
+            .and_then(|name| find_executable_on_path(name, path))
+        {
+            return found;
+        }
+    }
+    program
+}
+
 /// [`find_executable_on_path`] with `pathext` given, `None` outside Windows.
 fn find_executable_in(
     name: &str,

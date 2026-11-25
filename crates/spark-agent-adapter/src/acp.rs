@@ -9,6 +9,7 @@
 //! one-shot processes after draining any open background tool calls.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -774,8 +775,8 @@ fn live_harness(request: &AgentTurnRequest, harness_id: &str) -> Option<AcpHarne
 
 /// Whether `program` names an executable file: a path that exists, or a bare
 /// name found on `path` (else Spark's own `PATH`), honoring `PATHEXT` on
-/// Windows, as [`launch_program`] resolves it. A relative path is taken as
-/// found, since where it resolves depends on the launch.
+/// Windows. A relative path is taken as found, since where it resolves depends
+/// on the launch.
 pub fn program_found(program: &str, path: Option<&str>) -> bool {
     let candidate = Path::new(program);
     if candidate.is_absolute() {
@@ -788,31 +789,32 @@ pub fn program_found(program: &str, path: Option<&str>) -> bool {
         .is_some()
 }
 
-/// The `PATH` a launch of `harness` searches: its own `env`'s, else the
-/// inherited one, in any case on Windows. `None` leaves Spark's own.
-pub fn launch_path(
+/// `harness`'s program with the environment it inherits under `inheritance`,
+/// its own `env`, then `bindings`, applied in that order. The program is named
+/// as the child's own `PATH` finds it: the last binding of `PATH`, in any case
+/// on Windows, as the child receives it.
+fn harness_command(
     harness: &AcpHarness,
     inheritance: EnvironmentInheritancePolicy,
-) -> Option<String> {
-    let inherited = crate::local_environment::inherited_environment(inheritance);
-    harness
-        .env
+    bindings: impl IntoIterator<Item = (String, OsString)>,
+) -> Command {
+    let env = crate::local_environment::inherited_environment(inheritance)
+        .into_iter()
+        .chain(harness.env.clone())
+        .map(|(key, value)| (key, OsString::from(value)))
+        .chain(bindings)
+        .collect::<Vec<_>>();
+    let path = env
         .iter()
-        .chain(&inherited)
+        .rev()
         .find(|(key, _)| crate::local_environment::is_path_key(key))
-        .map(|(_, value)| value.clone())
-}
-
-/// `harness.executable` as its launch runs it: found on [`launch_path`], so a
-/// Windows `.cmd` shim runs as discovery finds it; else as registered, so a
-/// failure names it.
-fn launch_program(harness: &AcpHarness, inheritance: EnvironmentInheritancePolicy) -> PathBuf {
-    let path = launch_path(harness, inheritance);
-    crate::local_environment::find_executable_on_path(
-        &harness.executable,
-        path.as_deref().map(std::ffi::OsStr::new),
-    )
-    .unwrap_or_else(|| PathBuf::from(&harness.executable))
+        .map(|(_, value)| value.as_os_str());
+    let mut command = Command::new(crate::local_environment::launch_program(
+        PathBuf::from(&harness.executable),
+        path,
+    ));
+    command.env_clear().envs(env);
+    command
 }
 
 /// The configuration generation a launch of `harness` records: its
@@ -869,7 +871,7 @@ impl Capability {
 /// run a particular request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AcpDiscovery {
-    /// `ready`, `unreachable` or `unauthenticated`.
+    /// `ready`, `unreachable`, `unauthenticated` or `not_installed`.
     pub setup_status: String,
     /// Why setup failed; callers report it as their own status error.
     #[serde(skip)]
@@ -916,6 +918,8 @@ struct ProbeFailure {
     /// The connection failed rather than the harness answering, as when it
     /// quits.
     lost: bool,
+    /// The program could not be found to launch.
+    missing: bool,
     message: String,
     auth_methods: Vec<AcpAuthMethod>,
 }
@@ -992,10 +996,13 @@ fn probe(
         probe_protocol(endpoints, cwd, program, method, done)
     })
     .map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => {
-            format!("executable not found: {}", harness.executable)
-        }
-        _ => format!("launch failed: {error}"),
+        // Found or not as the launch's own environment finds it.
+        std::io::ErrorKind::NotFound => ProbeFailure {
+            missing: true,
+            message: format!("executable not found: {}", harness.executable),
+            ..Default::default()
+        },
+        _ => format!("launch failed: {error}").into(),
     })?;
     let (timeout, step) = match sign_in {
         Some(_) => (SIGN_IN_TIMEOUT, "signing in"),
@@ -1136,7 +1143,7 @@ async fn probe_session(
             true => auth_error(&error),
             false => setup_error(&error, method),
         },
-        auth_methods: Vec::new(),
+        ..Default::default()
     };
     let init = cx
         .send_request(
@@ -1284,6 +1291,8 @@ fn discovery(probed: Result<Probed, ProbeFailure>) -> AcpDiscovery {
             return AcpDiscovery {
                 setup_status: if failure.unauthenticated {
                     "unauthenticated"
+                } else if failure.missing {
+                    "not_installed"
                 } else {
                     "unreachable"
                 }
@@ -1792,16 +1801,18 @@ fn launch_command(
             .map_err(|error| format!("ACP harness {harness_id} system_instructions: {error}"))?,
         None => Default::default(),
     };
-    let mut command = Command::new(launch_program(harness, inheritance));
+    let mut command = harness_command(
+        harness,
+        inheritance,
+        channel_env
+            .into_iter()
+            .map(|(key, value)| (key, OsString::from(value)))
+            .chain(crate::agent::agent_turn_env(metadata)),
+    );
     command
         .args(&harness.args)
         .args(channel_args)
-        .current_dir(cwd)
-        .env_clear()
-        .envs(crate::local_environment::inherited_environment(inheritance))
-        .envs(&harness.env)
-        .envs(channel_env)
-        .envs(crate::agent::agent_turn_env(metadata));
+        .current_dir(cwd);
     Ok((command, instruction_file))
 }
 
@@ -3740,13 +3751,10 @@ pub fn read_antigravity_usage(
     harness: &AcpHarness,
     inheritance: EnvironmentInheritancePolicy,
 ) -> Result<Vec<crate::UsageWindow>, String> {
-    let mut command = Command::new(launch_program(harness, inheritance));
+    let mut command = harness_command(harness, inheritance, []);
     crate::local_environment::configure_process_group(&mut command);
     command
         .args(["-p", "/usage", "--output-format", "json"])
-        .env_clear()
-        .envs(crate::local_environment::inherited_environment(inheritance))
-        .envs(&harness.env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -4098,5 +4106,51 @@ done
             ..current.clone()
         };
         assert!(!saved(r"\\?\C:\proj").continues_as(&regenerated));
+    }
+
+    /// The program is the one the child's own `PATH` finds: `Path` is bound
+    /// after `PATH` in a registration, and a channel's binding comes last.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_launch_names_the_program_on_the_path_its_child_receives() {
+        let temp = tempfile::tempdir().unwrap();
+        let dirs = ["a", "b", "c"].map(|name| {
+            let dir = temp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("agent.cmd"), "").unwrap();
+            dir
+        });
+        let harness: AcpHarness = serde_json::from_value(json!({
+            "name": "Agent",
+            "executable": "agent",
+            "env": {"PATH": dirs[0], "Path": dirs[1]},
+        }))
+        .unwrap();
+        let launch = |bindings: Vec<(String, OsString)>| {
+            let command = harness_command(
+                &harness,
+                EnvironmentInheritancePolicy::InheritNone,
+                bindings,
+            );
+            let path = command
+                .get_envs()
+                .filter(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+                .filter_map(|(_, value)| value.map(std::ffi::OsStr::to_owned))
+                .collect::<Vec<_>>();
+            (command.get_program().to_owned(), path)
+        };
+        let named = |(program, path): (OsString, Vec<OsString>), dir: &Path| {
+            assert!(
+                program.eq_ignore_ascii_case(dir.join("agent.cmd")),
+                "{program:?}"
+            );
+            assert_eq!(path, [dir.as_os_str()]);
+        };
+
+        named(launch(Vec::new()), dirs[1].as_path());
+        named(
+            launch(vec![("PATH".into(), dirs[2].clone().into())]),
+            dirs[2].as_path(),
+        );
     }
 }

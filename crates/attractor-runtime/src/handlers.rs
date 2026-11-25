@@ -3161,10 +3161,20 @@ fn resolve_posix_shell() -> std::io::Result<PathBuf> {
             .or_else(|| std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH"))
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
-        let path_shell = spark_agent_adapter::local_environment::find_executable_on_path(
-            "sh", None,
-        )
-        .or_else(|| spark_agent_adapter::local_environment::find_executable_on_path("bash", None));
+        // Every sh, then every bash, in PATH order, so a native shell after
+        // the WSL launcher is still found.
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let path_shells = ["sh", "bash"]
+            .into_iter()
+            .flat_map(|name| {
+                std::env::split_paths(&path).filter_map(move |directory| {
+                    spark_agent_adapter::local_environment::find_executable_on_path(
+                        name,
+                        Some(directory.as_os_str()),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
         let git_path = spark_agent_adapter::local_environment::find_executable_on_path("git", None);
         let mut standard = Vec::new();
         for key in ["ProgramFiles", "ProgramFiles(x86)"] {
@@ -3183,7 +3193,7 @@ fn resolve_posix_shell() -> std::io::Result<PathBuf> {
         }
         resolve_posix_shell_from(
             env_override.as_deref(),
-            path_shell.as_deref(),
+            &path_shells,
             git_path.as_deref(),
             &standard,
         )
@@ -3193,7 +3203,7 @@ fn resolve_posix_shell() -> std::io::Result<PathBuf> {
 #[cfg_attr(not(windows), allow(dead_code))]
 fn resolve_posix_shell_from(
     env_override: Option<&Path>,
-    path_shell: Option<&Path>,
+    path_shells: &[PathBuf],
     git_path: Option<&Path>,
     standard_paths: &[PathBuf],
 ) -> std::io::Result<PathBuf> {
@@ -3209,9 +3219,9 @@ fn resolve_posix_shell_from(
             ),
         ));
     }
-    let path_shell = path_shell.filter(|path| path.is_file());
-    if let Some(path) = path_shell.filter(|path| !is_wsl_launcher(path)) {
-        return Ok(path.to_path_buf());
+    let path_shells = path_shells.iter().filter(|path| path.is_file());
+    if let Some(path) = path_shells.clone().find(|path| !is_wsl_launcher(path)) {
+        return Ok(path.clone());
     }
     if let Some(git_root) = git_path.and_then(Path::parent).and_then(Path::parent) {
         for segments in [
@@ -3233,8 +3243,9 @@ fn resolve_posix_shell_from(
             return Ok(candidate.clone());
         }
     }
-    if let Some(path) = path_shell {
-        return Ok(path.to_path_buf());
+    // Only the WSL launcher is left, which runs commands inside Linux.
+    if let Some(path) = path_shells.clone().next() {
+        return Ok(path.clone());
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::NotFound,
@@ -4377,7 +4388,7 @@ mod activity_tests {
         assert_eq!(
             resolve_posix_shell_from(
                 Some(&custom_sh),
-                Some(&path_sh),
+                std::slice::from_ref(&path_sh),
                 Some(&git_exe),
                 std::slice::from_ref(&std_bash),
             )
@@ -4385,25 +4396,35 @@ mod activity_tests {
             custom_sh
         );
         let missing = temp.path().join("missing-bash.exe");
-        let err = resolve_posix_shell_from(Some(&missing), Some(&path_sh), Some(&git_exe), &[])
-            .unwrap_err();
+        let err = resolve_posix_shell_from(
+            Some(&missing),
+            std::slice::from_ref(&path_sh),
+            Some(&git_exe),
+            &[],
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("SPARK_SH"), "{err}");
 
         // Next: PATH shell, then sibling of git.exe, then standard install paths.
         assert_eq!(
-            resolve_posix_shell_from(None, Some(&path_sh), Some(&git_exe), &[std_bash.clone()])
-                .unwrap(),
+            resolve_posix_shell_from(
+                None,
+                std::slice::from_ref(&path_sh),
+                Some(&git_exe),
+                &[std_bash.clone()]
+            )
+            .unwrap(),
             path_sh
         );
         assert_eq!(
-            resolve_posix_shell_from(None, None, Some(&git_exe), &[std_bash.clone()]).unwrap(),
+            resolve_posix_shell_from(None, &[], Some(&git_exe), &[std_bash.clone()]).unwrap(),
             git_bash
         );
         assert_eq!(
-            resolve_posix_shell_from(None, None, None, &[std_bash.clone()]).unwrap(),
+            resolve_posix_shell_from(None, &[], None, &[std_bash.clone()]).unwrap(),
             std_bash
         );
-        let none = resolve_posix_shell_from(None, None, None, &[]).unwrap_err();
+        let none = resolve_posix_shell_from(None, &[], None, &[]).unwrap_err();
         assert!(none.to_string().contains("Git for Windows"), "{none}");
     }
 
@@ -4428,21 +4449,41 @@ mod activity_tests {
 
         // Git Bash beside git.exe, then a standard install, beat WSL on PATH.
         assert_eq!(
-            resolve_posix_shell_from(None, Some(&wsl), Some(&git_exe), standard).unwrap(),
+            resolve_posix_shell_from(None, std::slice::from_ref(&wsl), Some(&git_exe), standard)
+                .unwrap(),
             git_bash
         );
         assert_eq!(
-            resolve_posix_shell_from(None, Some(&wsl), None, standard).unwrap(),
+            resolve_posix_shell_from(None, std::slice::from_ref(&wsl), None, standard).unwrap(),
             std_bash
+        );
+        // A native shell later on PATH beats the WSL launcher before it.
+        let later_bash = temp.path().join("MinGit").join("bin").join("bash.exe");
+        std::fs::create_dir_all(later_bash.parent().unwrap()).unwrap();
+        std::fs::write(&later_bash, "").unwrap();
+        assert_eq!(
+            resolve_posix_shell_from(
+                None,
+                &[wsl.clone(), later_bash.clone()],
+                Some(&git_exe),
+                standard
+            )
+            .unwrap(),
+            later_bash
         );
         // Without Git Bash, WSL still runs; an explicit override always wins.
         assert_eq!(
-            resolve_posix_shell_from(None, Some(&wsl), None, &[]).unwrap(),
+            resolve_posix_shell_from(None, std::slice::from_ref(&wsl), None, &[]).unwrap(),
             wsl
         );
         assert_eq!(
-            resolve_posix_shell_from(Some(&custom_sh), Some(&wsl), Some(&git_exe), standard)
-                .unwrap(),
+            resolve_posix_shell_from(
+                Some(&custom_sh),
+                std::slice::from_ref(&wsl),
+                Some(&git_exe),
+                standard
+            )
+            .unwrap(),
             custom_sh
         );
         // Only bash.exe in a Windows system directory is the WSL launcher.
