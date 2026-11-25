@@ -1,6 +1,6 @@
 import { useStore, type SaveErrorKind } from '@/store'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
-import { fetchPreviewValidated, saveFlowValidated, type FlowFile, type FlowSaveContent } from '@/lib/attractorClient'
+import { fetchPreviewValidated, saveFlowValidated, type FlowSaveContent } from '@/lib/attractorClient'
 import { recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 import { duplicateDecisionsInFlow } from '@/lib/canonicalFlowModel'
 import { flowProblemsFromDetail, type FlowProblem } from '@/features/editor/model/flowLoadFailure'
@@ -15,8 +15,7 @@ let lastSaveRequest: { name: string; content: FlowSaveContent; projectPath: stri
 const persistedBaselineByScope = new Map<string, string>()
 // One opening of a flow in the editor, from its load until the editor leaves it or loads it anew. A save
 // belongs to the opening it was made in: only that one shows its state, and a later one never gets it.
-// `files` are the flow's files as it loaded, null once a save from it left ones unknown.
-type FlowOpening = { files: string | null; closed: boolean }
+type FlowOpening = { closed: boolean }
 const openedByScope = new Map<string, FlowOpening>()
 
 // Flows belong to a project in an environment; the same name elsewhere is a different flow.
@@ -63,18 +62,17 @@ export async function retryLastSaveContent(): Promise<boolean> {
     return saveFlowContent(request.name, request.content, request.projectPath, request.environmentId)
 }
 
-/** Starts an opening of the flow, loaded as `content` from `files`; a flow its files don't make has no `content`. */
+/** Starts an opening of the flow, loaded as `content`; a flow its files don't make has no `content`. */
 export function primeFlowSaveBaseline(
     name: string,
     content: FlowSaveContent | null,
-    files: FlowFile[] | null = null,
     projectPath = activeProjectPath(),
     environmentId = getActiveEnvironmentId(),
 ): void {
     const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
     if (content) persistedBaselineByScope.set(scopeKey, JSON.stringify(content))
     else persistedBaselineByScope.delete(scopeKey)
-    openedByScope.set(scopeKey, { files: files && JSON.stringify(files), closed: false })
+    openedByScope.set(scopeKey, { closed: false })
     if (refusedSaves.has(scopeKey)) refusedSavesChanged()
 }
 
@@ -96,10 +94,8 @@ export function resetFlowSaveBaselines(): void {
 }
 
 // Saves refused out of sight (another flow, environment or view shown, or the flow opened anew since), by
-// scope, with what their edits were made over: the files the flow opened with while no save from that
-// opening had landed, and the content it last persisted. Their environment shows each, with its edits to
-// review and make again by hand, until it is dismissed; once the flow is open anew, it says whether the
-// flow is still as the edits found it. Nothing sends them again.
+// scope. Their environment shows each, with its edits to review and make again by hand, until it is
+// dismissed. Nothing sends them again, nor judges them against the flow as it reads now.
 // ponytail: kept for this page's life. Saves carry no revision (SaveFlowRequest in attractor-api), so a
 // recovered snapshot sent again could overwrite a version saved after any check; a revision checked by
 // the server would let recovery save them.
@@ -111,8 +107,6 @@ export type RefusedFlowSave = {
     message: string
     kind: SaveErrorKind
     problems: FlowProblem[] | null
-    baseFiles: string | null
-    baseline: string | null
     opened: FlowOpening | undefined
 }
 const refusedSaves = new Map<string, RefusedFlowSave>()
@@ -132,19 +126,10 @@ export function refusedFlowSaves(): RefusedFlowSave[] {
     return refusedSavesSnapshot
 }
 
-/**
- * `open` while the editor that made the edits still has them, behind another view; `hidden` once it left
- * the flow, until the flow is open anew; then whether it is as the edits were made over, by their files
- * when known or else the content persisted before them.
- */
-export function refusedFlowSaveStatus(refused: RefusedFlowSave): 'open' | 'hidden' | 'unchanged' | 'changed' {
-    const scopeKey = getSaveScopeKey(refused.name, refused.projectPath, refused.environmentId)
-    const current = openedByScope.get(scopeKey)
-    if (!current || current.closed) return 'hidden'
-    if (current === refused.opened) return 'open'
-    const same = refused.baseFiles !== null ? current.files === refused.baseFiles
-        : refused.baseline !== null && persistedBaselineByScope.get(scopeKey) === refused.baseline
-    return same ? 'unchanged' : 'changed'
+/** `open` while the editor that made the edits still has them, behind another view; otherwise `hidden`. */
+export function refusedFlowSaveStatus(refused: RefusedFlowSave): 'open' | 'hidden' {
+    const current = openedByScope.get(getSaveScopeKey(refused.name, refused.projectPath, refused.environmentId))
+    return current && !current.closed && current === refused.opened ? 'open' : 'hidden'
 }
 
 export function dismissRefusedFlowSave(refused: RefusedFlowSave): void {
@@ -232,9 +217,6 @@ async function persistFlowContent(
         return getActiveEnvironmentId() === environmentId && state.activeFlow === name && state.activeProjectPath === projectPath
             && openedByScope.get(scopeKey) === opened && !opened?.closed ? state : null
     }
-    // What the opening last persisted, before these edits: saves of a flow go one at a time, so this one's
-    // turn comes once the one before it settled. Opened anew since, it is the new opening's, so unknown.
-    const baseline = openedByScope.get(scopeKey) === opened ? persistedBaselineByScope.get(scopeKey) ?? null : null
     // Retry repeats the save whose failure is shown; one refused out of sight, even behind another view
     // of its editor, is also kept for its environment's notices.
     const fail = (message: string, kind: SaveErrorKind, problems: FlowProblem[] | null = null) => {
@@ -245,7 +227,7 @@ async function persistFlowContent(
             else state.markSaveFailure(message, kind, problems)
         }
         if (state?.viewMode !== 'editor') {
-            refusedSaves.set(scopeKey, { name, projectPath, environmentId, content, message, kind, problems, baseFiles: opened?.files ?? null, baseline, opened })
+            refusedSaves.set(scopeKey, { name, projectPath, environmentId, content, message, kind, problems, opened })
             refusedSavesChanged()
         }
         return false
@@ -339,8 +321,6 @@ async function persistFlowContent(
         })
         persistedBaselineByScope.set(scopeKey, serialized)
         shown()?.markSaveSuccess()
-        // Edits made from here on are over the content this save persisted; the files it left are unknown.
-        if (opened) opened.files = null
         return true
     } catch (error) {
         const message = error instanceof Error ? error.message : 'network error while saving flow'

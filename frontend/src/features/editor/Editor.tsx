@@ -1045,7 +1045,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 }
                 primeFlowSaveBaseline(flowName, {
                     flow: buildAuthoredFlow(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow),
-                }, data.files);
+                });
                 hydratedRef.current = true;
                 setIsHydrated(true);
                 useStore.getState().setFlowLoadFailure(null);
@@ -1071,14 +1071,14 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                         missing: isMissingFlowError(error),
                         problems: flowLoadProblems(error),
                     });
-                    // An invalid flow's files still read: they open in the file view to be fixed, and edits
-                    // made there are over them.
+                    // An invalid flow's files still read: they open in the file view to be fixed, in an
+                    // opening of their own.
                     if (isInvalidFlowError(error)) {
                         loadEditorFlowFiles(flowName, activeProjectPath, { signal: loadAbort.signal })
                             .then((files) => {
                                 if (!isCurrentLoad()) return;
                                 setFlowFiles(files);
-                                primeFlowSaveBaseline(flowName, null, files);
+                                primeFlowSaveBaseline(flowName, null);
                             })
                             .catch(() => undefined);
                     }

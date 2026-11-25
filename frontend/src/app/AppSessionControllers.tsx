@@ -709,8 +709,7 @@ export function HistoryRoutingController() {
 /**
  * Flow saves this environment refused out of sight, by flow and project, until dismissed. Behind another
  * view of the editor that still has the edits, the notice reports them; the editor shows them itself.
- * Otherwise it shows them to review and make again by hand, saying once the flow is open again whether
- * it is still as they found it; nothing sends them over it.
+ * Otherwise it shows them to review and make again by hand; nothing sends them over the flow.
  */
 export function RefusedFlowSaveNotices() {
     const [environmentId] = useState(getActiveEnvironmentId)
@@ -723,10 +722,7 @@ export function RefusedFlowSaveNotices() {
         const edits = 'flow' in content ? JSON.stringify(content.flow, null, 2)
             : [...content.files.map((file) => `${file.name}:\n${file.content}`), ...(content.deleted_files ?? []).map((file) => `${file}: deleted`)].join('\n')
         const next = status === 'open' ? 'Its edits are still in the editor.'
-            : status === 'changed' ? 'It may have changed since, so these edits weren’t saved over it. Copy them from here.'
-                : status === 'unchanged' ? 'It is still as these edits found it, so they can be made again as they are: copy them from here.'
-                    // Edits over nothing known, such as a refused creation's, can't be recovered.
-                    : save.baseFiles !== null || save.baseline !== null ? 'Open the flow to recover these edits.' : ''
+            : 'These edits weren’t saved. Review and copy them below if you still want to apply them.'
         return [
             <AppNotice
                 key={`${save.projectPath}\n${save.name}`}
@@ -741,7 +737,7 @@ export function RefusedFlowSaveNotices() {
                     </details>
                 )}
             >
-                {`${save.message} ${next}`.trim()}
+                {`${save.message} ${next}`}
             </AppNotice>,
         ]
     })
