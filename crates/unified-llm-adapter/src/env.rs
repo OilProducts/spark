@@ -2,6 +2,14 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// The process environment's variables whose name and value are UTF-8;
+/// [`std::env::vars`] panics on any other, such as a non-UTF-8 `HOME`.
+pub(crate) fn utf8_process_env() -> BTreeMap<String, String> {
+    std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect()
+}
+
 pub const PROVIDER_REGISTRATION_ORDER: [&str; 6] = [
     "openai",
     "anthropic",
@@ -32,8 +40,7 @@ pub struct ProviderEnvironment {
 
 impl ProviderEnvironment {
     pub fn from_process_env(explicit_default: Option<&str>) -> Self {
-        let env = std::env::vars().collect::<BTreeMap<_, _>>();
-        Self::from_env_map(&env, explicit_default)
+        Self::from_env_map(&utf8_process_env(), explicit_default)
     }
 
     pub fn from_env_map(env: &BTreeMap<String, String>, explicit_default: Option<&str>) -> Self {

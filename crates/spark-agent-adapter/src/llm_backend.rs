@@ -2328,13 +2328,8 @@ pub fn utility_cli_command(
     let effort = call.reasoning_effort.as_deref().and_then(non_empty);
     let mut command;
     if is_codex_provider_selector(call.provider.as_deref().unwrap_or("")) {
-        command = std::process::Command::new(
-            native
-                .as_ref()
-                .and_then(|config| config.codex_binary.as_ref())
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(crate::codex_app_server::codex_executable),
-        );
+        command =
+            std::process::Command::new(crate::codex_app_server::codex_program(native.as_ref()));
         command
             .envs(
                 crate::codex_app_server::build_codex_runtime_environment_with_settings(
@@ -2378,13 +2373,7 @@ pub fn utility_cli_command(
         }
         command.arg("-");
     } else {
-        command = std::process::Command::new(
-            native
-                .as_ref()
-                .and_then(|config| config.claude_binary.as_ref())
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(crate::claude_code::claude_code_executable),
-        );
+        command = std::process::Command::new(crate::claude_code::claude_program(native.as_ref()));
         command
             .args([
                 "-p",
@@ -2428,11 +2417,14 @@ fn run_utility_process(
     use std::io::{Read, Write};
     use std::process::Stdio;
     let program = command.get_program().to_string_lossy().into_owned();
-    let mut child = command
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    // Its own group, so a timeout also stops what it starts, such as the agent
+    // an npm shim runs, before the call's directory goes.
+    crate::local_environment::configure_process_group(&mut command);
+    let mut child = crate::local_environment::spawn_process_group(command)
         .map_err(|error| format!("utility model launch failed for {program}: {error}"))?;
     let mut stdin = child.stdin.take();
     let input = input.to_owned();
@@ -2461,7 +2453,7 @@ fn run_utility_process(
             break status;
         }
         if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
+            crate::local_environment::terminate_process_group(child.id(), Some(&mut child));
             let _ = child.wait();
             return Err(utility_timeout_message(timeout));
         }
@@ -2602,7 +2594,14 @@ fn build_agent_session_for_source(
             config.environment_inheritance,
         ),
     )
-    .with_env(crate::agent::agent_turn_env(&llm_request.request.metadata))
+    // ponytail: tool commands take a UTF-8 env, so a non-UTF-8 Spark home
+    // reaches them lossily; widen `ExecutionEnvironment::env` if that matters.
+    .with_env(
+        crate::agent::agent_turn_env(&llm_request.request.metadata)
+            .into_iter()
+            .map(|(key, value)| (key, value.to_string_lossy().into_owned()))
+            .collect(),
+    )
     .with_metadata(llm_request.request.metadata);
 
     let plan_mode = metadata_chat_mode

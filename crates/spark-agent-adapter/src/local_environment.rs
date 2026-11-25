@@ -111,7 +111,7 @@ impl LocalExecutionEnvironment {
     fn build_environment(&self, env_vars: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let mut environment = inherited_environment(self.environment_inheritance_policy);
         crate::codex_app_server::drop_managed_key_aliases(&mut environment);
-        environment.extend(env_vars.clone());
+        merge_env(&mut environment, env_vars.clone(), cfg!(windows));
         environment
     }
 
@@ -495,7 +495,7 @@ impl ExecutionEnvironmentBackend for LocalExecutionEnvironment {
         if !search_target.exists() {
             return Err(EnvironmentError::FileNotFound(search_target));
         }
-        if let Some(rg_path) = find_executable("rg") {
+        if let Some(rg_path) = find_executable_on_path("rg", None) {
             return self.grep_with_ripgrep(rg_path, &search_target, pattern, options);
         }
         self.grep_with_regex(&search_target, pattern, options)
@@ -680,21 +680,64 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
-/// Makes `command` lead its own process group, which `terminate_process_group`
-/// stops as a whole. Start it with `spawn_process_group`.
 /// What a child process inherits from Spark's own environment under `policy`.
 pub(crate) fn inherited_environment(
     policy: EnvironmentInheritancePolicy,
 ) -> BTreeMap<String, String> {
+    inherit(spark_common::paths::utf8_env_vars().into_iter(), policy)
+}
+
+/// The variables of `vars` a child inherits under `policy`.
+fn inherit(
+    vars: impl Iterator<Item = (String, String)>,
+    policy: EnvironmentInheritancePolicy,
+) -> BTreeMap<String, String> {
     match policy {
-        EnvironmentInheritancePolicy::InheritAll => env::vars().collect(),
+        EnvironmentInheritancePolicy::InheritAll => vars.collect(),
         EnvironmentInheritancePolicy::InheritNone => BTreeMap::new(),
-        EnvironmentInheritancePolicy::InheritCoreOnly => env::vars()
+        EnvironmentInheritancePolicy::InheritCoreOnly => vars
             .filter(|(key, _)| is_core_env_key(key) && !is_sensitive_env_key(key))
             .collect(),
     }
 }
 
+/// Sets `vars` over `environment`. With `ignore_case`, as Windows treats
+/// names, beyond ASCII too, a caller's `PATH` replaces an inherited `Path`,
+/// and `ÄVAR` an `äVAR`, instead of both reaching the child, where the
+/// inherited one could win.
+pub(crate) fn merge_env<V>(
+    environment: &mut BTreeMap<String, V>,
+    vars: impl IntoIterator<Item = (String, V)>,
+    ignore_case: bool,
+) {
+    for (key, value) in vars {
+        if ignore_case {
+            // ponytail: full Unicode uppercase also equates a few names
+            // Windows keeps apart, such as `ß` and `SS`; compare per-char
+            // simple mappings if one matters.
+            let upper = key.to_uppercase();
+            environment.retain(|existing, _| existing.to_uppercase() != upper);
+        }
+        environment.insert(key, value);
+    }
+}
+
+/// Whether `key` names the search path: `PATH`, in any case on Windows.
+pub(crate) fn is_path_key(key: &str) -> bool {
+    names_var(key, "PATH")
+}
+
+/// Whether `key` names the variable `name`: in any case on Windows.
+fn names_var(key: &str, name: &str) -> bool {
+    if cfg!(windows) {
+        key.eq_ignore_ascii_case(name)
+    } else {
+        key == name
+    }
+}
+
+/// Makes `command` lead its own process group, which `terminate_process_group`
+/// stops as a whole. Start it with `spawn_process_group`.
 pub fn configure_process_group(command: &mut Command) {
     #[cfg(unix)]
     {
@@ -721,9 +764,44 @@ pub fn spawn_process_group(command: Command) -> std::io::Result<Child> {
     #[cfg(windows)]
     {
         let mut command = command;
+        if let Some(error) = batch_directory_error(&command) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, error));
+        }
         join_spark_job()?;
         command.spawn()
     }
+}
+
+/// Why Windows cannot run `command` where it asks: cmd.exe, which runs a batch
+/// file, starts in the Windows directory instead of a UNC one, so the program
+/// would work outside its project.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn batch_directory_error(command: &Command) -> Option<String> {
+    let program = Path::new(command.get_program());
+    let directory = command.get_current_dir()?;
+    let unc = matches!(
+        directory.components().next(),
+        Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), std::path::Prefix::UNC(..) | std::path::Prefix::VerbatimUNC(..))
+    );
+    (unc && is_batch_file(program)).then(|| {
+        format!(
+            "{} is a batch file, which cmd.exe cannot run in the network directory {}: it \
+             would start in the Windows directory instead. Open the project through a mapped \
+             drive letter, or set the agent's program to its .exe.",
+            program.display(),
+            directory.display()
+        )
+    })
+}
+
+/// Whether Windows runs `program` through cmd.exe: a `.bat` or `.cmd` file.
+pub(crate) fn is_batch_file(program: &Path) -> bool {
+    program.extension().is_some_and(|extension| {
+        ["bat", "cmd"]
+            .iter()
+            .any(|batch| extension.eq_ignore_ascii_case(batch))
+    })
 }
 
 /// A pipe whose close-on-exec write end only this process holds, so its read
@@ -922,51 +1000,198 @@ pub fn terminate_process_group(process_group_id: u32, mut child: Option<&mut Chi
     }
 }
 
+/// `name` as a launch finds it: an explicit path (absolute, or with a
+/// separator) as given if it is a file, else the first match on
+/// `path_override` (else Spark's own `PATH`). A name with an extension is
+/// matched as written. On Windows a bare name tries, in `PATHEXT`'s order,
+/// each extension a launch can run, then `.exe`, which a launch always tries,
+/// if `PATHEXT` omits it, then the name itself only if it is an image, so a
+/// `rg.cmd` shim wins over a native `rg` beside it, and neither an
+/// extensionless script, such as one a WSL npm install writes, nor an npm
+/// `.ps1` shim hides a later runnable match.
 pub fn find_executable_on_path(
     name: &str,
     path_override: Option<&std::ffi::OsStr>,
 ) -> Option<PathBuf> {
-    let candidate = Path::new(name);
-    if candidate.is_absolute() {
-        return is_executable(candidate).then(|| candidate.to_path_buf());
-    }
     let path_var = path_override
         .map(std::ffi::OsStr::to_os_string)
-        .or_else(|| env::var_os("PATH"))?;
-    for directory in env::split_paths(&path_var) {
-        let direct = directory.join(name);
-        if is_executable(&direct) {
-            return Some(direct);
-        }
-        #[cfg(windows)]
+        .or_else(|| env::var_os("PATH"));
+    find_executable_in_directories(name, path_var.iter().flat_map(env::split_paths))
+}
+
+/// [`find_executable_on_path`] over `directories` in order, each taken whole.
+pub fn find_executable_in_directories(
+    name: &str,
+    directories: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    let pathext = cfg!(windows).then(own_pathext);
+    find_executable_in(name, directories, pathext.as_deref())
+}
+
+/// Windows' `PATHEXT` where none is set.
+const DEFAULT_PATHEXT: &str = ".EXE;.BAT;.CMD";
+
+/// Spark's own `PATHEXT`, else Windows' default.
+pub(crate) fn own_pathext() -> std::ffi::OsString {
+    env::var_os("PATHEXT").unwrap_or_else(|| DEFAULT_PATHEXT.into())
+}
+
+/// The file `command`'s program names as its child finds it, by only the
+/// `PATH` and `PATHEXT` `command` sets, whose whole environment its caller
+/// sets after `env_clear`: an explicit path from the child's directory, else
+/// the first match on `PATH`, whose relative entries resolve from that
+/// directory too, as does an empty one elsewhere than Windows. Nothing the
+/// child does not receive, such as Spark's own `PATH`, is searched.
+pub(crate) fn child_program(command: &Command) -> Option<PathBuf> {
+    let child_var = |name: &str| {
+        command
+            .get_envs()
+            .filter(|(key, _)| key.to_str().is_some_and(|key| names_var(key, name)))
+            .last()
+            .and_then(|(_, value)| value)
+            .map(std::ffi::OsStr::to_os_string)
+    };
+    let path = child_var("PATH");
+    let pathext =
+        cfg!(windows).then(|| child_var("PATHEXT").unwrap_or_else(|| DEFAULT_PATHEXT.into()));
+    let directory = command.get_current_dir().unwrap_or(Path::new(""));
+    let program = Path::new(command.get_program());
+    let program = if program.components().count() > 1 {
+        directory.join(program)
+    } else {
+        program.to_path_buf()
+    };
+    find_executable_in(
+        program.to_str()?,
+        path.iter()
+            .flat_map(|path| path_directories(path))
+            .map(|entry| directory.join(entry)),
+        pathext.as_deref(),
+    )
+}
+
+/// `path`'s entries, each taken whole, as a launch searches them: Windows
+/// searches no empty entry, which elsewhere names the launch's own directory.
+pub(crate) fn path_directories(path: &std::ffi::OsStr) -> impl Iterator<Item = PathBuf> + '_ {
+    env::split_paths(path).filter(|entry| !(cfg!(windows) && entry.as_os_str().is_empty()))
+}
+
+/// `program` as a launch should name it. On Windows, where launching a bare
+/// name tries only `.exe`, the match [`find_executable_on_path`] finds, such
+/// as an npm `.cmd` shim. Elsewhere, and when nothing matches, `program` as
+/// given: the system's own search resolves relative `PATH` entries from the
+/// child's directory and skips files it cannot run, and a failure names
+/// `program`.
+pub fn launch_program(program: PathBuf) -> PathBuf {
+    if cfg!(windows) {
+        if let Some(found) = program
+            .to_str()
+            .and_then(|name| find_executable_on_path(name, None))
         {
-            let pathext = env::var_os("PATHEXT")
-                .unwrap_or_else(|| std::ffi::OsString::from(".EXE;.BAT;.CMD"));
-            for extension in pathext
-                .to_string_lossy()
-                .split(';')
-                .filter(|ext| !ext.is_empty())
-            {
-                let candidate = directory.join(format!("{name}{extension}"));
-                if is_executable(&candidate) {
-                    return Some(candidate);
-                }
-            }
+            return found;
         }
     }
-    None
+    program
 }
 
-fn find_executable(name: &str) -> Option<PathBuf> {
-    find_executable_on_path(name, None)
+/// [`find_executable_in_directories`] with `pathext` given, `None` outside
+/// Windows.
+fn find_executable_in(
+    name: &str,
+    directories: impl IntoIterator<Item = PathBuf>,
+    pathext: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    let candidate = Path::new(name);
+    if candidate.is_absolute() || candidate.components().count() > 1 {
+        let launched = launched(candidate.to_path_buf());
+        return is_executable(&launched).then_some(launched);
+    }
+    let bare = pathext.is_some() && candidate.extension().is_none();
+    let pathext = pathext
+        .filter(|_| bare)
+        .map(std::ffi::OsStr::to_string_lossy)
+        .unwrap_or_default();
+    // A launch runs an image or, through cmd.exe, a batch file; other
+    // extensions, such as an npm `.ps1` shim's, cannot start. It always tries
+    // `.exe`, so that follows when `PATHEXT` omits it.
+    let extensions = pathext.split(';').collect::<Vec<_>>();
+    let exe =
+        (bare && !extensions.iter().any(|e| e.eq_ignore_ascii_case(".exe"))).then_some(".exe");
+    let names = extensions
+        .into_iter()
+        .filter(|extension| {
+            [".com", ".exe", ".bat", ".cmd"]
+                .iter()
+                .any(|runnable| extension.eq_ignore_ascii_case(runnable))
+        })
+        .chain(exe)
+        .map(|extension| format!("{name}{extension}"))
+        .chain([name.to_string()])
+        .collect::<Vec<_>>();
+    // Windows searches no empty entry; elsewhere one names the launch's own
+    // directory.
+    directories
+        .into_iter()
+        .filter(|directory| !(cfg!(windows) && directory.as_os_str().is_empty()))
+        .find_map(|directory| {
+            names
+                .iter()
+                .map(|name| directory.join(name))
+                .find(|file| {
+                    is_executable(file) && (!bare || file.extension().is_some() || is_image(file))
+                })
+                .map(launched)
+        })
 }
 
+/// Whether `path` begins as a Windows image does, with `MZ`: the only
+/// extensionless file a Windows launch can start, unlike a script such as one
+/// a WSL npm install writes.
+fn is_image(path: &Path) -> bool {
+    let mut magic = [0; 2];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .is_ok()
+        && magic == *b"MZ"
+}
+
+/// The file a launch of the path `program` runs. For any path not ending in
+/// `.exe`, Rust's Windows launcher runs `program` with `.exe` appended when
+/// that exists, and there is no way to launch `program` past it: so
+/// `C:\tools\agent` runs `agent.exe`, and an `agent.cmd` beside an
+/// `agent.cmd.exe` runs the latter. Elsewhere `program` itself.
+pub(crate) fn launched(program: PathBuf) -> PathBuf {
+    if cfg!(windows)
+        && !program
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    {
+        let mut exe = program.clone().into_os_string();
+        exe.push(".exe");
+        if Path::new(&exe).is_file() {
+            return exe.into();
+        }
+    }
+    program
+}
+
+/// Whether `path` is a file a launch can run: elsewhere than Windows, one
+/// with an execute bit, as the system's own search requires.
 fn is_executable(path: &Path) -> bool {
-    path.is_file()
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
 }
 
 fn absolutize(path: &Path) -> PathBuf {
-    let expanded = expand_home(path);
+    let expanded = expand_home(path, spark_common::paths::user_home_dir());
     if expanded.is_absolute() {
         normalize_path(expanded)
     } else {
@@ -978,22 +1203,14 @@ fn absolutize(path: &Path) -> PathBuf {
     }
 }
 
-fn expand_home(path: &Path) -> PathBuf {
+/// Expands a leading `~` component with `home`. `\` separates only on
+/// Windows, so elsewhere `~\repo` is a literal relative name.
+fn expand_home(path: &Path, home: Option<PathBuf>) -> PathBuf {
     let mut components = path.components();
-    let Some(Component::Normal(first)) = components.next() else {
-        return path.to_path_buf();
-    };
-    if first != "~" {
-        return path.to_path_buf();
+    match (components.next(), home) {
+        (Some(Component::Normal(first)), Some(home)) if first == "~" => home.join(components),
+        _ => path.to_path_buf(),
     }
-    let Some(home) = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")) else {
-        return path.to_path_buf();
-    };
-    let mut expanded = PathBuf::from(home);
-    for component in components {
-        expanded.push(component.as_os_str());
-    }
-    expanded
 }
 
 fn normalize_path(path: PathBuf) -> PathBuf {
@@ -1122,4 +1339,249 @@ fn os_version() -> String {
         }
     }
     format!("{} {}", env::consts::OS, env::consts::ARCH)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_leading_tilde_component_is_the_home() {
+        let home = env::temp_dir().join("home");
+        let expand = |path: &str| expand_home(Path::new(path), Some(home.clone()));
+        assert_eq!(expand("~/repo"), home.join("repo"));
+        // `\` separates only on Windows.
+        let backslash = if cfg!(windows) {
+            home.join("repo")
+        } else {
+            PathBuf::from(r"~\repo")
+        };
+        assert_eq!(expand(r"~\repo"), backslash);
+        assert_eq!(expand("~repo"), PathBuf::from("~repo"));
+        assert_eq!(
+            expand_home(Path::new("~/repo"), None),
+            PathBuf::from("~/repo")
+        );
+    }
+
+    /// An empty file a launch can run, with an execute bit outside Windows.
+    fn executable(path: &Path) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn a_pathext_shim_wins_over_an_extensionless_script() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (first, second) = (temp.path().join("first"), temp.path().join("second"));
+        let shadow = temp.path().join("shadow");
+        for file in [
+            shadow.join("rg"),
+            shadow.join("native"),
+            second.join("native"),
+            first.join("rg"),
+            first.join("rg.ps1"),
+            first.join("rg.cmd"),
+            second.join("rg.exe"),
+            second.join("tool.cmd"),
+            second.join("tool.cmd.exe"),
+        ] {
+            executable(&file);
+        }
+        for image in [first.join("rg"), second.join("native")] {
+            fs::write(image, "MZ").unwrap();
+        }
+        let path = env::join_paths([temp.path(), &shadow, &first, &second]).unwrap();
+        // Lowercase, so a case-insensitive file system returns the files as named.
+        let pathext = |pathext| Some(std::ffi::OsStr::new(pathext));
+        let windows = pathext(".com;.exe;.ps1;.bat;.cmd");
+        let find = |name: &str, pathext| find_executable_in(name, env::split_paths(&path), pathext);
+
+        // Windows runs the first shim, ahead of an image beside it and past an
+        // extensionless script, such as a WSL npm install writes, and an npm
+        // PowerShell shim, neither of which a launch can start; elsewhere the
+        // first script runs.
+        assert_eq!(find("rg", windows), Some(first.join("rg.cmd")));
+        assert_eq!(find("rg", None), Some(shadow.join("rg")));
+        // With no shim, Windows runs an extensionless image past such a script.
+        assert_eq!(find("native", windows), Some(second.join("native")));
+        assert_eq!(find("native", None), Some(shadow.join("native")));
+        // A name with an extension is taken as written, whatever PATHEXT
+        // holds, and found as Windows launches it: past a path not ending in
+        // `.exe`, the file with `.exe` appended when it exists.
+        assert_eq!(find("rg.exe", windows), Some(second.join("rg.exe")));
+        let tool = if cfg!(windows) {
+            "tool.cmd.exe"
+        } else {
+            "tool.cmd"
+        };
+        assert_eq!(find("tool.cmd", pathext(".exe")), Some(second.join(tool)));
+        // Explicit paths resolve as given, never through PATH, on Windows with
+        // `.exe` appended as its launch does, and elsewhere only to a file
+        // with an execute bit.
+        let explicit = second.join("rg.exe");
+        assert_eq!(
+            find(explicit.to_str().unwrap(), windows),
+            Some(explicit.clone())
+        );
+        assert_eq!(
+            find(second.join("rg").to_str().unwrap(), windows),
+            cfg!(windows).then_some(explicit)
+        );
+        assert_eq!(find("first/rg", windows), None);
+        assert_eq!(find("src/lib.rs", None).is_some(), cfg!(windows));
+    }
+
+    /// A child's program is found by only the `PATH` and `PATHEXT` it
+    /// receives, in any spelling on Windows, and an explicit relative path
+    /// from its directory, which an empty entry names elsewhere than Windows.
+    #[test]
+    fn child_program_follows_the_child_environment_and_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin = temp.path().join("bin");
+        for file in [
+            temp.path().join("agent"),
+            bin.join("agent"),
+            bin.join("agent.bat"),
+            bin.join("agent.cmd"),
+        ] {
+            executable(&file);
+        }
+
+        let mut explicit = Command::new(Path::new("bin").join("agent"));
+        explicit.current_dir(temp.path());
+        assert_eq!(child_program(&explicit), Some(bin.join("agent")));
+
+        // Lowercase, so a case-insensitive file system returns the files as named.
+        let mut bare = Command::new("agent");
+        bare.current_dir(temp.path())
+            .env_clear()
+            .env("PATH", env::join_paths(["", "bin"]).unwrap())
+            .env("Pathext", ".cmd;.bat");
+        let found = if cfg!(windows) {
+            bin.join("agent.cmd")
+        } else {
+            temp.path().join("agent")
+        };
+        assert_eq!(child_program(&bare), Some(found));
+
+        // Without a PATH of its own the child finds nothing, not the work
+        // area's program nor one on Spark's own PATH.
+        let shell = if cfg!(windows) { "cmd" } else { "sh" };
+        assert!(find_executable_on_path(shell, None).is_some());
+        for name in ["agent", shell] {
+            let mut unset = Command::new(name);
+            unset.current_dir(temp.path()).env_clear();
+            assert_eq!(child_program(&unset), None, "{name}");
+        }
+    }
+
+    /// cmd.exe would start a batch file in the Windows directory instead of a
+    /// UNC one, so the launch fails first; elsewhere it goes ahead.
+    #[cfg(windows)]
+    #[test]
+    fn a_batch_file_never_starts_outside_its_unc_directory() {
+        let command = |program: &str, directory: &str| {
+            let mut command = Command::new(program);
+            command.current_dir(directory);
+            command
+        };
+        let error = spawn_process_group(command(r"C:\tools\claude.cmd", r"\\server\share\repo"))
+            .unwrap_err();
+        assert!(error.to_string().contains("mapped drive letter"), "{error}");
+        for (program, directory) in [
+            (r"C:\tools\claude.exe", r"\\server\share\repo"),
+            (r"C:\tools\claude.cmd", r"C:\repo"),
+        ] {
+            assert_eq!(batch_directory_error(&command(program, directory)), None);
+        }
+    }
+
+    #[test]
+    fn caller_variables_replace_inherited_ones_in_any_case_only_on_windows() {
+        let inherited = || {
+            BTreeMap::from([
+                ("Path".to_string(), "inherited".to_string()),
+                ("HOME".to_string(), "home".to_string()),
+                ("äVAR".to_string(), "host".to_string()),
+            ])
+        };
+        let caller = BTreeMap::from([
+            ("PATH".to_string(), "caller".to_string()),
+            ("ÄVAR".to_string(), "caller".to_string()),
+        ]);
+
+        let mut windows = inherited();
+        merge_env(&mut windows, caller.clone(), true);
+        assert_eq!(
+            windows,
+            BTreeMap::from([
+                ("HOME".to_string(), "home".to_string()),
+                ("PATH".to_string(), "caller".to_string()),
+                ("ÄVAR".to_string(), "caller".to_string()),
+            ])
+        );
+
+        let mut unix = inherited();
+        merge_env(&mut unix, caller, false);
+        assert_eq!(unix.get("Path").map(String::as_str), Some("inherited"));
+        assert_eq!(unix.get("PATH").map(String::as_str), Some("caller"));
+        assert_eq!(unix.get("äVAR").map(String::as_str), Some("host"));
+        assert_eq!(unix.get("ÄVAR").map(String::as_str), Some("caller"));
+    }
+
+    /// A Windows launch of a bare name always tries `.exe`, so the lookup
+    /// does too when `PATHEXT` omits it.
+    #[test]
+    fn a_bare_name_finds_its_exe_whatever_pathext_holds() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        executable(&temp.path().join("claude.exe"));
+        assert_eq!(
+            find_executable_in(
+                "claude",
+                [temp.path().to_path_buf()],
+                Some(std::ffi::OsStr::new(".CMD"))
+            ),
+            Some(temp.path().join("claude.exe"))
+        );
+    }
+
+    #[test]
+    fn inherit_core_only_keeps_windows_system_variables() {
+        // As Windows spells them.
+        let windows = [
+            "APPDATA",
+            "COMPUTERNAME",
+            "ComSpec",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "LOCALAPPDATA",
+            "NUMBER_OF_PROCESSORS",
+            "OS",
+            "Path",
+            "PATHEXT",
+            "PROCESSOR_ARCHITECTURE",
+            "ProgramData",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "PSModulePath",
+            "SystemDrive",
+            "SystemRoot",
+            "TEMP",
+            "TMP",
+            "USERNAME",
+            "USERPROFILE",
+            "windir",
+        ]
+        .map(|key| (key.to_string(), format!("{key}-value")));
+        assert_eq!(
+            inherit(
+                windows.clone().into_iter(),
+                EnvironmentInheritancePolicy::InheritCoreOnly
+            ),
+            BTreeMap::from(windows)
+        );
+    }
 }

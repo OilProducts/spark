@@ -451,6 +451,30 @@ fn first_completed_turn_gets_one_generated_title_in_the_background() {
     assert_eq!(stored_title(&service, "titled"), "Deploy pipeline repair");
 }
 
+/// A completed chat still gets its generated title when Spark's HOME is not
+/// UTF-8. HOME is process-wide, so the title contract runs in a child.
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_home_still_gets_a_generated_title() {
+    use std::os::unix::ffi::OsStrExt;
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join(std::ffi::OsStr::from_bytes(b"home-\xff"));
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "utility_contracts::first_completed_turn_gets_one_generated_title_in_the_background",
+        ])
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_first_turn_resumed_after_a_question_gets_a_generated_title() {

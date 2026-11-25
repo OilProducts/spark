@@ -3519,6 +3519,71 @@ fn utility_cli_call_runs_outside_the_project_and_surfaces_timeouts_and_failures(
     assert!(error.contains("no text"), "{error}");
 }
 
+/// A utility call through a shim, as npm installs Claude Code and Codex, that
+/// starts the agent and outlives the call's timeout: the timeout stops the
+/// agent too before the call returns and removes its directory. The agent is
+/// this test binary, run again in that role.
+#[test]
+fn utility_cli_timeout_stops_the_agent_a_shim_started() {
+    const AGENT_DIR: &str = "SPARK_UTILITY_SHIM_AGENT_DIR";
+    const TEST: &str = "llm_backend_contracts::utility_cli_timeout_stops_the_agent_a_shim_started";
+    if let Some(dir) = std::env::var_os(AGENT_DIR) {
+        let dir = Path::new(&dir);
+        let started = format!(
+            "{}\n{}",
+            std::process::id(),
+            std::env::current_dir().unwrap().display()
+        );
+        fs::write(dir.join("agent.tmp"), started).unwrap();
+        fs::rename(dir.join("agent.tmp"), dir.join("agent")).unwrap();
+        thread::sleep(Duration::from_secs(60));
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let exe = std::env::current_exe().unwrap();
+    #[cfg(windows)]
+    let shim = {
+        let shim = temp.path().join("claude.cmd");
+        let body = format!(
+            "@set \"{AGENT_DIR}={}\"\r\n@\"{}\" --exact {TEST}\r\n",
+            temp.path().display(),
+            exe.display()
+        );
+        fs::write(&shim, body).expect("shim");
+        shim
+    };
+    #[cfg(not(windows))]
+    let shim = {
+        use std::os::unix::fs::PermissionsExt;
+        let shim = temp.path().join("claude");
+        let body = format!(
+            "#!/bin/sh\n{AGENT_DIR}='{}' '{}' --exact {TEST} & wait\n",
+            temp.path().display(),
+            exe.display()
+        );
+        fs::write(&shim, body).expect("shim");
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod");
+        shim
+    };
+    let mut call = utility_call(
+        "claude-code",
+        json!({"spark.execution.settings": {"configuration": {"agents": {"native": {"claude_binary": shim}}}}}),
+    );
+    call.timeout = Duration::from_secs(5);
+
+    let error =
+        spark_agent_adapter::run_utility_call(&Client::default(), &call).expect_err("timeout");
+
+    assert!(error.contains("timed out"), "{error}");
+    let agent = fs::read_to_string(temp.path().join("agent")).expect("the shim started the agent");
+    let (pid, work_dir) = agent.split_once('\n').unwrap();
+    assert!(
+        !super::spark_exit_contracts::running(pid.parse().unwrap()),
+        "the agent outlived the timeout"
+    );
+    assert!(!Path::new(work_dir).exists(), "{work_dir} is removed");
+}
+
 type StreamScript = dyn Fn(usize, &Request) -> Result<Vec<StreamEvent>, AdapterError> + Send + Sync;
 
 /// An `openai` model whose streamed responses come from `script`, by call index.
@@ -3787,13 +3852,27 @@ fn sdk_agent_shell_sees_sparks_home_and_api() {
     }
     let output = command.output().unwrap();
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(dir.path().join("agent-env")).expect("the shell ran"),
-        format!(
-            "{}|{SDK_AGENT_API_BASE_URL}|set:|set:|set:",
-            dir.path().join("spark-home").display()
-        )
+    let dump = fs::read(dir.path().join("agent-env")).expect("the shell ran");
+    // Windows' `cmd /U` writes the dump as UTF-16.
+    #[cfg(windows)]
+    let dump = String::from_utf16(
+        &dump
+            .chunks_exact(2)
+            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+            .collect::<Vec<_>>(),
     );
+    #[cfg(not(windows))]
+    let dump = String::from_utf8(dump);
+    let env = super::local_environment_contracts::env_lines(&dump.expect("environment dump text"));
+    let spark_home = dir.path().join("spark-home").display().to_string();
+    let mut expected = vec![
+        ("SPARK_HOME", spark_home.as_str()),
+        ("SPARK_API_BASE_URL", SDK_AGENT_API_BASE_URL),
+    ];
+    expected.extend(spark_agent_adapter::MANAGED_AGENT_API_KEYS.map(|key| (key, "")));
+    for (key, value) in expected {
+        assert_eq!(env.get(key).map(String::as_str), Some(value), "{key}");
+    }
 }
 
 /// The turn `sdk_agent_shell_sees_sparks_home_and_api` runs. A no-op in the
@@ -3811,6 +3890,11 @@ fn sdk_agent_env_role() {
         loopback_url: None,
     })
     .unwrap();
+    // The default shell writes the environment it gives commands.
+    #[cfg(windows)]
+    const DUMP_ENV: &str = "cmd /U /C set > agent-env";
+    #[cfg(not(windows))]
+    const DUMP_ENV: &str = "env > agent-env";
     let (client, calls) = scripted_client(|index, _| {
         Ok(match index {
             0 => reply(
@@ -3818,7 +3902,7 @@ fn sdk_agent_env_role() {
                 vec![ToolCall::new(
                     "call-env",
                     "shell",
-                    json!({"command": "printf '%s|%s|%s|%s|%s' \"$SPARK_HOME\" \"$SPARK_API_BASE_URL\" \"${SPARK_AGENT_API_TOKEN+set:$SPARK_AGENT_API_TOKEN}\" \"${SPARK_AGENT_API_ORIGIN+set:$SPARK_AGENT_API_ORIGIN}\" \"${SPARK_AGENT_LOOPBACK_URL+set:$SPARK_AGENT_LOOPBACK_URL}\" > agent-env"}),
+                    json!({"command": DUMP_ENV}),
                 )],
             ),
             _ => reply("Done.", Vec::new()),

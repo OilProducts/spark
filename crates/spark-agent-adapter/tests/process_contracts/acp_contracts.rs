@@ -117,6 +117,211 @@ fn other(events: &[TurnStreamEvent], kind: &str) -> Vec<TurnStreamEvent> {
         .collect()
 }
 
+/// Elsewhere than Windows a launch searches PATH as the system does: an entry
+/// relative to the work area, such as `node_modules/.bin`, finds the project's
+/// program, an empty entry the work area itself, and a file it cannot run
+/// earlier on PATH is passed over. A program on no PATH entry is not
+/// installed; one found whose interpreter is missing failed to launch.
+#[cfg(unix)]
+#[test]
+fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    let bin = project.join("node_modules").join(".bin");
+    let blocker = temp.path().join("blocker");
+    for dir in [&bin, &blocker] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::os::unix::fs::symlink(FAKE, bin.join("agent")).unwrap();
+    std::os::unix::fs::symlink(FAKE, project.join("local")).unwrap();
+    std::fs::write(blocker.join("agent"), "not a program").unwrap();
+    let broken = bin.join("broken");
+    std::fs::write(&broken, "#!/missing/interpreter\n").unwrap();
+    std::fs::set_permissions(&broken, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = format!("{}::node_modules/.bin", blocker.display());
+    let discover = |executable: &str| {
+        let harness = serde_json::from_value(json!({
+            "name": "Project agent",
+            "executable": executable,
+            "env": {"PATH": path},
+        }))
+        .unwrap();
+        acp::discover(
+            "project",
+            &harness,
+            spark_agent_adapter::EnvironmentInheritancePolicy::InheritNone,
+            &project,
+        )
+    };
+
+    for executable in ["agent", "local"] {
+        let found = discover(executable);
+        assert_eq!(
+            found.setup_status, "ready",
+            "{executable}: {:?}",
+            found.error
+        );
+    }
+    let local = request(
+        &project,
+        json!({}),
+        json!({"executable": "local", "env": {"PATH": path}}),
+    );
+    run(&local, |_| {}).0.expect("turn");
+    // An explicit empty PATH names the work area alone, after Spark's tools.
+    let harness = serde_json::from_value(json!({
+        "name": "Project agent",
+        "executable": "local",
+        "env": {"PATH": ""},
+    }))
+    .unwrap();
+    let found = acp::discover(
+        "project",
+        &harness,
+        spark_agent_adapter::EnvironmentInheritancePolicy::InheritNone,
+        &project,
+    );
+    assert_eq!(found.setup_status, "ready", "{:?}", found.error);
+    let missing = discover("missing-agent");
+    assert_eq!(missing.setup_status, "not_installed", "{:?}", missing.error);
+    for executable in ["broken", broken.to_str().unwrap()] {
+        let failed = discover(executable);
+        assert_eq!(failed.setup_status, "unreachable", "{executable}");
+        assert!(
+            failed
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("launch failed")),
+            "{executable}: {:?}",
+            failed.error
+        );
+    }
+}
+
+/// Windows runs a batch shim through cmd.exe, which takes no line break in an
+/// argument: a raw `{{instructions}}` argument launches for setup and a chat
+/// without pinned instructions, a launch with multiline ones fails first, and
+/// instructions through a file reach the agent whole.
+#[cfg(windows)]
+#[test]
+fn acp_windows_batch_shim_takes_instructions_through_a_file_not_an_argument() {
+    let dir = tempfile::tempdir().unwrap();
+    let shim = dir.path().join("agent.cmd");
+    std::fs::write(&shim, format!("@\"{FAKE}\" %*\r\n")).unwrap();
+    let instructions = "Be exact.\nSay so twice.";
+    let chat = |args: Value, instructions: Option<&str>| {
+        let mut chat = request(
+            dir.path(),
+            json!({}),
+            json!({"executable": shim, "system_instructions": {"args": args}}),
+        );
+        if let Some(instructions) = instructions {
+            chat.metadata.insert(
+                AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
+                json!(instructions),
+            );
+        }
+        (setup(&chat), run(&chat, |_| {}).0)
+    };
+
+    let raw = json!(["--system", "{{instructions}}"]);
+    let (found, turn) = chat(raw.clone(), None);
+    assert_eq!(found.setup_status, "ready", "{:?}", found.error);
+    turn.expect("turn without instructions");
+    let before = launches(dir.path());
+    let (_, turn) = chat(raw, Some(instructions));
+    let error = turn.err().unwrap();
+    assert!(error.contains("{{instructions_file}}"), "{error}");
+    assert_eq!(launches(dir.path()), before + 1, "only setup launched");
+
+    let (found, turn) = chat(json!(["{{instructions_file}}"]), Some(instructions));
+    assert_eq!(found.setup_status, "ready", "{:?}", found.error);
+    turn.expect("turn");
+    let startup = log(dir.path())
+        .into_iter()
+        .rev()
+        .find(|entry| entry.get("argv").is_some())
+        .unwrap();
+    let file = startup["argv"][0].as_str().unwrap();
+    assert_eq!(startup["files"][file], instructions);
+}
+
+/// Discovery of the harness `request` registers, in its project.
+#[cfg(windows)]
+fn setup(request: &AgentTurnRequest) -> acp::AcpDiscovery {
+    let harness = serde_json::from_value(
+        request.metadata["spark.execution.settings"]["configuration"]["agents"]["acp_harnesses"]
+            ["fake"]
+            .clone(),
+    )
+    .unwrap();
+    acp::discover(
+        "fake",
+        &harness,
+        spark_agent_adapter::EnvironmentInheritancePolicy::InheritCoreOnly,
+        Path::new(&request.project_path),
+    )
+}
+
+/// A Windows probe and turn run the program the harness's own child would:
+/// by the `PATHEXT` it registers, in any spelling, past a project's
+/// extensionless npm script to a shim or an extensionless native agent, an
+/// explicit relative path from the project, and an explicit path without
+/// `.exe`. Where the launch would run an `agent.cmd.exe` beside the
+/// `agent.cmd` found, both name it, so multiline instructions reach it as an
+/// argument.
+#[cfg(windows)]
+#[test]
+fn acp_windows_launch_finds_the_program_by_the_harness_pathext_and_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let (bin, beside) = (dir.path().join("bin"), dir.path().join("beside"));
+    let shadow = dir.path().join("node_modules").join(".bin");
+    let native = dir.path().join("native");
+    for directory in [&bin, &beside, &shadow, &native] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    // An npm install from WSL writes a script no Windows launch can start.
+    std::fs::write(shadow.join("agent"), "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::copy(FAKE, native.join("agent")).unwrap();
+    // Spark's own PATHEXT would pick the failing batch file.
+    std::fs::write(bin.join("agent.bat"), "@exit /b 1\r\n").unwrap();
+    std::fs::write(bin.join("agent.cmd"), format!("@\"{FAKE}\" %*\r\n")).unwrap();
+    std::fs::write(beside.join("agent.cmd"), "@exit /b 1\r\n").unwrap();
+    std::fs::copy(FAKE, beside.join("agent.cmd.exe")).unwrap();
+    for registration in [
+        json!({
+            "executable": "agent",
+            "env": {"PATH": format!(r"node_modules\.bin;{}", bin.display()), "Pathext": ".CMD;.BAT;.EXE"},
+        }),
+        json!({
+            "executable": "agent",
+            "env": {"PATH": format!(r"node_modules\.bin;{}", native.display())},
+        }),
+        json!({"executable": r"bin\agent.cmd"}),
+        json!({"executable": FAKE.strip_suffix(".exe").unwrap()}),
+        json!({
+            "executable": "agent",
+            "env": {"PATH": beside, "Pathext": ".CMD"},
+            "system_instructions": {"args": ["--system", "{{instructions}}"]},
+        }),
+    ] {
+        let mut chat = request(dir.path(), json!({}), registration.clone());
+        chat.metadata.insert(
+            AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
+            json!("Be exact.\nSay so twice."),
+        );
+        let found = setup(&chat);
+        assert_eq!(
+            found.setup_status, "ready",
+            "{registration}: {:?}",
+            found.error
+        );
+        if let Err(error) = run(&chat, |_| {}).0 {
+            panic!("{registration}: {error}");
+        }
+    }
+}
+
 #[test]
 fn acp_turn_streams_updates_while_the_prompt_is_open_and_returns_them_once() {
     let dir = tempfile::tempdir().unwrap();
@@ -231,7 +436,7 @@ fn acp_turn_streams_updates_while_the_prompt_is_open_and_returns_them_once() {
     assert!(new.get("systemPrompt").is_none());
     assert_eq!(
         new["cwd"],
-        json!(std::fs::canonicalize(dir.path()).unwrap())
+        json!(spark_common::paths::canonicalize_clean(dir.path()).unwrap())
     );
     let prompt = &received(dir.path(), "session/prompt")[0];
     assert_eq!(
@@ -549,6 +754,116 @@ fn acp_pinned_instructions_reach_every_harness() {
         .contains("exact"));
 }
 
+/// A declared channel's `PATH` follows Spark's tool directory, and the
+/// harness, registered by bare name, is found and launched on that `PATH`.
+#[test]
+fn acp_channel_path_follows_sparks_tool_directory() {
+    let _env = super::test_support::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let fake = Path::new(FAKE);
+    let fake_dir = fake.parent().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut channel = request(
+        dir.path(),
+        json!({"log_env": ["PATH"]}),
+        json!({
+            "executable": fake.file_name().unwrap().to_str().unwrap(),
+            "system_instructions": {"env": {
+                "PATH": {"text": fake_dir},
+                "FAKE_TEXT": {"text": "{{instructions}}"},
+            }},
+        }),
+    );
+    channel.metadata.insert(
+        AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
+        json!("Be brief."),
+    );
+    run(&channel, |_| {})
+        .0
+        .expect("the harness launches from the channel's PATH");
+    let path = log(dir.path())[0]["env"]["PATH"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+    let exe_dir = std::env::current_exe().unwrap();
+    assert_eq!(entries.len(), 2, "{path}");
+    assert_eq!(entries[0], exe_dir.parent().unwrap(), "{path}");
+    assert_eq!(entries[1], fake_dir, "{path}");
+}
+
+/// Spark's tool directory stays one PATH entry when its name holds `;`, the
+/// Windows separator, so agent shells and ACP lookup find the tools beside
+/// Spark: a harness installed there launches by bare name. Spark's directory
+/// is the running binary's, so a link to this binary runs in it as a child.
+#[test]
+fn acp_finds_a_harness_beside_spark_in_a_directory_named_with_a_semicolon() {
+    const CHILD: &str = "SPARK_SEMICOLON_INSTALL_CONTRACT";
+    let agent = format!("beside-spark-agent{}", std::env::consts::EXE_SUFFIX);
+    if std::env::var_os(CHILD).is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("Spark;beta");
+        std::fs::create_dir(&install).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let spark = install.join(exe.file_name().unwrap());
+        for (from, to) in [
+            (exe.as_path(), &spark),
+            (Path::new(FAKE), &install.join(&agent)),
+        ] {
+            std::fs::hard_link(from, to)
+                .or_else(|_| std::fs::copy(from, to).map(drop))
+                .unwrap();
+        }
+        let output = std::process::Command::new(&spark)
+            .args([
+                "--exact",
+                "acp_contracts::acp_finds_a_harness_beside_spark_in_a_directory_named_with_a_semicolon",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let install =
+        spark_common::paths::canonicalize_clean(std::env::current_exe().unwrap().parent().unwrap())
+            .unwrap();
+    let elsewhere = install.parent().unwrap().join("elsewhere");
+    let path = spark_agent_adapter::codex_app_server::spark_agent_environment(Some(
+        elsewhere.to_str().unwrap(),
+    ))
+    .into_iter()
+    .find(|(key, _)| key == "PATH")
+    .unwrap()
+    .1;
+    assert_eq!(
+        std::env::split_paths(&path).collect::<Vec<_>>(),
+        [install.clone(), elsewhere],
+        "{path:?}"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let beside = request(
+        dir.path(),
+        json!({"log_env": ["PATH"]}),
+        json!({"executable": agent}),
+    );
+    run(&beside, |_| {})
+        .0
+        .expect("the harness beside Spark launches");
+    let path = log(dir.path())[0]["env"]["PATH"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(std::env::split_paths(&path).next(), Some(install), "{path}");
+}
+
 #[test]
 fn acp_unsupported_settings_fail_before_the_prompt() {
     let options = json!([{
@@ -765,7 +1080,7 @@ fn saved(dir: &Path, request: &AgentTurnRequest, session_id: &str) -> AcpSession
     AcpSessionRecord {
         harness: "fake".to_string(),
         session_id: session_id.to_string(),
-        cwd: std::fs::canonicalize(dir)
+        cwd: spark_common::paths::canonicalize_clean(dir)
             .unwrap()
             .to_string_lossy()
             .into_owned(),

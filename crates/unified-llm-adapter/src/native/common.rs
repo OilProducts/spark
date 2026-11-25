@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
@@ -420,10 +421,22 @@ pub(super) fn is_local_media_path(value: &str) -> bool {
 }
 
 pub(super) fn expand_user_path(value: &str) -> PathBuf {
+    expand_user_path_with(value, |key| env::var_os(key))
+}
+
+/// The home is `spark_common::paths::user_home_dir_with_env`'s, which this
+/// crate sits below: `HOME`, `USERPROFILE`, then `HOMEDRIVE` + `HOMEPATH`,
+/// skipping empty values and keeping ones that are not UTF-8.
+fn expand_user_path_with(value: &str, var: impl Fn(&str) -> Option<OsString>) -> PathBuf {
+    let var = |key: &str| var(key).filter(|value| !value.is_empty());
     let home = || {
-        env::var_os("HOME")
-            .or_else(|| env::var_os("USERPROFILE"))
-            .filter(|v| !v.is_empty())
+        var("HOME")
+            .or_else(|| var("USERPROFILE"))
+            .or_else(|| {
+                let mut home = var("HOMEDRIVE")?;
+                home.push(var("HOMEPATH")?);
+                Some(home)
+            })
             .map(PathBuf::from)
     };
     if value == "~" {
@@ -977,4 +990,53 @@ pub(super) fn configuration_error(provider: &str, message: impl Into<String>) ->
         message,
         Some(provider.to_string()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_user_path_skips_empty_home_values_before_each_fallback() {
+        let vars = |pairs: &'static [(&str, &str)]| {
+            move |key: &str| {
+                pairs
+                    .iter()
+                    .find(|(name, _)| *name == key)
+                    .map(|(_, value)| OsString::from(value))
+            }
+        };
+        assert_eq!(
+            expand_user_path_with(
+                "~/cat.png",
+                vars(&[("HOME", ""), ("USERPROFILE", r"C:\Users\chris")])
+            ),
+            PathBuf::from(r"C:\Users\chris").join("cat.png")
+        );
+        let drive = vars(&[
+            ("HOME", ""),
+            ("USERPROFILE", ""),
+            ("HOMEDRIVE", "D:"),
+            ("HOMEPATH", r"\Users\builder"),
+        ]);
+        assert_eq!(
+            expand_user_path_with("~", &drive),
+            PathBuf::from(r"D:\Users\builder")
+        );
+        assert_eq!(
+            expand_user_path_with("~", vars(&[("HOME", ""), ("USERPROFILE", "")])),
+            PathBuf::from("~")
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let home = std::ffi::OsStr::from_bytes(b"/home-\xff");
+            assert_eq!(
+                expand_user_path_with("~/cat.png", |key| (key == "HOME")
+                    .then(|| home.to_os_string())),
+                Path::new(home).join("cat.png")
+            );
+        }
+    }
 }

@@ -353,7 +353,7 @@ fn rust_llm_client_from_env() -> unified_llm_adapter::Client {
 }
 
 pub fn rust_llm_client_from_settings(settings: &SparkSettings) -> unified_llm_adapter::Client {
-    let env = std::env::vars().collect::<std::collections::BTreeMap<_, _>>();
+    let env = spark_common::paths::utf8_env_vars();
     unified_llm_adapter::Client::from_env_map_and_profiles(&env, &settings.config_dir, None)
         .and_then(|client| {
             client.with_execution_environment(&settings.providers.execution_environment(&env))

@@ -166,7 +166,7 @@ async fn workspace_flow_list_detail_files_and_validate_routes_layer_the_project_
         json!({
             "name": "ops/review/inspectable",
             "layer": "bundled",
-            "path": inspectable.canonicalize().expect("canonical").to_string_lossy(),
+            "path": spark_common::paths::canonicalize_clean(&inspectable).expect("canonical").to_string_lossy(),
             "files": [
                 {"name": "flow.md", "content": authored},
                 read(&inspectable, "done.md"),
@@ -187,8 +187,7 @@ async fn workspace_flow_list_detail_files_and_validate_routes_layer_the_project_
     assert_eq!(validation.1["name"], "ops/review/inspectable");
     assert_eq!(
         validation.1["path"],
-        json!(inspectable
-            .canonicalize()
+        json!(spark_common::paths::canonicalize_clean(&inspectable)
             .expect("canonical")
             .to_string_lossy())
     );
@@ -207,8 +206,7 @@ async fn workspace_flow_list_detail_files_and_validate_routes_layer_the_project_
     assert_eq!(project_files.1["layer"], "org");
     assert_eq!(
         project_files.1["path"],
-        json!(project_shared
-            .canonicalize()
+        json!(spark_common::paths::canonicalize_clean(&project_shared)
             .expect("canonical")
             .to_string_lossy())
     );

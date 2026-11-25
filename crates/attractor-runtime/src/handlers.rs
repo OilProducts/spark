@@ -1125,7 +1125,7 @@ impl RuntimeHandlerRunner {
                         (Some((broker, base_client)), Some(value)) => {
                             let profiles = serde_json::from_value(value.clone())
                                 .map_err(|_| RuntimeNodeError::runtime("Invalid captured LLM profiles."))?;
-                            let env = std::env::vars().collect::<BTreeMap<_, _>>();
+                            let env = spark_common::paths::utf8_env_vars();
                             let client = if let Some(value) = runtime.context.get("internal.execution_configuration_snapshot") {
                                 let configuration: spark_storage::settings::ExecutionConfiguration = serde_json::from_value(value.clone()).map_err(|_| RuntimeNodeError::runtime("Invalid captured execution configuration."))?;
                                 base_client.clone().with_execution_environment(&configuration.providers.execution_environment(&env)).map_err(|_| RuntimeNodeError::runtime("Unable to initialize captured provider connections."))?
@@ -3145,21 +3145,11 @@ fn run_owned_shell_command(
         })
 }
 
-/// Runs `command`, draining stdout and stderr concurrently so a chatty
-/// command never blocks on a full pipe, and kills it, with its descendants, at
-/// `timeout` or when `stop` answers true. The command ends when its shell has
-/// exited and its output has closed, so a descendant still holding the output
-/// keeps it running and stoppable. The shell stays unreaped until then, which
-/// keeps its group's ID from being reused when no `owner` holds it. An `owner`
-/// supplies the output, so a stop finds whoever still holds it, and a stop does
-/// not return until that has settled, however long a failing discovery takes:
-/// the owner's record and everything above this wait, so nothing is published,
-/// and a crash meanwhile leaves the record for recovery. Its problems go to the
-/// given report.
 /// Resolves the POSIX shell used by flow `type: tool` nodes. On Unix this is
 /// `sh`; on Windows it locates Git for Windows' `bash.exe` / `sh.exe` (via
 /// `SPARK_SH`, `CLAUDE_CODE_GIT_BASH_PATH`, `PATH`, beside `git.exe`, or
-/// standard Git install paths).
+/// standard Git install paths), using the legacy WSL `bash.exe` only when no
+/// Git Bash is installed.
 fn resolve_posix_shell() -> std::io::Result<PathBuf> {
     #[cfg(not(windows))]
     {
@@ -3171,11 +3161,7 @@ fn resolve_posix_shell() -> std::io::Result<PathBuf> {
             .or_else(|| std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH"))
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
-        let path_shell = spark_agent_adapter::local_environment::find_executable_on_path(
-            "sh", None,
-        )
-        .or_else(|| spark_agent_adapter::local_environment::find_executable_on_path("bash", None));
-        let git_path = spark_agent_adapter::local_environment::find_executable_on_path("git", None);
+        let path = std::env::var_os("PATH").unwrap_or_default();
         let mut standard = Vec::new();
         for key in ["ProgramFiles", "ProgramFiles(x86)"] {
             if let Some(base) = std::env::var_os(key) {
@@ -3191,20 +3177,41 @@ fn resolve_posix_shell() -> std::io::Result<PathBuf> {
                     .join("bash.exe"),
             );
         }
+        // Every sh, then every bash, so a native shell after the WSL launcher
+        // is found; every git, so a Git install after another's shim is found.
         resolve_posix_shell_from(
             env_override.as_deref(),
-            path_shell.as_deref(),
-            git_path.as_deref(),
+            ["sh", "bash"]
+                .into_iter()
+                .flat_map(|name| every_on_path(&path, name)),
+            every_on_path(&path, "git"),
             &standard,
         )
     }
 }
 
+/// Every `name` on `path` in order, each entry taken whole, so a quoted
+/// directory holding `;` keeps its program. Lazy, so a search stops at its
+/// choice.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn every_on_path<'a>(
+    path: &'a std::ffi::OsStr,
+    name: &'a str,
+) -> impl Iterator<Item = PathBuf> + 'a {
+    std::env::split_paths(path).filter_map(move |directory| {
+        spark_agent_adapter::local_environment::find_executable_in_directories(name, [directory])
+    })
+}
+
+/// The first of: the explicit override, a native shell from `path_shells`,
+/// Git Bash beside any of `git_paths`, a standard install, then the WSL
+/// launcher. Each source is searched only when everything before it is
+/// missing.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn resolve_posix_shell_from(
     env_override: Option<&Path>,
-    path_shell: Option<&Path>,
-    git_path: Option<&Path>,
+    path_shells: impl IntoIterator<Item = PathBuf>,
+    git_paths: impl IntoIterator<Item = PathBuf>,
     standard_paths: &[PathBuf],
 ) -> std::io::Result<PathBuf> {
     if let Some(path) = env_override {
@@ -3219,21 +3226,29 @@ fn resolve_posix_shell_from(
             ),
         ));
     }
-    if let Some(path) = path_shell.filter(|path| path.is_file()) {
-        return Ok(path.to_path_buf());
+    let mut wsl = None;
+    for shell in path_shells.into_iter().filter(|path| path.is_file()) {
+        if !is_wsl_launcher(&shell) {
+            return Ok(shell);
+        }
+        wsl.get_or_insert(shell);
     }
-    if let Some(git_root) = git_path.and_then(Path::parent).and_then(Path::parent) {
-        for segments in [
-            &["bin", "bash.exe"][..],
-            &["bin", "sh.exe"][..],
-            &["usr", "bin", "bash.exe"][..],
-            &["usr", "bin", "sh.exe"][..],
-        ] {
-            let candidate = segments
-                .iter()
-                .fold(git_root.to_path_buf(), |path, seg| path.join(seg));
-            if candidate.is_file() {
-                return Ok(candidate);
+    // `git.exe` sits up to three levels inside its install, as in
+    // `cmd\git.exe` or `ucrt64\bin\git.exe`: each is searched nearest first.
+    for git in git_paths {
+        for git_root in git.ancestors().skip(1).take(3) {
+            for segments in [
+                &["bin", "bash.exe"][..],
+                &["bin", "sh.exe"][..],
+                &["usr", "bin", "bash.exe"][..],
+                &["usr", "bin", "sh.exe"][..],
+            ] {
+                let candidate = segments
+                    .iter()
+                    .fold(git_root.to_path_buf(), |path, seg| path.join(seg));
+                if candidate.is_file() {
+                    return Ok(candidate);
+                }
             }
         }
     }
@@ -3242,12 +3257,43 @@ fn resolve_posix_shell_from(
             return Ok(candidate.clone());
         }
     }
+    // Only the WSL launcher is left, which runs commands inside Linux.
+    if let Some(path) = wsl {
+        return Ok(path);
+    }
     Err(std::io::Error::new(
         std::io::ErrorKind::NotFound,
         "A POSIX shell (sh/bash) is required to run tool nodes on Windows. Install Git for Windows or set SPARK_SH (or CLAUDE_CODE_GIT_BASH_PATH) to bash.exe.",
     ))
 }
 
+/// Whether `shell` is Windows' legacy WSL launcher, `bash.exe` in System32,
+/// Sysnative or WindowsApps, which runs commands inside Linux, where Windows
+/// paths such as `C:\repo` do not resolve.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_wsl_launcher(shell: &Path) -> bool {
+    let named = |name: Option<&std::ffi::OsStr>, names: &[&str]| {
+        name.and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|name| names.iter().any(|known| name.eq_ignore_ascii_case(known)))
+    };
+    named(shell.file_name(), &["bash.exe"])
+        && named(
+            shell.parent().and_then(Path::file_name),
+            &["System32", "Sysnative", "WindowsApps"],
+        )
+}
+
+/// Runs `command`, draining stdout and stderr concurrently so a chatty
+/// command never blocks on a full pipe, and kills it, with its descendants, at
+/// `timeout` or when `stop` answers true. The command ends when its shell has
+/// exited and its output has closed, so a descendant still holding the output
+/// keeps it running and stoppable. The shell stays unreaped until then, which
+/// keeps its group's ID from being reused when no `owner` holds it. An `owner`
+/// supplies the output, so a stop finds whoever still holds it, and a stop does
+/// not return until that has settled, however long a failing discovery takes:
+/// the owner's record and everything above this wait, so nothing is published,
+/// and a crash meanwhile leaves the record for recovery. Its problems go to the
+/// given report.
 fn run_shell_command(
     command: &str,
     cwd: &Path,
@@ -4352,30 +4398,41 @@ mod activity_tests {
             std::fs::write(file, "").unwrap();
         }
 
+        let git = || Some(git_exe.clone());
+        // The search stops at its choice: nothing after it is looked at.
+        let unsearched = || {
+            std::iter::from_fn(|| -> Option<PathBuf> { panic!("PATH searched past the choice") })
+        };
+
         // Explicit override wins, and a missing explicit override fails clearly.
         assert_eq!(
             resolve_posix_shell_from(
                 Some(&custom_sh),
-                Some(&path_sh),
-                Some(&git_exe),
+                unsearched(),
+                unsearched(),
                 std::slice::from_ref(&std_bash),
             )
             .unwrap(),
             custom_sh
         );
         let missing = temp.path().join("missing-bash.exe");
-        let err = resolve_posix_shell_from(Some(&missing), Some(&path_sh), Some(&git_exe), &[])
-            .unwrap_err();
+        let err =
+            resolve_posix_shell_from(Some(&missing), unsearched(), unsearched(), &[]).unwrap_err();
         assert!(err.to_string().contains("SPARK_SH"), "{err}");
 
         // Next: PATH shell, then sibling of git.exe, then standard install paths.
         assert_eq!(
-            resolve_posix_shell_from(None, Some(&path_sh), Some(&git_exe), &[std_bash.clone()])
-                .unwrap(),
+            resolve_posix_shell_from(
+                None,
+                std::iter::once(path_sh.clone()).chain(unsearched()),
+                unsearched(),
+                &[std_bash.clone()]
+            )
+            .unwrap(),
             path_sh
         );
         assert_eq!(
-            resolve_posix_shell_from(None, None, Some(&git_exe), &[std_bash.clone()]).unwrap(),
+            resolve_posix_shell_from(None, None, git(), &[std_bash.clone()]).unwrap(),
             git_bash
         );
         assert_eq!(
@@ -4384,5 +4441,162 @@ mod activity_tests {
         );
         let none = resolve_posix_shell_from(None, None, None, &[]).unwrap_err();
         assert!(none.to_string().contains("Git for Windows"), "{none}");
+    }
+
+    #[test]
+    fn resolve_posix_shell_uses_the_legacy_wsl_launcher_only_without_git_bash() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let git_root = temp.path().join("Git");
+        let git_exe = git_root.join("cmd").join("git.exe");
+        let git_bash = git_root.join("usr").join("bin").join("bash.exe");
+        let std_bash = temp.path().join("ProgramFilesGit").join("bash.exe");
+        let wsl = temp
+            .path()
+            .join("Windows")
+            .join("system32")
+            .join("BASH.EXE");
+        let custom_sh = temp.path().join("custom-bash.exe");
+        for file in [&git_exe, &git_bash, &std_bash, &wsl, &custom_sh] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "").unwrap();
+        }
+        let standard = std::slice::from_ref(&std_bash);
+
+        let git = || Some(git_exe.clone());
+
+        // Git Bash beside git.exe, then a standard install, beat WSL on PATH.
+        assert_eq!(
+            resolve_posix_shell_from(None, Some(wsl.clone()), git(), standard).unwrap(),
+            git_bash
+        );
+        assert_eq!(
+            resolve_posix_shell_from(None, Some(wsl.clone()), None, standard).unwrap(),
+            std_bash
+        );
+        // A native shell later on PATH beats the WSL launcher before it.
+        let later_bash = temp.path().join("MinGit").join("bin").join("bash.exe");
+        std::fs::create_dir_all(later_bash.parent().unwrap()).unwrap();
+        std::fs::write(&later_bash, "").unwrap();
+        assert_eq!(
+            resolve_posix_shell_from(None, [wsl.clone(), later_bash.clone()], git(), standard)
+                .unwrap(),
+            later_bash
+        );
+        // A git shim without Git Bash beside it does not hide a later Git's.
+        let shim_git = temp.path().join("shims").join("bin").join("git.exe");
+        std::fs::create_dir_all(shim_git.parent().unwrap()).unwrap();
+        std::fs::write(&shim_git, "").unwrap();
+        assert_eq!(
+            resolve_posix_shell_from(None, Some(wsl.clone()), [shim_git, git_exe.clone()], &[])
+                .unwrap(),
+            git_bash
+        );
+        // Without Git Bash, WSL still runs; an explicit override always wins.
+        assert_eq!(
+            resolve_posix_shell_from(None, Some(wsl.clone()), None, &[]).unwrap(),
+            wsl
+        );
+        assert_eq!(
+            resolve_posix_shell_from(Some(&custom_sh), Some(wsl.clone()), git(), standard).unwrap(),
+            custom_sh
+        );
+        // Only bash.exe in a Windows system directory is the WSL launcher.
+        for (shell, wsl) in [
+            (r"Sysnative/bash.exe", true),
+            (r"WindowsApps/bash.exe", true),
+            (r"System32/sh.exe", false),
+            (r"Git/bin/bash.exe", false),
+        ] {
+            assert_eq!(is_wsl_launcher(Path::new(shell)), wsl, "{shell}");
+        }
+    }
+
+    /// A Git whose `git.exe` sits deeper, as in `D:\Git\ucrt64\bin\git.exe`,
+    /// still has its `D:\Git\usr\bin\bash.exe` beat the WSL launcher.
+    #[test]
+    fn resolve_posix_shell_finds_git_bash_three_levels_above_git() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let git_root = temp.path().join("D").join("Git");
+        let git_exe = git_root.join("ucrt64").join("bin").join("git.exe");
+        let git_bash = git_root.join("usr").join("bin").join("bash.exe");
+        let wsl = temp
+            .path()
+            .join("Windows")
+            .join("System32")
+            .join("bash.exe");
+        for file in [&git_exe, &git_bash, &wsl] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "").unwrap();
+        }
+        assert_eq!(
+            resolve_posix_shell_from(None, Some(wsl), Some(git_exe), &[]).unwrap(),
+            git_bash
+        );
+    }
+
+    /// Each PATH entry is searched whole, so a quoted Windows directory
+    /// holding `;` keeps its program, and every match is listed in order.
+    #[test]
+    fn every_on_path_lists_each_match_in_path_order() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first = temp.path().join("first");
+        let second = temp
+            .path()
+            .join(if cfg!(windows) { "Git;bin" } else { "second" });
+        let shell = |dir: &Path, name: &str| {
+            let file = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(&file, "").unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
+            file
+        };
+        shell(&second, "sh");
+        let expected = [shell(&first, "bash"), shell(&second, "bash")];
+        let path = std::env::join_paths([&first, &second]).unwrap();
+
+        // A case-insensitive file system names a match with PATHEXT's case.
+        let lower = |path: &Path| path.to_string_lossy().to_lowercase();
+        assert_eq!(
+            every_on_path(&path, "bash")
+                .map(|found| lower(&found))
+                .collect::<Vec<_>>(),
+            expected.iter().map(|path| lower(path)).collect::<Vec<_>>()
+        );
+    }
+
+    /// A tool command runs in the shell Spark resolves and reaches a
+    /// drive-qualified path, which the WSL launcher's Linux shell cannot.
+    #[cfg(windows)]
+    #[test]
+    fn tool_commands_reach_drive_qualified_paths_on_windows() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let fixture = temp.path().join("fixture.txt");
+        std::fs::write(&fixture, "drive-qualified").expect("fixture");
+        let fixture = fixture
+            .to_str()
+            .expect("UTF-8 fixture path")
+            .replace('\\', "/");
+        assert!(fixture.as_bytes().get(1) == Some(&b':'), "{fixture}");
+
+        let shell = resolve_posix_shell().expect("a POSIX shell");
+        assert!(!is_wsl_launcher(&shell), "{}", shell.display());
+        let output = run_shell_command(
+            &format!("cat '{fixture}'"),
+            temp.path(),
+            Some(Duration::from_secs(60)),
+            BTreeMap::new(),
+            None,
+            None,
+            None,
+        )
+        .expect("tool command");
+        assert_eq!(
+            (output.exit_code, output.stdout.as_str()),
+            (0, "drive-qualified"),
+            "{}",
+            output.stderr
+        );
     }
 }

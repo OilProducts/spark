@@ -223,7 +223,13 @@ pub fn chat_models_with_codex_result(
 fn native_setup(result: &NativeModels, program: &Option<String>) -> &'static str {
     match result {
         Ok(_) => "ready",
-        Err(_) if !acp::program_found(program.as_deref().unwrap_or_default(), None) => {
+        // Codex runs with Spark's own environment.
+        Err(_)
+            if !acp::program_found(
+                program.as_deref().unwrap_or_default(),
+                spark_common::agent_settings::EnvironmentInheritancePolicy::InheritAll,
+            ) =>
+        {
             "not_installed"
         }
         Err(_) => "unreachable",
@@ -306,7 +312,7 @@ fn listing(
     let environment = unified_llm_adapter::ProviderEnvironment::from_env_map(
         &configuration
             .providers
-            .execution_environment(&std::env::vars().collect()),
+            .execution_environment(&spark_common::paths::utf8_env_vars()),
         None,
     );
     let mut cache = PROVIDER_MODELS_CACHE
@@ -400,7 +406,8 @@ fn acp_discoveries<'a>(
 )> {
     // One check per directory however it is named, such as Home through a
     // symlinked HOME, as sessions' acknowledged options are kept.
-    let work_area = std::fs::canonicalize(work_area).unwrap_or_else(|_| work_area.to_path_buf());
+    let work_area = spark_common::paths::canonicalize_clean(work_area)
+        .unwrap_or_else(|_| work_area.to_path_buf());
     if refresh {
         // Check again runs from Settings (Home), so drop other work areas'
         // cached results; each re-probes on its next listing.
@@ -415,13 +422,8 @@ fn acp_discoveries<'a>(
                 let (id, harness, work_area) =
                     (id.clone(), harness.clone(), work_area.to_path_buf());
                 let inheritance = agents.environment_inheritance;
-                move || {
-                    let mut discovery = acp::discover(&id, &harness, inheritance, &work_area);
-                    if discovery.setup_status == "unreachable" && !acp_program_found(&harness) {
-                        discovery.setup_status = "not_installed".into();
-                    }
-                    discovery
-                }
+                // Its launch reports a program it cannot find as not installed.
+                move || acp::discover(&id, &harness, inheritance, &work_area)
             };
             let finished = {
                 let (finished, provider) = (finished.clone(), format!("acp:{id}"));
@@ -448,13 +450,6 @@ fn acp_discoveries<'a>(
             (id, harness, discovery)
         })
         .collect()
-}
-
-fn acp_program_found(harness: &spark_common::agent_settings::AcpHarness) -> bool {
-    acp::program_found(
-        &harness.executable,
-        harness.env.get("PATH").map(String::as_str),
-    )
 }
 
 /// An ACP harness's models are its model selector's values, in order. With

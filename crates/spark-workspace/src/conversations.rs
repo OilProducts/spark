@@ -39,6 +39,7 @@ use spark_triggers::TriggerActivationRequest;
 use time::OffsetDateTime;
 
 use crate::errors::{WorkspaceError, WorkspaceResult};
+use crate::projects::normalize_project_path_or_400;
 
 const UI_TOOL_OUTPUT_PREVIEW_BYTES: usize = 8 * 1024;
 const ACTIVE_ASSISTANT_TURN_MESSAGE: &str = "An assistant turn is still in progress for this conversation. Wait for it to finish before sending another message.";
@@ -538,7 +539,8 @@ impl AgentTurnBackend for EnvironmentAgentTurnBackend {
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, AgentError> {
-        let client = self.client_for_execution(&request.metadata, &std::env::vars().collect())?;
+        let client =
+            self.client_for_execution(&request.metadata, &spark_common::paths::utf8_env_vars())?;
         RustLlmAgentTurnBackend::new(client).run_turn_with_event_sink(request, event_sink)
     }
 
@@ -546,7 +548,8 @@ impl AgentTurnBackend for EnvironmentAgentTurnBackend {
         &self,
         request: AgentRequestUserInputAnswerRequest,
     ) -> Result<AgentTurnOutput, AgentError> {
-        let client = self.client_for_execution(&request.metadata, &std::env::vars().collect())?;
+        let client =
+            self.client_for_execution(&request.metadata, &spark_common::paths::utf8_env_vars())?;
         RustLlmAgentTurnBackend::new(client).answer_request_user_input(request)
     }
 }
@@ -5555,8 +5558,9 @@ fn relative_project_path(project_root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
-fn absolute_path_string(path: &Path) -> String {
-    path.canonicalize()
+/// `path` as responses show it: canonical, without a needless `\\?\` prefix.
+pub(crate) fn absolute_path_string(path: &Path) -> String {
+    spark_common::paths::canonicalize_clean(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
         .into_owned()
@@ -5592,13 +5596,6 @@ pub(crate) fn validate_reasoning_effort(
 ) -> WorkspaceResult<String> {
     spark_agent_adapter::config::validate_reasoning_effort(value, provider)
         .map_err(WorkspaceError::Validation)
-}
-
-fn normalize_project_path_or_400(project_path: &str) -> WorkspaceResult<String> {
-    normalize_project_path(project_path)
-        .map_err(|error| WorkspaceError::Validation(error.to_string()))?
-        .map(|path| path.to_string_lossy().into_owned())
-        .ok_or_else(|| WorkspaceError::Validation("Project path is required.".to_string()))
 }
 
 fn normalize_optional_project_path(value: Option<&str>) -> WorkspaceResult<Option<String>> {
@@ -5653,6 +5650,28 @@ fn snapshot_model_group(snapshot: &Value) -> WorkspaceResult<Option<ModelSetting
             .unwrap_or(Value::Null),
     )
     .map_err(|_| WorkspaceError::Validation("Invalid conversation model_settings group.".into()))
+}
+
+#[cfg(test)]
+mod response_path_tests {
+    use super::*;
+
+    /// Flow and change-request responses show the canonical path, without
+    /// the `\\?\` prefix Windows canonicalization adds to ordinary paths.
+    #[test]
+    fn response_paths_are_canonical_and_conventional() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("request.md");
+        std::fs::write(&file, "").unwrap();
+        let shown = absolute_path_string(&temp.path().join(".").join("request.md"));
+        assert_eq!(
+            Path::new(&shown),
+            spark_common::paths::canonicalize_clean(&file).unwrap()
+        );
+        assert!(!shown.starts_with(r"\\?\"), "{shown}");
+        let missing = temp.path().join("missing");
+        assert_eq!(absolute_path_string(&missing), missing.to_string_lossy());
+    }
 }
 
 #[cfg(test)]

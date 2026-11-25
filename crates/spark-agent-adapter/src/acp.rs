@@ -9,6 +9,7 @@
 //! one-shot processes after draining any open background tool calls.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -110,6 +111,19 @@ impl AcpSessionRecord {
 
     pub fn to_metadata(&self) -> BTreeMap<String, Value> {
         BTreeMap::from([(ACP_SESSION_METADATA_KEY.to_string(), json!(self))])
+    }
+
+    /// Whether this saved session may continue as `current`: every field
+    /// matches exactly, except that the saved work area may carry a Windows
+    /// `\\?\` prefix. Its path is never resolved again, so a checkout
+    /// replaced by a symlink to another directory doesn't continue.
+    fn continues_as(&self, current: &Self) -> bool {
+        let cwd = spark_common::paths::strip_verbatim_prefix(PathBuf::from(&self.cwd));
+        Self {
+            session_id: current.session_id.clone(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            ..self.clone()
+        } == *current
     }
 }
 
@@ -759,20 +773,118 @@ fn live_harness(request: &AgentTurnRequest, harness_id: &str) -> Option<AcpHarne
     agents.acp_harnesses.get(harness_id).cloned()
 }
 
-/// Whether `program` names an executable file: a path that exists, or a bare
-/// name found on `path` (else Spark's own `PATH`), honoring `PATHEXT` on
-/// Windows. A relative path is taken as found, since where it resolves depends
-/// on the launch.
-pub fn program_found(program: &str, path: Option<&str>) -> bool {
+/// Whether a harness registered with `program` and no `env` of its own finds
+/// it under `inheritance`, as its setup and launches do. A relative path is
+/// taken as found, since where it resolves depends on the launch's project.
+pub fn program_found(program: &str, inheritance: EnvironmentInheritancePolicy) -> bool {
     let candidate = Path::new(program);
-    if candidate.is_absolute() {
-        return candidate.is_file();
-    }
-    if candidate.components().count() > 1 {
+    if !candidate.is_absolute() && candidate.components().count() > 1 {
         return true;
     }
-    crate::local_environment::find_executable_on_path(program, path.map(std::ffi::OsStr::new))
-        .is_some()
+    let harness = AcpHarness {
+        name: String::new(),
+        executable: program.to_string(),
+        args: Vec::new(),
+        env: BTreeMap::new(),
+        permission_policy: Default::default(),
+        system_instructions: None,
+    };
+    found(&harness_command(
+        &harness,
+        inheritance,
+        None,
+        spark_path(&harness, inheritance, &[]),
+    ))
+}
+
+/// The `PATH` binding that puts Spark's own tool directories, `spark` among
+/// them, ahead of the `PATH` `harness` otherwise gives its child under
+/// `inheritance` with `channel_env`, its instruction channel's rendered
+/// variables, as every backend's agents get them. Its setup and launches all
+/// bind it, so they find the same program.
+fn spark_path(
+    harness: &AcpHarness,
+    inheritance: EnvironmentInheritancePolicy,
+    channel_env: &[(String, String)],
+) -> Option<(String, OsString)> {
+    let inherited = crate::local_environment::inherited_environment(inheritance);
+    let path = inherited
+        .iter()
+        .chain(&harness.env)
+        .chain(channel_env.iter().map(|(key, value)| (key, value)))
+        .filter(|(key, _)| crate::local_environment::is_path_key(key))
+        .last()
+        .map(|(_, value)| value.as_str());
+    crate::codex_app_server::spark_agent_environment(path)
+        .into_iter()
+        .find(|(key, _)| key == "PATH")
+}
+
+/// `harness`'s program in `cwd` (else Spark's own directory) with the
+/// environment it inherits under `inheritance`, its own `env`, then
+/// `bindings`, applied in that order.
+fn harness_command(
+    harness: &AcpHarness,
+    inheritance: EnvironmentInheritancePolicy,
+    cwd: Option<&Path>,
+    bindings: impl IntoIterator<Item = (String, OsString)>,
+) -> Command {
+    let env = crate::local_environment::inherited_environment(inheritance)
+        .into_iter()
+        .chain(harness.env.clone())
+        .map(|(key, value)| (key, OsString::from(value)))
+        .chain(bindings)
+        .collect::<Vec<_>>();
+    let command = |program: &std::ffi::OsStr| {
+        let mut command = Command::new(program);
+        command.env_clear().envs(env.iter().cloned());
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        command
+    };
+    let named = command(harness.executable.as_ref());
+    // A Windows launch of a bare name tries only `.exe`, so there the launch
+    // names the file its child finds, such as a project's npm `.cmd` shim.
+    // Elsewhere the system's own search runs, as from a shell. Either way
+    // [`ensure_found`] stops a launch the system would look for past the
+    // child's `PATH`.
+    match cfg!(windows)
+        .then(|| crate::local_environment::child_program(&named))
+        .flatten()
+    {
+        Some(program) => command(program.as_os_str()),
+        None => named,
+    }
+}
+
+/// Whether `command` from [`harness_command`] runs a program its child finds.
+fn found(command: &Command) -> bool {
+    crate::local_environment::child_program(command).is_some()
+}
+
+/// Stops a launch the system would look for past the child's `PATH`: on
+/// Windows any program its child does not find, such as one on Spark's own
+/// `PATH`, and elsewhere a bare name the child has no `PATH` for, which the
+/// system would look for on its default path, so that launch fails exactly
+/// when [`program_found`] reports the program missing. Any other launch
+/// elsewhere is the system's own, which starts what [`found`] cannot inspect
+/// and says why a file it finds cannot start, such as a script without
+/// execute permission.
+fn ensure_found(command: &Command) -> std::io::Result<()> {
+    let pathless_name = || {
+        Path::new(command.get_program()).components().count() == 1
+            && !command.get_envs().any(|(key, value)| {
+                value.is_some()
+                    && key
+                        .to_str()
+                        .is_some_and(crate::local_environment::is_path_key)
+            })
+    };
+    if (cfg!(windows) || pathless_name()) && !found(command) {
+        return Err(std::io::ErrorKind::NotFound.into());
+    }
+    Ok(())
 }
 
 /// The configuration generation a launch of `harness` records: its
@@ -829,7 +941,7 @@ impl Capability {
 /// run a particular request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AcpDiscovery {
-    /// `ready`, `unreachable` or `unauthenticated`.
+    /// `ready`, `unreachable`, `unauthenticated` or `not_installed`.
     pub setup_status: String,
     /// Why setup failed; callers report it as their own status error.
     #[serde(skip)]
@@ -876,6 +988,8 @@ struct ProbeFailure {
     /// The connection failed rather than the harness answering, as when it
     /// quits.
     lost: bool,
+    /// The program could not be found to launch.
+    missing: bool,
     message: String,
     auth_methods: Vec<AcpAuthMethod>,
 }
@@ -948,15 +1062,23 @@ fn probe(
         .chain(&harness.args)
         .cloned()
         .collect();
-    let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
-        probe_protocol(endpoints, cwd, program, method, done)
-    })
-    .map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => {
-            format!("executable not found: {}", harness.executable)
-        }
-        _ => format!("launch failed: {error}"),
-    })?;
+    // Only a program its child cannot find is missing; one that exists but
+    // cannot start, such as a script whose interpreter is gone, failed.
+    let missing = !found(&command);
+    let connection = ensure_found(&command)
+        .and_then(|()| {
+            stdio_transport::launch(command, LIMITS, move |endpoints| {
+                probe_protocol(endpoints, cwd, program, method, done)
+            })
+        })
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound if missing => ProbeFailure {
+                missing: true,
+                message: format!("executable not found: {}", harness.executable),
+                ..Default::default()
+            },
+            _ => format!("launch failed: {error}").into(),
+        })?;
     let (timeout, step) = match sign_in {
         Some(_) => (SIGN_IN_TIMEOUT, "signing in"),
         None => (PROBE_TIMEOUT, "setup"),
@@ -1096,7 +1218,7 @@ async fn probe_session(
             true => auth_error(&error),
             false => setup_error(&error, method),
         },
-        auth_methods: Vec::new(),
+        ..Default::default()
     };
     let init = cx
         .send_request(
@@ -1189,7 +1311,7 @@ static ACKNOWLEDGED: Mutex<BTreeMap<AcknowledgedKey, Vec<Value>>> = Mutex::new(B
 /// The options `harness_id` last acknowledged in `cwd` under `generation`.
 pub fn acknowledged_options(cwd: &Path, harness_id: &str, generation: &str) -> Option<Vec<Value>> {
     let key = (
-        std::fs::canonicalize(cwd).ok()?,
+        spark_common::paths::canonicalize_clean(cwd).ok()?,
         harness_id.to_string(),
         generation.to_string(),
     );
@@ -1244,6 +1366,8 @@ fn discovery(probed: Result<Probed, ProbeFailure>) -> AcpDiscovery {
             return AcpDiscovery {
                 setup_status: if failure.unauthenticated {
                     "unauthenticated"
+                } else if failure.missing {
+                    "not_installed"
                 } else {
                     "unreachable"
                 }
@@ -1380,7 +1504,7 @@ fn turn(
             "ACP harness {harness_id} has no {control} control, so {control} {value} cannot be applied; clear it or choose another harness."
         ));
     }
-    let cwd = std::fs::canonicalize(&request.project_path).map_err(|error| {
+    let cwd = spark_common::paths::canonicalize_clean(&request.project_path).map_err(|error| {
         format!(
             "ACP harness {harness_id} work area {} is unavailable: {error}",
             request.project_path
@@ -1588,6 +1712,13 @@ fn turn(
                 work.plan.instructions.as_deref(),
                 &request.metadata,
             )?;
+            let missing = !found(&command);
+            ensure_found(&command).map_err(|_| {
+                format!(
+                    "ACP harness {harness_id} executable not found: {}",
+                    harness.executable
+                )
+            })?;
             let (turns_tx, turns_rx) = tokio::sync::mpsc::unbounded_channel();
             let alive = Arc::new(AtomicBool::new(true));
             let parked = Arc::new(tokio::sync::Notify::new());
@@ -1608,15 +1739,12 @@ fn turn(
                     pending_worker,
                 )
             })
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    format!(
-                        "ACP harness {harness_id} executable not found: {}",
-                        harness.executable
-                    )
-                } else {
-                    format!("ACP harness {harness_id} launch failed: {error}")
-                }
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound if missing => format!(
+                    "ACP harness {harness_id} executable not found: {}",
+                    harness.executable
+                ),
+                _ => format!("ACP harness {harness_id} launch failed: {error}"),
             })?;
             attach_stop(&live, &connection);
             let launched = LiveWorker {
@@ -1718,7 +1846,8 @@ fn turn(
 
 /// The command that launches `harness` in `cwd`, carrying `instructions`
 /// through its declared channel, and the instruction file that must outlive
-/// the process. Spark's reserved bindings come last, so nothing overrides them.
+/// the process. Spark's reserved bindings, its tool directories first on
+/// `PATH` among them, come last, so nothing overrides them.
 fn launch_command(
     harness_id: &str,
     harness: &AcpHarness,
@@ -1752,29 +1881,34 @@ fn launch_command(
             .map_err(|error| format!("ACP harness {harness_id} system_instructions: {error}"))?,
         None => Default::default(),
     };
-    let mut env = crate::local_environment::inherited_environment(inheritance);
-    env.extend(harness.env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    env.extend(channel_env);
-    crate::codex_app_server::drop_managed_key_aliases(&mut env);
-    let existing_path = env
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
-        .map(|(_, v)| v.clone());
-    for (key, value) in crate::codex_app_server::spark_agent_environment(existing_path.as_deref()) {
-        if key.eq_ignore_ascii_case("PATH") {
-            env.retain(|k, _| !k.eq_ignore_ascii_case("PATH"));
-        }
-        env.insert(key, value);
+    let spark_path = spark_path(harness, inheritance, &channel_env);
+    let mut command = harness_command(
+        harness,
+        inheritance,
+        Some(cwd),
+        channel_env
+            .into_iter()
+            .map(|(key, value)| (key, OsString::from(value)))
+            .chain(spark_path)
+            .chain(crate::agent::agent_turn_env(metadata)),
+    );
+    command.args(&harness.args).args(channel_args);
+    // Windows runs a batch file through cmd.exe, which takes no line break in
+    // an argument, as multiline instructions would bring.
+    let program = Path::new(command.get_program());
+    if cfg!(windows)
+        && crate::local_environment::is_batch_file(program)
+        && command
+            .get_args()
+            .any(|arg| arg.to_string_lossy().contains(['\r', '\n']))
+    {
+        return Err(format!(
+            "ACP harness {harness_id} runs the batch file {}, to which Windows cannot pass \
+             an argument with line breaks, such as multiline instructions. Pass them through \
+             {{{{instructions_file}}}} or an environment variable instead.",
+            program.display()
+        ));
     }
-    env.extend(crate::agent::agent_turn_env(metadata));
-
-    let mut command = Command::new(&harness.executable);
-    command
-        .args(&harness.args)
-        .args(channel_args)
-        .current_dir(cwd)
-        .env_clear()
-        .envs(env);
     Ok((command, instruction_file))
 }
 
@@ -2600,11 +2734,7 @@ impl Turn {
         let mut reset = None;
         let mut restored = None;
         if let Some(saved) = &self.plan.saved {
-            let matches = AcpSessionRecord {
-                session_id: saved.session_id.clone(),
-                ..current.clone()
-            } == *saved;
-            let restore = if !matches {
+            let restore = if !saved.continues_as(&current) {
                 Err("its harness, work area, configuration or instructions changed".to_string())
             } else if capabilities.session_capabilities.resume.is_some() {
                 let request = ResumeSessionRequest::new(saved.session_id.clone(), &self.plan.cwd)
@@ -3721,13 +3851,17 @@ pub fn read_antigravity_usage(
     harness: &AcpHarness,
     inheritance: EnvironmentInheritancePolicy,
 ) -> Result<Vec<crate::UsageWindow>, String> {
-    let mut command = Command::new(&harness.executable);
+    let mut command = harness_command(
+        harness,
+        inheritance,
+        None,
+        spark_path(harness, inheritance, &[]),
+    );
+    ensure_found(&command)
+        .map_err(|error| format!("Could not launch {}: {error}", harness.executable))?;
     crate::local_environment::configure_process_group(&mut command);
     command
         .args(["-p", "/usage", "--output-format", "json"])
-        .env_clear()
-        .envs(crate::local_environment::inherited_environment(inheritance))
-        .envs(&harness.env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -3857,6 +3991,97 @@ fn parse_antigravity_usage(
 mod tests {
     use super::*;
 
+    /// Settings offers a known harness only when a registration of it finds
+    /// its program under the configured inheritance, as setup and launches
+    /// do. An explicit path needs no PATH, and on Windows may omit `.exe`;
+    /// Spark's own tool directory is on every PATH.
+    #[test]
+    fn program_found_follows_the_inheritance_policy() {
+        let shell = if cfg!(windows) { "cmd" } else { "sh" };
+        let harness = AcpHarness {
+            name: String::new(),
+            executable: shell.to_string(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            permission_policy: Default::default(),
+            system_instructions: None,
+        };
+        for (inheritance, found) in [
+            (EnvironmentInheritancePolicy::InheritAll, true),
+            (EnvironmentInheritancePolicy::InheritCoreOnly, true),
+            (EnvironmentInheritancePolicy::InheritNone, false),
+        ] {
+            assert_eq!(program_found(shell, inheritance), found, "{inheritance:?}");
+            // A bare name launches exactly when Settings finds it, even where
+            // the system would search a default path without PATH.
+            let launch = ensure_found(&harness_command(&harness, inheritance, None, []));
+            assert_eq!(launch.is_ok(), found, "{inheritance:?}");
+            if let Err(error) = launch {
+                assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+            }
+        }
+        let exe = std::env::current_exe().unwrap();
+        // Spark's own tool directory leads every launch's PATH, so Settings
+        // finds a bare name there even when nothing is inherited.
+        assert!(program_found(
+            exe.file_name().unwrap().to_str().unwrap(),
+            EnvironmentInheritancePolicy::InheritNone
+        ));
+        let explicit = if cfg!(windows) {
+            exe.with_extension("")
+        } else {
+            exe
+        };
+        assert!(program_found(
+            explicit.to_str().unwrap(),
+            EnvironmentInheritancePolicy::InheritNone
+        ));
+    }
+
+    /// Elsewhere than Windows setup refuses only a bare name its child has
+    /// no PATH for; a configured path launches as the system does, which says
+    /// why a script without execute permission cannot start.
+    #[cfg(unix)]
+    #[test]
+    fn unix_setup_leaves_a_configured_path_to_the_system() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("agent");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let setup = |executable: &str| {
+            let harness = AcpHarness {
+                name: String::new(),
+                executable: executable.to_string(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                permission_policy: Default::default(),
+                system_instructions: None,
+            };
+            discover(
+                "agent",
+                &harness,
+                EnvironmentInheritancePolicy::InheritNone,
+                temp.path(),
+            )
+        };
+
+        let unrunnable = setup(script.to_str().unwrap());
+        assert_eq!(unrunnable.setup_status, "unreachable");
+        assert!(
+            unrunnable
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("Permission denied")),
+            "{:?}",
+            unrunnable.error
+        );
+        let pathless = setup("sh");
+        assert_eq!(
+            pathless.setup_status, "not_installed",
+            "{:?}",
+            pathless.error
+        );
+    }
+
     #[test]
     fn deferred_end_uses_in_progress_idle_until_an_assistant_message_is_open() {
         let now = Instant::now();
@@ -3925,6 +4150,229 @@ mod tests {
                 now
             ),
             DeferredEnd::WaitingForTools,
+        );
+    }
+
+    /// A probe and every live session request name the work area alike: its
+    /// conventional canonical path, whatever spelling the caller used, and
+    /// options a live session acknowledges reach the chooser asking under
+    /// another spelling. A saved session continues in the same directory, and
+    /// resets once the checkout path is replaced by a symlink to another one.
+    /// The agent is a shell script.
+    #[cfg(unix)]
+    #[test]
+    fn probe_and_live_sessions_send_one_conventional_work_area() {
+        const AGENT: &str = r#"
+log=$1
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log"
+  id=${line#*\"id\":}
+  id=${id%%[,\}]*}
+  IFS= read -r capabilities < "$2"
+  case $line in
+    *'"method":"initialize"'*) result="{\"protocolVersion\":1,\"agentCapabilities\":$capabilities}" ;;
+    *'"method":"session/new"'*) result='{"sessionId":"shell-session","configOptions":[{"id":"model","name":"Model","type":"select","currentValue":"small","options":[{"value":"small","name":"Small"}]}]}' ;;
+    *'"method":"session/resume"'* | *'"method":"session/load"'*) result='{}' ;;
+    *'"method":"session/prompt"'*) result='{"stopReason":"end_turn"}' ;;
+    *) continue ;;
+  esac
+  printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$result"
+done
+"#;
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let cwd = spark_common::paths::canonicalize_clean(&real).unwrap();
+        let (agent, log, capabilities) = (
+            temp.path().join("agent.sh"),
+            temp.path().join("acp.log"),
+            temp.path().join("capabilities"),
+        );
+        std::fs::write(&agent, AGENT).unwrap();
+        let harness = json!({
+            "name": "Shell agent",
+            "executable": "/bin/sh",
+            "args": [agent, log, capabilities],
+        });
+        let request = |saved: Option<&AcpSessionRecord>| AgentTurnRequest {
+            conversation_id: "work-area".to_string(),
+            project_path: alias.to_string_lossy().into_owned(),
+            prompt: "Hi.".to_string(),
+            history: Vec::new(),
+            provider: Some("acp:shell".to_string()),
+            model: None,
+            llm_profile: None,
+            reasoning_effort: None,
+            chat_mode: None,
+            metadata: BTreeMap::from([
+                (
+                    "spark.execution.settings".to_string(),
+                    json!({"configuration": {"agents": {"acp_harnesses": {"shell": harness}}}}),
+                ),
+                // A flow node's turn: nothing parks, so each turn launches anew.
+                ("spark.runtime.run_id".to_string(), json!("run")),
+            ])
+            .into_iter()
+            .chain(saved.map(AcpSessionRecord::to_metadata).unwrap_or_default())
+            .collect(),
+        };
+        let run = |saved, agent_capabilities: &str| {
+            std::fs::write(&capabilities, agent_capabilities).unwrap();
+            run_turn(&request(saved), "shell", None, None)
+                .map_err(|failure| failure.message)
+                .unwrap()
+        };
+
+        std::fs::write(&capabilities, "{}").unwrap();
+        let shell: AcpHarness = serde_json::from_value(harness.clone()).unwrap();
+        discover("shell", &shell, Default::default(), &alias);
+        let fresh = run(None, "{}").record.unwrap();
+        assert_eq!(Path::new(&fresh.cwd), cwd);
+        assert!(acknowledged_options(
+            &alias,
+            "shell",
+            &launch_generation(&shell, Default::default())
+        )
+        .is_some());
+        let resume = r#"{"sessionCapabilities":{"resume":{}}}"#;
+        for agent_capabilities in [resume, r#"{"loadSession":true}"#] {
+            let turn = run(Some(&fresh), agent_capabilities);
+            assert!(turn.output.thread_resume_failure.is_none());
+            assert_eq!(turn.record.as_ref(), Some(&fresh));
+        }
+        // The checkout becomes a symlink to another one: a fresh session.
+        let other = temp.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::remove_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&other, &real).unwrap();
+        let other = spark_common::paths::canonicalize_clean(&other).unwrap();
+        let moved = run(Some(&fresh), resume);
+        assert!(moved.output.thread_resume_failure.is_some());
+        assert_eq!(Path::new(&moved.record.unwrap().cwd), other);
+
+        let sent = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|message| {
+                message["method"].as_str().is_some_and(|method| {
+                    method.starts_with("session/") && method != "session/prompt"
+                })
+            })
+            .map(|message| (message["method"].clone(), message["params"]["cwd"].clone()))
+            .collect::<Vec<_>>();
+        let expected = [
+            ("session/new", &cwd),
+            ("session/new", &cwd),
+            ("session/resume", &cwd),
+            ("session/load", &cwd),
+            ("session/new", &other),
+        ]
+        .map(|(method, cwd)| (json!(method), json!(cwd)));
+        assert_eq!(sent, expected);
+    }
+
+    /// Only a Windows `\\?\` prefix may differ between a saved session's
+    /// work area and the current one; every other field must match.
+    #[test]
+    fn a_saved_session_continues_only_where_a_verbatim_prefix_differs() {
+        let current = AcpSessionRecord {
+            harness: "shell".into(),
+            session_id: String::new(),
+            cwd: r"C:\proj".into(),
+            configuration_generation: "1".into(),
+            instructions_sha256: None,
+        };
+        let saved = |cwd: &str| AcpSessionRecord {
+            session_id: "session".into(),
+            cwd: cwd.into(),
+            ..current.clone()
+        };
+        assert!(saved(r"C:\proj").continues_as(&current));
+        assert!(saved(r"\\?\C:\proj").continues_as(&current));
+        assert!(!saved(r"\\?\C:\other").continues_as(&current));
+        let kept = AcpSessionRecord {
+            cwd: r"\\?\C:\proj.".into(),
+            ..current.clone()
+        };
+        assert!(saved(r"\\?\C:\proj.").continues_as(&kept));
+        assert!(!saved(r"C:\proj.").continues_as(&kept));
+        let regenerated = AcpSessionRecord {
+            configuration_generation: "2".into(),
+            ..current.clone()
+        };
+        assert!(!saved(r"\\?\C:\proj").continues_as(&regenerated));
+    }
+
+    /// The program is the one the child's own `PATH` finds: `Path` is bound
+    /// after `PATH` in a registration, a channel's binding comes last, and a
+    /// relative entry resolves from the work area.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_launch_names_the_program_on_the_path_its_child_receives() {
+        let temp = tempfile::tempdir().unwrap();
+        let dirs = ["a", "b", "c"].map(|name| {
+            let dir = temp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("agent.cmd"), "").unwrap();
+            dir
+        });
+        let harness: AcpHarness = serde_json::from_value(json!({
+            "name": "Agent",
+            "executable": "agent",
+            "env": {"PATH": dirs[0], "Path": dirs[1]},
+        }))
+        .unwrap();
+        let launch = |bindings: Vec<(String, OsString)>| {
+            let command = harness_command(
+                &harness,
+                EnvironmentInheritancePolicy::InheritNone,
+                None,
+                bindings,
+            );
+            let path = command
+                .get_envs()
+                .filter(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+                .filter_map(|(_, value)| value.map(std::ffi::OsStr::to_owned))
+                .collect::<Vec<_>>();
+            (command.get_program().to_owned(), path)
+        };
+        let named = |(program, path): (OsString, Vec<OsString>), dir: &Path| {
+            assert!(
+                program.eq_ignore_ascii_case(dir.join("agent.cmd")),
+                "{program:?}"
+            );
+            assert_eq!(path, [dir.as_os_str()]);
+        };
+
+        named(launch(Vec::new()), dirs[1].as_path());
+        named(
+            launch(vec![("PATH".into(), dirs[2].clone().into())]),
+            dirs[2].as_path(),
+        );
+
+        let project = temp.path().join("project");
+        let bin = project.join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("agent.cmd"), "").unwrap();
+        let local = AcpHarness {
+            env: BTreeMap::from([("PATH".to_string(), r"node_modules\.bin".to_string())]),
+            ..harness.clone()
+        };
+        let command = harness_command(
+            &local,
+            EnvironmentInheritancePolicy::InheritNone,
+            Some(&project),
+            [],
+        );
+        assert!(
+            command
+                .get_program()
+                .eq_ignore_ascii_case(bin.join("agent.cmd")),
+            "{:?}",
+            command.get_program()
         );
     }
 }

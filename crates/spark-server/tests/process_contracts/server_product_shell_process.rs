@@ -504,12 +504,10 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
-    use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().expect("tempdir");
-    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let root = spark_common::paths::canonicalize_clean(temp.path()).expect("canonical tempdir");
     let ui_dir = root.join("ui");
     let home = root.join("home");
     let dumps = root.join("agent-env");
@@ -518,7 +516,23 @@ fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
     }
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
     // Each fake agent records the environment Spark launched it with, then exits.
+    // cmd reads a script in the console's code page, so the Windows one names
+    // its dump by its own directory, `%~dp0`, rather than by a path written in
+    // it, and `cmd /U` writes the values as UTF-16, keeping a home such as
+    // `C:\Users\René` exact.
+    #[cfg(windows)]
     let fake = |name: &str| {
+        let path = root.join(format!("{name}.cmd"));
+        fs::write(
+            &path,
+            format!("@echo off\r\ncmd /U /C set > \"%~dp0agent-env\\{name}\"\r\n"),
+        )
+        .expect("fake agent");
+        path
+    };
+    #[cfg(unix)]
+    let fake = |name: &str| {
+        use std::os::unix::fs::PermissionsExt;
         let path = root.join(name);
         fs::write(
             &path,
@@ -558,8 +572,18 @@ fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
 
     let data_dir = root.join("spark-home");
     let agent_env = |name: &str| -> BTreeMap<String, String> {
-        fs::read_to_string(dumps.join(name))
-            .unwrap_or_else(|error| panic!("{name} was not launched: {error}"))
+        let dump = fs::read(dumps.join(name))
+            .unwrap_or_else(|error| panic!("{name} was not launched: {error}"));
+        #[cfg(windows)]
+        let dump = String::from_utf16(
+            &dump
+                .chunks_exact(2)
+                .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                .collect::<Vec<_>>(),
+        );
+        #[cfg(unix)]
+        let dump = String::from_utf8(dump);
+        dump.expect("environment dump text")
             .lines()
             .filter_map(|line| line.split_once('='))
             .map(|(key, value)| (key.to_string(), value.to_string()))
@@ -568,10 +592,14 @@ fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
     let codex_env = agent_env("codex");
     let data_dir_text = data_dir.to_string_lossy().into_owned();
     assert_eq!(codex_env.get("SPARK_HOME"), Some(&data_dir_text));
-    assert_eq!(
-        codex_env.get("HOME").map(PathBuf::from),
-        Some(data_dir.join("runtime/codex"))
-    );
+    // Windows tools find the home through USERPROFILE.
+    for home in ["HOME", "USERPROFILE"] {
+        assert_eq!(
+            codex_env.get(home).map(PathBuf::from),
+            Some(data_dir.join("runtime/codex")),
+            "{home}"
+        );
+    }
     let claude_env = agent_env("claude");
     assert_eq!(claude_env.get("SPARK_HOME"), Some(&data_dir_text));
     assert_eq!(

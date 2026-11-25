@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use crate::error::{Result, SparkCommonError};
 use crate::paths::{
-    detect_project_root, ensure_directory, normalize_path, Environment, ProcessEnvironment,
+    detect_project_root, ensure_directory, expand_tilde_with_env, normalize_path_with_env,
+    tilde_rest, Environment, ProcessEnvironment,
 };
 
 pub const ENV_HOME_DIR: &str = "SPARK_HOME";
@@ -294,7 +295,11 @@ pub struct RuntimeSettings {
     pub project_roots: Vec<PathBuf>,
 }
 
+const PROJECT_ROOTS_ABSOLUTE: &str = "Runtime project_roots must contain absolute paths.";
+
 impl RuntimeSettings {
+    /// Checks what needs no environment, so stored settings read the same
+    /// anywhere. `validate_with_env` also checks where `~` roots resolve.
     pub fn validate(&self) -> Result<()> {
         if [&self.runs_dir, &self.ui_dir]
             .into_iter()
@@ -309,10 +314,26 @@ impl RuntimeSettings {
         if self
             .project_roots
             .iter()
-            .any(|path| !expand_for_absolute_check(path).is_absolute())
+            .any(|path| !path.is_absolute() && tilde_rest(path).is_none())
         {
             return Err(SparkCommonError::SettingsValidation(
-                "Runtime project_roots must contain absolute paths.".into(),
+                PROJECT_ROOTS_ABSOLUTE.into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `validate`, plus every project root must be absolute once `~` expands
+    /// with `env`'s home.
+    pub fn validate_with_env(&self, env: &impl Environment) -> Result<()> {
+        self.validate()?;
+        if self
+            .project_roots
+            .iter()
+            .any(|root| !expand_tilde_with_env(root, env).is_absolute())
+        {
+            return Err(SparkCommonError::SettingsValidation(
+                PROJECT_ROOTS_ABSOLUTE.into(),
             ));
         }
         Ok(())
@@ -577,10 +598,10 @@ pub fn resolve_settings_with_persisted(
     env: &impl Environment,
     persisted: &RuntimeSettings,
 ) -> Result<SparkSettings> {
-    persisted.validate()?;
+    persisted.validate_with_env(env)?;
     let project_root = detect_project_root();
     let data_dir = match overrides.data_dir.as_ref() {
-        Some(value) => normalize_path(value)?,
+        Some(value) => normalize_path_with_env(value, env)?,
         None => resolve_data_dir(env)?,
     };
     let config_dir = data_dir.join("config");
@@ -589,18 +610,20 @@ pub fn resolve_settings_with_persisted(
         overrides.runs_dir.as_ref(),
         None,
         persisted.runs_dir.as_ref(),
+        env,
     )?;
     let ui_dir = coalesce_optional_path(
         overrides.ui_dir.as_ref(),
         env.get_var(ENV_UI_DIR).as_deref(),
         persisted.ui_dir.as_ref(),
+        env,
     )?;
     let project_roots = match env.get_var(ENV_PROJECT_ROOTS) {
-        Some(value) => parse_project_roots(Some(&value))?,
+        Some(value) => parse_project_roots(Some(&value), env)?,
         None => persisted
             .project_roots
             .iter()
-            .map(normalize_path)
+            .map(|root| normalize_path_with_env(root, env))
             .collect::<Result<Vec<_>>>()?,
     };
 
@@ -663,7 +686,8 @@ pub fn validate_settings(settings: &SparkSettings) -> Result<()> {
     Ok(())
 }
 
-pub fn parse_project_roots(value: Option<&str>) -> Result<Vec<PathBuf>> {
+/// Absolute entries of a `PATH`-style list, expanding `~` with `env`'s home.
+pub fn parse_project_roots(value: Option<&str>, env: &impl Environment) -> Result<Vec<PathBuf>> {
     let Some(value) = value else {
         return Ok(Vec::new());
     };
@@ -680,51 +704,37 @@ pub fn parse_project_roots(value: Option<&str>) -> Result<Vec<PathBuf>> {
                 Some(PathBuf::from(text))
             }
         })
-        .filter(|entry| expand_for_absolute_check(entry).is_absolute())
-        .map(normalize_path)
+        .filter(|entry| expand_tilde_with_env(entry, env).is_absolute())
+        .map(|entry| normalize_path_with_env(entry, env))
         .collect::<Result<Vec<_>>>()?;
     Ok(roots)
 }
 
-/// The one data directory rule for every Spark process: `$SPARK_HOME`, else `~/.spark`.
+/// The one data directory rule for every Spark process: `$SPARK_HOME`, else
+/// `~/.spark`, with `~` from `env`.
 pub fn resolve_data_dir(env: &impl Environment) -> Result<PathBuf> {
-    coalesce_path(
-        None,
-        env.get_var(ENV_HOME_DIR).as_deref(),
-        &PathBuf::from("~").join(".spark"),
-    )
-}
-
-fn coalesce_path(
-    cli_value: Option<&PathBuf>,
-    env_value: Option<&str>,
-    default_value: &PathBuf,
-) -> Result<PathBuf> {
-    if let Some(value) = cli_value {
-        return normalize_path(value);
-    }
-    if let Some(value) = env_value.filter(|value| !value.is_empty()) {
-        return normalize_path(value);
-    }
-    normalize_path(default_value)
+    let value = env
+        .get_var(ENV_HOME_DIR)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "~/.spark".into());
+    normalize_path_with_env(value, env)
 }
 
 fn coalesce_optional_path(
     cli_value: Option<&PathBuf>,
     env_value: Option<&str>,
     default_value: Option<&PathBuf>,
+    env: &impl Environment,
 ) -> Result<Option<PathBuf>> {
     if let Some(value) = cli_value {
-        return normalize_path(value).map(Some);
+        return normalize_path_with_env(value, env).map(Some);
     }
     if let Some(value) = env_value.filter(|value| !value.is_empty()) {
-        return normalize_path(value).map(Some);
+        return normalize_path_with_env(value, env).map(Some);
     }
-    default_value.map(normalize_path).transpose()
-}
-
-fn expand_for_absolute_check(path: &std::path::Path) -> PathBuf {
-    crate::paths::expand_tilde_with_env(path, &ProcessEnvironment)
+    default_value
+        .map(|value| normalize_path_with_env(value, env))
+        .transpose()
 }
 
 /// Non-secret resolved settings captured for an execution; profiles accompany this in their domain snapshots.
