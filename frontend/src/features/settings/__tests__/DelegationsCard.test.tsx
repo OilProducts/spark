@@ -1429,6 +1429,39 @@ it('shows a cancel that fails after Settings was reopened on the row its first l
     expect(within(row).getByText('Linked environment is unreachable')).toBeInTheDocument()
 })
 
+it.each([
+    ['', false],
+    [', through a reopen whose first list shows it sealed,', true],
+])('shows a cancel that fails after a poll saw its row sealed%s until a Refresh confirms the seal', async (_reopen, reopen) => {
+    const cancel = later()
+    serve({
+        [LIST]: [ok(list(nightly)), ok(list(canceledSeal)), ok(list(canceledSeal)), ok(list(canceledSeal))],
+        [cancelRoute('del-1')]: [cancel.reply],
+    })
+    const first = renderCard()
+    const row = () => screen.findByRole('group', { name: /^Delegation nightly-checks/ })
+    await confirmCancel(first.user, 'nightly-checks')
+    await waitFor(() => expect(sent(cancelRoute('del-1'))).toHaveLength(1))
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(await within(await row()).findByText('flow · canceled')).toBeInTheDocument()
+    await cancel.resolve({ detail: 'database is locked' }, 500)
+    expect(await within(await row()).findByText('Database is locked')).toBeInTheDocument()
+
+    let { user } = first
+    if (reopen) {
+        first.unmount()
+        user = renderCard().user
+        await waitFor(() => expect(sent(LIST)).toHaveLength(3))
+        await settled()
+        expect(within(await row()).getByText('Database is locked')).toBeInTheDocument()
+    }
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(sent(LIST)).toHaveLength(reopen ? 4 : 3))
+    await settled()
+    expect(within(await row()).getByText('flow · canceled')).toBeInTheDocument()
+    expect(screen.queryByText('Database is locked')).not.toBeInTheDocument()
+})
+
 it('leaves a row sealed by a retry after Settings was reopened clear of an earlier try\'s failure that arrives later', async () => {
     const unlinked = { ...nightly, ...requested, paused: 'No link to this environment; link it again to resume.' }
     const sealed = { ...unlinked, paused: null, phase: 'sealed', result: { status: 'canceled' }, updated_at: '2026-11-23T00:03:00Z' }

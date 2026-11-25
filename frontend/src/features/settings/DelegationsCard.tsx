@@ -37,8 +37,8 @@ type Failure = { requestKey: string; message: string }
 
 /**
  * An environment's drafts, the questions answered there, and its refused replies, each by question,
- * its failed cancels by delegation, each shown on its row until a refresh shows the row, as the card last showed it,
- * changed to sealed, or to canceling with no seal to retry,
+ * its failed cancels by delegation, each shown on its row until a refresh requested since shows it sealed, or canceling
+ * with no seal to retry where it showed a cancel to retry,
  * and a reload after a change that failed while no card showed the environment, for the next one to show.
  */
 type Answers = {
@@ -299,6 +299,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     // the ref lets a cancel confirmation act on what is true when it closes.
     const [seen, setSeen] = useState<Record<string, DelegationOut>>({})
     const seenRef = useRef(seen)
+    // The rows this card shows a failed cancel on, as shown.
+    const errorRowsRef = useRef<Record<string, DelegationOut>>({})
     // A card left behind when Settings closes neither shows nor prunes with what its requests return.
     const mountedRef = useRef(false)
     useEffect(() => {
@@ -325,6 +327,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         const fetched = polling && requested === 'paused' ? 'open' : requested
         const env = activeEnv()
         const seq = ++requestSeqRef.current
+        const errorRows = errorRowsRef.current
         const current = () => mountedRef.current && seq === requestSeqRef.current && requested === filterRef.current
         inFlightCounts[env] = (inFlightCounts[env] ?? 0) + 1
         setLoading(true)
@@ -334,7 +337,6 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             setLoaded({ filter: requested, records: fetched === requested ? records : records.filter((row) => inFilter(row, requested)) })
             // A list of every open delegation (All, Open) shows that one seen open but left out has sealed since.
             const coversOpen = fetched !== 'paused'
-            const shown = seenRef.current
             const kept = coversOpen
                 ? Object.fromEntries(Object.entries(seenRef.current).filter(([, row]) => row.phase === 'sealed'))
                 : seenRef.current
@@ -342,12 +344,13 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             setSeen(seenRef.current)
             setLinkChange((change) => (change && change.seq >= seq ? change : null))
             setLoadError(null)
-            // A failure the card hasn't shown yet, as when it arrived before a reopened card's first list, stays.
+            // Only a failure the card showed when this list was requested retires: not one that arrived since, or
+            // before a reopened card's first list.
             updateAnswers(env, ({ cancelErrors }) => ({
                 cancelErrors: Object.fromEntries(Object.entries(cancelErrors).filter(([id]) => {
                     const record = records.find((row) => row.delegation_id === id)
-                    const before = shown[id]
-                    return !record || cancelable(record) || !before || (before.phase === record.phase && !cancelable(before))
+                    const shown = errorRows[id]
+                    return !record || cancelable(record) || !shown || (record.phase !== 'sealed' && !cancelable(shown))
                 })),
             }))
             // A delegation listed as resumed through a link this machine's links lack shows them stale, as
@@ -435,6 +438,9 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     }, [active, activeEnvironmentId, refresh])
 
     const rows = loaded?.filter === filter ? loaded.records : null
+    useEffect(() => {
+        errorRowsRef.current = Object.fromEntries((rows ?? []).filter((row) => cancelErrors[row.delegation_id]).map((row) => [row.delegation_id, row]))
+    }, [rows, cancelErrors])
     const questionsOf = (record: DelegationOut) => (record.phase === 'accepted'
         ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))
         : [])
