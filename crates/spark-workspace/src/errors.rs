@@ -20,6 +20,10 @@ pub enum WorkspaceError {
     #[error("{0}")]
     Forbidden(String),
 
+    /// A request body sent without the media type the route reads.
+    #[error("{0}")]
+    UnsupportedMediaType(String),
+
     #[error("{0}")]
     ServiceUnavailable(String),
 
@@ -34,6 +38,7 @@ impl WorkspaceError {
             Self::NotFound(_) => 404,
             Self::Conflict(_) | Self::TurnIdConflict(_) => 409,
             Self::Forbidden(_) => 403,
+            Self::UnsupportedMediaType(_) => 415,
             Self::ServiceUnavailable(_) => 503,
             Self::Internal(_) => 500,
         }

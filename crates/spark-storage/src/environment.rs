@@ -22,6 +22,9 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const UI_API_VERSION: u32 = 2;
 /// How long a pairing code stays valid.
 pub const PAIRING_CODE_TTL: time::Duration = time::Duration::minutes(10);
+/// The `peer_tokens` ID of the local agents' token, outside the UUIDs pairing
+/// issues. It is internal: never listed or revoked by users.
+const AGENT_TOKEN_ID: &str = "spark-agent";
 
 /// The home's environment ID, created on first use by exclusive creation of a
 /// complete file. The caller holds the home lock. A file that is not a UUID
@@ -292,10 +295,11 @@ impl EnvironmentRepository {
     pub fn tokens(&self) -> Result<Vec<PeerToken>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT token_id, label, created_at, revoked_at FROM peer_tokens ORDER BY created_at",
+            "SELECT token_id, label, created_at, revoked_at FROM peer_tokens \
+             WHERE token_id != ?1 ORDER BY created_at",
         )?;
         let tokens = statement
-            .query_map([], |row| {
+            .query_map([AGENT_TOKEN_ID], |row| {
                 Ok(PeerToken {
                     token_id: row.get(0)?,
                     label: row.get(1)?,
@@ -307,12 +311,36 @@ impl EnvironmentRepository {
         Ok(tokens)
     }
 
-    /// Returns whether a live token was revoked.
+    /// Returns whether a live token was revoked. The local agents' token
+    /// is never revoked here.
     pub fn revoke_token(&self, token_id: &str) -> Result<bool> {
         Ok(self.connection()?.execute(
-            "UPDATE peer_tokens SET revoked_at = ?2 WHERE token_id = ?1 AND revoked_at IS NULL",
-            params![token_id, now()],
+            "UPDATE peer_tokens SET revoked_at = ?2 WHERE token_id = ?1 AND token_id != ?3 \
+             AND revoked_at IS NULL",
+            params![token_id, now(), AGENT_TOKEN_ID],
         )? > 0)
+    }
+
+    /// Replaces the reserved local-agent token with a fresh secret and returns the secret.
+    pub fn provision_agent_token(&self) -> Result<String> {
+        let secret = secret();
+        self.connection()?.execute(
+            "INSERT INTO peer_tokens (token_id, label, token_sha256, created_at) \
+             VALUES (?1, 'Local agents', ?2, ?3) ON CONFLICT (token_id) DO UPDATE SET \
+             label = excluded.label, token_sha256 = excluded.token_sha256, \
+             created_at = excluded.created_at, revoked_at = NULL",
+            params![AGENT_TOKEN_ID, hash(&secret), now()],
+        )?;
+        Ok(secret)
+    }
+
+    /// Deletes the reserved local-agent token, if any.
+    pub fn clear_agent_token(&self) -> Result<()> {
+        self.connection()?.execute(
+            "DELETE FROM peer_tokens WHERE token_id = ?1",
+            [AGENT_TOKEN_ID],
+        )?;
+        Ok(())
     }
 
     /// The ID of the unrevoked token whose secret is `secret`.

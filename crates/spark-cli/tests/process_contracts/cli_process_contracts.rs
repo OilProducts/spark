@@ -389,6 +389,221 @@ fn process_api_token_is_sent_as_a_bearer_only_when_set() {
     }
 }
 
+/// `spark delegation get d-1` with only `env`, at `--base-url` when given.
+fn delegation_get(base_url: Option<&str>, env: &[(&str, &str)]) -> std::process::Output {
+    let mut command = Command::new(spark_bin());
+    command
+        .args(["delegation", "get", "d-1"])
+        .env_clear()
+        .envs(env.iter().copied());
+    if let Some(base_url) = base_url {
+        command.args(["--base-url", base_url]);
+    }
+    command.output().expect("run spark")
+}
+
+fn delegation_found() -> HttpResponse {
+    HttpResponse::json(200, r#"{"id":"d-1"}"#)
+}
+
+#[test]
+fn process_automatic_bearer_goes_only_to_its_pinned_origin() {
+    // The pinned origin, with `{port}` the target's; the automatic and manual
+    // bearers; and the one the target receives.
+    for (origin, automatic, manual, received) in [
+        ("http://127.0.0.1:{port}", "auto", "manual", "auto"),
+        ("http://127.0.0.1:{port}/", "auto", "", "auto"),
+        ("http://localhost:{port}", "auto", "manual", "manual"),
+        ("https://127.0.0.1:{port}", "auto", "manual", "manual"),
+        ("http://127.0.0.1:1", "auto", "manual", "manual"),
+        ("http://localhost:{port}", "auto", "", ""),
+        ("http://127.0.0.1:{port}", " ", "manual", "manual"),
+        ("http://127.0.0.1:{port}/prefix", "auto", "manual", "manual"),
+    ] {
+        for flag in [true, false] {
+            let (target, requests) = serve_once(delegation_found());
+            let port = target.rsplit(':').next().expect("port");
+            let origin = origin.replace("{port}", port);
+            // The flag wins over a different environment target.
+            let env_target: &str = if flag { "http://127.0.0.1:1" } else { &target };
+            let output = delegation_get(
+                flag.then_some(target.as_str()),
+                &[
+                    ("SPARK_API_BASE_URL", env_target),
+                    ("SPARK_AGENT_API_ORIGIN", &origin),
+                    ("SPARK_AGENT_API_TOKEN", automatic),
+                    ("SPARK_API_TOKEN", manual),
+                ],
+            );
+            assert_eq!(output.status.code(), Some(0), "{origin} {output:?}");
+            let request = requests
+                .recv_timeout(Duration::from_secs(2))
+                .expect("request");
+            let expected = (!received.is_empty()).then(|| format!("Bearer {received}"));
+            assert_eq!(
+                request.authorization, expected,
+                "{origin} {automatic:?} {manual:?} flag={flag}"
+            );
+        }
+    }
+}
+
+#[test]
+fn process_managed_requests_fail_on_a_redirect_without_following_it() {
+    let elsewhere = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let location = format!("http://{}/elsewhere", elsewhere.local_addr().expect("addr"));
+    for automatic in [true, false] {
+        let (target, requests) = serve_once(HttpResponse::redirect(&location));
+        let output = if automatic {
+            delegation_get(
+                Some(target.as_str()),
+                &[
+                    ("SPARK_AGENT_API_TOKEN", "auto-secret"),
+                    ("SPARK_AGENT_API_ORIGIN", &target),
+                ],
+            )
+        } else {
+            delegation_get(
+                None,
+                &[
+                    ("SPARK_API_BASE_URL", "http://127.0.0.1:1"),
+                    ("SPARK_AGENT_API_ORIGIN", "http://127.0.0.1:1"),
+                    ("SPARK_AGENT_LOOPBACK_URL", &target),
+                ],
+            )
+        };
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+        assert!(stderr.contains("does not follow redirects"), "{stderr}");
+        assert!(stderr.contains("\"status_code\": 302"), "{stderr}");
+        assert!(!stderr.contains("auto-secret"), "{stderr}");
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request");
+        let expected = automatic.then_some("Bearer auto-secret");
+        assert_eq!(request.authorization.as_deref(), expected);
+    }
+    assert_no_pending_connection(&elsewhere);
+}
+
+#[test]
+fn process_managed_requests_skip_the_proxy_a_manual_bearer_uses() {
+    let (proxy, proxied) = serve_once(delegation_found());
+    let proxy_env = [
+        ("HTTP_PROXY", proxy.as_str()),
+        ("http_proxy", proxy.as_str()),
+        ("NO_PROXY", ""),
+        ("no_proxy", ""),
+    ];
+    let with_proxy =
+        |env: &[(&'static str, &str)]| delegation_get(None, &[&proxy_env[..], env].concat());
+
+    let (target, requests) = serve_once(delegation_found());
+    let output = with_proxy(&[
+        ("SPARK_API_BASE_URL", &target),
+        ("SPARK_AGENT_API_ORIGIN", &target),
+        ("SPARK_AGENT_API_TOKEN", "auto"),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let request = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("direct");
+    assert_eq!(request.authorization.as_deref(), Some("Bearer auto"));
+
+    let (companion, requests) = serve_once(delegation_found());
+    let output = with_proxy(&[
+        ("SPARK_API_BASE_URL", "http://127.0.0.1:1"),
+        ("SPARK_AGENT_API_ORIGIN", "http://127.0.0.1:1"),
+        ("SPARK_AGENT_LOOPBACK_URL", &companion),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let request = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("direct");
+    assert_eq!(request.authorization, None);
+    assert!(
+        proxied.try_recv().is_err(),
+        "a managed request used the proxy"
+    );
+
+    let output = with_proxy(&[
+        ("SPARK_API_BASE_URL", "http://127.0.0.1:1"),
+        ("SPARK_AGENT_API_ORIGIN", &target),
+        ("SPARK_AGENT_API_TOKEN", "auto"),
+        ("SPARK_API_TOKEN", "manual"),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let request = proxied
+        .recv_timeout(Duration::from_secs(2))
+        .expect("proxied");
+    assert_eq!(
+        request.path,
+        "http://127.0.0.1:1/workspace/api/delegations/d-1"
+    );
+    assert_eq!(request.authorization.as_deref(), Some("Bearer manual"));
+}
+
+#[test]
+fn process_companion_replaces_only_an_unchanged_advertised_target_without_bearers() {
+    let (companion, requests) = serve_once(delegation_found());
+    let output = delegation_get(
+        None,
+        &[
+            ("SPARK_API_BASE_URL", "http://127.0.0.1:1/"),
+            ("SPARK_AGENT_API_ORIGIN", "http://127.0.0.1:1"),
+            ("SPARK_AGENT_API_TOKEN", ""),
+            ("SPARK_API_TOKEN", " "),
+            ("SPARK_AGENT_LOOPBACK_URL", &companion),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let request = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("request");
+    assert_eq!(request.authorization, None);
+
+    let unused = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = unused.local_addr().expect("addr").port();
+    let loopback = format!("http://127.0.0.1:{port}");
+    // Whether `--base-url` names the target, the path after the advertised
+    // origin, the manual bearer, and the companion.
+    for (flag, path, manual, companion) in [
+        (true, "", "", loopback.clone()),
+        (false, "/prefix", "", loopback.clone()),
+        (false, "", "manual", loopback.clone()),
+        (false, "", "", format!("http://localhost:{port}")),
+        (false, "", "", format!("http://192.0.2.1:{port}")),
+        (false, "", "", format!("https://127.0.0.1:{port}")),
+    ] {
+        let (target, requests) = serve_once(delegation_found());
+        let advertised: &str = if flag {
+            "http://127.0.0.1:1"
+        } else {
+            target.as_str()
+        };
+        let output = delegation_get(
+            flag.then_some(target.as_str()),
+            &[
+                ("SPARK_API_BASE_URL", &format!("{advertised}{path}")),
+                ("SPARK_AGENT_API_ORIGIN", advertised),
+                ("SPARK_API_TOKEN", manual),
+                ("SPARK_AGENT_LOOPBACK_URL", &companion),
+            ],
+        );
+        assert_eq!(output.status.code(), Some(0), "{companion} {output:?}");
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request");
+        assert_eq!(
+            request.path,
+            format!("{path}/workspace/api/delegations/d-1")
+        );
+        let expected = (!manual.is_empty()).then(|| format!("Bearer {manual}"));
+        assert_eq!(request.authorization, expected, "{companion}");
+    }
+    assert_no_pending_connection(&unused);
+}
+
 #[test]
 fn process_delegation_wait_polls_until_sealed_or_its_timeout() {
     let (base_url, requests) = serve_sequence(vec![
@@ -728,6 +943,15 @@ impl HttpResponse {
             body: body.into(),
         }
     }
+
+    /// A 302 whose body is its `Location`.
+    fn redirect(location: &str) -> Self {
+        Self {
+            status: 302,
+            content_type: "text/plain",
+            body: location.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -759,8 +983,13 @@ fn serve_sequence(responses: Vec<HttpResponse>) -> (String, mpsc::Receiver<Captu
                 404 => "Not Found",
                 _ => "OK",
             };
+            let location = if response.status == 302 {
+                format!("Location: {}\r\n", response.body)
+            } else {
+                String::new()
+            };
             let wire_response = format!(
-                "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 {} {}\r\n{location}Content-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 response.status,
                 reason,
                 response.content_type,

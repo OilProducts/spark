@@ -18,15 +18,50 @@ use tokio::sync::oneshot;
 use tower::ServiceExt;
 
 const REMOTE: &str = "10.1.2.3:40000";
+const LOCAL: &str = "127.0.0.1:40000";
 
-/// Requests that are not trusted as this machine: a remote peer, and a
-/// loopback peer relaying for someone else.
-const UNTRUSTED: &[(&str, &[(&str, &str)])] = &[
-    (REMOTE, &[]),
-    ("[2001:db8::1]:40000", &[]),
-    ("127.0.0.1:40000", &[("x-forwarded-for", "203.0.113.9")]),
-    ("127.0.0.1:40000", &[("X-Forwarded-Proto", "https")]),
-    ("[::1]:40000", &[("forwarded", "for=203.0.113.9")]),
+/// Requests that are not trusted as this machine's owner without a token: a
+/// remote peer, a loopback peer relaying for someone else, a request without
+/// a peer, and a loopback peer whose Host, Origin or fetch metadata do not
+/// name this listener from the same origin.
+const UNTRUSTED: &[(Option<&str>, &[(&str, &str)])] = &[
+    (Some(REMOTE), &[]),
+    (Some("[2001:db8::1]:40000"), &[]),
+    (Some(LOCAL), &[("x-forwarded-for", "203.0.113.9")]),
+    (Some(LOCAL), &[("X-Forwarded-Proto", "https")]),
+    (Some("[::1]:40000"), &[("forwarded", "for=203.0.113.9")]),
+    (None, &[]),
+    (Some(LOCAL), &[("host", "testserver")]),
+    (Some(LOCAL), &[("host", "127.0.0.1:8001")]),
+    (Some(LOCAL), &[("host", "127.0.0.1")]),
+    (Some(LOCAL), &[("host", "127.0.0.2:8000")]),
+    (Some(LOCAL), &[("host", "[::1]:8000")]),
+    (Some(LOCAL), &[("host", "user@127.0.0.1:8000")]),
+    (Some(LOCAL), &[("host", "localhost.:8000")]),
+    (Some(LOCAL), &[("host", "127.0.0.1:8000, 127.0.0.1:8000")]),
+    (
+        Some(LOCAL),
+        &[("host", "127.0.0.1:8000"), ("host", "127.0.0.1:8000")],
+    ),
+    (Some(LOCAL), &[("origin", "http://evil.example")]),
+    (Some(LOCAL), &[("origin", "null")]),
+    (Some(LOCAL), &[("origin", "https://127.0.0.1:8000")]),
+    (Some(LOCAL), &[("origin", "http://127.0.0.1:8001")]),
+    (Some(LOCAL), &[("origin", "http://127.0.0.1:8000/")]),
+    (Some(LOCAL), &[("origin", "http://localhost:8000")]),
+    (
+        Some(LOCAL),
+        &[
+            ("origin", "http://127.0.0.1:8000"),
+            ("origin", "http://127.0.0.1:8000"),
+        ],
+    ),
+    (Some(LOCAL), &[("sec-fetch-site", "cross-site")]),
+    (Some(LOCAL), &[("sec-fetch-site", "same-origin, none")]),
+    (
+        Some(LOCAL),
+        &[("sec-fetch-site", "none"), ("sec-fetch-site", "none")],
+    ),
 ];
 
 /// One route of each protected kind: both API families, owner routes, the
@@ -79,7 +114,7 @@ async fn untrusted_requests_need_a_peer_token_on_every_protected_route() {
 
     for &(peer, headers) in UNTRUSTED {
         for &(method, uri, body) in PROTECTED {
-            let response = send(&app, method, uri, Some(peer), headers, body).await;
+            let response = send(&app, method, uri, peer, headers, body).await;
             let status = response.status();
             assert_eq!(
                 (status, json(response).await),
@@ -87,61 +122,440 @@ async fn untrusted_requests_need_a_peer_token_on_every_protected_route() {
                     StatusCode::UNAUTHORIZED,
                     json!({"detail": "A peer token is required."})
                 ),
-                "{method} {uri} from {peer} {headers:?}"
+                "{method} {uri} from {peer:?} {headers:?}"
             );
         }
+    }
+    // Without the listener it arrived on, a request cannot name it.
+    let mut unlisted = request("GET", "/workspace/api/projects", Some(LOCAL), &[], None);
+    unlisted
+        .extensions_mut()
+        .remove::<spark_http::ListenerAddr>();
+    let unlisted = app.clone().oneshot(unlisted).await.expect("response");
+    assert_eq!(unlisted.status(), StatusCode::UNAUTHORIZED);
+    // Nor can a request whose target names another authority or scheme.
+    for uri in [
+        "http://127.0.0.1:9000/workspace/api/projects",
+        "https://127.0.0.1:8000/workspace/api/projects",
+    ] {
+        let status = send(&app, "GET", uri, Some(LOCAL), &[], None)
+            .await
+            .status();
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
     }
 }
 
 #[tokio::test]
-async fn loopback_requests_without_forwarded_headers_are_trusted() {
+async fn direct_loopback_and_same_origin_requests_are_trusted() {
     let temp = tempfile::tempdir().expect("tempdir");
     let app = crate::store_app_default(settings(temp.path()));
 
-    // No connection info means an in-process caller.
+    let same_origin: &[&[(&str, &str)]] = &[
+        &[],
+        &[
+            ("origin", "http://127.0.0.1:8000"),
+            ("sec-fetch-site", "same-origin"),
+        ],
+        &[("sec-fetch-site", "none")],
+        &[("sec-fetch-site", "same-site")],
+        &[
+            ("host", "LocalHost:8000"),
+            ("origin", "http://localhost:8000"),
+        ],
+        // An invalid token still leaves the owner's own access.
+        &[("authorization", "Bearer not-a-token")],
+    ];
     for peer in [
-        None,
-        Some("127.0.0.1:40000"),
-        Some("127.8.9.10:40000"),
-        Some("[::1]:40000"),
-        Some("[::ffff:127.0.0.1]:40000"),
+        "127.0.0.1:40000",
+        "127.8.9.10:40000",
+        "[::1]:40000",
+        "[::ffff:127.0.0.1]:40000",
     ] {
-        for (method, uri, expected) in [
-            ("GET", "/workspace/api/projects", StatusCode::OK),
-            ("GET", "/workspace/api/environment/tokens", StatusCode::OK),
-            (
-                "GET",
-                "/workspace/api/live/events?include_settings=true",
-                StatusCode::OK,
-            ),
-            (
-                "GET",
-                "/workspace/api/conversations/conversation-1/attachments/attachment-1",
-                StatusCode::NOT_FOUND,
-            ),
-            ("GET", "/attractor/status", StatusCode::OK),
-            ("GET", "/attractor/runs", StatusCode::OK),
-            (
-                "GET",
-                "/attractor/pipelines/run-1/artifacts",
-                StatusCode::NOT_FOUND,
-            ),
-        ] {
-            // The live stream stays open; only its status is read.
-            let status = send(&app, method, uri, peer, &[], None).await.status();
-            assert_eq!(status, expected, "{method} {uri} from {peer:?}");
+        for headers in same_origin {
+            for (method, uri, expected) in [
+                ("GET", "/workspace/api/projects", StatusCode::OK),
+                ("GET", "/workspace/api/environment/tokens", StatusCode::OK),
+                (
+                    "GET",
+                    "/workspace/api/live/events?include_settings=true",
+                    StatusCode::OK,
+                ),
+                (
+                    "GET",
+                    "/workspace/api/conversations/conversation-1/attachments/attachment-1",
+                    StatusCode::NOT_FOUND,
+                ),
+                ("GET", "/attractor/status", StatusCode::OK),
+                ("GET", "/attractor/runs", StatusCode::OK),
+                (
+                    "GET",
+                    "/attractor/pipelines/run-1/artifacts",
+                    StatusCode::NOT_FOUND,
+                ),
+            ] {
+                // The live stream stays open; only its status is read.
+                let status = send(&app, method, uri, Some(peer), headers, None)
+                    .await
+                    .status();
+                assert_eq!(status, expected, "{method} {uri} from {peer} {headers:?}");
+            }
         }
+        // A request target naming the listener agrees with its Host.
+        let absolute = send(
+            &app,
+            "GET",
+            "http://127.0.0.1:8000/attractor/status",
+            Some(peer),
+            &[],
+            None,
+        )
+        .await;
+        assert_eq!(absolute.status(), StatusCode::OK);
         let launch = send(
             &app,
             "POST",
             "/workspace/api/runs/launch",
-            peer,
+            Some(peer),
             &[],
             Some("{"),
         )
         .await;
         assert_eq!(launch.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let upload = send(
+            &app,
+            "POST",
+            "/workspace/api/conversations/conversation-1/attachments?project_path=/missing",
+            Some(peer),
+            &[("content-type", "application/octet-stream")],
+            Some("bytes"),
+        )
+        .await;
+        assert_ne!(upload.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(upload.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
+}
+
+/// Host names the listener by its canonical address: IPv6 literals in any
+/// spelling, mapped IPv4, and on a wildcard bind any loopback literal or
+/// `localhost`. Origin keeps names and literal families apart.
+#[tokio::test]
+async fn host_and_origin_name_the_listener_by_its_canonical_address() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app = crate::store_app_default(settings(temp.path()));
+    let cases: &[(&str, &str, &[(&str, &str)], StatusCode)] = &[
+        (
+            "[::1]:8000",
+            "[::1]:40000",
+            &[
+                ("host", "[0:0:0:0:0:0:0:1]:8000"),
+                ("origin", "http://[::1]:8000"),
+            ],
+            StatusCode::OK,
+        ),
+        (
+            "[::1]:8000",
+            "[::1]:40000",
+            &[("host", "localhost:8000")],
+            StatusCode::OK,
+        ),
+        (
+            "[::1]:8000",
+            "[::1]:40000",
+            &[("host", "127.0.0.1:8000")],
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "[::ffff:127.0.0.1]:8000",
+            "[::ffff:127.0.0.1]:40000",
+            &[("host", "[::ffff:127.0.0.1]:8000")],
+            StatusCode::OK,
+        ),
+        (
+            "[::ffff:127.0.0.1]:8000",
+            "[::ffff:127.0.0.1]:40000",
+            &[
+                ("host", "[::ffff:127.0.0.1]:8000"),
+                ("origin", "http://127.0.0.1:8000"),
+            ],
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "127.0.0.1:8000",
+            LOCAL,
+            &[("host", "127.0.0.2:8000")],
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "127.0.0.2:8000",
+            LOCAL,
+            &[("host", "127.0.0.2:8000")],
+            StatusCode::OK,
+        ),
+        (
+            "127.0.0.2:8000",
+            LOCAL,
+            &[("host", "localhost:8000")],
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "0.0.0.0:8000",
+            LOCAL,
+            &[("host", "127.0.0.2:8000")],
+            StatusCode::OK,
+        ),
+        (
+            "0.0.0.0:8000",
+            LOCAL,
+            &[("host", "localhost:8000")],
+            StatusCode::OK,
+        ),
+        (
+            "0.0.0.0:8000",
+            LOCAL,
+            &[("host", "10.1.2.3:8000")],
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "0.0.0.0:8000",
+            REMOTE,
+            &[("host", "127.0.0.1:8000")],
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "127.0.0.1:80",
+            LOCAL,
+            &[("host", "127.0.0.1"), ("origin", "http://127.0.0.1")],
+            StatusCode::OK,
+        ),
+        (
+            "127.0.0.1:80",
+            LOCAL,
+            &[("host", "127.0.0.1:80"), ("origin", "http://127.0.0.1")],
+            StatusCode::OK,
+        ),
+    ];
+    for &(listener, peer, headers, expected) in cases {
+        let response = send_to(
+            &app,
+            Some(listener),
+            "GET",
+            "/workspace/api/projects",
+            Some(peer),
+            headers,
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), expected, "{listener} {peer} {headers:?}");
+    }
+}
+
+/// A peer at the IP the server bound, such as a local agent calling the
+/// advertised non-loopback URL, needs a token like any other remote peer.
+#[tokio::test]
+async fn a_non_loopback_listener_requires_a_bearer_even_from_its_own_ip() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let app = crate::store_app_default(settings.clone());
+    let listener = Some("10.1.2.3:8000");
+    let host = [("host", "10.1.2.3:8000")];
+
+    for peer in [REMOTE, LOCAL] {
+        let refused = send_to(
+            &app,
+            listener,
+            "GET",
+            "/workspace/api/projects",
+            Some(peer),
+            &host,
+            None,
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::UNAUTHORIZED, "{peer}");
+    }
+    let shell = send_to(&app, listener, "GET", "/", Some(REMOTE), &host, None).await;
+    assert_eq!(shell.status(), StatusCode::OK);
+
+    // The reserved agent token works as a bearer, but is not a peer token
+    // the owner lists or revokes.
+    let secret = spark_storage::environment::EnvironmentRepository::new(&settings.data_dir)
+        .provision_agent_token()
+        .expect("agent token");
+    let bearer = format!("Bearer {secret}");
+    let authorized = [host[0], ("authorization", bearer.as_str())];
+    let status = send_to(
+        &app,
+        listener,
+        "GET",
+        "/workspace/api/projects",
+        Some(REMOTE),
+        &authorized,
+        None,
+    )
+    .await
+    .status();
+    assert_eq!(status, StatusCode::OK);
+    let tokens = send(
+        &app,
+        "GET",
+        "/workspace/api/environment/tokens",
+        Some(LOCAL),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(json(tokens).await, json!({"tokens": []}));
+    let tokens = text(
+        send_to(
+            &app,
+            listener,
+            "GET",
+            "/workspace/api/environment/tokens",
+            Some(REMOTE),
+            &authorized,
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(!tokens.contains(&secret));
+    let revoke = send(
+        &app,
+        "POST",
+        "/workspace/api/environment/tokens/spark-agent/revoke",
+        Some(LOCAL),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(revoke.status(), StatusCode::NOT_FOUND);
+    let still = send_to(
+        &app,
+        listener,
+        "GET",
+        "/attractor/status",
+        Some(REMOTE),
+        &authorized,
+        None,
+    )
+    .await;
+    assert_eq!(still.status(), StatusCode::OK);
+}
+
+/// A served listener attaches itself and the peer to each request.
+#[tokio::test]
+async fn a_served_listener_trusts_only_requests_naming_it() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app = crate::store_app_default(settings(temp.path()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("address");
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(spark_http::serve(listener, app, async {
+        let _ = stopped.await;
+    }));
+
+    let own = format!("Host: {addr}\r\n");
+    let other_port = format!("Host: 127.0.0.1:{}\r\n", addr.port() + 1);
+    for (headers, expected) in [
+        (own.clone(), "200"),
+        ("Host: testserver\r\n".to_string(), "401"),
+        (other_port, "401"),
+        (format!("{own}Origin: http://evil.example\r\n"), "401"),
+        (format!("{own}X-Forwarded-For: 203.0.113.9\r\n"), "401"),
+    ] {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let head =
+            format!("GET /workspace/api/projects HTTP/1.1\r\n{headers}Connection: close\r\n\r\n");
+        stream.write_all(head.as_bytes()).await.expect("write");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.expect("read");
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {expected} ")),
+            "{headers:?}: {response}"
+        );
+    }
+    stop.send(()).expect("server running");
+    server.await.expect("server task").expect("served");
+}
+
+/// A JSON body needs one JSON media type, checked before the body is read.
+#[tokio::test]
+async fn json_bodies_need_a_json_media_type() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app = crate::store_app_default(settings(temp.path()));
+    let codes = "/workspace/api/environment/pairing-codes";
+    let body = Some(r#"{"label": "laptop"}"#);
+
+    for content_type in [
+        "application/json",
+        "Application/JSON",
+        "application/json; charset=utf-8",
+        "application/json ;\tcharset=utf-8",
+        r#"application/json;charset=utf-8; profile="a, b; c""#,
+        "application/vnd.spark+json",
+    ] {
+        let status = send(
+            &app,
+            "POST",
+            codes,
+            Some(LOCAL),
+            &[("content-type", content_type)],
+            body,
+        )
+        .await
+        .status();
+        assert_eq!(status, StatusCode::OK, "{content_type}");
+    }
+    let refused: &[&[(&str, &str)]] = &[
+        &[("content-type", "text/plain")],
+        &[("content-type", "application/x-www-form-urlencoded")],
+        &[("content-type", "text/vnd.spark+json")],
+        &[("content-type", "application/json+xml")],
+        &[("content-type", "application/+json")],
+        &[("content-type", "application/json; charset=")],
+        &[("content-type", r#"application/json; profile="a\""#)],
+        &[("content-type", "application/json, text/plain")],
+        &[
+            ("content-type", "application/json"),
+            ("content-type", "application/json"),
+        ],
+    ];
+    for headers in refused {
+        let response = send(&app, "POST", codes, Some(LOCAL), headers, body).await;
+        let status = response.status();
+        assert_eq!(
+            (status, json(response).await),
+            (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                json!({"detail": "Expected Content-Type: application/json."})
+            ),
+            "{headers:?}"
+        );
+    }
+    let mut untyped = request("POST", codes, Some(LOCAL), &[], body);
+    untyped.headers_mut().remove("content-type");
+    let untyped = app.clone().oneshot(untyped).await.expect("response");
+    assert_eq!(untyped.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    // A JSON media type still needs a valid JSON body.
+    let malformed = send(&app, "POST", codes, Some(LOCAL), &[], Some("{")).await;
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    // An empty body still asks for a code with the defaults.
+    let empty = send(&app, "POST", codes, Some(LOCAL), &[], None).await;
+    assert_eq!(empty.status(), StatusCode::OK);
+
+    let pair = send(
+        &app,
+        "POST",
+        "/environment/pair",
+        Some(REMOTE),
+        &[("content-type", "text/plain")],
+        Some(r#"{"code": "x"}"#),
+    )
+    .await;
+    assert_eq!(pair.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
 
 #[tokio::test]
@@ -154,18 +568,18 @@ async fn public_routes_serve_untrusted_requests() {
         .to_string();
 
     for &(peer, headers) in UNTRUSTED {
-        let index = send(&app, "GET", "/", Some(peer), headers, None).await;
+        let index = send(&app, "GET", "/", peer, headers, None).await;
         assert_eq!(index.status(), StatusCode::OK);
         assert!(text(index).await.contains("environment ui"));
-        let asset = send(&app, "GET", "/assets/app.js", Some(peer), headers, None).await;
+        let asset = send(&app, "GET", "/assets/app.js", peer, headers, None).await;
         assert_eq!(asset.status(), StatusCode::OK);
-        let favicon = send(&app, "GET", "/favicon.ico", Some(peer), headers, None).await;
+        let favicon = send(&app, "GET", "/favicon.ico", peer, headers, None).await;
         assert_eq!(favicon.status(), StatusCode::OK);
-        let missing = send(&app, "GET", "/assets/missing.js", Some(peer), headers, None).await;
+        let missing = send(&app, "GET", "/assets/missing.js", peer, headers, None).await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
         assert_eq!(json(missing).await, json!({"detail": "Asset not found"}));
 
-        let descriptor = send(&app, "GET", "/environment", Some(peer), headers, None).await;
+        let descriptor = send(&app, "GET", "/environment", peer, headers, None).await;
         assert_eq!(descriptor.status(), StatusCode::OK);
         assert_eq!(
             descriptor
@@ -199,7 +613,7 @@ async fn webhook_route_keeps_its_own_credentials_for_untrusted_requests() {
             &app,
             "POST",
             "/workspace/api/webhooks",
-            Some(peer),
+            peer,
             headers,
             Some("{}"),
         )
@@ -222,7 +636,7 @@ async fn webhook_route_keeps_its_own_credentials_for_untrusted_requests() {
             &app,
             "POST",
             "/workspace/api/webhooks",
-            Some(peer),
+            peer,
             &credentials,
             Some("{}"),
         )
@@ -246,7 +660,7 @@ async fn paired_token_is_accepted_until_revoked() {
         &app,
         "POST",
         "/workspace/api/environment/pairing-codes",
-        None,
+        Some(LOCAL),
         &[],
         Some(r#"{"label": "laptop"}"#),
     )
@@ -281,10 +695,8 @@ async fn paired_token_is_accepted_until_revoked() {
     for &(peer, headers) in UNTRUSTED {
         let headers = [headers, &[("authorization", bearer.as_str())][..]].concat();
         for uri in ["/workspace/api/projects", "/attractor/status"] {
-            let status = send(&app, "GET", uri, Some(peer), &headers, None)
-                .await
-                .status();
-            assert_eq!(status, StatusCode::OK, "{uri} from {peer} {headers:?}");
+            let status = send(&app, "GET", uri, peer, &headers, None).await.status();
+            assert_eq!(status, StatusCode::OK, "{uri} from {peer:?} {headers:?}");
         }
     }
     for authorization in [
@@ -310,7 +722,7 @@ async fn paired_token_is_accepted_until_revoked() {
         &app,
         "GET",
         "/workspace/api/environment/tokens",
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -320,7 +732,7 @@ async fn paired_token_is_accepted_until_revoked() {
     assert!(!listed.contains(&secret));
 
     let revoke_uri = format!("/workspace/api/environment/tokens/{token_id}/revoke");
-    let revoked = send(&app, "POST", &revoke_uri, None, &[], None).await;
+    let revoked = send(&app, "POST", &revoke_uri, Some(LOCAL), &[], None).await;
     assert_eq!(revoked.status(), StatusCode::OK);
     assert_eq!(
         json(revoked).await,
@@ -344,7 +756,7 @@ async fn paired_token_is_accepted_until_revoked() {
         &app,
         "POST",
         "/workspace/api/environment/tokens/unknown/revoke",
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -455,7 +867,7 @@ async fn a_bearer_peer_revokes_other_tokens_and_the_owner_revokes_its_token() {
     assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
 
     let self_revoke = format!("/workspace/api/environment/tokens/{self_id}/revoke");
-    let revoked = send(&app, "POST", &self_revoke, None, &[], None).await;
+    let revoked = send(&app, "POST", &self_revoke, Some(LOCAL), &[], None).await;
     assert_eq!(revoked.status(), StatusCode::OK);
     let refused = send(
         &app,
@@ -500,7 +912,7 @@ async fn pair_token(app: &Router, label: &str) -> (String, String) {
         app,
         "POST",
         "/workspace/api/environment/pairing-codes",
-        None,
+        Some(LOCAL),
         &[],
         Some(&json!({"label": label}).to_string()),
     )
@@ -532,7 +944,7 @@ async fn concurrent_pairs_consume_a_code_exactly_once() {
         &app,
         "POST",
         "/workspace/api/environment/pairing-codes",
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -566,7 +978,7 @@ async fn concurrent_pairs_consume_a_code_exactly_once() {
         &app,
         "GET",
         "/workspace/api/environment/tokens",
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -644,66 +1056,6 @@ async fn pairing_is_rate_limited_per_peer_and_caps_its_body() {
 }
 
 #[tokio::test]
-async fn specific_bound_ip_trusts_only_direct_local_self_connections() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let mut bound = settings(temp.path());
-    bound.connections.server_host = Some("10.1.2.3".to_string());
-    let app = crate::store_app_default(bound);
-
-    // Direct connection from the server's own bound IP (e.g. a local agent) passes.
-    let self_local = send(
-        &app,
-        "GET",
-        "/workspace/api/projects",
-        Some(REMOTE),
-        &[],
-        None,
-    )
-    .await;
-    assert_eq!(self_local.status(), StatusCode::OK);
-
-    // A forwarded header on that IP still requires a bearer token.
-    let proxied = send(
-        &app,
-        "GET",
-        "/workspace/api/projects",
-        Some(REMOTE),
-        &[("x-forwarded-for", "203.0.113.9")],
-        None,
-    )
-    .await;
-    assert_eq!(proxied.status(), StatusCode::UNAUTHORIZED);
-
-    // Any other remote peer still requires a bearer token.
-    let other_remote = send(
-        &app,
-        "GET",
-        "/workspace/api/projects",
-        Some("10.1.2.4:40000"),
-        &[],
-        None,
-    )
-    .await;
-    assert_eq!(other_remote.status(), StatusCode::UNAUTHORIZED);
-
-    // An unspecified bind (`0.0.0.0`) never trusts non-loopback peers.
-    let temp_any = tempfile::tempdir().expect("tempdir");
-    let mut any = settings(temp_any.path());
-    any.connections.server_host = Some("0.0.0.0".to_string());
-    let app_any = crate::store_app_default(any);
-    let remote_on_any = send(
-        &app_any,
-        "GET",
-        "/workspace/api/projects",
-        Some(REMOTE),
-        &[],
-        None,
-    )
-    .await;
-    assert_eq!(remote_on_any.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
 async fn delegation_list_and_discovery_routes_are_mounted_and_protected() {
     let temp = tempfile::tempdir().expect("tempdir");
     let app = crate::store_app_default(settings(temp.path()));
@@ -712,7 +1064,7 @@ async fn delegation_list_and_discovery_routes_are_mounted_and_protected() {
         &app,
         "GET",
         "/workspace/api/delegations?open=true",
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -724,7 +1076,7 @@ async fn delegation_list_and_discovery_routes_are_mounted_and_protected() {
         &app,
         "GET",
         "/workspace/api/environments/links/env-missing/projects",
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -735,7 +1087,7 @@ async fn delegation_list_and_discovery_routes_are_mounted_and_protected() {
         &app,
         "GET",
         "/workspace/api/environments/links/env-missing/flows/ops/run",
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -942,19 +1294,13 @@ async fn fake_peer_route(State(peer): State<FakePeer>, request: Request<Body>) -
     response
 }
 
-/// Serves `app` on a loopback port with connection info; returns its origin.
+/// Serves `app` on a loopback port as Spark does; returns its origin.
 async fn serve(app: Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
-    let origin = format!("http://{}", listener.local_addr().expect("address"));
-    tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-    });
+    let origin = spark_http::listener_url(listener.local_addr().expect("address"));
+    tokio::spawn(spark_http::serve(listener, app, std::future::pending()));
     origin
 }
 
@@ -979,13 +1325,16 @@ async fn proxy_with(
     body: Vec<u8>,
     timeouts: ProxyTimeouts,
 ) -> Response {
-    let request = Request::builder()
-        .method(method)
-        .uri(format!("{PROXY}{target}"))
-        .header("authorization", "Bearer caller-should-not-leak")
-        .extension(timeouts)
-        .body(Body::from(body))
-        .expect("request");
+    let (mut parts, _) = request(
+        method,
+        &format!("{PROXY}{target}"),
+        Some(LOCAL),
+        &[("authorization", "Bearer caller-should-not-leak")],
+        None,
+    )
+    .into_parts();
+    parts.extensions.insert(timeouts);
+    let request = Request::from_parts(parts, Body::from(body));
     app.clone().oneshot(request).await.expect("response")
 }
 
@@ -1067,7 +1416,7 @@ async fn linked_environment_proxy_forwards_raw_targets_and_refuses_unsafe_paths(
         &app,
         "GET",
         "/workspace/api/environments/links/env-missing/proxy/environment",
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -1421,7 +1770,7 @@ async fn linked_environment_proxy_requires_the_peer_to_answer_as_the_link() {
             &app,
             "GET",
             &format!("/workspace/api/environments/links/env-c/proxy/{target}"),
-            None,
+            Some(LOCAL),
             &[],
             None,
         )
@@ -1534,7 +1883,7 @@ async fn pair(app: &Router) -> (String, String) {
         app,
         "POST",
         "/workspace/api/environment/pairing-codes",
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -1544,7 +1893,7 @@ async fn pair(app: &Router) -> (String, String) {
         app,
         "POST",
         "/environment/pair",
-        None,
+        Some(LOCAL),
         &[],
         Some(&json!({"code": code}).to_string()),
     )
@@ -1574,7 +1923,15 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
     let via = |target: &str| format!("/workspace/api/environments/links/{b_id}/proxy/{target}");
 
     // Every response names its environment; the identity route needs a token.
-    let direct = send(&app_b, "GET", "/workspace/api/projects", None, &[], None).await;
+    let direct = send(
+        &app_b,
+        "GET",
+        "/workspace/api/projects",
+        Some(LOCAL),
+        &[],
+        None,
+    )
+    .await;
     assert_eq!(
         header(&direct, "x-spark-environment-id"),
         Some(b_id.as_str())
@@ -1598,7 +1955,7 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
         &app_a,
         "GET",
         &via("workspace/api/environment"),
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -1639,7 +1996,7 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
         &app_a,
         "GET",
         &via("workspace/api/projects"),
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -1677,7 +2034,7 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
             "workspace/api/delegations/{}/wait?timeout_ms=50",
             pending.delegation_id
         )),
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -1696,7 +2053,7 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
         "workspace/api/environment",
         "environment",
     ] {
-        let swapped = send(&app_a, "GET", &via(target), None, &[], None).await;
+        let swapped = send(&app_a, "GET", &via(target), Some(LOCAL), &[], None).await;
         assert_eq!(swapped.status(), StatusCode::BAD_GATEWAY, "{target}");
         let detail = json(swapped).await["detail"]
             .as_str()
@@ -1708,13 +2065,13 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
     // A loopback peer still checks the token the proxy relays.
     link(&a, &b_id, &b_origin, &b_token);
     let revoke = format!("/workspace/api/environment/tokens/{b_token_id}/revoke");
-    let revoked = send(&app_b, "POST", &revoke, None, &[], None).await;
+    let revoked = send(&app_b, "POST", &revoke, Some(LOCAL), &[], None).await;
     assert_eq!(revoked.status(), StatusCode::OK);
     let refused = send(
         &app_a,
         "GET",
         &via("workspace/api/projects"),
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -1756,7 +2113,7 @@ async fn artifact_downloads_are_exact_attachments_the_browser_does_not_sniff() {
                 &app,
                 "GET",
                 &format!("{}{query}", uri(name)),
-                None,
+                Some(LOCAL),
                 &[],
                 None,
             )
@@ -1777,7 +2134,7 @@ async fn artifact_downloads_are_exact_attachments_the_browser_does_not_sniff() {
             &app,
             "GET",
             &format!("{}?download=1", uri(spelled)),
-            None,
+            Some(LOCAL),
             &[],
             None,
         )
@@ -1792,11 +2149,11 @@ async fn artifact_downloads_are_exact_attachments_the_browser_does_not_sniff() {
     }
 
     // Previews are unchanged: text as before, binary refused.
-    let preview = send(&app, "GET", &uri("result.json"), None, &[], None).await;
+    let preview = send(&app, "GET", &uri("result.json"), Some(LOCAL), &[], None).await;
     assert_eq!(preview.status(), StatusCode::OK);
     assert_eq!(header(&preview, "content-disposition"), None);
     assert_eq!(json(preview).await, json!("{\"ok\": true}\n"));
-    let binary_preview = send(&app, "GET", &uri("capture.bin"), None, &[], None).await;
+    let binary_preview = send(&app, "GET", &uri("capture.bin"), Some(LOCAL), &[], None).await;
     assert_eq!(binary_preview.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
 
@@ -1926,7 +2283,7 @@ async fn delegation_routes_refuse_dot_identifiers_before_contacting_the_peer() {
         ),
     ] {
         let method = if body.is_some() { "POST" } else { "GET" };
-        let refused = send(&app, method, uri, None, &[], body).await;
+        let refused = send(&app, method, uri, Some(LOCAL), &[], body).await;
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{uri}");
     }
     assert_eq!(*seen.lock().unwrap(), Vec::<String>::new());
@@ -1935,7 +2292,7 @@ async fn delegation_routes_refuse_dot_identifiers_before_contacting_the_peer() {
         &app,
         "GET",
         "/workspace/api/environments/links/env-b/flows/software-development/implement-change/files",
-        None,
+        Some(LOCAL),
         &[],
         None,
     )
@@ -1945,7 +2302,7 @@ async fn delegation_routes_refuse_dot_identifiers_before_contacting_the_peer() {
         &app,
         "POST",
         &format!("/workspace/api/delegations/{id}/questions/q-1.2/answer"),
-        None,
+        Some(LOCAL),
         &[],
         answer,
     )
@@ -1968,7 +2325,7 @@ async fn delegation_routes_refuse_dot_identifiers_before_contacting_the_peer() {
         &app,
         "POST",
         "/workspace/api/delegations/incoming/not-a-uuid/cancel",
-        None,
+        Some(LOCAL),
         &[],
         Some("{}"),
     )
@@ -1984,14 +2341,42 @@ fn request(
     headers: &[(&str, &str)],
     body: Option<&str>,
 ) -> Request<Body> {
+    request_to(Some(crate::LISTENER), method, uri, peer, headers, body)
+}
+
+/// A request arriving on `listener` from `peer`, as a served app sees it.
+/// It names the listener in `Host` unless `headers` give one.
+fn request_to(
+    listener: Option<&str>,
+    method: &str,
+    uri: &str,
+    peer: Option<&str>,
+    headers: &[(&str, &str)],
+    body: Option<&str>,
+) -> Request<Body> {
     let mut builder = Request::builder().method(method).uri(uri);
+    if let Some(listener) = listener {
+        builder = builder.extension(spark_http::ListenerAddr(
+            listener.parse().expect("listener"),
+        ));
+        if !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("host"))
+        {
+            builder = builder.header("host", listener);
+        }
+    }
     if let Some(peer) = peer {
         builder = builder.extension(ConnectInfo(peer.parse::<SocketAddr>().expect("peer")));
     }
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }
-    if body.is_some() {
+    if body.is_some()
+        && !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    {
         builder = builder.header("content-type", "application/json");
     }
     builder
@@ -2007,8 +2392,20 @@ async fn send(
     headers: &[(&str, &str)],
     body: Option<&str>,
 ) -> Response {
+    send_to(app, Some(crate::LISTENER), method, uri, peer, headers, body).await
+}
+
+async fn send_to(
+    app: &Router,
+    listener: Option<&str>,
+    method: &str,
+    uri: &str,
+    peer: Option<&str>,
+    headers: &[(&str, &str)],
+    body: Option<&str>,
+) -> Response {
     app.clone()
-        .oneshot(request(method, uri, peer, headers, body))
+        .oneshot(request_to(listener, method, uri, peer, headers, body))
         .await
         .expect("response")
 }

@@ -20,26 +20,26 @@ async fn codex_connection_routes_validate_login_input_and_cancel_without_changin
     ] {
         let response = app
             .clone()
-            .oneshot(
+            .oneshot(crate::local(
                 Request::builder()
                     .method("POST")
                     .uri("/workspace/api/codex/login")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
-            )
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
     let response = app
-        .oneshot(
+        .oneshot(crate::local(
             Request::builder()
                 .method("DELETE")
                 .uri("/workspace/api/codex/login")
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -66,26 +66,26 @@ async fn claude_connection_routes_validate_codes_and_cancel() {
     ] {
         let response = app
             .clone()
-            .oneshot(
+            .oneshot(crate::local(
                 Request::builder()
                     .method("POST")
                     .uri("/workspace/api/claude/login/code")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
-            )
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), status, "{body}");
     }
     let response = app
-        .oneshot(
+        .oneshot(crate::local(
             Request::builder()
                 .method("DELETE")
                 .uri("/workspace/api/claude/login")
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -1115,7 +1115,7 @@ async fn request_raw(
 }
 
 async fn execute_request(app: axum::Router, request: Request<Body>) -> (StatusCode, Value, String) {
-    let response = app.oneshot(request).await.expect("response");
+    let response = app.oneshot(crate::local(request)).await.expect("response");
     let status = response.status();
     let content_type = response
         .headers()
@@ -1736,12 +1736,12 @@ async fn mission_routes_enforce_records_revisions_messages_and_controls() {
     // The transcript replaced the inbox read route.
     let read = app
         .clone()
-        .oneshot(
+        .oneshot(crate::local(
             Request::builder()
                 .uri(at("/events"))
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(read.status(), StatusCode::METHOD_NOT_ALLOWED);
@@ -2735,12 +2735,12 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
     let app = build_app(settings).expect("app");
     let live = app
         .clone()
-        .oneshot(
+        .oneshot(crate::local(
             Request::builder()
                 .uri("/workspace/api/live/events?include_settings=true")
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(live.status(), StatusCode::OK);
@@ -3077,13 +3077,13 @@ async fn antigravity_usage_route_reports_unregistered_and_reads_registered_harne
     // Without a registered Antigravity harness, the endpoint reports unregistered without error.
     let response = app
         .clone()
-        .oneshot(
+        .oneshot(crate::local(
             Request::builder()
                 .method("GET")
                 .uri("/workspace/api/antigravity/usage")
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -3117,13 +3117,13 @@ EOF
     .unwrap();
 
     let response = app
-        .oneshot(
+        .oneshot(crate::local(
             Request::builder()
                 .method("GET")
                 .uri("/workspace/api/antigravity/usage")
                 .body(Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);

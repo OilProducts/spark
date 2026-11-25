@@ -158,6 +158,26 @@ explicit flag or environment API target, even when a persisted target exists.
 The target must be HTTP(S) without embedded credentials, query parameters or
 fragments. Errors do not repeat rejected URL contents.
 
+Without a token, Spark trusts only the machine's owner: a direct loopback
+connection to a loopback or wildcard listener, with a `Host` naming that
+listener at its actual port, no `Forwarded` or `X-Forwarded-*` header, and no
+cross-site `Origin` or `Sec-Fetch-Site`. Any other caller sends
+`Authorization: Bearer <token>` with a token from pairing. On a specific
+non-loopback `server_host`, that address needs a token even from the same
+machine. Spark then also listens on loopback, at the same port or a free one if
+it is taken, and prints it as `Spark local UI <url>`. Use that URL for the
+browser and local tools. Agents that Spark starts get their own token, replaced
+on each such start and removed when Spark next starts on loopback.
+
+To reach a remote Spark through an SSH forward, use the same local port as the
+remote listener, for example `ssh -L 8000:127.0.0.1:8000 host`, and open
+`http://127.0.0.1:8000`. With a different local port the page loads, but its API
+requests get 401. Update an environment link or bookmark saved under another
+origin to the forwarded one.
+
+API requests with a JSON body must send `Content-Type: application/json` (or an
+`application/*+json` type); others get 415.
+
 The connection editor uses the same section revision and explicit Save/Discard
 as runtime settings, with validation, pending protection and live conflict
 retention. Desktop continues to choose its binding through native remote-access

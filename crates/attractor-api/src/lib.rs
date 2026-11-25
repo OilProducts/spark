@@ -3085,8 +3085,9 @@ impl AttractorApiService {
         }
     }
 
+    /// Dispatches an in-process request, whose body is JSON.
     pub fn dispatch(&self, method: &str, path: &str, body: &str) -> RuntimeRouteResponse {
-        dispatch_attractor_route(self, method, path, body)
+        dispatch_attractor_route(self, method, path, body, true)
     }
 
     fn reserve_run_id(&self, store: &RunStore, requested: Option<&str>) -> Result<String, String> {
@@ -3125,20 +3126,20 @@ pub fn handle_attractor_request_with_runtime_handler_runner_factory(
     settings: SparkSettings,
     runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
 ) -> RuntimeRouteResponse {
-    handle_attractor_request_with_options(
-        method,
-        path,
-        body,
+    AttractorApiService::new_with_runtime_handler_runner_factory(
         settings,
         runtime_handler_runner_factory,
-        None,
     )
+    .dispatch(method, path, body)
 }
 
+/// An HTTP request; `json_body` says whether it declared a JSON media type,
+/// which the routes that parse a JSON body require.
 pub fn handle_attractor_request_with_options(
     method: &str,
     path: &str,
     body: &str,
+    json_body: bool,
     settings: SparkSettings,
     runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
     run_event_observer: Option<attractor_runtime::RunEventObserver>,
@@ -3151,7 +3152,7 @@ pub fn handle_attractor_request_with_options(
         Some(observer) => service.with_run_event_observer(observer),
         None => service,
     };
-    service.dispatch(method, path, body)
+    dispatch_attractor_route(&service, method, path, body, json_body)
 }
 
 pub fn default_runtime_handler_runner_factory() -> RuntimeHandlerRunnerFactory {
@@ -3290,15 +3291,26 @@ pub fn handle_preview_request(
     preview_with_config(req, config)
 }
 
+fn unsupported_media_type() -> RuntimeRouteResponse {
+    RuntimeRouteResponse::json(
+        415,
+        json!({"detail": "Expected Content-Type: application/json."}),
+    )
+}
+
 fn dispatch_attractor_route(
     service: &AttractorApiService,
     method: &str,
     path: &str,
     body: &str,
+    json_body: bool,
 ) -> RuntimeRouteResponse {
     let method = method.to_ascii_uppercase();
     let (path, query) = split_attractor_path_query(path);
     match (method.as_str(), path.as_str()) {
+        ("POST", "/pipelines" | "/preview" | "/api/flows") if !json_body => {
+            unsupported_media_type()
+        }
         ("GET", "/status") => service.get_status(),
         ("GET", "/runs") => {
             service.list_runs_for_project(query_string(&query, "project_path").as_deref())
@@ -3353,7 +3365,7 @@ fn dispatch_attractor_route(
             }
         }
         _ if path.starts_with("/pipelines/") => {
-            dispatch_pipeline_route(service, &method, &path, &query, body)
+            dispatch_pipeline_route(service, &method, &path, &query, body, json_body)
         }
         _ => RuntimeRouteResponse::json(404, json!({"detail": "Not Found"})),
     }
@@ -3382,13 +3394,19 @@ fn dispatch_pipeline_route(
     path: &str,
     query: &str,
     body: &str,
+    json_body: bool,
 ) -> RuntimeRouteResponse {
     let remainder = path.trim_start_matches("/pipelines/");
     let (pipeline_id, subpath) = remainder.split_once('/').unwrap_or((remainder, ""));
     if pipeline_id.trim().is_empty() {
         return RuntimeRouteResponse::json(404, json!({"detail": "Not Found"}));
     }
+    let answer = subpath.starts_with("questions/") && subpath.ends_with("/answer");
     match (method, subpath) {
+        ("POST", "continue" | "steer") | ("PATCH", "metadata") if !json_body => {
+            unsupported_media_type()
+        }
+        ("POST", _) if answer && !json_body => unsupported_media_type(),
         ("GET", "") => service.get_pipeline(pipeline_id),
         ("GET", "checkpoint") => service.get_pipeline_checkpoint(pipeline_id),
         ("GET", "context") => service.get_pipeline_context(pipeline_id),
@@ -3474,7 +3492,7 @@ fn dispatch_pipeline_route(
                 ),
             }
         }
-        ("POST", subpath) if subpath.starts_with("questions/") && subpath.ends_with("/answer") => {
+        ("POST", subpath) if answer => {
             let question_id = subpath
                 .trim_start_matches("questions/")
                 .trim_end_matches("/answer");

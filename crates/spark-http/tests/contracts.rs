@@ -28,6 +28,30 @@ mod workspace_run_route_contracts;
 #[path = "contracts/workspace_trigger_route_contracts.rs"]
 mod workspace_trigger_route_contracts;
 
+/// The listener in-process requests arrive on, as a served app attaches it.
+pub(crate) const LISTENER: &str = "127.0.0.1:8000";
+
+/// `request` as a direct loopback client of the owner's machine sends it to
+/// the `LISTENER`: with that listener, a loopback peer and, unless the
+/// request names one, its `Host`.
+pub(crate) fn local<B>(mut request: axum::http::Request<B>) -> axum::http::Request<B> {
+    let listener: std::net::SocketAddr = LISTENER.parse().expect("listener");
+    request
+        .extensions_mut()
+        .insert(spark_http::ListenerAddr(listener));
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40000,
+        ))));
+    request
+        .headers_mut()
+        .entry(axum::http::header::HOST)
+        .or_insert(axum::http::HeaderValue::from_static(LISTENER));
+    request
+}
+
 fn write_conversation_snapshot(data_dir: &std::path::Path, snapshot: &serde_json::Value) {
     seed_conversation(data_dir, snapshot);
 }
@@ -228,12 +252,12 @@ async fn conversation_view(
         encode_query(project_path)
     );
     let response = app
-        .oneshot(
+        .oneshot(local(
             axum::http::Request::builder()
                 .uri(uri)
                 .body(axum::body::Body::empty())
                 .unwrap(),
-        )
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), axum::http::StatusCode::OK);

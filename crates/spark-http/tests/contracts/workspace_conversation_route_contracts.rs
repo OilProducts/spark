@@ -435,7 +435,7 @@ async fn request_json(
     } else {
         builder.body(Body::empty()).expect("request body")
     };
-    let response = app.oneshot(request).await.expect("response");
+    let response = app.oneshot(crate::local(request)).await.expect("response");
     let status = response.status();
     let content_type = response
         .headers()
@@ -464,7 +464,7 @@ async fn request_text(
     let request = builder
         .body(Body::from(body.to_string()))
         .expect("request body");
-    let response = app.oneshot(request).await.expect("response");
+    let response = app.oneshot(crate::local(request)).await.expect("response");
     let status = response.status();
     let content_type = response
         .headers()

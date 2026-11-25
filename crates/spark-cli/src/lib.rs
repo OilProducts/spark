@@ -49,7 +49,8 @@ pub enum HttpMethod {
 pub struct ApiRequestPlan {
     pub method: HttpMethod,
     pub base_url: String,
-    /// Where `base_url` came from: `flag`, `env`, `saved` or `default`.
+    /// Where `base_url` came from: `flag`, `env`, `companion`, `saved` or
+    /// `default`.
     pub target_source: &'static str,
     pub path: String,
     pub body: Option<Value>,
@@ -1508,8 +1509,8 @@ fn encode(value: &str) -> String {
     encoded
 }
 
-/// `--base-url`, then `SPARK_API_BASE_URL`, then the saved target, then the
-/// default; a source checkout refuses the default.
+/// `--base-url`, then `SPARK_API_BASE_URL` (or its loopback companion), then
+/// the saved target, then the default; a source checkout refuses the default.
 fn with_target(
     plan: ApiRequestPlan,
     names: &[&str],
@@ -1536,7 +1537,10 @@ fn with_target(
         .filter(|url| !url.is_empty());
     let (base_url, target_source) = match (flag, env_url) {
         (Some(url), _) => (url, "flag"),
-        (None, Some(url)) => (url, "env"),
+        (None, Some(url)) => match companion(env, &url) {
+            Some(companion) => (companion, "companion"),
+            None => (url, "env"),
+        },
         (None, None) => {
             let fail = |error: String| json_error(error, EXIT_GENERAL_FAILURE);
             let bootstrap =
@@ -1562,20 +1566,64 @@ fn with_target(
     })
 }
 
+/// The same server's loopback URL, for a managed agent whose shell dropped
+/// the automatic bearer but kept the advertised target `env_url` unchanged.
+fn companion(env: &impl Environment, env_url: &str) -> Option<String> {
+    if env_value(env, "SPARK_AGENT_API_TOKEN").is_some()
+        || env_value(env, "SPARK_API_TOKEN").is_some()
+    {
+        return None;
+    }
+    let advertised = origin_url(&env_value(env, "SPARK_AGENT_API_ORIGIN")?)?;
+    let loopback = env_value(env, "SPARK_AGENT_LOOPBACK_URL")?;
+    let url = origin_url(&loopback)?;
+    let host = url
+        .host_str()?
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let literal_loopback = host
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback());
+    let unchanged = origin_url(env_url) == Some(advertised);
+    (unchanged && url.scheme() == "http" && literal_loopback).then_some(loopback)
+}
+
+/// `value` as an http(s) URL naming only an origin: the root path, and no
+/// query, fragment or user information.
+fn origin_url(value: &str) -> Option<reqwest::Url> {
+    let url = reqwest::Url::parse(value).ok()?;
+    let origin_only = matches!(url.scheme(), "http" | "https")
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.username().is_empty()
+        && url.password().is_none();
+    origin_only.then_some(url)
+}
+
+fn env_value(env: &impl Environment, key: &str) -> Option<String> {
+    env.get_var(key)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 // ---------------------------------------------------------------------------
 // Sending a request and printing its response.
 
-/// The bearer a human sets to reach a remote server; agents on their own
-/// server's loopback need none.
-fn api_token(env: &impl Environment) -> Option<String> {
-    env.get_var("SPARK_API_TOKEN")
-        .map(|token| token.trim().to_string())
-        .filter(|token| !token.is_empty())
+/// The bearers a command may send: the one a human sets to reach a remote
+/// server, and the one Spark gives its agents, pinned to its advertised
+/// origin. Agents on their own server's loopback need neither.
+struct Tokens {
+    manual: Option<String>,
+    automatic: Option<(String, reqwest::Url)>,
 }
 
 fn execute(plan: &ApiRequestPlan, env: &impl Environment, out: &mut dyn Write) -> CommandOutput {
-    let token = api_token(env);
-    let token = token.as_deref();
+    let token = &Tokens {
+        manual: env_value(env, "SPARK_API_TOKEN"),
+        automatic: env_value(env, "SPARK_AGENT_API_TOKEN")
+            .zip(env_value(env, "SPARK_AGENT_API_ORIGIN").and_then(|origin| origin_url(&origin))),
+    };
     let payload = match &plan.view {
         View::Events {
             run_id,
@@ -1611,16 +1659,30 @@ fn transport(error: reqwest::Error) -> Failure {
     Failure::Transport(format!("Request failed: {error}"))
 }
 
+/// Sends the automatic bearer only to its pinned origin, else any manual
+/// one. A request carrying the automatic bearer or sent to the loopback
+/// companion goes direct and follows no redirect, so neither a proxy nor a
+/// `Location` can take it elsewhere.
 fn send(
     plan: &ApiRequestPlan,
-    token: Option<&str>,
+    token: &Tokens,
     timeout: Option<Duration>,
 ) -> Result<reqwest::blocking::Response, Failure> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(transport)?;
     let url = format!("{}{}", plan.base_url.trim_end_matches('/'), plan.path);
+    let automatic = token.automatic.as_ref().filter(|(_, origin)| {
+        reqwest::Url::parse(&url).is_ok_and(|url| url.origin() == origin.origin())
+    });
+    let bearer = automatic
+        .map(|(bearer, _)| bearer)
+        .or(token.manual.as_ref());
+    let managed = automatic.is_some() || plan.target_source == "companion";
+    let mut client = reqwest::blocking::Client::builder().timeout(timeout);
+    if managed {
+        client = client
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none());
+    }
+    let client = client.build().map_err(transport)?;
     let mut request = match plan.method {
         HttpMethod::Get => client.get(&url),
         HttpMethod::Post => client.post(&url),
@@ -1630,10 +1692,20 @@ fn send(
     if let Some(body) = &plan.body {
         request = request.json(body);
     }
-    if let Some(token) = token {
-        request = request.bearer_auth(token);
+    if let Some(bearer) = bearer {
+        request = request.bearer_auth(bearer);
     }
-    request.send().map_err(transport)
+    let response = request.send().map_err(transport)?;
+    let status = response.status();
+    if managed && status.is_redirection() {
+        return Err(Failure::Http(
+            status.as_u16(),
+            format!(
+                "The server answered {status}; a Spark-managed request does not follow redirects."
+            ),
+        ));
+    }
+    Ok(response)
 }
 
 /// The response, or the server's error from it.
@@ -1657,13 +1729,13 @@ fn read_payload(response: reqwest::blocking::Response) -> Result<Value, Failure>
     Ok(serde_json::from_str(&text).unwrap_or_else(|_| json!({ "detail": text })))
 }
 
-fn request_json(plan: &ApiRequestPlan, token: Option<&str>) -> Result<Value, Failure> {
+fn request_json(plan: &ApiRequestPlan, token: &Tokens) -> Result<Value, Failure> {
     read_payload(send(plan, token, Some(REQUEST_TIMEOUT))?)
 }
 
 /// The failure as JSON on stderr, naming the target, with the plan's hint
 /// when the server's error is the one it answers.
-fn failure_output(plan: &ApiRequestPlan, error: Failure, token: Option<&str>) -> CommandOutput {
+fn failure_output(plan: &ApiRequestPlan, error: Failure, token: &Tokens) -> CommandOutput {
     let target = Some((plan.base_url.as_str(), plan.target_source));
     let (status, mut message) = match error {
         Failure::Transport(message) => return failure(message, EXIT_GENERAL_FAILURE, None, target),
@@ -1700,11 +1772,7 @@ fn failure_output(plan: &ApiRequestPlan, error: Failure, token: Option<&str>) ->
 /// The project of the conversation with this handle.
 // ponytail: reads every conversation's summary row, only after a flow 404;
 // add a by-handle read route if this path gets hot.
-fn conversation_project(
-    plan: &ApiRequestPlan,
-    handle: &str,
-    token: Option<&str>,
-) -> Option<String> {
+fn conversation_project(plan: &ApiRequestPlan, handle: &str, token: &Tokens) -> Option<String> {
     let list = ApiRequestPlan {
         method: HttpMethod::Get,
         path: "/workspace/api/projects/conversations".to_string(),
@@ -1726,7 +1794,7 @@ fn similar_flows(
     plan: &ApiRequestPlan,
     name: &str,
     project: Option<String>,
-    token: Option<&str>,
+    token: &Tokens,
 ) -> Option<String> {
     let wanted = name.strip_suffix(".dot").unwrap_or(name).trim_matches('/');
     let list = ApiRequestPlan {
@@ -1759,7 +1827,7 @@ fn stream_events(
     after: Option<u64>,
     text: bool,
     until_done: bool,
-    token: Option<&str>,
+    token: &Tokens,
     out: &mut dyn Write,
 ) -> CommandOutput {
     let done = CommandOutput::stdout(0, String::new());
@@ -1861,7 +1929,7 @@ fn is_run_end(envelope: &Value) -> bool {
 fn last_sequence_if_ended(
     plan: &ApiRequestPlan,
     run_id: &str,
-    token: Option<&str>,
+    token: &Tokens,
 ) -> Result<Option<u64>, Failure> {
     let read = |path: String| ApiRequestPlan {
         method: HttpMethod::Get,
@@ -1887,7 +1955,7 @@ const DELEGATION_SERVER_WAIT: Duration = Duration::from_secs(25);
 fn wait_for_delegation(
     plan: &ApiRequestPlan,
     timeout: Option<Duration>,
-    token: Option<&str>,
+    token: &Tokens,
 ) -> CommandOutput {
     let started = std::time::Instant::now();
     loop {
@@ -1913,7 +1981,7 @@ fn wait_for_delegation(
 /// Sends an answer once. A request whose response is lost is reported as
 /// uncertain and never resent; `spark delegation get` shows whether the
 /// question closed.
-fn answer_once(plan: &ApiRequestPlan, token: Option<&str>) -> CommandOutput {
+fn answer_once(plan: &ApiRequestPlan, token: &Tokens) -> CommandOutput {
     let mut plan = plan.clone();
     if plan.view == View::AnswerOpenQuestion {
         let read = ApiRequestPlan {
