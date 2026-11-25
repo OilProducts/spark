@@ -19,9 +19,13 @@ pub const AGENT_INSTRUCTIONS_METADATA_KEY: &str = "spark.agent.instructions";
 /// shell a turn starts sees it as `SPARK_PROJECT_WORK_DIR`.
 pub const PROJECT_WORK_DIR_METADATA_KEY: &str = "spark.runtime.project_work_dir";
 
+/// Metadata key for the active conversation's handle; every agent process and
+/// shell a turn starts sees it as `SPARK_CONVERSATION_HANDLE`.
+pub const CONVERSATION_HANDLE_METADATA_KEY: &str = "spark.runtime.conversation_handle";
+
 /// The environment a turn binds for its agent processes: this Spark's home
 /// and API, so `spark` reaches it from every backend, and the metadata's
-/// work area.
+/// work area and conversation handle.
 pub(crate) fn agent_turn_env(metadata: &BTreeMap<String, Value>) -> BTreeMap<String, OsString> {
     crate::codex_app_server::spark_agent_environment(None)
         .into_iter()
@@ -34,6 +38,19 @@ pub(crate) fn agent_turn_env(metadata: &BTreeMap<String, Value>) -> BTreeMap<Str
                     (
                         spark_common::project::PROJECT_WORK_DIR_ENV.to_string(),
                         work.into(),
+                    )
+                }),
+        )
+        .chain(
+            metadata
+                .get(CONVERSATION_HANDLE_METADATA_KEY)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|handle| !handle.is_empty())
+                .map(|handle| {
+                    (
+                        spark_common::project::CONVERSATION_HANDLE_ENV.to_string(),
+                        handle.into(),
                     )
                 }),
         )

@@ -19,9 +19,12 @@ pub const ENVIRONMENT_ID_FILE_NAME: &str = "environment_id";
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Frontend↔backend HTTP/SSE contract version for remote UI views; bump on
 /// breaking workspace/attractor API or SSE envelope changes.
-pub const UI_API_VERSION: u32 = 1;
+pub const UI_API_VERSION: u32 = 2;
 /// How long a pairing code stays valid.
 pub const PAIRING_CODE_TTL: time::Duration = time::Duration::minutes(10);
+/// The `peer_tokens` ID of the local agents' token, outside the UUIDs pairing
+/// issues. It is internal: never listed or revoked by users.
+const AGENT_TOKEN_ID: &str = "spark-agent";
 
 /// The home's environment ID, created on first use by exclusive creation of a
 /// complete file. The caller holds the home lock. A file that is not a UUID
@@ -93,6 +96,8 @@ pub struct DelegationOut {
     pub cancel_acknowledged_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// When the follower first sent the record; `None` means B never saw it.
+    pub submitted_at: Option<String>,
 }
 
 /// A delegation this home admitted, or a cancellation tombstone.
@@ -145,7 +150,8 @@ pub fn now() -> String {
 
 const OUT_COLUMNS: &str = "delegation_id, environment_id, project_path, kind, request, \
     request_sha256, caller, request_key, owner_conversation_id, phase, target_id, last_state, \
-    result, paused, cancel_requested_at, cancel_acknowledged_at, created_at, updated_at";
+    result, paused, cancel_requested_at, cancel_acknowledged_at, created_at, updated_at, \
+    submitted_at";
 const IN_COLUMNS: &str = "delegation_id, origin_environment_id, project_path, kind, request, \
     request_sha256, target_kind, target_id, phase, result, created_at, sealed_at, canceled_at";
 
@@ -175,6 +181,7 @@ fn out_row(row: &Row<'_>) -> rusqlite::Result<DelegationOut> {
         cancel_acknowledged_at: row.get(15)?,
         created_at: row.get(16)?,
         updated_at: row.get(17)?,
+        submitted_at: row.get(18)?,
     })
 }
 
@@ -198,14 +205,22 @@ fn in_row(row: &Row<'_>) -> rusqlite::Result<DelegationIn> {
 
 /// Seals an outgoing delegation on `connection`, inside the caller's
 /// transaction, so the seal and its inbox event commit together. A sealed
-/// record keeps its first result.
-pub fn seal_out_on(connection: &Connection, delegation_id: &str, result: &Value) -> Result<()> {
-    connection.execute(
+/// record keeps its first result. With `unsubmitted`, it seals only a record
+/// paused before it was ever submitted, checked in the same statement, so a
+/// relink or submission that commits first leaves it open. Returns whether
+/// it sealed.
+pub fn seal_out_on(
+    connection: &Connection,
+    delegation_id: &str,
+    result: &Value,
+    unsubmitted: bool,
+) -> Result<bool> {
+    Ok(connection.execute(
         "UPDATE delegations_out SET phase = 'sealed', result = ?2, paused = NULL, \
-         updated_at = ?3 WHERE delegation_id = ?1 AND phase != 'sealed'",
-        params![delegation_id, result.to_string(), now()],
-    )?;
-    Ok(())
+         updated_at = ?3 WHERE delegation_id = ?1 AND phase != 'sealed' \
+         AND (NOT ?4 OR (paused IS NOT NULL AND submitted_at IS NULL))",
+        params![delegation_id, result.to_string(), now(), unsubmitted],
+    )? > 0)
 }
 
 /// The environment tables of one Spark home.
@@ -280,10 +295,11 @@ impl EnvironmentRepository {
     pub fn tokens(&self) -> Result<Vec<PeerToken>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT token_id, label, created_at, revoked_at FROM peer_tokens ORDER BY created_at",
+            "SELECT token_id, label, created_at, revoked_at FROM peer_tokens \
+             WHERE token_id != ?1 ORDER BY created_at",
         )?;
         let tokens = statement
-            .query_map([], |row| {
+            .query_map([AGENT_TOKEN_ID], |row| {
                 Ok(PeerToken {
                     token_id: row.get(0)?,
                     label: row.get(1)?,
@@ -295,12 +311,36 @@ impl EnvironmentRepository {
         Ok(tokens)
     }
 
-    /// Returns whether a live token was revoked.
+    /// Returns whether a live token was revoked. The local agents' token
+    /// is never revoked here.
     pub fn revoke_token(&self, token_id: &str) -> Result<bool> {
         Ok(self.connection()?.execute(
-            "UPDATE peer_tokens SET revoked_at = ?2 WHERE token_id = ?1 AND revoked_at IS NULL",
-            params![token_id, now()],
+            "UPDATE peer_tokens SET revoked_at = ?2 WHERE token_id = ?1 AND token_id != ?3 \
+             AND revoked_at IS NULL",
+            params![token_id, now(), AGENT_TOKEN_ID],
         )? > 0)
+    }
+
+    /// Replaces the reserved local-agent token with a fresh secret and returns the secret.
+    pub fn provision_agent_token(&self) -> Result<String> {
+        let secret = secret();
+        self.connection()?.execute(
+            "INSERT INTO peer_tokens (token_id, label, token_sha256, created_at) \
+             VALUES (?1, 'Local agents', ?2, ?3) ON CONFLICT (token_id) DO UPDATE SET \
+             label = excluded.label, token_sha256 = excluded.token_sha256, \
+             created_at = excluded.created_at, revoked_at = NULL",
+            params![AGENT_TOKEN_ID, hash(&secret), now()],
+        )?;
+        Ok(secret)
+    }
+
+    /// Deletes the reserved local-agent token, if any.
+    pub fn clear_agent_token(&self) -> Result<()> {
+        self.connection()?.execute(
+            "DELETE FROM peer_tokens WHERE token_id = ?1",
+            [AGENT_TOKEN_ID],
+        )?;
+        Ok(())
     }
 
     /// The ID of the unrevoked token whose secret is `secret`.
@@ -415,7 +455,7 @@ impl EnvironmentRepository {
             &format!(
                 "INSERT INTO delegations_out ({OUT_COLUMNS}) VALUES \
                  (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'created', NULL, NULL, NULL, NULL, NULL, \
-                 NULL, ?10, ?10) ON CONFLICT (caller, request_key) DO NOTHING"
+                 NULL, ?10, ?10, NULL) ON CONFLICT (caller, request_key) DO NOTHING"
             ),
             params![
                 record.delegation_id,
@@ -530,6 +570,18 @@ impl EnvironmentRepository {
         )
     }
 
+    /// Notes, before the follower sends a record, that B may now have it.
+    /// Refused, so nothing is sent, once the record is sealed, paused or
+    /// canceled.
+    pub fn submit_out(&self, delegation_id: &str) -> Result<bool> {
+        Ok(self.connection()?.execute(
+            "UPDATE delegations_out SET submitted_at = coalesce(submitted_at, ?2) \
+             WHERE delegation_id = ?1 AND phase = 'created' AND paused IS NULL \
+             AND cancel_requested_at IS NULL",
+            params![delegation_id, now()],
+        )? > 0)
+    }
+
     /// Records the owner's cancellation once.
     pub fn request_cancel_out(&self, delegation_id: &str) -> Result<bool> {
         Ok(self.connection()?.execute(
@@ -547,9 +599,10 @@ impl EnvironmentRepository {
         )? > 0)
     }
 
-    /// Seals a record that has no owner conversation to tell.
-    pub fn seal_out(&self, delegation_id: &str, result: &Value) -> Result<()> {
-        seal_out_on(&self.connection()?, delegation_id, result)
+    /// Seals a record that has no owner conversation to tell; see
+    /// [`seal_out_on`].
+    pub fn seal_out(&self, delegation_id: &str, result: &Value, unsubmitted: bool) -> Result<bool> {
+        seal_out_on(&self.connection()?, delegation_id, result, unsubmitted)
     }
 
     // ---- Incoming delegations ----------------------------------------------

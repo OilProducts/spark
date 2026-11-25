@@ -44,17 +44,49 @@ const TURN_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const CODEX_RUNTIME_ROOT_ENV: &str = "ATTRACTOR_CODEX_RUNTIME_ROOT";
 const CODEX_SEED_DIR_ENV: &str = "ATTRACTOR_CODEX_SEED_DIR";
 static CODEX_SPARK_HOME: OnceLock<PathBuf> = OnceLock::new();
-static CODEX_API_BASE_URL: OnceLock<String> = OnceLock::new();
+static AGENT_API: OnceLock<AgentApi> = OnceLock::new();
 
-/// Records the workspace API base URL exported to codex sessions as
-/// SPARK_API_BASE_URL, so the spark CLI inside agent shells targets this
-/// server instead of requiring --base-url.
-pub fn configure_codex_api_base_url(url: impl Into<String>) -> Result<(), String> {
-    let url = url.into();
-    match CODEX_API_BASE_URL.set(url.clone()) {
+/// The automatic owner bearer, the origin it may be sent to, and the same
+/// server's loopback URL. Spark exports them, empty when unset, to every agent
+/// it launches, so a value inherited from elsewhere never survives.
+pub const MANAGED_AGENT_API_KEYS: [&str; 3] = [
+    "SPARK_AGENT_API_TOKEN",
+    "SPARK_AGENT_API_ORIGIN",
+    "SPARK_AGENT_LOOPBACK_URL",
+];
+
+/// How agents reach this Spark: exported as `SPARK_API_BASE_URL` and, for a
+/// non-loopback `base_url`, the `MANAGED_AGENT_API_KEYS`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AgentApi {
+    pub base_url: String,
+    /// The owner bearer for a non-loopback `base_url`; never printed.
+    pub token: Option<String>,
+    /// The same server's loopback URL, beside a non-loopback `base_url`.
+    pub loopback_url: Option<String>,
+}
+
+/// Records, once per process, how the agents this process launches reach
+/// its Spark, so the spark CLI inside agent shells needs no --base-url.
+pub fn configure_agent_api(api: AgentApi) -> Result<(), String> {
+    match AGENT_API.set(api.clone()) {
         Ok(()) => Ok(()),
-        Err(_) if CODEX_API_BASE_URL.get() == Some(&url) => Ok(()),
-        Err(_) => Err("codex API base URL is already configured differently".to_string()),
+        Err(_) if AGENT_API.get() == Some(&api) => Ok(()),
+        Err(_) => Err("The agent API endpoint is already configured differently.".to_string()),
+    }
+}
+
+/// Windows names are case-insensitive: drops another spelling of a managed
+/// key from an assembled environment, so launching cannot reinstate its
+/// inherited value over the one Spark exports.
+pub(crate) fn drop_managed_key_aliases<V>(env: &mut BTreeMap<String, V>) {
+    if cfg!(windows) && AGENT_API.get().is_some() {
+        // As `merge_env` compares Windows names, beyond ASCII too.
+        env.retain(|key, _| {
+            !MANAGED_AGENT_API_KEYS
+                .iter()
+                .any(|managed| key != managed && key.to_uppercase() == *managed)
+        });
     }
 }
 const COLLABORATION_MODE_DEFAULT: &str = "default";
@@ -3018,6 +3050,7 @@ pub(crate) fn build_codex_runtime_environment_with_settings(
     let path = existing_path_key
         .as_deref()
         .and_then(|key| env_map.remove(key));
+    drop_managed_key_aliases(&mut env_map);
     env_map.extend(spark_agent_environment(
         path.as_deref().and_then(OsStr::to_str),
     ));
@@ -3492,8 +3525,19 @@ pub fn spark_agent_environment(path: Option<&str>) -> Vec<(String, OsString)> {
     if let Some(spark_home) = CODEX_SPARK_HOME.get() {
         vars.push(("SPARK_HOME".to_string(), spark_home.into()));
     }
-    if let Some(base_url) = CODEX_API_BASE_URL.get() {
-        vars.push(("SPARK_API_BASE_URL".to_string(), base_url.into()));
+    if let Some(api) = AGENT_API.get() {
+        vars.push((
+            "SPARK_API_BASE_URL".to_string(),
+            api.base_url.clone().into(),
+        ));
+        let origin = api.token.as_ref().map(|_| api.base_url.clone());
+        for (key, value) in MANAGED_AGENT_API_KEYS.into_iter().zip([
+            api.token.clone(),
+            origin,
+            api.loopback_url.clone(),
+        ]) {
+            vars.push((key.to_string(), value.unwrap_or_default().into()));
+        }
     }
     let mut path_entries = first_party_tool_bin_dirs()
         .into_iter()

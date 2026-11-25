@@ -25,7 +25,10 @@ npm run dev
 ```
 
 By default, the Vite dev server proxies API requests to `http://127.0.0.1:8000`.
-Override that with `VITE_BACKEND_URL` if needed.
+Override that with `VITE_BACKEND_URL` if needed. When Spark binds a specific
+non-loopback address, set it to the `Spark local UI` URL Spark prints at startup.
+The proxy forwards a request without a bearer token only from a loopback client
+of the page's own origin.
 
 ## Shared UI Boundary
 

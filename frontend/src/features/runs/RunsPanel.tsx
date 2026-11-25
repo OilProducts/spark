@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { cn } from '@/lib/utils'
+import { normalizeProjectPath } from '@/lib/projectPaths'
 import { useNow } from '@/lib/useNow'
 import { useRunsList } from './hooks/useRunsList'
 import { useRunActions } from './hooks/useRunActions'
@@ -72,7 +73,8 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const statusFilter = useStore((state) => state.runsListSession.statusFilter ?? null)
     const searchQuery = useStore((state) => state.runsListSession.searchQuery ?? '')
     const fetched = useStore((state) => state.runsListSession.fetched ?? false)
-    const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
+    // Runs carry native paths (C:\repo); the filter is a normalized registry key (C:/repo).
+    const runs = projectFilter ? scopedRuns.filter((run) => normalizeProjectPath(run.project_path ?? '') === projectFilter) : scopedRuns
     // A desktop opens on the run you most likely came for of those the list shows, never one found
     // missing; a phone opens on the list. It waits for the first full list: Spark's live snapshot
     // arrives one run at a time, so ranking before then can open a lesser run. A run picked or
@@ -147,7 +149,7 @@ export function RunsPanel() {
         hasRuns: state.runsListSession.runs.length > 0,
         // The project filter can leave the list empty while other projects have runs.
         hasProjectRuns: state.runsListSession.runs.some((run) => (
-            !state.runsListSession.projectFilter || run.project_path === state.runsListSession.projectFilter
+            !state.runsListSession.projectFilter || normalizeProjectPath(run.project_path ?? '') === state.runsListSession.projectFilter
         )),
     })))
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)

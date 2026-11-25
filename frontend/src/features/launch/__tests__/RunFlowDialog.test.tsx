@@ -132,6 +132,20 @@ it('opens in the project of the latest run when that is more recent than the las
     expect(await within(dialog).findByText('Beta only')).toBeVisible()
 })
 
+it('opens in the registered project of a latest run recorded with a native Windows path', async () => {
+    useStore.setState((state) => ({
+        projectRegistry: { ...state.projectRegistry, 'C:/work/repo': { directoryPath: 'C:/work/repo', isFavorite: false, lastAccessedAt: null } },
+        runsListSession: {
+            ...state.runsListSession,
+            runs: [{ run_id: 'run-1', flow_name: 'nightly', status: 'completed', working_directory: 'C:\\work\\repo', project_path: 'C:\\work\\repo', model: '', started_at: '2026-10-01T09:00:00Z' }],
+        },
+    }))
+    render(<RunFlowDialog />)
+    act(() => openRunFlowDialog())
+    const dialog = await screen.findByTestId('run-flow-dialog')
+    expect(within(dialog).getByTestId<HTMLSelectElement>('run-flow-project-select').value).toBe('C:/work/repo')
+})
+
 it('is one Tab stop that the arrow keys move through, picks the first match on Enter, and gives focus back on close', async () => {
     const user = userEvent.setup()
     render(<><button type="button" onClick={() => openRunFlowDialog({ projectPath: '/tmp/alpha' })}>Open</button><RunFlowDialog /></>)

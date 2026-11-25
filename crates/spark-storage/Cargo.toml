@@ -23,3 +23,6 @@ thiserror = "1.0"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 toml = "0.8"
 uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }

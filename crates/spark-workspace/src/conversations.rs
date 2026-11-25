@@ -1997,6 +1997,12 @@ impl WorkspaceConversationService {
             spark_agent_adapter::AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
             json!(instructions),
         );
+        if !prepared.conversation_handle.trim().is_empty() {
+            metadata.insert(
+                spark_agent_adapter::CONVERSATION_HANDLE_METADATA_KEY.to_string(),
+                json!(prepared.conversation_handle),
+            );
+        }
         let mut prompt = if rejection_notes.is_empty() {
             prepared.prompt.clone()
         } else {
@@ -4544,7 +4550,7 @@ pub(crate) fn run_question_instructions(sources: &str) -> String {
 /// How a conversation agent drives Spark, shared by the chat, role, and mission frames.
 pub(crate) fn spark_control_surface(conversation_handle: &str, project_path: &str) -> String {
     format!(
-        "The Spark control surface is the `spark` CLI from this workspace's runtime, already configured for this Spark: SPARK_HOME and SPARK_API_BASE_URL are set in your environment. `spark <domain> --help` lists every command and flag; `spark --help` lists the domains. Flows are directories of markdown files (flow.md plus one file per node) and roles are <name>.md files. They resolve project first, then bundled: this project's definitions {org} (flows/ and roles/) replace any bundled flow or role of the same name in $SPARK_HOME/bundled, which is a read-only library rewritten on every start. Every flow can be launched; `spark flow list --project {project_path}` includes this project's flows.\n\
+        "The Spark control surface is the `spark` CLI from this workspace's runtime, already configured for this Spark: SPARK_HOME, SPARK_API_BASE_URL, and SPARK_CONVERSATION_HANDLE are set in your environment. `spark <domain> --help` lists every command and flag; `spark --help` lists the domains. Flows are directories of markdown files (flow.md plus one file per node) and roles are <name>.md files. They resolve project first, then bundled: this project's definitions {org} (flows/ and roles/) replace any bundled flow or role of the same name in $SPARK_HOME/bundled, which is a read-only library rewritten on every start. Every flow can be launched; `spark flow list --project {project_path}` includes this project's flows.\n\
         - Before launching, read the flow's declared inputs with `spark flow get <name> --inputs` and supply the required ones with `--context`, keyed by input key.\n\
         - `spark run start --conversation {handle} --flow <name> --summary <text>` launches the flow immediately and prints its run id. This is the only way you start workflow runs.\n\
         - `spark delegation --help` hands a whole task to a linked environment; `spark environment --help` manages links and discovers their projects (`spark environment link projects <environment_id>`), and `spark flow list --environment <environment_id> --project <path>` / `spark flow get <name> --environment <environment_id> --project <path> --inputs` inspect remote flows before delegating.\n\n\

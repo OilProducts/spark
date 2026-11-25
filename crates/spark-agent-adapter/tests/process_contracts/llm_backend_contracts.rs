@@ -3838,20 +3838,24 @@ const SDK_AGENT_API_BASE_URL: &str = "http://127.0.0.1:43123";
 
 /// An SDK agent's shell reaches this Spark as Codex and Claude Code shells do.
 /// Spark's home and API are set once per process, and other tests here need
-/// them unset, so a copy of this binary runs the turn.
+/// them unset, so a copy of this binary runs the turn. A loopback endpoint
+/// blanks the managed owner-access values Spark itself inherited.
 #[test]
 fn sdk_agent_shell_sees_sparks_home_and_api() {
     let dir = tempfile::tempdir().unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
         .args(["--exact", "llm_backend_contracts::sdk_agent_env_role"])
-        .env(SDK_AGENT_ENV_DIR_ENV, dir.path())
-        .output()
-        .unwrap();
+        .env(SDK_AGENT_ENV_DIR_ENV, dir.path());
+    for key in spark_agent_adapter::MANAGED_AGENT_API_KEYS {
+        command.env(key, "stale");
+    }
+    let output = command.output().unwrap();
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         fs::read_to_string(dir.path().join("agent-env")).expect("the shell ran"),
         format!(
-            "{}|{SDK_AGENT_API_BASE_URL}",
+            "{}|{SDK_AGENT_API_BASE_URL}|set:|set:|set:",
             dir.path().join("spark-home").display()
         )
     );
@@ -3866,7 +3870,12 @@ fn sdk_agent_env_role() {
     };
     let dir = std::path::PathBuf::from(dir);
     spark_agent_adapter::configure_codex_spark_home(dir.join("spark-home")).unwrap();
-    spark_agent_adapter::configure_codex_api_base_url(SDK_AGENT_API_BASE_URL).unwrap();
+    spark_agent_adapter::configure_agent_api(spark_agent_adapter::AgentApi {
+        base_url: SDK_AGENT_API_BASE_URL.to_string(),
+        token: None,
+        loopback_url: None,
+    })
+    .unwrap();
     let (client, calls) = scripted_client(|index, _| {
         Ok(match index {
             0 => reply(
@@ -3874,7 +3883,7 @@ fn sdk_agent_env_role() {
                 vec![ToolCall::new(
                     "call-env",
                     "shell",
-                    json!({"command": "printf '%s|%s' \"$SPARK_HOME\" \"$SPARK_API_BASE_URL\" > agent-env"}),
+                    json!({"command": "printf '%s|%s|%s|%s|%s' \"$SPARK_HOME\" \"$SPARK_API_BASE_URL\" \"${SPARK_AGENT_API_TOKEN+set:$SPARK_AGENT_API_TOKEN}\" \"${SPARK_AGENT_API_ORIGIN+set:$SPARK_AGENT_API_ORIGIN}\" \"${SPARK_AGENT_LOOPBACK_URL+set:$SPARK_AGENT_LOOPBACK_URL}\" > agent-env"}),
                 )],
             ),
             _ => reply("Done.", Vec::new()),

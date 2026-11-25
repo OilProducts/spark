@@ -29,7 +29,8 @@ interface FormQuestionFieldsProps {
     draftKey: string
     form: FormQuestion
     isSubmitting: boolean
-    onReply: (reply: FormReply) => void
+    /** A returned promise keeps the stored draft until it resolves true, so a refused reply comes back as entered. */
+    onReply: (reply: FormReply) => void | Promise<boolean>
     testId: string
 }
 
@@ -51,8 +52,9 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
     }
     const reply = (value: FormReply) => {
         setInvalid(null)
-        draftsByKey.delete(draftKey)
-        onReply(value)
+        const accepted = onReply(value)
+        if (!accepted) draftsByKey.delete(draftKey)
+        else void accepted.then((ok) => { if (ok) draftsByKey.delete(draftKey) })
     }
     const submit = () => {
         const result = draftReply(fields, draft)

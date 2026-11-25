@@ -789,7 +789,32 @@ pub fn program_found(program: &str, inheritance: EnvironmentInheritancePolicy) -
         permission_policy: Default::default(),
         system_instructions: None,
     };
-    found(&harness_command(&harness, inheritance, None, []))
+    found(&harness_command(
+        &harness,
+        inheritance,
+        None,
+        spark_path(&harness, inheritance),
+    ))
+}
+
+/// The `PATH` binding that puts Spark's own tool directories, `spark` among
+/// them, ahead of the `PATH` `harness` otherwise gives its child under
+/// `inheritance`, as every backend's agents get them. Its setup and launches
+/// all bind it, so they find the same program.
+fn spark_path(
+    harness: &AcpHarness,
+    inheritance: EnvironmentInheritancePolicy,
+) -> Option<(String, OsString)> {
+    let inherited = crate::local_environment::inherited_environment(inheritance);
+    let path = inherited
+        .iter()
+        .chain(&harness.env)
+        .filter(|(key, _)| crate::local_environment::is_path_key(key))
+        .last()
+        .map(|(_, value)| value.as_str());
+    crate::codex_app_server::spark_agent_environment(path)
+        .into_iter()
+        .find(|(key, _)| key == "PATH")
 }
 
 /// `harness`'s program in `cwd` (else Spark's own directory) with the
@@ -1818,7 +1843,8 @@ fn turn(
 
 /// The command that launches `harness` in `cwd`, carrying `instructions`
 /// through its declared channel, and the instruction file that must outlive
-/// the process. Spark's reserved bindings come last, so nothing overrides them.
+/// the process. Spark's reserved bindings, its tool directories first on
+/// `PATH` among them, come last, so nothing overrides them.
 fn launch_command(
     harness_id: &str,
     harness: &AcpHarness,
@@ -1859,6 +1885,7 @@ fn launch_command(
         channel_env
             .into_iter()
             .map(|(key, value)| (key, OsString::from(value)))
+            .chain(spark_path(harness, inheritance))
             .chain(crate::agent::agent_turn_env(metadata)),
     );
     command.args(&harness.args).args(channel_args);
@@ -2275,6 +2302,9 @@ struct Turn {
     live_messages: UnboundedReceiver<LiveMessage>,
     /// Shared flag telling `send_message` when the turn is between prompts.
     accepting_messages: Arc<AtomicBool>,
+    /// Whether instructions are pinned into each prompt because the harness has
+    /// neither a declared instruction channel nor ACP `systemPrompt` support.
+    in_prompt: bool,
 }
 
 /// A harness's `elicitation/create` waiting for its reply.
@@ -2303,7 +2333,7 @@ struct Ready {
     record: AcpSessionRecord,
     reset: Option<String>,
     resumed: bool,
-    /// Instructions the first prompt of a fresh session carries.
+    /// Instructions pinned into each prompt when no system-prompt channel exists.
     in_prompt: bool,
 }
 
@@ -2393,6 +2423,7 @@ impl Turn {
             replies: work.replies,
             live_messages: work.live_messages,
             accepting_messages: work.accepting_messages,
+            in_prompt: false,
         }
     }
 
@@ -2451,18 +2482,14 @@ impl Turn {
             resumed,
             in_prompt,
         } = ready;
+        self.in_prompt = in_prompt;
         let mut text = self.plan.prompt.clone();
         if let Some(context) = self.plan.fresh_context.as_ref().filter(|_| !resumed) {
             text = format!("{context}\n\n---\n\n{text}");
         }
-        // ponytail: instructions sent as prompt text weigh less than a system
-        // prompt and may fade in a long or compacted session.
-        if let Some(instructions) = self
-            .plan
-            .instructions
-            .as_ref()
-            .filter(|_| in_prompt && !resumed)
-        {
+        // Without a system-prompt channel, pin instructions onto every turn so
+        // harness context compaction or session resume cannot drop them.
+        if let Some(instructions) = self.plan.instructions.as_ref().filter(|_| self.in_prompt) {
             text = format!("<instructions>\n{instructions}\n</instructions>\n\n{text}");
         }
         let _ = self.out.messages.send(Message::Prompted);
@@ -2535,9 +2562,13 @@ impl Turn {
             let _ = self.out.messages.send(Message::Done(Err(error)));
             return false;
         }
+        let mut text = self.plan.prompt.clone();
+        if let Some(instructions) = self.plan.instructions.as_ref().filter(|_| self.in_prompt) {
+            text = format!("<instructions>\n{instructions}\n</instructions>\n\n{text}");
+        }
         let _ = self.out.messages.send(Message::Prompted);
         if let Err(error) = session
-            .send_prompt(self.plan.prompt.clone())
+            .send_prompt(text)
             .map_err(|error| format!("session/prompt failed: {}", describe(&error)))
         {
             let error = failure.get().cloned().unwrap_or(error);
@@ -3816,7 +3847,7 @@ pub fn read_antigravity_usage(
     harness: &AcpHarness,
     inheritance: EnvironmentInheritancePolicy,
 ) -> Result<Vec<crate::UsageWindow>, String> {
-    let mut command = harness_command(harness, inheritance, None, []);
+    let mut command = harness_command(harness, inheritance, None, spark_path(harness, inheritance));
     ensure_found(&command)
         .map_err(|error| format!("Could not launch {}: {error}", harness.executable))?;
     crate::local_environment::configure_process_group(&mut command);
@@ -3953,7 +3984,8 @@ mod tests {
 
     /// Settings offers a known harness only when a registration of it finds
     /// its program under the configured inheritance, as setup and launches
-    /// do. An explicit path needs no PATH, and on Windows may omit `.exe`.
+    /// do. An explicit path needs no PATH, and on Windows may omit `.exe`;
+    /// Spark's own tool directory is on every PATH.
     #[test]
     fn program_found_follows_the_inheritance_policy() {
         let shell = if cfg!(windows) { "cmd" } else { "sh" };
@@ -3980,6 +4012,12 @@ mod tests {
             }
         }
         let exe = std::env::current_exe().unwrap();
+        // Spark's own tool directory leads every launch's PATH, so Settings
+        // finds a bare name there even when nothing is inherited.
+        assert!(program_found(
+            exe.file_name().unwrap().to_str().unwrap(),
+            EnvironmentInheritancePolicy::InheritNone
+        ));
         let explicit = if cfg!(windows) {
             exe.with_extension("")
         } else {

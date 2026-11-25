@@ -406,7 +406,7 @@ export function TriggerEditor({
 
             {form.sourceType === 'webhook' ? (
                 <Well className="p-3 text-sm text-muted-foreground sm:col-span-2">
-                    Another service starts this trigger by sending a POST request to <code>{SHARED_WEBHOOK_ENDPOINT}</code>, with a key and secret that Spark creates for it.
+                    Another service starts this trigger by sending a POST request with a JSON body to <code>{SHARED_WEBHOOK_ENDPOINT}</code>, with a key and secret that Spark creates for it.
                 </Well>
             ) : null}
 

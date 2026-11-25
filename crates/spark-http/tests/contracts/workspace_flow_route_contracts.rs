@@ -843,7 +843,7 @@ async fn request_text(
     let request = builder
         .body(Body::from(body.unwrap_or_default().to_string()))
         .expect("request body");
-    let response = app.oneshot(request).await.expect("response");
+    let response = app.oneshot(crate::local(request)).await.expect("response");
     let status = response.status();
     let headers = response.headers().clone();
     let content_type = headers

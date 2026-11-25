@@ -779,9 +779,10 @@ async fn launch_workspace_run(
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, WorkspaceApiError> {
-    let request = match run_launch_payload(body) {
+    let request = match run_launch_payload(&headers, body) {
         Ok(request) => request,
         Err(response) => return Ok(response),
     };
@@ -805,9 +806,10 @@ async fn retry_workspace_run(
     State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(run_id): AxumPath<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, WorkspaceApiError> {
-    let request = match run_retry_payload(body) {
+    let request = match run_retry_payload(&headers, body) {
         Ok(request) => request,
         Err(response) => return Ok(response),
     };
@@ -833,9 +835,10 @@ async fn continue_workspace_run(
     State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(run_id): AxumPath<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, WorkspaceApiError> {
-    let request = match run_continue_payload(body) {
+    let request = match run_continue_payload(&headers, body) {
         Ok(request) => request,
         Err(response) => return Ok(response),
     };
@@ -1548,6 +1551,9 @@ async fn post_trigger_webhook(
             "Webhook key and secret headers are required.",
         ));
     }
+    if !crate::is_json_content_type(&headers) {
+        return Ok(crate::unsupported_media_type());
+    }
     let value = serde_json::from_slice::<Value>(&body).map_err(|_| {
         WorkspaceError::Validation("Webhook payload must be valid JSON.".to_string())
     })?;
@@ -1664,23 +1670,7 @@ async fn patch_settings(
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     payload: Result<Json<spark_workspace::settings::WorkspaceSettingsUpdate>, JsonRejection>,
 ) -> ApiResult<Value> {
-    let request = payload
-        .map_err(|error| {
-            let detail = error.body_text();
-            let field = [
-                "thinking_budget_tokens",
-                "thinking",
-                "reasoning_mode",
-                "reasoning_summary",
-            ]
-            .into_iter()
-            .find(|field| detail.contains(field));
-            WorkspaceError::Validation(match field {
-                Some(field) => format!("Invalid {field}; check its value and type."),
-                None => "Invalid settings update; check section, revision, and field types.".into(),
-            })
-        })?
-        .0;
+    let request = json_body(payload, settings_update_detail)?;
     let (scope, section, project_path) = match &request.section {
         spark_workspace::settings::WorkspaceSettingsSection::Providers(_) => {
             ("workspace", "providers", None)
@@ -1741,23 +1731,7 @@ async fn validate_settings_update(
     State(settings): State<Arc<SparkSettings>>,
     payload: Result<Json<spark_workspace::settings::WorkspaceSettingsUpdate>, JsonRejection>,
 ) -> ApiResult<Value> {
-    let request = payload
-        .map_err(|error| {
-            let detail = error.body_text();
-            let field = [
-                "thinking_budget_tokens",
-                "thinking",
-                "reasoning_mode",
-                "reasoning_summary",
-            ]
-            .into_iter()
-            .find(|field| detail.contains(field));
-            WorkspaceError::Validation(match field {
-                Some(field) => format!("Invalid {field}; check its value and type."),
-                None => "Invalid settings update; check section, revision, and field types.".into(),
-            })
-        })?
-        .0;
+    let request = json_body(payload, settings_update_detail)?;
     spark_workspace::settings::validate_workspace_settings_update(&settings, &request)?;
     Ok(Json(json!({"valid": true})))
 }
@@ -1784,13 +1758,44 @@ impl From<DeletedProjectRecord> for DeletedProjectRecordWithStatus {
 pub(crate) fn json_payload<T>(
     payload: Result<Json<T>, JsonRejection>,
 ) -> Result<T, WorkspaceApiError> {
-    payload
-        .map(|Json(value)| value)
-        .map_err(|rejection| WorkspaceError::Validation(rejection.to_string()).into())
+    json_body(payload, JsonRejection::to_string)
 }
 
-fn run_launch_payload(body: Bytes) -> Result<RunLaunchRequest, Response> {
-    let value = run_body_value(body)?;
+/// A JSON body, or 415 when it was sent without a JSON media type and 400
+/// with `detail` for any other rejection.
+fn json_body<T>(
+    payload: Result<Json<T>, JsonRejection>,
+    detail: impl FnOnce(&JsonRejection) -> String,
+) -> Result<T, WorkspaceApiError> {
+    payload.map(|Json(value)| value).map_err(|rejection| {
+        match rejection {
+            JsonRejection::MissingJsonContentType(_) => WorkspaceError::UnsupportedMediaType(
+                "Expected Content-Type: application/json.".into(),
+            ),
+            rejection => WorkspaceError::Validation(detail(&rejection)),
+        }
+        .into()
+    })
+}
+
+fn settings_update_detail(rejection: &JsonRejection) -> String {
+    let detail = rejection.body_text();
+    let field = [
+        "thinking_budget_tokens",
+        "thinking",
+        "reasoning_mode",
+        "reasoning_summary",
+    ]
+    .into_iter()
+    .find(|field| detail.contains(field));
+    match field {
+        Some(field) => format!("Invalid {field}; check its value and type."),
+        None => "Invalid settings update; check section, revision, and field types.".into(),
+    }
+}
+
+fn run_launch_payload(headers: &HeaderMap, body: Bytes) -> Result<RunLaunchRequest, Response> {
+    let value = run_body_value(headers, body)?;
     let object = run_body_object(&value)?;
     let mut errors = required_field_errors(object, &["flow_name", "summary"], &value);
     // Only an admitted delegation fixes a run's ID.
@@ -1805,8 +1810,8 @@ fn run_launch_payload(body: Bytes) -> Result<RunLaunchRequest, Response> {
     deserialize_run_payload(value)
 }
 
-fn run_retry_payload(body: Bytes) -> Result<RunRetryRequest, Response> {
-    let value = run_body_value(body)?;
+fn run_retry_payload(headers: &HeaderMap, body: Bytes) -> Result<RunRetryRequest, Response> {
+    let value = run_body_value(headers, body)?;
     let object = run_body_object(&value)?;
     let errors = extra_field_errors(object, &["conversation_handle"]);
     if !errors.is_empty() {
@@ -1815,8 +1820,8 @@ fn run_retry_payload(body: Bytes) -> Result<RunRetryRequest, Response> {
     deserialize_run_payload(value)
 }
 
-fn run_continue_payload(body: Bytes) -> Result<RunContinueRequest, Response> {
-    let value = run_body_value(body)?;
+fn run_continue_payload(headers: &HeaderMap, body: Bytes) -> Result<RunContinueRequest, Response> {
+    let value = run_body_value(headers, body)?;
     let object = run_body_object(&value)?;
     let mut errors = required_field_errors(object, &["start_node", "flow_source_mode"], &value);
     errors.extend(extra_field_errors(
@@ -1839,7 +1844,10 @@ fn run_continue_payload(body: Bytes) -> Result<RunContinueRequest, Response> {
     deserialize_run_payload(value)
 }
 
-fn run_body_value(body: Bytes) -> Result<Value, Response> {
+fn run_body_value(headers: &HeaderMap, body: Bytes) -> Result<Value, Response> {
+    if !crate::is_json_content_type(headers) {
+        return Err(crate::unsupported_media_type());
+    }
     serde_json::from_slice::<Value>(&body).map_err(|error| {
         run_validation_response(vec![json!({
             "type": "json_invalid",
@@ -2133,9 +2141,13 @@ async fn control_mission(
     State(store): State<Arc<ConversationStore>>,
     AxumPath((id, control)): AxumPath<(String, String)>,
     query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
+    headers: HeaderMap,
     body: Bytes,
-) -> ApiResult<MissionRecord> {
+) -> Result<Response, WorkspaceApiError> {
     let query = query_payload(query)?;
+    if !body.is_empty() && !crate::is_json_content_type(&headers) {
+        return Ok(crate::unsupported_media_type());
+    }
     let body: &[u8] = if body.is_empty() { b"{}" } else { &body };
     let close: spark_workspace::missions::MissionCloseRequest = serde_json::from_slice(body)
         .map_err(|error| WorkspaceError::Validation(format!("Invalid close request: {error}")))?;
@@ -2151,6 +2163,7 @@ async fn control_mission(
         }
     })
     .await
+    .map(IntoResponse::into_response)
 }
 
 async fn list_roles(
@@ -2266,13 +2279,9 @@ async fn patch_profile_resource(
     payload: Result<Json<ProfileResourceUpdate>, JsonRejection>,
     section: &str,
 ) -> ApiResult<Value> {
-    let payload = payload
-        .map_err(|_| {
-            WorkspaceError::Validation(
-                "Invalid profile update; supply expected_revision and a typed value.".into(),
-            )
-        })?
-        .0;
+    let payload = json_body(payload, |_| {
+        "Invalid profile update; supply expected_revision and a typed value.".into()
+    })?;
     let request = serde_json::from_value(json!({"expected_revision": payload.expected_revision, "section": section, "value": payload.value}))
         .map_err(|_| WorkspaceError::Validation("Invalid profile fields.".into()))?;
     patch_settings(settings, live_hub, Ok(Json(request))).await

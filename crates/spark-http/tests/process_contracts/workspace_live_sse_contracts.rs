@@ -2648,10 +2648,18 @@ async fn request_with_headers(
     headers: &[(&str, &str)],
     body: Option<Value>,
 ) -> Response<Body> {
+    // A direct loopback client of the listener, as a served app sees it.
+    let listener = std::net::SocketAddr::from(([127, 0, 0, 1], 8000));
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
-        .header("content-type", "application/json");
+        .header("host", listener.to_string())
+        .header("content-type", "application/json")
+        .extension(spark_http::ListenerAddr(listener))
+        .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40000,
+        ))));
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }
