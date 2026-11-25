@@ -36,6 +36,8 @@ type ActiveEnvironmentState = {
     /** Tab currently selected by the user; differs from activeEnvironmentId while checking or blocked. */
     selectedEnvironmentId: string | null
     status: RemoteEnvironmentStatus
+    /** What the mounted environment's own last check found: while it failed, its workspace stays hidden, whatever else is checked. */
+    activeCheck: Check
     localDescriptor: EnvironmentDescriptor | null
     remoteDescriptor: EnvironmentDescriptor | null
     error: string | null
@@ -99,10 +101,14 @@ export function fetchLocalEnvironmentLinks(): Promise<EnvironmentLink[]> {
     )
 }
 
+type Check = Pick<ActiveEnvironmentState, 'status' | 'error' | 'remoteDescriptor'>
+const READY_LOCAL: Check = { status: 'ready', error: null, remoteDescriptor: null }
+
 const INITIAL_STATE: ActiveEnvironmentState = {
     activeEnvironmentId: null,
     selectedEnvironmentId: null,
     status: 'ready',
+    activeCheck: READY_LOCAL,
     localDescriptor: null,
     remoteDescriptor: null,
     error: null,
@@ -110,16 +116,11 @@ const INITIAL_STATE: ActiveEnvironmentState = {
     linksLoaded: false,
 }
 
-type Check = Pick<ActiveEnvironmentState, 'status' | 'error' | 'remoteDescriptor'>
-const READY_LOCAL: Check = { status: 'ready', error: null, remoteDescriptor: null }
-
 let state: ActiveEnvironmentState = { ...INITIAL_STATE }
 const listeners = new Set<() => void>()
 let switchSequence = 0
 let refreshSequence = 0
 let resetHandler: ((targetEnvironmentId: string | null) => void) | null = null
-// What the mounted environment's own last check found; a switch that does not go through shows it again.
-let activeCheck: Check = READY_LOCAL
 // The latest re-check of the mounted environment, and whether one is running.
 let reverifySequence = 0
 let reverifying = false
@@ -264,7 +265,7 @@ export async function refreshLocalEnvironments(): Promise<void> {
 
 /** Shows the mounted environment again as its own last check left it, without remounting it. */
 function showActiveEnvironment() {
-    updateState({ selectedEnvironmentId: state.activeEnvironmentId, ...activeCheck })
+    updateState({ selectedEnvironmentId: state.activeEnvironmentId, ...state.activeCheck })
 }
 
 /**
@@ -276,10 +277,9 @@ function commitEnvironment(seq: number, environmentId: string | null, check: Che
     requestNavigation(() => {
         if (committed || seq !== switchSequence) return
         committed = true
-        activeCheck = check
         // Update activeEnvironmentId before wiping stores so any store subscription sees the new environment,
         // then notify React listeners once stores are clean so the remounted subtree starts fresh.
-        state = { ...state, activeEnvironmentId: environmentId, selectedEnvironmentId: environmentId, ...check }
+        state = { ...state, activeEnvironmentId: environmentId, selectedEnvironmentId: environmentId, activeCheck: check, ...check }
         resetHandler?.(environmentId)
         emit()
         onActivated?.()
@@ -290,7 +290,8 @@ function commitEnvironment(seq: number, environmentId: string | null, check: Che
 
 /**
  * Switches the workspace to `environmentId` (`null`: this machine). A linked environment is checked first while the
- * current workspace stays mounted; a failed check hides it, keeping its edits, until the user retries or returns.
+ * current workspace stays mounted; a failed check hides it, keeping its edits, until the user retries or returns. One
+ * that failed its own check stays hidden while another is checked.
  */
 export async function selectEnvironment(
     environmentId: string | null,
@@ -300,8 +301,8 @@ export async function selectEnvironment(
     const active = state.activeEnvironmentId
     if (environmentId === active && (state.selectedEnvironmentId !== active || state.status === 'ready')) {
         showActiveEnvironment()
-        if (activeCheck.status === 'ready') options?.onActivated?.()
-        return activeCheck.status === 'ready'
+        if (state.status === 'ready') options?.onActivated?.()
+        return state.status === 'ready'
     }
     if (environmentId === null) return commitEnvironment(seq, null, READY_LOCAL, options?.onActivated)
 
@@ -310,8 +311,7 @@ export async function selectEnvironment(
     const check = await checkRemoteEnvironment(environmentId).catch((error: unknown) => unreachable(errorText(error)))
     if (seq !== switchSequence) return false
     if (environmentId === active || check.status !== 'ready') {
-        if (environmentId === active) activeCheck = check
-        updateState(check)
+        updateState(environmentId === active ? { activeCheck: check, ...check } : check)
         if (check.status === 'ready') options?.onActivated?.()
         return check.status === 'ready'
     }
@@ -324,8 +324,8 @@ export function retrySelectedEnvironment(): Promise<boolean> {
 
 /**
  * Checks the mounted linked environment again, as when its live connection fails or opens again after failing: one
- * that was upgraded, re-paired as another environment or revoked this Spark's credential shows the gate's error, now
- * or, while a switch elsewhere is pending, once that switch comes back to it. It leaves a pending switch alone.
+ * that was upgraded, re-paired as another environment or revoked this Spark's credential hides its workspace behind the
+ * gate at once. A switch elsewhere carries on: the gate shows its check, and a return from it shows this error.
  * Resolves whether the mounted environment passed, or `null` with no answer. A failing connection's checks run one at a
  * time; a `fresh` one, for a connection that opened again, starts anew and outdates any still running.
  */
@@ -333,7 +333,7 @@ export async function reverifyActiveEnvironment(fresh = false): Promise<boolean 
     const environmentId = state.activeEnvironmentId
     if (environmentId === null) return true
     // An error already found stays until Retry or Return.
-    if (activeCheck.status !== 'ready') return false
+    if (state.activeCheck.status !== 'ready') return false
     if (reverifying && !fresh) return null
     const seq = ++reverifySequence
     reverifying = true
@@ -346,8 +346,7 @@ export async function reverifyActiveEnvironment(fresh = false): Promise<boolean 
         if (seq === reverifySequence) reverifying = false
     }
     if (seq !== reverifySequence || state.activeEnvironmentId !== environmentId) return null
-    activeCheck = check
-    if (state.selectedEnvironmentId === environmentId) updateState(check)
+    updateState(state.selectedEnvironmentId === environmentId ? { activeCheck: check, ...check } : { activeCheck: check })
     return check.status === 'ready'
 }
 
@@ -365,7 +364,6 @@ export function useActiveEnvironment(): ActiveEnvironmentState {
 export function resetActiveEnvironmentForTests() {
     switchSequence += 1
     refreshSequence += 1
-    activeCheck = READY_LOCAL
     reverifySequence += 1
     reverifying = false
     state = { ...INITIAL_STATE }

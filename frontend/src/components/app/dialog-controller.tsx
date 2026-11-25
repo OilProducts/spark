@@ -38,6 +38,8 @@ type ConfirmDialogOptions = {
   confirmLabel?: string
   cancelLabel?: string
   confirmVariant?: ButtonVariant
+  /** Asks whether to leave the current view, such as for a switch to another environment awaiting approval. */
+  leaving?: boolean
 }
 
 type AlertDialogOptions = {
@@ -66,6 +68,8 @@ type DialogController = {
   alert: (options: AlertDialogOptions) => Promise<void>
   confirm: (options: ConfirmDialogOptions) => Promise<boolean>
   prompt: (options: PromptDialogOptions) => Promise<string | null>
+  /** Brings an open question about leaving over a layer opened after it, such as an environment's error gate. */
+  raiseLeaving: () => void
 }
 
 type AlertDialogRequest = AlertDialogOptions & {
@@ -120,6 +124,7 @@ const fallbackDialogController: DialogController = {
     }
     return trimmedValue
   },
+  raiseLeaving: () => {},
 }
 
 export function DialogProvider({ children }: PropsWithChildren) {
@@ -162,6 +167,9 @@ export function DialogProvider({ children }: PropsWithChildren) {
         resolve,
       })
     }),
+    raiseLeaving: () => setCurrentDialog((dialog) => (
+      dialog?.kind === 'confirm' && dialog.leaving ? { ...dialog, id: ++dialogRequests } : dialog
+    )),
   }), [])
 
   const closeDialog = () => {

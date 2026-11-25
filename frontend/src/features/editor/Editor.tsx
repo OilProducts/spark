@@ -518,6 +518,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                     confirmLabel: 'Discard and leave',
                     cancelLabel: 'Keep editing',
                     confirmVariant: 'destructive',
+                    leaving: true,
                 })) {
                     proceed();
                 }

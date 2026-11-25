@@ -104,10 +104,10 @@ function WorkspaceShell() {
 }
 
 function App() {
-  const { activeEnvironmentId, status } = useActiveEnvironment()
-  // A failed check hides the workspace without unmounting it, so its unsaved edits wait for Retry or Return; the gate
-  // brings the switcher bar along.
-  const blocked = status === 'incompatible' || status === 'unreachable'
+  const { activeEnvironmentId, status, activeCheck } = useActiveEnvironment()
+  // A failed check, a destination's or the mounted environment's own, hides the workspace without unmounting it, so its
+  // unsaved edits wait for Retry or Return; the gate brings the switcher bar along.
+  const blocked = status === 'incompatible' || status === 'unreachable' || activeCheck.status !== 'ready'
 
   return (
     <DialogProvider>

@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { AlertTriangle, Laptop, Loader2, RefreshCw, Server } from 'lucide-react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { Button } from '@/components/ui/button'
+import { useDialogController } from '@/components/app/dialog-controller'
 import { useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
 import { resetModelOptionsCache } from '@/components/model-chooser/useModelOptions'
 import { useRunJournalStore } from '@/features/runs/state/runJournalStore'
@@ -166,11 +167,15 @@ export function EnvironmentSwitcherBar() {
 /**
  * Shown, with the workspace hidden but still mounted, when a linked environment fails its check: unreachable, a
  * rejected credential or another identity, or a `ui_api_version` / `protocol_version` this bundle does not speak.
- * It is a modal layer, with the switcher bar, over any dialog the workspace left open, which waits under it; a
- * switch's confirmation opens over it in turn.
+ * A mounted one that failed stays behind it while another is checked, which it shows. It is a modal layer, with the
+ * switcher bar, over any dialog the workspace left open, which waits under it; a question about leaving, such as a
+ * switch's confirmation, opens over it, or comes over it if it was open as the gate came up.
  */
 export function RemoteEnvironmentGate() {
     const { activeEnvironmentId, selectedEnvironmentId, status, error, links, localDescriptor, remoteDescriptor } = useActiveEnvironment()
+    const { raiseLeaving } = useDialogController()
+    useEffect(raiseLeaving, [raiseLeaving])
+    const checking = status === 'checking'
     const nameOf = (environmentId: string) => links.find((entry) => entry.environment_id === environmentId)?.label || environmentId
     const name = selectedEnvironmentId ? nameOf(selectedEnvironmentId) : 'Remote environment'
     // Back to the workspace still mounted, or to this machine when that is the one failing.
@@ -190,12 +195,16 @@ export function RemoteEnvironmentGate() {
                     >
                         <div className="w-full max-w-md space-y-4 rounded-xl border border-border bg-background p-6 shadow-sm">
                             <div className="flex items-center justify-center gap-2 text-sm font-semibold text-foreground">
-                                <AlertTriangle aria-hidden="true" className="size-4 text-warning" />
+                                {checking
+                                    ? <Loader2 aria-hidden="true" className="size-4 animate-spin" />
+                                    : <AlertTriangle aria-hidden="true" className="size-4 text-warning" />}
                                 <DialogPrimitive.Title asChild>
                                     <span>
-                                        {status === 'incompatible'
-                                            ? `Version mismatch with ${name}`
-                                            : `Couldn’t connect to ${name}`}
+                                        {checking
+                                            ? `Connecting to ${name}…`
+                                            : status === 'incompatible'
+                                                ? `Version mismatch with ${name}`
+                                                : `Couldn’t connect to ${name}`}
                                     </span>
                                 </DialogPrimitive.Title>
                             </div>
@@ -217,10 +226,12 @@ export function RemoteEnvironmentGate() {
                                 </dl>
                             ) : null}
                             <div className="flex flex-wrap justify-center gap-2">
-                                <Button type="button" size="sm" variant="outline" onClick={() => void retrySelectedEnvironment()}>
-                                    <RefreshCw aria-hidden="true" className="size-3.5" />
-                                    Retry
-                                </Button>
+                                {checking ? null : (
+                                    <Button type="button" size="sm" variant="outline" onClick={() => void retrySelectedEnvironment()}>
+                                        <RefreshCw aria-hidden="true" className="size-3.5" />
+                                        Retry
+                                    </Button>
+                                )}
                                 <Button type="button" size="sm" onClick={() => void selectEnvironment(returnTo)}>
                                     Return to {returnTo === null ? 'this machine' : nameOf(returnTo)}
                                 </Button>
