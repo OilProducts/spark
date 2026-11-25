@@ -29,7 +29,8 @@ export type EnvironmentLink = {
 }
 
 // `refused`: the link no longer reaches the Spark it paired with, which revoked this Spark's credential or was replaced
-// by another environment, or this Spark no longer links it, until it is paired again.
+// by another environment, or this Spark no longer links it, until it is paired again; or, linked anew while it failed,
+// until Retry checks the new link.
 type RemoteEnvironmentStatus = 'ready' | 'checking' | 'incompatible' | 'unreachable' | 'refused'
 
 type ActiveEnvironmentState = {
@@ -184,8 +185,9 @@ export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]
     if (update) {
         // A listing already in flight may predate the change; the reload this event starts replaces it.
         refreshSequence += 1
-        updateState({ links: update(state.links) })
-        dropRemovedDestination()
+        const previous = state.links
+        updateState({ links: update(previous) })
+        dropRemovedDestination(previous)
     }
     window.dispatchEvent(new Event(ENVIRONMENT_LINKS_CHANGED_EVENT))
 }
@@ -193,17 +195,23 @@ export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]
 /**
  * A destination removed or linked anew, here or in another tab, while it is checked or its switch awaits approval is no
  * longer one to switch to, whatever its check or the open editors answer: the workspace mounted stays, with its edits.
- * A mounted environment no longer linked fails for good, its live connection closed, until Retry passes or you leave it.
+ * A mounted environment no longer linked fails for good, its live connection closed, until Retry passes or you leave it;
+ * one linked anew while it failed, until Retry checks the new link.
  */
-function dropRemovedDestination() {
-    const linked = (environmentId: string) => state.links.find((link) => link.environment_id === environmentId)
+function dropRemovedDestination(previous: EnvironmentLink[]) {
+    const linked = (environmentId: string, links = state.links) => links.find((link) => link.environment_id === environmentId)
     const active = state.activeEnvironmentId
-    if (active !== null && state.linksLoaded && !linked(active)) {
-        // Checks still running, sent before the link went, find nothing for it: automatic ones, and a Retry's, which
+    const now = active === null ? undefined : linked(active)
+    const before = active === null ? undefined : linked(active, previous)
+    const gone = active !== null && state.linksLoaded && !now
+    const replaced = now && before && (now.origin !== before.origin || now.created_at !== before.created_at)
+    if (gone || replaced) {
+        // Checks still running, sent for the link as it was, find nothing for it: automatic ones, and a Retry's, which
         // runs only while it is the one chosen. A switch elsewhere awaiting approval carries on.
         outdated = reverifySequence
         if (state.selectedEnvironmentId === active) switchSequence += 1
-        if (!isFinalCheck(state.activeCheck)) applyActiveCheck(unlinked(active))
+        if (gone && !isFinalCheck(state.activeCheck)) applyActiveCheck(unlinked(active))
+        if (replaced && state.activeCheck.status !== 'ready') applyActiveCheck(relinked(now.label || now.environment_id))
     }
     const pending = state.selectedEnvironmentId
     if (pending === null || pending === active) return
@@ -247,6 +255,7 @@ function describeCompatibilityMismatch(name: string, local: EnvironmentDescripto
 
 const unreachable = (error: string): Check => ({ status: 'unreachable', error, remoteDescriptor: null })
 const unlinked = (name: string): Check => ({ status: 'refused', remoteDescriptor: null, error: `This Spark no longer links ${name}. Link it again in Settings with a new pairing code from ${name}, then Retry.` })
+const relinked = (name: string): Check => ({ status: 'refused', remoteDescriptor: null, error: `${name} was linked anew since it was last checked. Retry to check the current link.` })
 
 // The environment that answered a descriptor request: the one its descriptor names, or the other one the proxy refused
 // with a 502 naming it in `answered_as`. None answered one the proxy refused naming none, such as a gateway's.
@@ -323,10 +332,11 @@ export async function refreshLocalEnvironments(): Promise<void> {
         patch.links = linksResult.value
         patch.linksLoaded = true
     }
+    const previous = state.links
     if (Object.keys(patch).length > 0) {
         updateState(patch)
     }
-    if (patch.links) dropRemovedDestination()
+    if (patch.links) dropRemovedDestination(previous)
 }
 
 /** Shows the mounted environment again as its own last check left it, without remounting it. */

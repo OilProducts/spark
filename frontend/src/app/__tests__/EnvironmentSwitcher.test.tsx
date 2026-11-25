@@ -667,6 +667,46 @@ describe('Same-window multi-environment switching', () => {
         await waitFor(() => expect(winLive()).toBeDefined())
     })
 
+    it('keeps a remote behind its gate, its live connection closed, when the listing replaces its link while Retry checks the old one, until Retry passes for the current link', async () => {
+        let links = [WIN_LINK]
+        const routes: Record<string, Route> = { [LINKS]: () => json({ links }) }
+        const { user, remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        Object.assign(routes, gatewayDown)
+        act(() => winLive()!.onerror?.(new Event('error')))
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(gate).toHaveTextContent('Couldn’t connect to Windows Workstation')
+
+        // Retry: the old link's check passes, but answers only once the listing shows the link replaced.
+        const late = deferred<void>()
+        routes[WIN_AUTH] = () => late.promise.then(() => json(WIN_ENV))
+        const before = checks()
+        await user.click(within(gate).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+        links = [WIN_RELINKED]
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        await waitFor(() => expect(getActiveEnvironmentState().links).toEqual([WIN_RELINKED]))
+        await act(async () => late.resolve())
+        const tried = connects()
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'refused', activeCheck: { status: 'refused' } })
+        expect(gate).toHaveTextContent('linked anew since it was last checked')
+        expect(remoteShell).not.toBeVisible()
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+
+        // Only Retry checks the current link: incompatible, then passing.
+        routes[WIN_AUTH] = () => json(descriptor('env-win', { ui_api_version: 3 }))
+        await user.click(within(gate).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(gate).toHaveTextContent('Version mismatch with Windows Workstation'))
+        expect(winLive()).toBeUndefined()
+        delete routes[WIN_AUTH]
+        delete routes[WIN_PUBLIC]
+        await user.click(within(gate).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(remoteShell).toBeVisible())
+        await waitFor(() => expect(winLive()).toBeDefined())
+    })
+
     it('keeps a remote ready once Retry passes after pairing again during an outage, though an older check answers late with the revoked credential, and its live connection recovers', async () => {
         const routes: Record<string, Route> = {}
         const { user, remoteShell, checks } = await mountWindows(routes)
