@@ -1208,17 +1208,20 @@ describe('routing across environments', () => {
         expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
     })
 
-    it('opens nothing from a remote environment\'s link reloaded on this machine', async () => {
-        // Before the reload, routing ran where the link was shown; the reloaded page starts on this machine.
-        await switchEnvironment('env-r')
-        render(<HistoryRoutingController />).unmount()
-        await switchEnvironment(null)
+    it('opens nothing from a remote environment\'s link a page opens on this machine, replacing its entry so one Back leaves', async () => {
         window.history.replaceState(null, '', `${buildRunsHash('remote-run')}?env=env-r`)
-        render(<HistoryRoutingController />)
+        const entries = window.history.length
+        // A page opened anew on the link: its modules load fresh, so routing has run nowhere yet.
+        vi.resetModules()
+        const { HistoryRoutingController: Controller } = await import('@/app/AppSessionControllers')
+        const { useStore: store } = await import('@/store')
+        store.setState({ viewMode: 'home' })
+        render(<Controller />)
 
         expect(window.location.hash).toBe('#/chats')
-        expect(useStore.getState().viewMode).toBe('home')
-        expect(selectSelectedRunId(useStore.getState())).toBeNull()
+        expect(window.history.length).toBe(entries)
+        expect(store.getState().viewMode).toBe('home')
+        expect(selectSelectedRunId(store.getState())).toBeNull()
         expect(savedRoute()).not.toMatchObject({ selectedRunId: 'remote-run' })
     })
 
