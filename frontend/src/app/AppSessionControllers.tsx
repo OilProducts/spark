@@ -624,9 +624,15 @@ export function WorkspaceLiveEventsController() {
             }
         }
 
+        // A final check closes this connection, even one whose handshake is still pending, though an earlier
+        // connection's check found it.
+        const stopOnFinal = subscribeActiveEnvironment(() => {
+            if (eventSource && final()) waitForCheck()
+        })
         open()
         return () => {
             closed = true
+            stopOnFinal()
             stopWaiting()
             if (reconnectTimer !== null) {
                 window.clearTimeout(reconnectTimer)

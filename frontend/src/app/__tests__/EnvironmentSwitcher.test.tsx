@@ -635,6 +635,46 @@ describe('Same-window multi-environment switching', () => {
         expect(connects()).toBe(tried + 1)
     })
 
+    it('closes a replacement live connection, its handshake still pending, once the check of a reopened connection that dropped finds the credential refused, and opens one promptly once Retry passes', async () => {
+        const routes: Record<string, Route> = {}
+        const { user, remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+
+        // A connection opens again; the check it starts gets the refusal only later.
+        const reopened = winLive()!
+        const before = checks()
+        const refusal = deferred<void>()
+        routes[WIN_AUTH] = async () => {
+            await refusal.promise
+            return json({ detail: 'Unauthorized' }, 401)
+        }
+        act(() => reopened.onopen?.(new Event('open')))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+
+        // It drops meanwhile, and its replacement's handshake stays pending.
+        act(() => reopened.onerror?.(new Event('error')))
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+        const replacement = winLive()!
+
+        await act(async () => refusal.resolve())
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(gate).toHaveTextContent('refused this Spark’s credential')
+        expect(replacement.closed).toBe(true)
+        const tried = connects()
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+
+        // Retry passes: a new connection opens at once.
+        delete routes[WIN_AUTH]
+        await user.click(within(gate).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(remoteShell).toBeVisible())
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 400 })
+        expect(connects()).toBe(tried + 1)
+    })
+
     it('shows a refused credential that an earlier reconnect\'s check finds after a newer one\'s gets no answer, and stops reconnecting until Retry passes', async () => {
         const routes: Record<string, Route> = {}
         const { user, remoteShell, checks } = await mountWindows(routes)
@@ -681,13 +721,16 @@ describe('Same-window multi-environment switching', () => {
         await waitFor(() => expect(winLive()).toBeDefined())
     })
 
-    it('shows a mounted remote\'s refused credential and stops reconnecting at once, while this machine\'s descriptor is still asked for, and keeps them when that answers 503', async () => {
+    it.each([
+        ['refused credential', () => json({ detail: 'Unauthorized' }, 401), 'refused this Spark’s credential', 'refused'],
+        ['version mismatch', () => json(descriptor('env-win', { ui_api_version: 3 })), 'Version mismatch with Windows Workstation', 'incompatible'],
+    ])('shows a mounted remote\'s %s and stops reconnecting at once, while this machine\'s descriptor is still asked for, and keeps them when that answers 503', async (_finding, answer, message, status) => {
         const routes: Record<string, Route> = {}
         const { user, remoteShell, checks } = await mountWindows(routes)
         const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
         const localLate = deferred<void>()
         let localAsked = 0
-        routes[WIN_AUTH] = () => json({ detail: 'Unauthorized' }, 401)
+        routes[WIN_AUTH] = answer
         routes['/environment'] = async () => {
             localAsked += 1
             await localLate.promise
@@ -695,8 +738,8 @@ describe('Same-window multi-environment switching', () => {
         }
         act(() => winLive()!.onerror?.(new Event('error')))
         const gate = await screen.findByTestId('remote-environment-gate')
-        expect(gate).toHaveTextContent('refused this Spark’s credential')
-        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'refused', activeCheck: { status: 'refused' } })
+        expect(gate).toHaveTextContent(message)
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status, activeCheck: { status } })
         expect(remoteShell).not.toBeVisible()
 
         // This machine's descriptor is still pending, and nothing is tried or checked again.
@@ -708,10 +751,10 @@ describe('Same-window multi-environment switching', () => {
         expect(winLive()).toBeUndefined()
         expect(checks()).toBe(checked)
 
-        // Its late 503 leaves the credential gate as it was.
+        // Its late 503 leaves the gate as it was.
         await act(async () => localLate.resolve())
-        expect(gate).toHaveTextContent('refused this Spark’s credential')
-        expect(getActiveEnvironmentState()).toMatchObject({ status: 'refused', activeCheck: { status: 'refused' } })
+        expect(gate).toHaveTextContent(message)
+        expect(getActiveEnvironmentState()).toMatchObject({ status, activeCheck: { status } })
         expect(connects()).toBe(tried)
         expect(winLive()).toBeUndefined()
 

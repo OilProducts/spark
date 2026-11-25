@@ -246,8 +246,12 @@ const answeredAs = (result: PromiseSettledResult<EnvironmentDescriptor>): string
  */
 async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     const name = linkLabelFor(environmentId)
-    // This machine's descriptor is asked for alongside; a refused credential or another identity doesn't wait for it.
-    const localAnswer = Promise.allSettled([fetchEnvironmentDescriptor(null)])
+    // This machine's descriptor is asked for alongside. A refused credential, another identity or a peer speaking other
+    // versions doesn't wait for it, which then explains a mismatch only if already in.
+    const localRequest = fetchEnvironmentDescriptor(null)
+    let localSoFar = null as EnvironmentDescriptor | null
+    localRequest.then((local) => { localSoFar = local }, () => {})
+    const localAnswer = Promise.allSettled([localRequest])
     const [authenticated] = await Promise.allSettled([fetchEnvironmentDescriptor(environmentId, '/workspace/api/environment')])
     const error = authenticated.status === 'rejected' ? authenticated.reason : null
     const status = error instanceof ApiHttpError ? error.status : 0
@@ -265,12 +269,16 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
         return { status: 'refused', remoteDescriptor: null, error: `${name} answered as environment ${other}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.` }
     }
     const remote = found.status === 'fulfilled' ? found.value : null
+    const incompatible = (peer: EnvironmentDescriptor, local: EnvironmentDescriptor | null): Check =>
+        ({ status: 'incompatible', error: describeCompatibilityMismatch(name, local, peer), remoteDescriptor: peer })
+    if (remote && !speaksThisBundle(remote)) {
+        if (localSoFar) updateState({ localDescriptor: localSoFar })
+        return incompatible(remote, localSoFar)
+    }
     const [localResult] = await localAnswer
     const local = localResult.status === 'fulfilled' ? localResult.value : null
     if (local) updateState({ localDescriptor: local })
-    if (remote && !(speaksThisBundle(remote) && (!local || speaksThisBundle(local)))) {
-        return { status: 'incompatible', error: describeCompatibilityMismatch(name, local, remote), remoteDescriptor: remote }
-    }
+    if (remote && local && !speaksThisBundle(local)) return incompatible(remote, local)
     if (localResult.status === 'rejected') {
         throw new Error(`Could not verify this Spark server’s version: ${errorText(localResult.reason)}`)
     }
