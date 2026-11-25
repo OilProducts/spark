@@ -315,7 +315,9 @@ impl std::fmt::Display for PeerError {
     }
 }
 
-/// One JSON request to another environment. Redirects are not followed.
+/// One JSON request to another environment. Redirects are not followed, ambient
+/// proxies are bypassed, and the entire round-trip (headers plus body) shares
+/// one wall-clock deadline.
 fn call(
     method: Method,
     origin: &str,
@@ -323,52 +325,109 @@ fn call(
     token: Option<&str>,
     body: Option<&Value>,
 ) -> Result<Value, PeerError> {
+    call_with_timeout(method, origin, path, token, body, PEER_TIMEOUT)
+}
+
+fn call_with_timeout(
+    method: Method,
+    origin: &str,
+    path: &str,
+    token: Option<&str>,
+    body: Option<&Value>,
+    timeout: Duration,
+) -> Result<Value, PeerError> {
     static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
     let client = CLIENT
         .get_or_init(|| {
             reqwest::blocking::Client::builder()
+                .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(10))
-                .timeout(PEER_TIMEOUT)
                 .build()
                 .map_err(|error| error.to_string())
         })
         .as_ref()
-        .map_err(|error| PeerError::Network(error.clone()))?;
-    let mut request = client.request(method, format!("{origin}{path}"));
+        .map_err(|error| PeerError::Network(error.clone()))?
+        .clone();
+    let url = format!("{origin}{path}");
+    let mut request = client.request(method, url).timeout(timeout);
     if let Some(token) = token {
-        request = request.bearer_auth(token);
+        request = request
+            .bearer_auth(token)
+            // Marks the call as relayed so a loopback peer always checks the token.
+            .header(reqwest::header::FORWARDED, "by=spark-peer");
     }
     if let Some(body) = body {
         request = request.json(body);
     }
-    let response = request.send().map_err(|error| {
-        PeerError::Network(if error.is_timeout() {
-            format!("{path} did not answer within {PEER_TIMEOUT:?}.")
-        } else {
-            error.to_string()
-        })
-    })?;
-    let status = response.status().as_u16();
-    let too_large = || {
-        PeerError::Network(format!(
-            "{origin}{path} answered with more than {MAX_RESPONSE_BYTES} bytes; the answer was refused."
-        ))
+    let deadline = Instant::now() + timeout;
+    let origin_owned = origin.to_string();
+    let path_owned = path.to_string();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let outcome = (|| -> Result<(u16, Vec<u8>), PeerError> {
+            let mut response = request.send().map_err(|error| {
+                PeerError::Network(if error.is_timeout() {
+                    format!("{path_owned} did not answer within {timeout:?}.")
+                } else {
+                    error.to_string()
+                })
+            })?;
+            let status = response.status().as_u16();
+            let too_large = || {
+                PeerError::Network(format!(
+                    "{origin_owned}{path_owned} answered with more than {MAX_RESPONSE_BYTES} bytes; the answer was refused."
+                ))
+            };
+            if response
+                .content_length()
+                .is_some_and(|length| length > MAX_RESPONSE_BYTES)
+            {
+                return Err(too_large());
+            }
+            let mut bytes = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                if Instant::now() >= deadline {
+                    return Err(PeerError::Network(format!(
+                        "{path_owned} did not answer within {timeout:?}."
+                    )));
+                }
+                let read = response.read(&mut chunk).map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::TimedOut || Instant::now() >= deadline {
+                        PeerError::Network(format!(
+                            "{path_owned} did not answer within {timeout:?}."
+                        ))
+                    } else {
+                        PeerError::Network(error.to_string())
+                    }
+                })?;
+                if read == 0 {
+                    break;
+                }
+                if (bytes.len() as u64).saturating_add(read as u64) > MAX_RESPONSE_BYTES {
+                    return Err(too_large());
+                }
+                bytes.extend_from_slice(&chunk[..read]);
+            }
+            Ok((status, bytes))
+        })();
+        let _ = tx.send(outcome);
+    });
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let (status, bytes) = match rx.recv_timeout(remaining) {
+        Ok(result) => result?,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            return Err(PeerError::Network(format!(
+                "{path} did not answer within {timeout:?}."
+            )));
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            return Err(PeerError::Network(format!(
+                "{path} request worker stopped unexpectedly."
+            )));
+        }
     };
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_RESPONSE_BYTES)
-    {
-        return Err(too_large());
-    }
-    let mut bytes = Vec::new();
-    response
-        .take(MAX_RESPONSE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| PeerError::Network(error.to_string()))?;
-    if bytes.len() as u64 > MAX_RESPONSE_BYTES {
-        return Err(too_large());
-    }
     let text = String::from_utf8_lossy(&bytes);
     let value = serde_json::from_str::<Value>(&text);
     if (200..300).contains(&status) {
@@ -629,22 +688,52 @@ pub fn cancel(
         return Ok(record);
     }
     if let Some(reason) = record.paused.as_deref() {
-        let target_kind = if record.kind == "flow" {
-            "run"
-        } else {
-            "conversation"
-        };
-        let state = json!({
-            "target_kind": target_kind,
-            "target_id": record.target_id,
-        });
-        let result = json!({
-            "status": "canceled",
-            "detail": format!("Canceled locally while paused: {reason}"),
-        });
-        seal_out_and_notify(settings, store, &record, &state, result, true)?;
+        seal_canceled_unsubmitted(settings, store, &record, reason)?;
     }
     get(settings, delegation_id)
+}
+
+fn seal_canceled_unsubmitted(
+    settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
+    record: &DelegationOut,
+    reason: &str,
+) -> WorkspaceResult<bool> {
+    let target_kind = if record.kind == "flow" {
+        "run"
+    } else {
+        "conversation"
+    };
+    let state = json!({
+        "target_kind": target_kind,
+        "target_id": record.target_id,
+    });
+    let result = json!({
+        "status": "canceled",
+        "detail": format!("Canceled locally while paused: {reason}"),
+    });
+    seal_out_and_notify(settings, store, record, &state, result, true)
+}
+
+fn pause_or_seal_canceled(
+    settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
+    delegation_id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let repository = environments(settings);
+    let _ = repository.pause_out(delegation_id, reason);
+    let Ok(Some(current)) = repository.out(delegation_id) else {
+        return Ok(());
+    };
+    if current.phase != "sealed"
+        && current.paused.is_some()
+        && current.cancel_requested_at.is_some()
+        && current.submitted_at.is_none()
+    {
+        seal_canceled_unsubmitted(settings, store, &current, reason).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// A run question takes `selected_value`; a conversation request takes
@@ -653,6 +742,8 @@ pub fn cancel(
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DelegationAnswerRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub selected_value: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -885,14 +976,25 @@ fn follow(
     store: &Arc<ConversationStore>,
     record: &DelegationOut,
 ) -> Result<(), String> {
+    if let Some(reason) = record.paused.as_deref() {
+        if record.cancel_requested_at.is_some() && record.submitted_at.is_none() {
+            seal_canceled_unsubmitted(settings, store, record, reason)
+                .map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
     let repository = environments(settings);
     let id = &record.delegation_id;
     let Some((link, token)) = repository
         .link(&record.environment_id)
         .map_err(|e| e.to_string())?
     else {
-        let _ = repository.pause_out(id, "No link to this environment; link it again to resume.");
-        return Ok(());
+        return pause_or_seal_canceled(
+            settings,
+            store,
+            id,
+            "No link to this environment; link it again to resume.",
+        );
     };
     let path = format!("{INCOMING_PATH}/{id}");
     let peer = |method: Method, path: &str, body: Option<Value>| {
@@ -935,8 +1037,7 @@ fn follow(
                 404 => format!("The environment does not know this delegation ({detail})."),
                 _ => format!("The environment refused this delegation ({status}: {detail})."),
             };
-            let _ = repository.pause_out(id, &reason);
-            return Ok(());
+            return pause_or_seal_canceled(settings, store, id, &reason);
         }
     };
     apply(settings, store, record, &state).map_err(|error| error.to_string())?;
@@ -964,11 +1065,13 @@ fn delegation_inbox_payload(record: &DelegationOut, state: &Value) -> Value {
 fn live_owner<'a>(
     conversations: &ConversationRepository,
     record: &'a DelegationOut,
-) -> Option<&'a str> {
-    record
-        .owner_conversation_id
-        .as_deref()
-        .filter(|owner| matches!(conversations.conversation_project_path(owner), Ok(Some(_))))
+) -> WorkspaceResult<Option<&'a str>> {
+    let Some(owner) = record.owner_conversation_id.as_deref() else {
+        return Ok(None);
+    };
+    Ok(conversations
+        .conversation_project_path(owner)?
+        .map(|_| owner))
 }
 
 /// Seals an outgoing record (see `seal_out_on` for `unsubmitted`) and
@@ -987,7 +1090,7 @@ fn seal_out_and_notify(
 ) -> WorkspaceResult<bool> {
     let id = &record.delegation_id;
     let conversations = ConversationRepository::new(store.clone());
-    let Some(owner) = live_owner(&conversations, record) else {
+    let Some(owner) = live_owner(&conversations, record)? else {
         return Ok(environments(settings).seal_out(id, &result, unsubmitted)?);
     };
     let mut payload = delegation_inbox_payload(record, state);
@@ -1031,18 +1134,25 @@ fn apply(
     let id = &record.delegation_id;
     let sealed = state["phase"] == "sealed";
     let conversations = ConversationRepository::new(store.clone());
-    let owner = live_owner(&conversations, record).filter(|_| !sealed);
+    let owner = if sealed {
+        None
+    } else {
+        live_owner(&conversations, record)?
+    };
     let prefix = format!("delegation:{id}:question:");
-    // B's open questions, each under its notification ID.
+    // B's open questions, each under its notification ID. Run questions carry
+    // `run_id` so sibling child runs sharing a gate ID do not collide.
     let questions: Vec<(String, &Value)> = state["questions"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|question| {
-            Some((
-                format!("{prefix}{}", question["question_id"].as_str()?),
-                question,
-            ))
+            let qid = question["question_id"].as_str()?;
+            let key = match non_empty(question["run_id"].as_str()) {
+                Some(run_id) => format!("{run_id}:{qid}"),
+                None => qid.to_string(),
+            };
+            Some((format!("{prefix}{key}"), question))
         })
         .collect();
     if let Some(owner) = owner {
@@ -1641,18 +1751,34 @@ pub fn answer_incoming(
             "Question {question_id} is not open in delegation {delegation_id}."
         ))
     };
+    let requested_run_id = non_empty(request.run_id.as_deref());
     if row.target_kind == "run" {
         if !request.answers.is_empty() {
             return Err(validation("A run question takes selected_value or form."));
         }
         let api = conversations.runtime_api_service();
         let questions = api.list_pipeline_questions(&row.target_id).body;
-        let question = questions["questions"]
+        let matching: Vec<&Value> = questions["questions"]
             .as_array()
             .into_iter()
             .flatten()
-            .find(|question| question["question_id"] == question_id)
-            .ok_or_else(unknown)?;
+            .filter(|question| question["question_id"] == question_id)
+            .collect();
+        let question = match requested_run_id {
+            Some(target_run_id) => matching
+                .into_iter()
+                .find(|question| question["run_id"].as_str() == Some(target_run_id.as_str()))
+                .ok_or_else(unknown)?,
+            None => match matching.as_slice() {
+                [] => return Err(unknown()),
+                [only] => *only,
+                _ => {
+                    return Err(WorkspaceError::Conflict(format!(
+                        "Question {question_id} is open in multiple runs of delegation {delegation_id}; specify run_id."
+                    )));
+                }
+            },
+        };
         let run_id = question["run_id"].as_str().unwrap_or(&row.target_id);
         let response = api.answer_pipeline_question(
             run_id,
@@ -1676,6 +1802,11 @@ pub fn answer_incoming(
             400 | 422 => Err(WorkspaceError::Validation(detail)),
             _ => Err(WorkspaceError::Internal(detail)),
         };
+    }
+    if requested_run_id.is_some() {
+        return Err(validation(
+            "A conversation question does not accept run_id.",
+        ));
     }
     let snapshot = ConversationRepository::new(conversations.store().clone())
         .read_snapshot(&row.target_id, None)?
@@ -1725,4 +1856,61 @@ pub fn answer_incoming(
         },
     )?;
     Ok(json!({"question_id": question_id, "answered": true}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+
+    #[test]
+    fn call_with_timeout_enforces_one_deadline_across_a_slow_streaming_body_and_marks_relay() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen_forwarded = Arc::new(Mutex::new(String::new()));
+        let seen_clone = seen_forwarded.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req = [0u8; 2048];
+            let n = stream.read(&mut req).unwrap_or(0);
+            *seen_clone.lock().unwrap() = String::from_utf8_lossy(&req[..n]).to_lowercase();
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n",
+            );
+            let _ = stream.flush();
+            for _ in 0..40 {
+                if stream.write_all(b"1\r\n \r\n").is_err() || stream.flush().is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        let started = Instant::now();
+        let result = call_with_timeout(
+            Method::GET,
+            &format!("http://{addr}"),
+            "/slow",
+            Some("test-token"),
+            None,
+            Duration::from_millis(200),
+        );
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(&result, Err(PeerError::Network(msg)) if msg.contains("did not answer within")),
+            "expected deadline timeout, got {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "slow streaming body outlasted deadline: {elapsed:?}"
+        );
+        let headers = seen_forwarded.lock().unwrap().clone();
+        assert!(
+            headers.contains("forwarded: by=spark-peer"),
+            "expected relay marker in headers: {headers}"
+        );
+        let _ = server.join();
+    }
 }

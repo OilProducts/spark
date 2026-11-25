@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use attractor_core::{
     AttractorContext, CheckpointState, ContextMap, DotAttribute, FailureKind, FlowDefinition,
@@ -712,6 +713,7 @@ where
                             Some(next_attempt),
                         ),
                     )?;
+                    let delay_ms = policy.backoff.delay_for_attempt(next_attempt);
                     store.append_event(
                         &paths,
                         stage_retrying_event(
@@ -719,7 +721,7 @@ where
                             stage_index,
                             &current_node,
                             next_attempt,
-                            policy.backoff.delay_for_attempt(next_attempt),
+                            delay_ms,
                         ),
                     )?;
                     save_checkpoint_event(
@@ -732,6 +734,12 @@ where
                         &retry_counts,
                         &visit_counts,
                     )?;
+                    let delay = if delay_ms.is_finite() && delay_ms > 0.0 {
+                        Duration::from_secs_f64(delay_ms / 1000.0)
+                    } else {
+                        Duration::ZERO
+                    };
+                    sleep_retry_backoff(delay, || self.poll_control().is_some());
                     continue;
                 }
                 // An execution error never becomes a decision: exhausted or
@@ -1812,6 +1820,20 @@ fn finalize_paused(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn sleep_retry_backoff(delay: Duration, mut should_stop: impl FnMut() -> bool) {
+    if delay.is_zero() {
+        return;
+    }
+    let deadline = Instant::now() + delay;
+    const SLICE: Duration = Duration::from_millis(50);
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        if remaining.is_zero() || should_stop() {
+            break;
+        }
+        std::thread::sleep(remaining.min(SLICE));
+    }
+}
+
 fn finalize_canceled(
     store: &RunStore,
     paths: &crate::paths::RunRootPaths,

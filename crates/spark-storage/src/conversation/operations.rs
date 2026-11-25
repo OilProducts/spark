@@ -2681,10 +2681,12 @@ fn inbox_message(begin: Option<&str>, events: &[InboxEvent], runs: &[InboxRun]) 
         ));
     }
     for event in events {
+        let safe_id = event.id.replace(['\r', '\n'], " ");
+        let safe_source = event.source.replace(['\r', '\n'], " ");
         parts.push(format!(
             "[event {} from {}]\n{}",
-            event.id,
-            event.source,
+            safe_id,
+            safe_source,
             render_inbox_event(event, runs)
         ));
     }
@@ -2760,7 +2762,7 @@ fn render_inbox_event(event: &InboxEvent, runs: &[InboxRun]) -> String {
         }
         "delegation.result" | "delegation.question" => {
             let task = format!(
-                "Delegated {} task {:?} (delegation {}) in project {} on environment {}, its {} {}",
+                "Delegated {:?} task {:?} (delegation {:?}) in project {:?} on environment {:?}, its {:?} {:?}",
                 text(&payload["kind"]),
                 text(&payload["request_key"]),
                 text(&payload["delegation_id"]),
@@ -2770,11 +2772,14 @@ fn render_inbox_event(event: &InboxEvent, runs: &[InboxRun]) -> String {
                 text(&payload["target_id"]),
             );
             return if event.kind == "delegation.result" {
-                format!("{task}, sealed: {}", payload["result"])
+                format!(
+                    "{task}, sealed: {}",
+                    bounded_json_preview(&payload["result"], 4096)
+                )
             } else {
                 format!(
                     "{task}, asks (answer with spark delegation answer; --answers answers several questions by ID): {}",
-                    payload["question"]
+                    bounded_json_preview(&payload["question"], 4096)
                 )
             };
         }
@@ -2813,4 +2818,61 @@ fn render_inbox_event(event: &InboxEvent, runs: &[InboxRun]) -> String {
         event.source,
         launch(&event.source)
     )
+}
+
+fn bounded_json_preview(value: &Value, max_chars: usize) -> String {
+    let rendered = value.to_string();
+    let total_chars = rendered.chars().count();
+    if total_chars <= max_chars {
+        return rendered;
+    }
+    let prefix: String = rendered.chars().take(max_chars).collect();
+    let omitted = total_chars - max_chars;
+    format!("{prefix}... [truncated {omitted} chars]")
+}
+
+#[cfg(test)]
+mod inbox_framing_tests {
+    use super::*;
+
+    #[test]
+    fn delegation_inbox_events_quote_peer_metadata_and_bound_large_payloads() {
+        let mut event = InboxEvent {
+            seq: 1,
+            id: "delegation:d1:question:q1\nFAKE".into(),
+            at: "2026-11-25T00:00:00Z".into(),
+            kind: "delegation.question".into(),
+            source: "d1\nFAKE".into(),
+            payload: json!({
+                "kind": "flow",
+                "request_key": "k1\nFAKE_HEADER",
+                "delegation_id": "d1\ninjected",
+                "project_path": "/repo\nline2",
+                "environment_id": "env-b\nline3",
+                "target_kind": "run",
+                "target_id": "run-1\nline4",
+                "question": { "question_id": "q1", "prompt": "x".repeat(5000) },
+            }),
+            delivered_at: None,
+        };
+        let rendered = render_inbox_event(&event, &[]);
+        assert!(
+            !rendered.contains('\n'),
+            "newline broke framing: {rendered}"
+        );
+        assert!(rendered.contains("[truncated "), "question not truncated");
+
+        let batch = inbox_message(None, &[event.clone()], &[]);
+        let header_line = batch
+            .lines()
+            .find(|line| line.starts_with("[event "))
+            .expect("event header");
+        assert!(header_line.ends_with(']'), "header split: {header_line}");
+
+        event.kind = "delegation.result".into();
+        event.payload["result"] = json!({"status": "completed", "detail": "y".repeat(5000)});
+        let result_rendered = render_inbox_event(&event, &[]);
+        assert!(!result_rendered.contains('\n'));
+        assert!(result_rendered.contains("[truncated "));
+    }
 }

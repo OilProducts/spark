@@ -7,9 +7,29 @@ export const normalizeProjectPath = (path: string): string => {
   // The owner deferred this to a backend fix that writes the UNC prefix in one spelling, not a frontend rewrite of every request.
   // No `.` here: it skips line separators (U+2028/9), which are valid in folder names.
   // UNC starts \\ or //, so a POSIX /\Team stays a POSIX path rather than a share.
-  // It needs a server and a share, neither . nor ..: //tmp/../repo and //repo are POSIX paths.
+  // An explicit \\server\share is always UNC (never climbs above the share). A leading //server/share
+  // stays UNC only while server and share are neither . nor .. and no `..` climbs above the share,
+  // so POSIX doubled-slash paths like //tmp/../repo or //Users/chris/../chris/repo normalize to /...
+  const explicitBackslashUnc = trimmed.startsWith("\\\\")
   const uncMatch = /^(?:\\\\|\/\/)/.test(trimmed) ? trimmed.replace(/\\/g, "/").match(/^\/\/([^/]+)\/+([^/]+)/) : null
-  const unc = uncMatch && ![uncMatch[1], uncMatch[2]].some((part) => part === "." || part === "..") ? uncMatch : null
+  const uncCandidate = uncMatch && ![uncMatch[1], uncMatch[2]].some((part) => part === "." || part === "..") ? uncMatch : null
+  const climbsAboveUncShare = (body: string): boolean => {
+    let depth = 0
+    for (const part of body.split("/")) {
+      if (!part || part === ".") continue
+      if (part === "..") {
+        if (depth === 0) return true
+        depth -= 1
+      } else {
+        depth += 1
+      }
+    }
+    return false
+  }
+  const unc =
+    uncCandidate && (explicitBackslashUnc || !climbsAboveUncShare(trimmed.replace(/\\/g, "/").slice(uncCandidate[0].length)))
+      ? uncCandidate
+      : null
   // A backslash separates Windows paths; in a POSIX path (leading /) it is part of a folder name: /tmp/team\repo is not /tmp/team/repo.
   const forwardSlashed = trimmed.startsWith("/") && !unc ? trimmed : trimmed.replace(/\\/g, "/")
   const uncRoot = unc ? `//${unc[1]}/${unc[2]}` : null

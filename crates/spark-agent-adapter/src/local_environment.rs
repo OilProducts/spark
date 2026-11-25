@@ -666,9 +666,12 @@ You can retry with a longer timeout by setting the timeout_ms parameter.]"
 fn shell_command(command: &str) -> Command {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         let shell = env::var_os("COMSPEC").unwrap_or_else(|| std::ffi::OsString::from("cmd.exe"));
         let mut command_builder = Command::new(shell);
-        command_builder.arg("/C").arg(command);
+        // Use raw_arg so Rust does not apply C-runtime quote escaping that
+        // cmd.exe parses differently from the original command string.
+        command_builder.arg("/C").raw_arg(command);
         command_builder
     }
 
@@ -772,9 +775,9 @@ pub fn spawn_process_group(command: Command) -> std::io::Result<Child> {
     }
 }
 
-/// Why Windows cannot run `command` where it asks: cmd.exe, which runs a batch
-/// file, starts in the Windows directory instead of a UNC one, so the program
-/// would work outside its project.
+/// Why Windows cannot run `command` where it asks: cmd.exe (directly or when
+/// running a batch file) starts in the Windows directory instead of a UNC one,
+/// so the program would work outside its project.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn batch_directory_error(command: &Command) -> Option<String> {
     let program = Path::new(command.get_program());
@@ -784,15 +787,38 @@ fn batch_directory_error(command: &Command) -> Option<String> {
         Some(Component::Prefix(prefix))
             if matches!(prefix.kind(), std::path::Prefix::UNC(..) | std::path::Prefix::VerbatimUNC(..))
     );
-    (unc && is_batch_file(program)).then(|| {
-        format!(
+    if !unc {
+        return None;
+    }
+    if is_batch_file(program) {
+        return Some(format!(
             "{} is a batch file, which cmd.exe cannot run in the network directory {}: it \
              would start in the Windows directory instead. Open the project through a mapped \
              drive letter, or set the agent's program to its .exe.",
             program.display(),
             directory.display()
-        )
-    })
+        ));
+    }
+    if is_cmd_exe(program) {
+        return Some(format!(
+            "{} cannot run in the network directory {}: cmd.exe falls back to the Windows \
+             directory instead of a UNC path. Open the project through a mapped drive letter.",
+            program.display(),
+            directory.display()
+        ));
+    }
+    None
+}
+
+/// Whether `program` names Windows `cmd.exe`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_cmd_exe(program: &Path) -> bool {
+    program
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case("cmd.exe") || name.eq_ignore_ascii_case("cmd")
+        })
 }
 
 /// Whether Windows runs `program` through cmd.exe: a `.bat` or `.cmd` file.
@@ -1583,5 +1609,15 @@ mod tests {
             ),
             BTreeMap::from(windows)
         );
+    }
+
+    #[test]
+    fn is_cmd_exe_matches_cmd_and_ignores_other_executables() {
+        assert!(is_cmd_exe(Path::new("cmd.exe")));
+        assert!(is_cmd_exe(Path::new("CMD.EXE")));
+        assert!(is_cmd_exe(Path::new("cmd")));
+        assert!(is_cmd_exe(Path::new("C:/Windows/System32/cmd.exe")));
+        assert!(!is_cmd_exe(Path::new("pwsh.exe")));
+        assert!(!is_cmd_exe(Path::new("bash")));
     }
 }

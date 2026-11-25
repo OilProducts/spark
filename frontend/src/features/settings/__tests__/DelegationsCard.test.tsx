@@ -111,7 +111,7 @@ const deployForm = (questionId: string, message: string) => ({
 // A conversation request for one secret answer.
 const tokenRequest = (questionId: string) => ({
     question_id: questionId,
-    questions: [{ id: 'token', question: 'Deploy token?', question_type: 'FREEFORM', isSecret: true }],
+    questions: [{ id: 'token', question: 'Deploy token?', question_type: 'FREEFORM', is_secret: true }],
 })
 const nightly = delegation('del-1', 'nightly-checks', [approveGate()])
 const pausedTask = delegation('del-2', 'paused-task', [], { paused: 'The link to this environment was removed.', last_state: null })
@@ -1924,8 +1924,8 @@ it('masks secret sub-questions, keeps typed custom answers, submits chosen optio
         question_id: 'req-env',
         questions: [
             { id: 'env', question: 'Which environment?', question_type: 'MULTIPLE_CHOICE', options: [{ label: 'Staging' }, { label: 'Production', value: 'prod' }] },
-            { id: 'region', question: 'Which region?', question_type: 'MULTIPLE_CHOICE', options: [{ label: 'eu' }], isOther: true },
-            { id: 'token', question: 'Deploy token?', question_type: 'FREEFORM', isSecret: true },
+            { id: 'region', question: 'Which region?', question_type: 'MULTIPLE_CHOICE', options: [{ label: 'eu' }], allow_other: true },
+            { id: 'token', question: 'Deploy token?', question_type: 'FREEFORM', is_secret: true },
         ],
     }
     serve({
@@ -2111,7 +2111,7 @@ it('keeps child runs\' gates sharing a question ID and prompt apart: distinct na
     expect(screen.queryByRole('group', { name: name('child-2') })).not.toBeInTheDocument()
     const open = screen.getByRole('group', { name: name('child-1') })
     expect(within(open).getByRole('textbox', { name: 'Free-text answer' })).toBeEnabled()
-    expect(sent(answerRoute('del-1', 'gate-0'))).toEqual([{ selected_value: 'ship it' }])
+    expect(sent(answerRoute('del-1', 'gate-0'))).toEqual([{ selected_value: 'ship it', run_id: 'child-2' }])
 
     // Once a snapshot drops child-2's gate, its acknowledgement goes, though child-1 still asks gate-0.
     await act(async () => { vi.advanceTimersByTime(4000) })
@@ -2178,4 +2178,16 @@ it('shows only the error when the first load for a filter fails, clearing the pr
     await user.click(screen.getByRole('button', { name: 'Paused' }))
     expect(screen.getByText('Database is locked')).toBeInTheDocument()
     expect(screen.queryByText('Loading delegations…')).not.toBeInTheDocument()
+})
+
+it('shows Submit (disabled) instead of Submitting... on an idle paused delegation form', async () => {
+    const pausedForm = delegation('del-p', 'paused-form', [deployForm('form-p', 'Deploy details')], {
+        paused: 'The link to this environment was removed.',
+    })
+    serve({ [LIST]: [ok(list(pausedForm))] })
+    renderCard()
+    const submit = await screen.findByTestId('delegation-form-form-p-submit')
+    expect(submit).toBeDisabled()
+    expect(submit).toHaveTextContent('Submit')
+    expect(submit).not.toHaveTextContent('Submitting...')
 })

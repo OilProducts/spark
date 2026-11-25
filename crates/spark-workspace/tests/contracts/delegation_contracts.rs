@@ -2257,3 +2257,185 @@ fn a_refuses_answer_ids_that_would_leave_their_route() {
     assert_eq!(answer(&id, "q.1").unwrap(), json!({"answered": true}));
     assert_eq!(b.requests(), [format!("questions/q.1/answer {id}")]);
 }
+
+#[test]
+fn sibling_child_run_questions_sharing_a_gate_id_notify_and_answer_independently() {
+    let home = Home::new();
+    let store = RunStore::for_settings(&home.settings);
+
+    // Parent run with two sibling child runs paused on the exact same gate ID.
+    let mut parent = RunRecord::new("run-parent", &home.project);
+    parent.status = "running".into();
+    store
+        .create_run(CreateRunRequest {
+            record: parent,
+            ..Default::default()
+        })
+        .unwrap();
+
+    for child_id in ["run-child-1", "run-child-2"] {
+        let mut child = RunRecord::new(child_id, &home.project);
+        child.status = "waiting".into();
+        child.parent_run_id = Some("run-parent".into());
+        child.root_run_id = Some("run-parent".into());
+        let paths = store
+            .create_run(CreateRunRequest {
+                record: child,
+                ..Default::default()
+            })
+            .unwrap();
+        let gate = attractor_runtime::human_gate_pending_event(
+            child_id,
+            "gate-0",
+            "review",
+            "Review",
+            "Approve?",
+            None,
+            vec![json!({"key": "1", "label": "Approve", "value": "approve"})],
+        );
+        store.append_event(&paths, gate).unwrap();
+    }
+
+    // An unrelated run outside the delegated run tree sharing the same gate ID.
+    let mut unrelated = RunRecord::new("run-other", &home.project);
+    unrelated.status = "waiting".into();
+    let other_paths = store
+        .create_run(CreateRunRequest {
+            record: unrelated,
+            ..Default::default()
+        })
+        .unwrap();
+    let other_gate = attractor_runtime::human_gate_pending_event(
+        "run-other",
+        "gate-0",
+        "review",
+        "Review",
+        "Approve?",
+        None,
+        vec![json!({"key": "1", "label": "Approve", "value": "approve"})],
+    );
+    store.append_event(&other_paths, other_gate).unwrap();
+
+    let delegation_id = "00000000-0000-4000-8000-000000000099";
+    home.launched(delegation_id, "run", "run-parent");
+    let initial = home.state(delegation_id);
+    let initial_runs: std::collections::BTreeSet<&str> = initial["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|q| q["run_id"].as_str())
+        .collect();
+    assert_eq!(
+        initial_runs,
+        std::collections::BTreeSet::from(["run-child-1", "run-child-2"])
+    );
+
+    // Omitting run_id when two children share gate-0 refuses to guess.
+    let ambiguous = answer(
+        &home,
+        delegation_id,
+        "gate-0",
+        json!({"selected_value": "approve"}),
+    );
+    assert!(
+        matches!(ambiguous, Err(WorkspaceError::Conflict(_))),
+        "{ambiguous:?}"
+    );
+
+    // An out-of-tree run_id is rejected without touching either sibling.
+    let out_of_tree = answer(
+        &home,
+        delegation_id,
+        "gate-0",
+        json!({"run_id": "run-other", "selected_value": "approve"}),
+    );
+    assert!(
+        matches!(out_of_tree, Err(WorkspaceError::NotFound(_))),
+        "{out_of_tree:?}"
+    );
+
+    // Naming run-child-2 answers only run-child-2 and leaves run-child-1 open.
+    answer(
+        &home,
+        delegation_id,
+        "gate-0",
+        json!({"run_id": "run-child-2", "selected_value": "approve"}),
+    )
+    .unwrap();
+    let remaining = home.state(delegation_id);
+    let remaining_runs: Vec<&str> = remaining["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|q| q["run_id"].as_str())
+        .collect();
+    assert_eq!(remaining_runs, vec!["run-child-1"]);
+
+    // On A's follower side, sibling child questions sharing gate-0 produce distinct inbox events.
+    home.seed_chat("chat-owner", "amber-owner", "chat", "complete", json!([]));
+    let b = Peer::serve(move |_, id| {
+        let mut state = b_state(id, "launched", "waiting");
+        state["questions"] = json!([
+            {"question_id": "gate-0", "run_id": "run-child-1"},
+            {"question_id": "gate-0", "run_id": "run-child-2"},
+        ]);
+        (200, state)
+    });
+    home.link_to(LINKED, &b);
+    let out_id = home.start_on(LINKED, "siblings", Some("amber-owner"));
+    assert_eq!(
+        home.tick(&mut delegations::Follower::default()),
+        Vec::<String>::new()
+    );
+    let event_ids: std::collections::BTreeSet<String> = home
+        .repository()
+        .inbox_events("chat-owner")
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "delegation.question")
+        .map(|event| event.id)
+        .collect();
+    assert_eq!(
+        event_ids,
+        std::collections::BTreeSet::from([
+            format!("delegation:{out_id}:question:run-child-1:gate-0"),
+            format!("delegation:{out_id}:question:run-child-2:gate-0"),
+        ])
+    );
+}
+
+#[test]
+fn follower_seals_a_never_submitted_canceled_delegation_when_pausing() {
+    let home = Home::new();
+    home.seed_chat("chat-owner", "amber-owner", "chat", "complete", json!([]));
+    // Peer rejects with 401 before any submission occurs.
+    let b = Peer::serve(|_, _| (401, json!({"detail": "revoked"})));
+    home.link_to(LINKED, &b);
+
+    // Case 1: cancel requested, then follower hits 401 while pausing.
+    let refused_id = home.start_on(LINKED, "cancel-before-401", Some("amber-owner"));
+    home.environments().request_cancel_out(&refused_id).unwrap();
+    assert_eq!(
+        home.tick(&mut delegations::Follower::default()),
+        Vec::<String>::new()
+    );
+    let refused = home.out(&refused_id);
+    assert_eq!(refused.phase, "sealed");
+    assert_eq!(refused.result.as_ref().unwrap()["status"], "canceled");
+
+    // Case 2: cancel requested, then remove_link pauses the unsubmitted record.
+    let unlinked_id = home.start_on(LINKED, "cancel-before-unlink", Some("amber-owner"));
+    home.environments()
+        .request_cancel_out(&unlinked_id)
+        .unwrap();
+    home.environments().remove_link(LINKED).unwrap();
+    assert_eq!(
+        home.tick(&mut delegations::Follower::default()),
+        Vec::<String>::new()
+    );
+    let unlinked = home.out(&unlinked_id);
+    assert_eq!(unlinked.phase, "sealed");
+    assert_eq!(unlinked.result.as_ref().unwrap()["status"], "canceled");
+    assert_eq!(home.results("chat-owner", &refused_id).len(), 1);
+    assert_eq!(home.results("chat-owner", &unlinked_id).len(), 1);
+}

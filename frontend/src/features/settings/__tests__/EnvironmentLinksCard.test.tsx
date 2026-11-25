@@ -1335,3 +1335,34 @@ it('stops offering an expired pairing code: on time, at copy time, on returning 
     expectExpired()
     expect(writeText).toHaveBeenCalledTimes(1)
 })
+
+it('keeps a local action failure off a remote card after switching and shows it on return', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-gpu', 'GPU')] })
+    let failCode = () => {}
+    backend.replies['POST /workspace/api/environment/pairing-codes'] = () => new Promise<Response>((resolve) => {
+        failCode = () => resolve(json({ detail: 'local pairing store locked' }, 500))
+    })
+    backend.replies[`${LINKS}/env-gpu/proxy/environment`] = {
+        environment_id: 'env-gpu',
+        display_name: 'GPU box',
+        protocol_version: 1,
+        ui_api_version: descriptor.ui_api_version,
+    }
+    backend.replies[`${LINKS}/env-gpu/proxy${TOKENS}`] = { tokens: [] }
+    backend.replies[`${LINKS}/env-gpu/proxy${LINKS}`] = { links: [] }
+    render(<WorkspaceLikeApp />)
+    await screen.findByText('env-local-1')
+
+    await user.click(screen.getByRole('button', { name: 'Create pairing code' }))
+    await user.click(await screen.findByTestId('environment-tab-env-gpu'))
+    await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-gpu'))
+    await screen.findByText('env-gpu')
+
+    await act(async () => failCode())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('environment-tab-local'))
+    await waitFor(() => expect(getActiveEnvironmentId()).toBeNull())
+    expect(await screen.findByRole('alert')).toHaveTextContent('Local pairing store locked')
+})

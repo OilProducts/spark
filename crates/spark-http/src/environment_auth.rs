@@ -194,6 +194,14 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 #[derive(Clone)]
 struct AuthenticatedPeerToken(String);
 
+fn unauthorized() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({"detail": "A peer token is required."})),
+    )
+        .into_response()
+}
+
 /// The trust rule, applied before any handler reads the request body.
 pub(crate) async fn require_trust(
     State(settings): State<Arc<SparkSettings>>,
@@ -204,27 +212,25 @@ pub(crate) async fn require_trust(
         return next.run(request).await;
     }
     // Resolved before the local check: a peer paired over loopback or the
-    // bound host still presents its token and must not revoke it.
+    // bound host still presents its token and must not revoke it, and a
+    // revoked peer token must never fall back to local-owner access.
     if let Some(secret) = bearer(request.headers()) {
-        match EnvironmentRepository::new(&settings.data_dir).token_for_secret(secret) {
-            Ok(Some(token_id)) => {
+        match EnvironmentRepository::new(&settings.data_dir).peer_token_status(secret) {
+            Ok(spark_storage::environment::PeerTokenStatus::Active(token_id)) => {
                 request
                     .extensions_mut()
                     .insert(AuthenticatedPeerToken(token_id));
                 return next.run(request).await;
             }
-            Ok(None) => {}
+            Ok(spark_storage::environment::PeerTokenStatus::Revoked) => return unauthorized(),
+            Ok(spark_storage::environment::PeerTokenStatus::Unknown) => {}
             Err(error) => return WorkspaceApiError(error.into()).into_response(),
         }
     }
     if is_local_owner(&request) {
         return next.run(request).await;
     }
-    (
-        StatusCode::UNAUTHORIZED,
-        Json(json!({"detail": "A peer token is required."})),
-    )
-        .into_response()
+    unauthorized()
 }
 
 /// The machine's name, read once.
