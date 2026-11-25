@@ -513,6 +513,41 @@ describe('onChatComposerSubmit', () => {
             expect(setPanelError.mock.calls).toEqual([[null], ['Unable to send the project chat turn.']])
         })
 
+        it('opens a late-refused unlisted chat again, here and now, when the chat its projects loaded on only opens the model picker with /model', async () => {
+            await show('env-r')
+            loadProjects(null)
+            listChats('conversation-1')
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId: 'conversation-new' })
+            useStore.getState().updateHomeConversationSession('conversation-new', { attachments: [entry] })
+            const sent = deferred<ConversationAcceptance>()
+            vi.mocked(sendConversationTurnValidated).mockReturnValue(sent.promise)
+            const setPanelError = vi.fn()
+            composer({ attachments: [entry], setPanelError, ensureConversationId: () => 'conversation-new', getCurrentConversationId: openChat }).onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalledTimes(1))
+
+            // Away and back, its projects load on another chat, where /model is typed; the send is refused meanwhile.
+            await show(null)
+            await show('env-r')
+            loadProjects('conversation-1')
+            useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: '/model' })
+            sent.reject(new Error('offline'))
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(openChat(projectPath)).toBe('conversation-1')
+
+            // It opens the picker and clears the draft, sending nothing: the refused chat opens with all of it.
+            const onOpenModelPicker = vi.fn()
+            const setChatDraft = (value: SetStateAction<string>) => useStore.getState().updateHomeProjectSession(projectPath, {
+                chatDraft: typeof value === 'function' ? value(draft() ?? '') : value,
+            })
+            composer({ chatDraft: '/model', onOpenModelPicker, setChatDraft, getCurrentConversationId: openChat }).onChatComposerSubmit()
+            expect(onOpenModelPicker).toHaveBeenCalledTimes(1)
+            expect(sendConversationTurnValidated).toHaveBeenCalledTimes(1)
+            expect(openChat(projectPath)).toBe('conversation-new')
+            expect(draft()).toBe('Hello there')
+            expect(attachmentsOf('conversation-new')).toEqual([entry])
+            expect(setPanelError.mock.calls).toEqual([[null], ['Unable to send the project chat turn.']])
+        })
+
         it('puts a send back unsent, with its files and why, when its settings fail to save after a switch away', async () => {
             loadProjects('conversation-1')
             useStore.getState().updateHomeConversationSession('conversation-1', { attachments: [entry] })
