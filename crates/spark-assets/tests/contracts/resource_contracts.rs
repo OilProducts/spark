@@ -23,6 +23,7 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "software-development/implement-change",
     "software-development/investigate-bug",
     "software-development/merge-change",
+    "software-development/mission-retrospective",
     "software-development/review-change",
     "software-development/run-retrospective",
     "software-development/spec-implementation/implement-milestone",
@@ -135,7 +136,7 @@ fn frontend_asset_lookup_rejects_unsafe_paths_and_symlink_escapes() {
 #[test]
 fn starter_flow_inventory_is_packaged_sorted_and_assembles() {
     let names = flows::starter_flow_names().expect("starter flow names");
-    assert_eq!(names.len(), 20);
+    assert_eq!(names.len(), 21);
     assert_eq!(
         names,
         STARTER_FLOW_NAMES
@@ -270,6 +271,10 @@ fn bundled_flows_use_named_sessions_instead_of_fidelity() {
         (
             "software-development/investigate-bug",
             json!({"investigator": ["investigate"], "planner": ["propose_plan"]}),
+        ),
+        (
+            "software-development/mission-retrospective",
+            json!({"reviewer": ["review_mission"]}),
         ),
         (
             "software-development/run-retrospective",
@@ -520,6 +525,11 @@ fn reviewers_hold_the_evidence_rules_and_authors_resolve_findings_within_a_cap()
         ("software-development/implement-change", "implement", 5),
         ("software-development/investigate-bug", "investigate", 4),
         ("software-development/investigate-bug", "propose_plan", 4),
+        (
+            "software-development/mission-retrospective",
+            "review_mission",
+            4,
+        ),
         ("software-development/run-retrospective", "diagnose", 4),
     ] {
         let node = node(flow, id);
@@ -561,6 +571,10 @@ fn reviewers_hold_the_evidence_rules_and_authors_resolve_findings_within_a_cap()
             "verify_investigation",
         ),
         ("software-development/investigate-bug", "verify_plan"),
+        (
+            "software-development/mission-retrospective",
+            "verify_review",
+        ),
         ("software-development/run-retrospective", "verify_diagnosis"),
     ] {
         let node = node(flow, id);
@@ -630,6 +644,7 @@ fn analysis_flows_end_with_their_result_and_investigate_bug_verifies_its_plan() 
         "software-development/audit-codebase",
         "software-development/design-change",
         "software-development/investigate-bug",
+        "software-development/mission-retrospective",
         "software-development/run-retrospective",
     ] {
         let flow = bundled_flow(name);
@@ -983,6 +998,70 @@ fn run_retrospective_locates_default_and_external_run_directories() {
         );
     }
     assert!(!locate("run-other").status.success());
+}
+
+#[test]
+fn mission_retrospective_locates_mission_in_state_db_and_resolves_runs_dir() {
+    let flow = bundled_flow("software-development/mission-retrospective");
+    let config = serde_json::to_value(&flow.nodes["locate_mission"].config).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let spark_home = temp.path().join("spark-home");
+    let runs_root = spark_home.join("projects");
+    fs::create_dir_all(runs_root.join("project-default/runs")).unwrap();
+    fs::create_dir_all(runs_root.join("project-external")).unwrap();
+    let db_path = spark_home.join("state.sqlite3");
+    let seed = Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import sqlite3, sys; \
+             c = sqlite3.connect(sys.argv[1]); \
+             c.execute('CREATE TABLE missions (project_id TEXT NOT NULL, mission_id TEXT NOT NULL, payload TEXT NOT NULL)'); \
+             c.execute(\"INSERT INTO missions VALUES ('project-default', 'mission-1', '{}')\"); \
+             c.execute(\"INSERT INTO missions VALUES ('project-external', 'mission-2', '{}')\"); \
+             c.commit(); c.close()",
+        )
+        .arg(&db_path)
+        .output()
+        .unwrap();
+    assert!(seed.status.success(), "{:?}", seed);
+
+    let locate = |mission: &str| {
+        Command::new("sh")
+            .arg("-c")
+            .arg(config["command"].as_str().unwrap())
+            .env("SPARK_HOME", &spark_home)
+            .env("SPARK_RUNS_ROOT", &runs_root)
+            .env("SPARK_TARGET_MISSION_ID", mission)
+            .output()
+            .unwrap()
+    };
+    for (mission, project_id, expected_runs) in [
+        (
+            "mission-1",
+            "project-default",
+            runs_root.join("project-default/runs"),
+        ),
+        (
+            "mission-2",
+            "project-external",
+            runs_root.join("project-external"),
+        ),
+    ] {
+        let output = locate(mission);
+        assert!(
+            output.status.success(),
+            "{mission}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(Path::new(result["state_db"].as_str().unwrap()), db_path);
+        assert_eq!(result["project_id"].as_str().unwrap(), project_id);
+        assert_eq!(
+            Path::new(result["runs_dir"].as_str().unwrap()),
+            expected_runs
+        );
+    }
+    assert!(!locate("mission-missing").status.success());
 }
 
 #[test]
