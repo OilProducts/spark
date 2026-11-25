@@ -395,10 +395,12 @@ it('sends a message and a mode switch delayed by a settings save to the environm
     expect(state.homeConversationSessionsById).toEqual({})
     expect(state.sendingChats).toEqual({})
 
-    // Back in the remote environment, once its project shows, the refused message is its draft again, with the error.
+    // Back in the remote environment, once its project shows with the chat open, the refused message is its draft again, with the error.
     await switchEnvironment('env-r')
     resetStoreForEnvironmentSwitch(false)
     useStore.getState().registerProject(PROJECT)
+    expect(setPanelError).not.toHaveBeenCalled()
+    useStore.getState().updateProjectSessionState(PROJECT, { conversationId: 'conversation-1' })
     expect(useStore.getState().homeProjectSessionsByPath[PROJECT]?.chatDraft).toBe('Hello there')
     expect(setPanelError).toHaveBeenCalledExactlyOnceWith('Unable to send the project chat turn.')
     await switchEnvironment(null)
@@ -612,19 +614,21 @@ it('keeps a refused send\'s text, files and error for the chat it was sent in, t
     projectsHeld = null
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    // Back again with the projects loaded: the chat opened since stays open, its draft its own; the error shows.
+    // Back again with the projects loaded: the chat opened since stays open, its draft its own.
     await show(null)
     const shown = renderHook(useWorkspace, { wrapper: DialogProvider })
     await loaded(shown)
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(useStore.getState().projectSessionsByPath[PROJECT]?.conversationId).toBe('conversation-2')
-    await waitFor(() => expect(shown.result.current.surfaceProps.panelError).toBe('unavailable'))
+    expect(shown.result.current.surfaceProps.panelError).toBeNull()
     expect(shown.result.current.surfaceProps.chatDraft).toBe('')
     expect(shown.result.current.surfaceProps.attachments).toEqual([])
 
-    // The chat it was sent in, opened again, has its text and files back, uploaded once.
+    // The chat it was sent in, opened again, has its text, files and error back, uploaded once.
     act(() => shown.result.current.sidebarProps.onSelectConversationThread(PROJECT, 'conversation-1'))
     await waitFor(() => expect(shown.result.current.surfaceProps.attachments).toMatchObject([{ status: 'uploaded', attachment: { id: 'attachment-1' } }]))
     expect(shown.result.current.surfaceProps.chatDraft).toBe('Hello there')
+    expect(shown.result.current.surfaceProps.panelError).toBe('unavailable')
     expect(uploads()).toHaveLength(1)
     expect(uploads()[0]).toContain('/workspace/api/conversations/conversation-1/attachments?')
     shown.unmount()

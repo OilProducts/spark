@@ -586,11 +586,14 @@ function projectInView() {
  */
 const isForeignPlace = (place: Place) => (place.envId ?? null) !== getActiveEnvironmentId()
 
-/** What you choose here that no place names: the project and chat open in Chats, the settings category, a project's Settings. */
+/**
+ * What you choose here that no place names: the project and chat open in Chats, the settings category, a
+ * project's Settings, the New Trigger form.
+ */
 function chosenHere() {
     const state = useStore.getState()
     const chat = state.activeProjectPath ? state.projectSessionsByPath[state.activeProjectPath]?.conversationId ?? null : null
-    return [state.activeProjectPath, chat, state.settingsCategory, state.projectPageSettingsRequest]
+    return [state.activeProjectPath, chat, state.settingsCategory, state.projectPageSettingsRequest, state.triggersSession.createFormOpen]
 }
 
 /** Moves the app to a place from a history entry or a link; returns whether it got there now. */
@@ -646,7 +649,9 @@ export function HistoryRoutingController() {
         const environmentId = getActiveEnvironmentId()
         const retired = () => getActiveEnvironmentId() !== environmentId
         const hash = window.location.hash
-        const linked = parsePlaceHash(hash, projectInView())
+        // The entry's place, which keeps what its hash can't name, such as a project page; else the hash's.
+        const entry = window.history.state?.sparkPlace as Place | undefined
+        const linked = entry ?? parsePlaceHash(hash, projectInView())
         // Another environment's link (a reload while one was shown starts on this machine) opens nothing.
         const foreign = linked !== null && isForeignPlace(linked)
         if (linked && !foreign) applyPlace(linked)
@@ -654,8 +659,7 @@ export function HistoryRoutingController() {
         let chosen = chosenHere()
         let projects = useStore.getState().projectRegistry
         // Switched here from another environment's entry: it stays for Back and Forward to reach.
-        const entry = window.history.state?.sparkPlace as Place | undefined
-        window.history[entry && isForeignPlace(entry) ? 'pushState' : 'replaceState']({ sparkPlace: current }, '', placeHash(current))
+        window.history[entry && foreign ? 'pushState' : 'replaceState']({ sparkPlace: current }, '', placeHash(current))
         // A trigger, mission or role link without a project names its item in one once the projects load,
         // unless you have moved on by then.
         const opened = placeHash(current)
@@ -680,11 +684,15 @@ export function HistoryRoutingController() {
                 // Back or Forward left another environment's entry showing: a move here follows it, never
                 // rewriting it. What moves by itself leaves history as it is: the projects loading, which
                 // can open a project and its chat, and what `addsEntry` finds opened by itself, such as a run.
+                // Once they have loaded, a project added or changed is yours: adding the first one before then
+                // looks like their loading, until the server's answer for it changes it.
+                // ponytail: a project's saved state answering only after Back reached this entry adds one too.
                 const loading = Object.keys(projects).length === 0 && state.projectRegistry !== projects
                 const moved = addsEntry(state, current, next)
                     // Only you choose a node of the open run, and what no place names.
                     || (next.runId === current.runId && next.nodeId !== current.nodeId)
                     || chosenHere().some((value, index) => value !== chosen[index])
+                    || state.projectRegistry !== projects
                 if (moved && !loading) window.history.pushState({ sparkPlace: next }, '', placeHash(next))
             } else if (addsEntry(state, current, next)) {
                 window.history.pushState({ sparkPlace: next }, '', placeHash(next))

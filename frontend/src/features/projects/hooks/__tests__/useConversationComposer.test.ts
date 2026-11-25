@@ -112,8 +112,9 @@ describe('onChatComposerSubmit', () => {
 
     beforeEach(() => {
         useStore.setState(useStore.getInitialState(), true)
-        // The project's chats show, where a refused send puts its message back.
+        // The project's chats show, open on the chat a refused send puts its message back in.
         useStore.getState().registerProject(projectPath)
+        useStore.getState().updateProjectSessionState(projectPath, { conversationId: 'conversation-1' })
         useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: 'Hello there' })
         pending = null
         setPending.mockClear()
@@ -278,8 +279,9 @@ describe('onChatComposerSubmit', () => {
             await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalledTimes(2))
             useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: 'Third' })
             first.reject(new Error('offline'))
-            await vi.waitFor(() => expect(setPanelError).toHaveBeenCalledWith('Unable to send the project chat turn.'))
+            await new Promise((resolve) => setTimeout(resolve, 0))
 
+            expect(setPanelError.mock.calls).toEqual([[null]])
             expect(openChat(projectPath)).toBe('conversation-2')
             expect(draft()).toBe('Third')
             expect(attachmentsOf('conversation-2')).toEqual([])
@@ -290,10 +292,34 @@ describe('onChatComposerSubmit', () => {
             await vi.waitFor(() => expect(useStore.getState().sendingChats).toEqual({}))
             expect(pending).toBeNull()
 
-            // Its own chat, opened again, has its text and files back.
+            // Its own chat, opened again, has its text, files and error back.
             useStore.getState().updateProjectSessionState(projectPath, { conversationId: 'conversation-1' })
             expect(draft()).toBe('Hello there')
             expect(attachmentsOf('conversation-1')).toEqual([entry])
+            expect(setPanelError.mock.calls).toEqual([[null], ['Unable to send the project chat turn.']])
+        })
+
+        it('leaves New chat fresh when a send from another chat is refused, keeping it for that chat', async () => {
+            loadProjects('conversation-1')
+            useStore.getState().updateHomeConversationSession('conversation-1', { attachments: [entry] })
+            const sent = deferred<ConversationAcceptance>()
+            vi.mocked(sendConversationTurnValidated).mockReturnValue(sent.promise)
+            const setPanelError = vi.fn()
+            composer({ attachments: [entry], setPanelError, getCurrentConversationId: openChat }).onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalled())
+
+            // New chat opens, as its action does; the send is refused meanwhile.
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId: null })
+            sent.reject(new Error('offline'))
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(openChat(projectPath)).toBeNull()
+            expect(draft()).toBe('')
+            expect(setPanelError.mock.calls).toEqual([[null]])
+
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId: 'conversation-1' })
+            expect(draft()).toBe('Hello there')
+            expect(attachmentsOf('conversation-1')).toEqual([entry])
+            expect(setPanelError.mock.calls).toEqual([[null], ['Unable to send the project chat turn.']])
         })
 
         it('leaves a newer send its pending and sending state when an older one\'s answer lands after a switch away and back', async () => {

@@ -362,7 +362,7 @@ export function useConversationComposer({
         if (live() && currentDraft() === chatDraft) {
             setDraft('')
         }
-        const accepted = await runTurn(conversationId, environmentId, live, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
+        const refusal = await runTurn(conversationId, live, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
             project_path: activeProjectPath,
             message: messageToSend,
             client_turn_id: clientTurnId,
@@ -372,16 +372,16 @@ export function useConversationComposer({
             // Accepted: clear what was sent, keeping anything attached meanwhile.
             clearSentAttachments(conversationId, sending.map((entry) => entry.localId))
         })
-        if (!accepted) {
+        if (refusal !== null) {
             updatePendingMessages((messages) => messages.filter((message) => message.id !== clientTurnId))
-            // The text and files go back to the chat they were sent in once it, or no chat, is open in its
-            // project, which then opens it; another chat opened meanwhile keeps its own draft.
+            // The text, files and error go back to the chat they were sent in while it is open, now or once it
+            // opens again; another chat, or a new one, opened meanwhile keeps its own draft.
             // ponytail: held for the page's life if that chat never opens again, as when it is deleted.
-            const openChat = () => useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId ?? null
-            whenShownAndReady(environmentId, () => projectShown() && [null, conversationId].includes(openChat()), () => {
-                if (openChat() === null) useStore.getState().updateProjectSessionState(activeProjectPath, { conversationId })
+            const open = () => projectShown() && useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId === conversationId
+            whenShownAndReady(environmentId, open, () => {
                 setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n'))
                 if (sending.length > 0) restoreRefusedAttachments(conversationId, sending)
+                setPanelError(refusal)
             })
         }
     }
@@ -398,31 +398,30 @@ export function useConversationComposer({
             return
         }
         if (live()) setPanelError(null)
-        await runTurn(conversationId, environmentId, live, 'Unable to retry the project chat turn.', () => retryConversationTurnValidated(conversationId, turnId, activeProjectPath, environmentId))
+        const refusal = await runTurn(conversationId, live, 'Unable to retry the project chat turn.', () => retryConversationTurnValidated(conversationId, turnId, activeProjectPath, environmentId))
+        // Its error shows in its environment's chats, now or once they show again.
+        if (refusal !== null) whenShownAndReady(environmentId, projectShown, () => setPanelError(refusal))
     }
 
-    /** Starts a turn through `start`, tracking it as running until the server answers. */
+    /**
+     * Starts a turn through `start`, tracking it as running until the server answers. Resolves to null once
+     * it is accepted, else to the refusal's message, for the caller to show.
+     */
     const runTurn = async (
         conversationId: string,
-        environmentId: string | null,
         live: () => boolean,
         failure: string,
         start: () => Promise<ConversationAcceptance>,
         onAccepted?: () => void,
-    ): Promise<boolean> => {
+    ): Promise<string | null> => {
         if (!activeProjectPath) {
-            return false
+            return failure
         }
-        // A refused turn's error shows in its environment's chats, now or once they show again.
-        const report = (error: unknown) => {
-            const message = formatErrorMessage(error, failure)
-            whenShownAndReady(environmentId, projectShown, () => setPanelError(message))
-            return false
-        }
+        const refusal = (error: unknown) => formatErrorMessage(error, failure)
         // Nothing here shows a turn from chats left since it began, even ones of this environment shown
         // again: its answer never ends a newer send's pending and sending state, nor merges into them.
         if (!live()) {
-            return start().then(() => true, report)
+            return start().then(() => null, refusal)
         }
         const afterRevision = getConversationRecord(conversationId)?.latestRevision ?? '0'
         setPendingConversationTurn({ conversationId, afterRevision })
@@ -435,7 +434,7 @@ export function useConversationComposer({
         setSendingChat(conversationId, true)
         try {
             const acceptance = await start()
-            if (!live()) return true
+            if (!live()) return null
             onAccepted?.()
             endPending()
             const shouldKeepFocusOnReplyThread = getCurrentConversationId(activeProjectPath) === conversationId
@@ -444,9 +443,9 @@ export function useConversationComposer({
             applyConversationBatch(activeProjectPath, conversationId, acceptance.changes, 'mutation', 'send-response', {
                 forceWorkspaceSync: shouldKeepFocusOnReplyThread,
             })
-            return true
+            return null
         } catch (error) {
-            return report(error)
+            return refusal(error)
         } finally {
             if (live()) {
                 endPending()

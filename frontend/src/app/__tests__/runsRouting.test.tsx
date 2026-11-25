@@ -579,7 +579,8 @@ describe('routing across environments', () => {
         expect(useStore.getState().settingsCategory).toBe('appearance')
     })
 
-    it('adds an entry of this machine\'s own for a project added and opened here while a remote environment\'s entry shows', async () => {
+    // The server's answers when a project is added at /tmp/added.
+    const answerAddingProject = () => {
         const answer = (payload: unknown) => new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
         vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
             const url = String(input)
@@ -588,6 +589,10 @@ describe('routing across environments', () => {
             if (url.includes('/workspace/api/projects/register')) return answer({ project_id: 'added', project_path: '/tmp/added', display_name: 'added', is_favorite: false, active_conversation_id: null })
             return new Response('{}', { status: 404 })
         }))
+    }
+
+    it('adds an entry of this machine\'s own for a project added and opened here while a remote environment\'s entry shows', async () => {
+        answerAddingProject()
         render(<><EnvironmentBootstrap /><Workspace /></>)
         await showEnvironment('env-r')
         selectRun('remote-run')
@@ -606,6 +611,74 @@ describe('routing across environments', () => {
         act(() => window.history.back())
         await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
         expect(useStore.getState().activeProjectPath).toBe('/tmp/added')
+    })
+
+    it.each([
+        ['before this machine\'s projects load', false],
+        ['once they have loaded with none', true],
+    ])('adds a clean entry of this machine\'s own for its first project, added %s while a remote environment\'s entry shows', async (_when, loaded) => {
+        answerAddingProject()
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        if (loaded) act(() => useStore.getState().hydrateProjectRegistry([]))
+        const addProject = renderHook(useAddProject)
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        await act(() => addProject.result.current.onOpenProjectDirectoryChooser())
+        await act(() => addProject.result.current.onSelectProjectBrowserDirectory())
+        expect(Object.keys(useStore.getState().projectRegistry)).toEqual(['/tmp/added'])
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state).toEqual({ sparkPlace: { envId: null, view: 'home', projectPagePath: null } })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(useStore.getState().activeProjectPath).toBe('/tmp/added')
+    })
+
+    it('adds a clean entry of this machine\'s own for the New Trigger form opened here while a remote environment\'s entry shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        act(() => useStore.getState().setViewMode('triggers'))
+        await waitFor(() => expect(window.location.hash).toBe('#/triggers'))
+        act(() => window.history.go(-2))
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        // As New Trigger does; no link names the form.
+        act(() => useStore.getState().updateTriggersSession({ createFormOpen: true }))
+        await waitFor(() => expect(window.location.hash).toBe('#/triggers'))
+        expect(window.history.state).toEqual({ sparkPlace: { envId: null, view: 'triggers', triggerId: null } })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(useStore.getState().triggersSession.createFormOpen).toBe(true)
+    })
+
+    it('keeps a remote environment\'s project page when Back reaches its entry and that environment shows again', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        act(() => {
+            useStore.getState().setViewMode('home')
+            useStore.getState().openProjectPage('/tmp/remote')
+        })
+        await waitFor(() => expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', projectPagePath: '/tmp/remote' }))
+        await showEnvironment(null)
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats?env=env-r'))
+        const entries = window.history.length
+
+        // Its link names only Chats; its entry still has the page, which opens again with its projects.
+        await showEnvironment('env-r')
+        expect(useStore.getState().projectPagePath).toBe('/tmp/remote')
+        act(() => useStore.getState().hydrateProjectRegistry([toHydratedProjectRecord({ project_path: '/tmp/remote', is_favorite: false })]))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(useStore.getState().projectPagePath).toBe('/tmp/remote')
+        expect(window.history.length).toBe(entries)
+        expect(window.history.state).toEqual({ sparkPlace: { envId: 'env-r', view: 'home', projectPagePath: '/tmp/remote' } })
     })
 
     it('adds an entry of this machine\'s own for an open project page\'s Settings opened here while a remote environment\'s entry shows', async () => {
