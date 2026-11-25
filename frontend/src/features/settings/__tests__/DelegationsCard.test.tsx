@@ -2110,7 +2110,7 @@ it('keeps child runs\' gates sharing a question ID and prompt apart: distinct na
     expect(screen.queryByRole('group', { name: name('child-2') })).not.toBeInTheDocument()
     const open = screen.getByRole('group', { name: name('child-1') })
     expect(within(open).getByRole('textbox', { name: 'Free-text answer' })).toBeEnabled()
-    expect(sent(answerRoute('del-1', 'gate-0'))).toEqual([{ selected_value: 'ship it' }])
+    expect(sent(answerRoute('del-1', 'gate-0'))).toEqual([{ selected_value: 'ship it', run_id: 'child-2' }])
 
     // Once a snapshot drops child-2's gate, its acknowledgement goes, though child-1 still asks gate-0.
     await act(async () => { vi.advanceTimersByTime(4000) })

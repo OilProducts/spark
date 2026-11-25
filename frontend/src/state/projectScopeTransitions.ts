@@ -59,7 +59,11 @@ type ProjectScopeTransitionState = Pick<
 // A path belongs to the deepest registered project holding it, so removing /work keeps /work/child's runs.
 const pathBelongsToProject = (path: string | null | undefined, projectPath: string, registry: AppState['projectRegistry']) => {
     const normalized = normalizeProjectPath(path ?? '')
-    const holds = (root: string) => normalized === root || normalized.startsWith(`${root}/`)
+    const holds = (root: string) => {
+        if (normalized === root) return true
+        if (root === '/') return normalized.startsWith('/') && !normalized.startsWith('//')
+        return normalized.startsWith(root.endsWith('/') ? root : `${root}/`)
+    }
     return holds(projectPath) && !Object.keys(registry).some((other) => other.length > projectPath.length && holds(other))
 }
 

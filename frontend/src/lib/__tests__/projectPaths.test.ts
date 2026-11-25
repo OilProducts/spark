@@ -11,6 +11,8 @@ it('keeps a UNC share as the root and never climbs above it', () => {
 
 it('reads a leading // as POSIX unless a server and a share, neither . nor .., follow it', () => {
     expect(normalizeProjectPath('//tmp/../repo')).toBe('/repo')
+    expect(normalizeProjectPath('//Users/chris/../chris/projects/spark')).toBe('/Users/chris/projects/spark')
+    expect(normalizeProjectPath('//fileserver/share/team/../other')).toBe('//fileserver/share/other')
     expect(normalizeProjectPath('//tmp/./team\\repo')).toBe('/tmp/team\\repo')
     expect(normalizeProjectPath('//repo')).toBe('/repo')
     expect(normalizeProjectPath('//../repo')).toBe('/repo')

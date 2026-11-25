@@ -752,6 +752,31 @@ async fn paired_token_is_accepted_until_revoked() {
         json(refused).await,
         json!({"detail": "A peer token is required."})
     );
+    // A revoked peer token must not fall back to local-owner access even over direct loopback,
+    // and any relayed loopback call with an unknown bearer is also rejected.
+    let local_revoked = send(
+        &app,
+        "GET",
+        "/workspace/api/projects",
+        Some(LOCAL),
+        &[("authorization", bearer.as_str())],
+        None,
+    )
+    .await;
+    assert_eq!(local_revoked.status(), StatusCode::UNAUTHORIZED);
+    let relayed_unknown = send(
+        &app,
+        "GET",
+        "/workspace/api/projects",
+        Some(LOCAL),
+        &[
+            ("authorization", "Bearer spark_peer_unknown"),
+            ("forwarded", "by=spark-peer"),
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(relayed_unknown.status(), StatusCode::UNAUTHORIZED);
     let unknown = send(
         &app,
         "POST",

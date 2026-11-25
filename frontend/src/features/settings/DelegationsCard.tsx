@@ -585,10 +585,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         editDraft(env, key, { sending: true, error: null })
         setBusy(true)
         try {
-            // ponytail: the answer route carries no run ID, so the linked environment answers the first open gate
-            // with this ID, which may be another child run's (spark-workspace delegations::answer_incoming). The
-            // owner deferred the route fix to a follow-up change.
-            await answerDelegationQuestion(record.delegation_id, question.question_id, body)
+            const payload = question.run_id ? { ...body, run_id: question.run_id } : body
+            await answerDelegationQuestion(record.delegation_id, question.question_id, payload)
         } catch (err) {
             // The draft stays to fix and resend. A refresh that dropped the question meanwhile (it closed
             // or was replaced) took its draft: the question stays closed, and the failure shows on the card.

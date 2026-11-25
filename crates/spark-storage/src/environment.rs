@@ -243,6 +243,14 @@ pub struct EnvironmentRepository {
     home: PathBuf,
 }
 
+/// Result of looking up a presented bearer secret against `peer_tokens`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerTokenStatus {
+    Active(String),
+    Revoked,
+    Unknown,
+}
+
 impl EnvironmentRepository {
     pub fn new(home: impl Into<PathBuf>) -> Self {
         Self { home: home.into() }
@@ -360,14 +368,27 @@ impl EnvironmentRepository {
 
     /// The ID of the unrevoked token whose secret is `secret`.
     pub fn token_for_secret(&self, secret: &str) -> Result<Option<String>> {
-        Ok(self
+        match self.peer_token_status(secret)? {
+            PeerTokenStatus::Active(token_id) => Ok(Some(token_id)),
+            PeerTokenStatus::Revoked | PeerTokenStatus::Unknown => Ok(None),
+        }
+    }
+
+    /// Whether `secret` matches an active peer token, a revoked peer token, or none.
+    pub fn peer_token_status(&self, secret: &str) -> Result<PeerTokenStatus> {
+        let row: Option<(String, Option<String>)> = self
             .connection()?
             .query_row(
-                "SELECT token_id FROM peer_tokens WHERE token_sha256 = ?1 AND revoked_at IS NULL",
+                "SELECT token_id, revoked_at FROM peer_tokens WHERE token_sha256 = ?1",
                 [hash(secret)],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .optional()?)
+            .optional()?;
+        Ok(match row {
+            Some((token_id, None)) => PeerTokenStatus::Active(token_id),
+            Some((_, Some(_))) => PeerTokenStatus::Revoked,
+            None => PeerTokenStatus::Unknown,
+        })
     }
 
     // ---- Links -----------------------------------------------------------

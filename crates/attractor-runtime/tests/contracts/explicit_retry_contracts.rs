@@ -466,3 +466,72 @@ fn a_retry_leaves_the_time_its_run_sat_failed_out_of_its_duration() {
     let idle_ms = record.idle_ms.unwrap();
     assert!((3_605_000..3_665_000).contains(&idle_ms), "{idle_ms}");
 }
+
+#[test]
+fn stage_retry_backoff_sleeps_before_the_next_attempt() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = RunStore::for_runs_dir(temp.path());
+    let flow: FlowDefinition = serde_json::from_value(json!({
+        "schema_version": "2",
+        "id": "backoff_sleep",
+        "title": "Backoff sleep",
+        "nodes": {
+            "start": { "kind": "start", "routes": { "next": route("task") } },
+            "task": {
+                "kind": "agent_task",
+                "config": { "kind": "agent_task", "prompt": "test" },
+                "retry": { "max_retries": 1 },
+                "contracts": { "response": "decision_envelope" },
+                "routes": { "done": route("done") }
+            },
+            "done": exit_node()
+        }
+    }))
+    .unwrap();
+    let mut attempts = Vec::<std::time::Instant>::new();
+    let result = PipelineExecutor::new(|request: NodeExecutionRequest| {
+        if request.node_id != "task" {
+            return Ok(Outcome::completed("next"));
+        }
+        attempts.push(std::time::Instant::now());
+        if attempts.len() == 1 {
+            Ok(Outcome::error(
+                FailureKind::Runtime,
+                "transient failure",
+                Some(true),
+            ))
+        } else {
+            Ok(Outcome::completed("done"))
+        }
+    })
+    .execute(ExecuteRunRequest {
+        store: store.clone(),
+        record: RunRecord::new("backoff-run", temp.path().to_string_lossy()),
+        flow: flow.clone().normalize(),
+        flow_definition_json: Some(flow.to_canonical_json_string()),
+        launch_context: LaunchContext::empty(),
+        runtime_context: Default::default(),
+        max_steps: Some(10),
+        start: ExecutionStart::Fresh,
+    })
+    .unwrap();
+    assert_eq!(result.status, "completed");
+    assert_eq!(attempts.len(), 2);
+    let bundle = store.read_run_bundle("backoff-run").unwrap().unwrap();
+    let recorded_delay_ms = store
+        .read_raw_events(&bundle.paths)
+        .unwrap()
+        .iter()
+        .find(|event| event.event_type == "StageRetrying")
+        .and_then(|event| event.payload.get("delay"))
+        .and_then(|value| value.as_f64())
+        .expect("stage_retrying delay_ms");
+    assert!(recorded_delay_ms >= 100.0, "{recorded_delay_ms}");
+    let gap = attempts[1].saturating_duration_since(attempts[0]);
+    let expected = std::time::Duration::from_secs_f64(recorded_delay_ms / 1000.0)
+        .saturating_sub(std::time::Duration::from_millis(25));
+    assert!(
+        gap >= expected,
+        "expected retry backoff sleep >= {expected:?} (recorded {recorded_delay_ms}ms), got {gap:?}"
+    );
+}

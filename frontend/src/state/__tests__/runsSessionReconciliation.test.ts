@@ -216,3 +216,26 @@ it('preserves a fresh list confirmation for a cached run after switching away', 
     expect(useStore.getState().runDetailSessionsByRunId.a.record?.status).toBe('running')
     expect(useStore.getState().runsListSession.runs[0].status).toBe('running')
 })
+
+it('prunes projectless runs under root projects / and C:/ without pruning UNC runs', () => {
+    const state = useStore.getState()
+    state.registerProject('/')
+    state.registerProject('C:/')
+    state.registerProject('//server/share')
+    state.updateRunsListSession({
+        runs: [
+            record('unix-child', { working_directory: '/worktree', project_path: null }),
+            record('win-child', { working_directory: 'C:\\worktree', project_path: null }),
+            record('unc-child', { working_directory: '\\\\server\\share\\repo', project_path: null }),
+        ],
+    })
+    state.setRunsSelectedRunId('unix-child')
+    state.removeProject('/', 'C:/')
+    expect(useStore.getState().runsListSession.runs.map((run) => run.run_id)).toEqual(['win-child', 'unc-child'])
+    expect(selectSelectedRunId(useStore.getState())).toBeNull()
+
+    state.setRunsSelectedRunId('win-child')
+    state.removeProject('C:/', '//server/share')
+    expect(useStore.getState().runsListSession.runs.map((run) => run.run_id)).toEqual(['unc-child'])
+    expect(selectSelectedRunId(useStore.getState())).toBeNull()
+})

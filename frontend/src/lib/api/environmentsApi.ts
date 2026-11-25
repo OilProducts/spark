@@ -92,6 +92,7 @@ export type DelegationOut = {
 }
 
 export type DelegationAnswerBody = {
+    run_id?: string
     selected_value?: string
     answers?: Record<string, string>
     form?: FormReply
