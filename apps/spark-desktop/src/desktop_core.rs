@@ -232,6 +232,17 @@ pub fn start_desktop_server(
     start_desktop_server_with_before_build(settings, bind_host, |_| Ok(()))
 }
 
+/// The app's embedded server: every agent it launches, from startup
+/// recovery on, gets this Spark's home and the server's own URL.
+pub fn start_app_server(settings: SparkSettings, bind_host: &str) -> Result<DesktopServer, String> {
+    spark_agent_adapter::configure_codex_spark_home(&settings.data_dir)?;
+    start_desktop_server_with_before_build(
+        settings,
+        bind_host,
+        spark_agent_adapter::configure_agent_api,
+    )
+}
+
 /// Starts the embedded desktop server. With the home lock held and before
 /// startup recovery or admitted delegations can launch any agent process,
 /// it hands `before_build` how local agents reach the server.

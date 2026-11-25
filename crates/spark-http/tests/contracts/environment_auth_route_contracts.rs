@@ -13,7 +13,7 @@ use axum::{Json, Router};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 use spark_http::ProxyTimeouts;
-use spark_storage::environment::{EnvironmentLink, EnvironmentRepository};
+use spark_storage::environment::{DelegationOut, EnvironmentLink, EnvironmentRepository};
 use tokio::sync::oneshot;
 use tower::ServiceExt;
 
@@ -1056,46 +1056,313 @@ async fn pairing_is_rate_limited_per_peer_and_caps_its_body() {
 }
 
 #[tokio::test]
-async fn delegation_list_and_discovery_routes_are_mounted_and_protected() {
+async fn delegation_list_filters_populated_records_newest_first() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let app = crate::store_app_default(settings(temp.path()));
+    let settings = settings(temp.path());
+    let app = crate::store_app_default(settings.clone());
+    let environments = EnvironmentRepository::new(&settings.data_dir);
+    // Linked to a closed port, so the app's follower only retries them.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let unreachable = format!("http://{}", closed.local_addr().expect("address"));
+    drop(closed);
+    link(&settings, "environment-b", &unreachable, "token");
+    link(&settings, "environment-c", &unreachable, "token");
+    // Oldest first, named by request key; `b-accepted` and `c-created` are
+    // paused, so every filter keeps a different set.
+    let mut ids = Vec::new();
+    for (second, key) in [
+        "b-created",
+        "b-accepted",
+        "b-sealed",
+        "c-created",
+        "c-accepted",
+        "c-sealed",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (env, phase) = key.split_once('-').expect("key");
+        let id = environments
+            .create_out(&DelegationOut {
+                delegation_id: format!("delegation-{second}"),
+                environment_id: format!("environment-{env}"),
+                project_path: "/b/project".into(),
+                kind: "flow".into(),
+                request: json!({}),
+                request_sha256: "sha".into(),
+                caller: "owner".into(),
+                request_key: key.into(),
+                owner_conversation_id: None,
+                phase: String::new(),
+                target_id: None,
+                last_state: None,
+                result: None,
+                paused: None,
+                cancel_requested_at: None,
+                cancel_acknowledged_at: None,
+                created_at: String::new(),
+                updated_at: String::new(),
+                submitted_at: None,
+            })
+            .expect("create")
+            .delegation_id;
+        if phase != "created" {
+            environments.accept_out(&id, "target").expect("accept");
+        }
+        if phase == "sealed" {
+            environments
+                .seal_out(&id, &json!({"status": "completed"}), false)
+                .expect("seal");
+        }
+        rusqlite::Connection::open(settings.data_dir.join("state.sqlite3"))
+            .expect("state database")
+            .execute(
+                "UPDATE delegations_out SET created_at = ?2 WHERE delegation_id = ?1",
+                [&id, &format!("2026-01-01T00:00:0{second}Z")],
+            )
+            .expect("created at");
+        ids.push(id);
+    }
+    environments.pause_out(&ids[1], "Paused").expect("pause");
+    environments.pause_out(&ids[3], "Paused").expect("pause");
 
-    let local_list = send(
+    let list = |query: &'static str| {
+        let app = app.clone();
+        async move {
+            let response = send(
+                &app,
+                "GET",
+                &format!("/workspace/api/delegations{query}"),
+                Some(LOCAL),
+                &[],
+                None,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "{query}");
+            json(response).await["delegations"]
+                .as_array()
+                .expect("delegations")
+                .iter()
+                .map(|record| record["request_key"].as_str().expect("key").to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+    for (query, expected) in [
+        (
+            "",
+            &[
+                "c-sealed",
+                "c-accepted",
+                "c-created",
+                "b-sealed",
+                "b-accepted",
+                "b-created",
+            ][..],
+        ),
+        (
+            "?environment_id=environment-b",
+            &["b-sealed", "b-accepted", "b-created"],
+        ),
+        ("?phase=accepted", &["c-accepted", "b-accepted"]),
+        (
+            "?open=true",
+            &["c-accepted", "c-created", "b-accepted", "b-created"],
+        ),
+        ("?paused=true", &["c-created", "b-accepted"]),
+        ("?environment_id=environment-c&paused=true", &["c-created"]),
+        ("?environment_id=environment-b&phase=sealed", &["b-sealed"]),
+        ("?phase=created&open=true&paused=true", &["c-created"]),
+        ("?environment_id=environment-c&phase=sealed&open=true", &[]),
+    ] {
+        assert_eq!(list(query).await, expected, "{query}");
+    }
+
+    // Removing a link pauses its environment's open records; linking it
+    // again resumes them; a seal leaves the open list.
+    let removed = send(
         &app,
-        "GET",
-        "/workspace/api/delegations?open=true",
+        "DELETE",
+        "/workspace/api/environments/links/environment-c",
         Some(LOCAL),
         &[],
         None,
     )
     .await;
-    assert_eq!(local_list.status(), StatusCode::OK);
-    assert_eq!(json(local_list).await, json!({"delegations": []}));
+    assert_eq!(removed.status(), StatusCode::OK);
+    assert_eq!(
+        list("?paused=true").await,
+        ["c-accepted", "c-created", "b-accepted"]
+    );
+    link(&settings, "environment-c", &unreachable, "token");
+    assert_eq!(list("?paused=true").await, ["b-accepted"]);
+    environments
+        .seal_out(&ids[1], &json!({"status": "completed"}), false)
+        .expect("seal");
+    assert!(list("?paused=true").await.is_empty());
+    assert_eq!(
+        list("?open=true").await,
+        ["c-accepted", "c-created", "b-created"]
+    );
 
-    let missing_link = send(
+    for query in ["?unknown=1", "?phase=bogus", "?open=maybe"] {
+        let refused = send(
+            &app,
+            "GET",
+            &format!("/workspace/api/delegations{query}"),
+            Some(LOCAL),
+            &[],
+            None,
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{query}");
+    }
+    let remote = send(
         &app,
         "GET",
-        "/workspace/api/environments/links/env-missing/projects",
-        Some(LOCAL),
-        &[],
-        None,
-    )
-    .await;
-    assert_eq!(missing_link.status(), StatusCode::NOT_FOUND);
-
-    let bad_flow_suffix = send(
-        &app,
-        "GET",
-        "/workspace/api/environments/links/env-missing/flows/ops/run",
-        Some(LOCAL),
-        &[],
-        None,
-    )
-    .await;
-    assert_eq!(bad_flow_suffix.status(), StatusCode::NOT_FOUND);
-
-    for uri in [
         "/workspace/api/delegations",
+        Some(REMOTE),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(remote.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// A linked environment's discovery routes, as `env-b` answers them: each
+/// request is recorded with its bearer, and the flow named in a files
+/// request picks the answer.
+async fn discovery_peer(
+    State(seen): State<Arc<Mutex<Vec<(String, Option<String>)>>>>,
+    request: Request<Body>,
+) -> Response {
+    let bearer = request
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    seen.lock()
+        .expect("seen")
+        .push((request.uri().to_string(), bearer));
+    let answer = |status: StatusCode, body: Value| (status, Json(body)).into_response();
+    let detail = |status: StatusCode, detail: &str| answer(status, json!({"detail": detail}));
+    match request.uri().path() {
+        "/workspace/api/projects" => answer(StatusCode::OK, json!([{"project_path": "/b/repo"}])),
+        "/workspace/api/flows" => answer(
+            StatusCode::OK,
+            json!([{"name": "software-development/implement-change", "title": "Implement"}]),
+        ),
+        "/workspace/api/flows/software-development%2Fimplement-change/files" => answer(
+            StatusCode::OK,
+            json!({"name": "software-development/implement-change",
+                   "files": [{"name": "flow.md", "content": "---\nid: implement-change\n---\n"}]}),
+        ),
+        "/workspace/api/flows/missing/files" => {
+            detail(StatusCode::NOT_FOUND, "Unknown flow: missing")
+        }
+        "/workspace/api/flows/unknown-token/files" => {
+            detail(StatusCode::UNAUTHORIZED, "Unknown token.")
+        }
+        "/workspace/api/flows/revoked/files" => detail(StatusCode::FORBIDDEN, "Revoked token."),
+        "/workspace/api/flows/starting/files" => {
+            detail(StatusCode::SERVICE_UNAVAILABLE, "Peer is starting.")
+        }
+        "/workspace/api/flows/plain/files" => "all good".into_response(),
+        path => detail(StatusCode::IM_A_TEAPOT, path),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn linked_discovery_routes_forward_to_a_populated_peer_and_map_its_errors() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let app = crate::store_app_default(settings.clone());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let peer = serve(
+        Router::new()
+            .fallback(discovery_peer)
+            .with_state(seen.clone()),
+    )
+    .await;
+    link(&settings, "env-b", &peer, "stored-peer-token");
+    let links = "/workspace/api/environments/links";
+    let get = |uri: String| {
+        let app = app.clone();
+        async move { send(&app, "GET", &uri, Some(LOCAL), &[], None).await }
+    };
+
+    let projects = get(format!("{links}/env-b/projects")).await;
+    assert_eq!(projects.status(), StatusCode::OK);
+    assert_eq!(json(projects).await, json!([{"project_path": "/b/repo"}]));
+    let flows = get(format!("{links}/env-b/flows?project_path=%2Fb%2Frepo")).await;
+    assert_eq!(flows.status(), StatusCode::OK);
+    assert_eq!(
+        json(flows).await[0]["name"],
+        "software-development/implement-change"
+    );
+    let files = get(format!(
+        "{links}/env-b/flows/software-development/implement-change/files?project_path=%2Fb%2Frepo"
+    ))
+    .await;
+    assert_eq!(files.status(), StatusCode::OK);
+    assert_eq!(json(files).await["files"][0]["name"], "flow.md");
+    // A flow path without `/files` names no route, so the peer never sees it.
+    let no_suffix = get(format!("{links}/env-b/flows/ops/run")).await;
+    assert_eq!(no_suffix.status(), StatusCode::NOT_FOUND);
+
+    // The peer's refusals keep their meaning; its outage, or a success that
+    // is not JSON, is Spark's 503 naming the peer.
+    for (flow, status, says) in [
+        ("missing", StatusCode::NOT_FOUND, "Unknown flow: missing"),
+        ("unknown-token", StatusCode::FORBIDDEN, "Unknown token."),
+        ("revoked", StatusCode::FORBIDDEN, "Revoked token."),
+        (
+            "starting",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Peer is starting.",
+        ),
+        (
+            "plain",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "/workspace/api/flows/plain/files answered 200 with a body that is not JSON",
+        ),
+    ] {
+        let response = get(format!("{links}/env-b/flows/{flow}/files")).await;
+        assert_eq!(response.status(), status, "{flow}");
+        let detail = json(response).await["detail"]
+            .as_str()
+            .expect("detail")
+            .to_string();
+        assert!(detail.contains(says), "{flow}: {detail}");
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            assert!(detail.starts_with(&peer), "{flow}: {detail}");
+        }
+        if flow.ends_with("token") || flow == "revoked" {
+            assert!(detail.contains("link it again"), "{flow}: {detail}");
+        }
+    }
+
+    let seen = seen.lock().expect("seen").clone();
+    let targets: Vec<_> = seen.iter().map(|(target, _)| target.as_str()).collect();
+    assert_eq!(
+        targets,
+        [
+            "/workspace/api/projects",
+            "/workspace/api/flows?project_path=%2Fb%2Frepo",
+            "/workspace/api/flows/software-development%2Fimplement-change/files?project_path=%2Fb%2Frepo",
+            "/workspace/api/flows/missing/files",
+            "/workspace/api/flows/unknown-token/files",
+            "/workspace/api/flows/revoked/files",
+            "/workspace/api/flows/starting/files",
+            "/workspace/api/flows/plain/files",
+        ]
+    );
+    assert!(seen
+        .iter()
+        .all(|(_, bearer)| bearer.as_deref() == Some("Bearer stored-peer-token")));
+
+    let missing_link = get(format!("{links}/env-missing/projects")).await;
+    assert_eq!(missing_link.status(), StatusCode::NOT_FOUND);
+    for uri in [
         "/workspace/api/environments/links/env-b/projects",
         "/workspace/api/environments/links/env-b/flows",
         "/workspace/api/environments/links/env-b/flows/ops/run/files",
@@ -1105,6 +1372,7 @@ async fn delegation_list_and_discovery_routes_are_mounted_and_protected() {
         let remote = send(&app, "GET", uri, Some(REMOTE), &[], None).await;
         assert_eq!(remote.status(), StatusCode::UNAUTHORIZED, "{uri}");
     }
+    assert_eq!(seen.len(), 8, "refused requests never reach the peer");
 }
 
 const PROXY: &str = "/workspace/api/environments/links/env-b/proxy/";

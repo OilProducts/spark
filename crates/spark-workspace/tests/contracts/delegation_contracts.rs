@@ -1271,58 +1271,54 @@ fn a_lists_outgoing_delegations_with_filters() {
             "token-2",
         )
         .unwrap();
-    let store = crate::shared_store(&home.settings.data_dir);
-    let d1 = home.start(home.flow_start("k1", "Task 1")).unwrap();
-    let d2 = home
+    // Each filter keeps a different set: open and paused differ by `open`,
+    // the environment and phase filters by `paused` and `sealed`.
+    let paused = home.start(home.flow_start("k1", "Task 1")).unwrap();
+    let sealed = home
         .start(DelegationStartRequest {
             environment_id: "env-other".into(),
             ..home.flow_start("k2", "Task 2")
         })
         .unwrap();
+    home.start(home.flow_start("k3", "Task 3")).unwrap();
     home.environments()
-        .pause_out(&d1.delegation_id, "Paused for test")
+        .pause_out(&paused.delegation_id, "Paused for test")
         .unwrap();
     home.environments()
-        .seal_out(&d2.delegation_id, &json!({"status": "completed"}), false)
+        .seal_out(
+            &sealed.delegation_id,
+            &json!({"status": "completed"}),
+            false,
+        )
         .unwrap();
-    let _ = store;
 
-    let all = delegations::list(&home.settings, Default::default()).unwrap();
-    assert_eq!(all.len(), 2);
-
-    let open = delegations::list(
-        &home.settings,
-        delegations::DelegationListFilter {
-            open: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(open.len(), 1);
-    assert_eq!(open[0].delegation_id, d1.delegation_id);
-
-    let paused = delegations::list(
-        &home.settings,
-        delegations::DelegationListFilter {
-            paused: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(paused.len(), 1);
-    assert_eq!(paused[0].delegation_id, d1.delegation_id);
-
-    let by_env = delegations::list(
-        &home.settings,
-        delegations::DelegationListFilter {
-            environment_id: Some("env-other".into()),
-            phase: Some("sealed".into()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(by_env.len(), 1);
-    assert_eq!(by_env[0].delegation_id, d2.delegation_id);
+    let list = |environment_id: Option<&str>, phase: Option<&str>, open, paused| {
+        let mut keys: Vec<_> = delegations::list(
+            &home.settings,
+            delegations::DelegationListFilter {
+                environment_id: environment_id.map(str::to_string),
+                phase: phase.map(str::to_string),
+                open,
+                paused,
+            },
+        )
+        .unwrap()
+        .into_iter()
+        .map(|record| record.request_key)
+        .collect();
+        keys.sort();
+        keys
+    };
+    assert_eq!(list(None, None, false, false), ["k1", "k2", "k3"]);
+    assert_eq!(list(None, None, true, false), ["k1", "k3"]);
+    assert_eq!(list(None, None, false, true), ["k1"]);
+    assert_eq!(list(Some(LINKED), None, false, false), ["k1", "k3"]);
+    assert_eq!(list(None, Some("sealed"), false, false), ["k2"]);
+    assert!(list(Some("env-other"), Some("created"), false, false).is_empty());
+    // A blank value does not filter, and surrounding space is ignored.
+    assert_eq!(list(Some(" "), Some(""), false, false), ["k1", "k2", "k3"]);
+    assert_eq!(list(Some(" environment-b "), None, false, true), ["k1"]);
+    assert_eq!(list(None, Some(" created "), true, false), ["k1", "k3"]);
 
     let bad_phase = delegations::list(
         &home.settings,
@@ -1344,17 +1340,30 @@ fn a_proxies_project_and_flow_discovery_to_a_linked_environment() {
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
         let mut seen = Vec::new();
-        for body in [
-            r#"[{"project_path":"/b/repo"}]"#,
-            r#"[{"name":"ops/run"}]"#,
-            r#"{"name":"ops/run","files":[{"name":"flow.md","content":"---\nid: run\n---\n"}]}"#,
+        for (status, content_type, body) in [
+            (200, "application/json", r#"[{"project_path":"/b/repo"}]"#),
+            (200, "application/json", r#"[{"name":"ops/run"}]"#),
+            (
+                200,
+                "application/json",
+                r#"{"name":"ops/run","files":[{"name":"flow.md","content":"---\nid: run\n---\n"}]}"#,
+            ),
+            (
+                404,
+                "application/json",
+                r#"{"detail":"Unknown flow: missing"}"#,
+            ),
+            (401, "application/json", r#"{"detail":"Unknown token."}"#),
+            (403, "application/json", r#"{"detail":"Revoked token."}"#),
+            (503, "application/json", r#"{"detail":"Peer is starting."}"#),
+            (200, "text/plain", "all good"),
         ] {
             let (mut stream, _) = listener.accept().unwrap();
             let mut buf = [0u8; 4096];
             let n = stream.read(&mut buf).unwrap();
             seen.push(String::from_utf8_lossy(&buf[..n]).to_string());
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 {status} Answer\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
                 body
             );
@@ -1405,6 +1414,44 @@ fn a_proxies_project_and_flow_discovery_to_a_linked_environment() {
     )
     .unwrap();
     assert_eq!(files["files"][0]["name"], "flow.md");
+
+    // The peer's refusals keep their meaning; an outage or a success that is
+    // not JSON is this environment's 503, naming the peer.
+    let origin = format!("http://127.0.0.1:{port}");
+    let flow = |name: &str| delegations::link_flow_files(&home.settings, "env-b", name, None);
+    match flow("missing") {
+        Err(WorkspaceError::NotFound(detail)) => assert_eq!(detail, "Unknown flow: missing"),
+        other => panic!("{other:?}"),
+    }
+    for (name, detail) in [
+        ("unknown-token", "Unknown token."),
+        ("revoked", "Revoked token."),
+    ] {
+        match flow(name) {
+            Err(WorkspaceError::Forbidden(message)) => assert!(
+                message.contains(detail) && message.contains("link it again"),
+                "{message}"
+            ),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+    match delegations::link_flows(&home.settings, "env-b", None) {
+        Err(WorkspaceError::ServiceUnavailable(message)) => assert!(
+            message.starts_with(&origin) && message.contains("Peer is starting."),
+            "{message}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    match delegations::link_projects(&home.settings, "env-b") {
+        Err(WorkspaceError::ServiceUnavailable(message)) => assert!(
+            message.starts_with(&origin)
+                && message
+                    .contains("/workspace/api/projects answered 200 with a body that is not JSON")
+                && message.contains("all good"),
+            "{message}"
+        ),
+        other => panic!("{other:?}"),
+    }
 
     let seen = server.join().unwrap();
     assert!(seen[0].starts_with("GET /workspace/api/projects HTTP/"));
@@ -2031,14 +2078,17 @@ fn oversized_answer(chunked: bool) -> Vec<u8> {
 }
 
 #[test]
-fn a_follower_refuses_an_oversized_answer_and_keeps_the_last_state() {
+fn a_follower_refuses_an_oversized_or_non_json_answer_and_keeps_the_last_state() {
     let home = Home::new();
     // 0: B's ordinary view; 1: an oversized one with its length; 2: one
-    // streamed without a length.
+    // streamed without a length; 3: a success that is not JSON.
     let mode = Arc::new(AtomicUsize::new(0));
     let answering = mode.clone();
     let b = Peer::serve_raw(move |_, id| match answering.load(Ordering::SeqCst) {
         0 => json_answer(200, &b_state(id, "launched", "running")),
+        3 => b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\
+               Connection: close\r\n\r\nok"
+            .to_vec(),
         n => oversized_answer(n == 2),
     });
     home.link_to(LINKED, &b);
@@ -2051,13 +2101,17 @@ fn a_follower_refuses_an_oversized_answer_and_keeps_the_last_state() {
     assert_eq!(valid.phase, "accepted");
     assert!(valid.last_state.is_some());
 
-    for n in [1, 2] {
+    let too_large = format!("more than {} bytes", delegations::MAX_RESPONSE_BYTES);
+    for (n, refused) in [
+        (1, too_large.as_str()),
+        (2, &too_large),
+        (3, "200 with a body that is not JSON"),
+    ] {
         mode.store(n, Ordering::SeqCst);
         let diagnostics = home.tick(&mut delegations::Follower::default());
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-        let too_large = format!("more than {} bytes", delegations::MAX_RESPONSE_BYTES);
         assert!(
-            diagnostics[0].contains(&id) && diagnostics[0].contains(&too_large),
+            diagnostics[0].contains(&id) && diagnostics[0].contains(refused),
             "{diagnostics:?}"
         );
         let kept = home.out(&id);
@@ -2071,6 +2125,7 @@ fn a_follower_refuses_an_oversized_answer_and_keeps_the_last_state() {
         b.requests(),
         [
             format!("submit {id}"),
+            format!("poll {id}"),
             format!("poll {id}"),
             format!("poll {id}")
         ]

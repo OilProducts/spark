@@ -7,7 +7,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::conversation::{open_state_database, STATE_DATABASE_FILE_NAME};
@@ -98,6 +98,21 @@ pub struct DelegationOut {
     pub updated_at: String,
     /// When the follower first sent the record; `None` means B never saw it.
     pub submitted_at: Option<String>,
+}
+
+/// Which outgoing delegations a list returns; each field set narrows it.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DelegationListFilter {
+    #[serde(default)]
+    pub environment_id: Option<String>,
+    #[serde(default)]
+    pub phase: Option<String>,
+    /// Only unsealed records.
+    #[serde(default)]
+    pub open: bool,
+    #[serde(default)]
+    pub paused: bool,
 }
 
 /// A delegation this home admitted, or a cancellation tombstone.
@@ -507,14 +522,26 @@ impl EnvironmentRepository {
             .optional()?)
     }
 
-    /// Every outgoing delegation, newest first.
-    pub fn list_out(&self) -> Result<Vec<DelegationOut>> {
+    /// The outgoing delegations `filter` selects, newest first. The filter
+    /// runs in SQL, so the payloads of rows it leaves out are never read.
+    pub fn list_out(&self, filter: &DelegationListFilter) -> Result<Vec<DelegationOut>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(&format!(
-            "SELECT {OUT_COLUMNS} FROM delegations_out ORDER BY created_at DESC, delegation_id DESC"
+            "SELECT {OUT_COLUMNS} FROM delegations_out \
+             WHERE (?1 IS NULL OR environment_id = ?1) AND (?2 IS NULL OR phase = ?2) \
+             AND (NOT ?3 OR phase != 'sealed') AND (NOT ?4 OR paused IS NOT NULL) \
+             ORDER BY created_at DESC, delegation_id DESC"
         ))?;
         let records = statement
-            .query_map([], out_row)?
+            .query_map(
+                params![
+                    filter.environment_id,
+                    filter.phase,
+                    filter.open,
+                    filter.paused
+                ],
+                out_row,
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(records)
     }

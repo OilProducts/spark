@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 use spark_storage::conversation::NewInboxEvent;
+pub use spark_storage::environment::DelegationListFilter;
 use spark_storage::environment::{
     now, seal_out_on, DelegationIn, DelegationOut, EnvironmentLink, EnvironmentRepository,
     PROTOCOL_VERSION,
@@ -36,6 +37,10 @@ pub const FOLLOW_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// The longest one `wait` request holds.
 pub const MAX_WAIT: Duration = Duration::from_secs(30);
+/// The longest one request to another environment takes, answer included:
+/// under the `spark` CLI's 30 s request limit, so a stalled peer's error,
+/// naming it, reaches the CLI before the CLI gives up on this server.
+pub const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 /// Provenance of a run B launched for a delegation.
 pub const DELEGATION_CONTEXT_KEY: &str = "context.spark_delegation";
 /// The most a linked environment's answer may hold; a larger one is refused
@@ -324,7 +329,7 @@ fn call(
             reqwest::blocking::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(30))
+                .timeout(PEER_TIMEOUT)
                 .build()
                 .map_err(|error| error.to_string())
         })
@@ -337,9 +342,13 @@ fn call(
     if let Some(body) = body {
         request = request.json(body);
     }
-    let response = request
-        .send()
-        .map_err(|error| PeerError::Network(error.to_string()))?;
+    let response = request.send().map_err(|error| {
+        PeerError::Network(if error.is_timeout() {
+            format!("{path} did not answer within {PEER_TIMEOUT:?}.")
+        } else {
+            error.to_string()
+        })
+    })?;
     let status = response.status().as_u16();
     let too_large = || {
         PeerError::Network(format!(
@@ -361,13 +370,19 @@ fn call(
         return Err(too_large());
     }
     let text = String::from_utf8_lossy(&bytes);
-    let value = serde_json::from_str::<Value>(&text).unwrap_or(Value::Null);
+    let value = serde_json::from_str::<Value>(&text);
     if (200..300).contains(&status) {
-        return Ok(value);
+        // Every Spark route answers JSON: any other success is no answer.
+        return value.map_err(|_| {
+            PeerError::Network(format!(
+                "{path} answered {status} with a body that is not JSON: {:?}",
+                text.chars().take(200).collect::<String>()
+            ))
+        });
     }
-    let detail = value["detail"]
-        .as_str()
-        .map(str::to_string)
+    let detail = value
+        .ok()
+        .and_then(|value| value["detail"].as_str().map(str::to_string))
         .unwrap_or_else(|| text.chars().take(500).collect());
     Err(PeerError::Status(status, detail))
 }
@@ -570,45 +585,23 @@ pub fn start(
     Ok(stored)
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DelegationListFilter {
-    #[serde(default)]
-    pub environment_id: Option<String>,
-    #[serde(default)]
-    pub phase: Option<String>,
-    #[serde(default)]
-    pub open: bool,
-    #[serde(default)]
-    pub paused: bool,
-}
-
 pub fn list(
     settings: &SparkSettings,
     filter: DelegationListFilter,
 ) -> WorkspaceResult<Vec<DelegationOut>> {
-    let environment_id = non_empty(filter.environment_id.as_deref());
-    let phase = non_empty(filter.phase.as_deref());
-    if let Some(phase) = phase.as_deref() {
+    let filter = DelegationListFilter {
+        environment_id: non_empty(filter.environment_id.as_deref()),
+        phase: non_empty(filter.phase.as_deref()),
+        ..filter
+    };
+    if let Some(phase) = filter.phase.as_deref() {
         if !matches!(phase, "created" | "accepted" | "sealed") {
             return Err(validation(format!(
                 "phase must be created, accepted or sealed, not {phase:?}."
             )));
         }
     }
-    let records = environments(settings)
-        .list_out()?
-        .into_iter()
-        .filter(|record| {
-            environment_id
-                .as_deref()
-                .is_none_or(|env| record.environment_id == env)
-                && phase.as_deref().is_none_or(|p| record.phase == p)
-                && (!filter.open || record.phase != "sealed")
-                && (!filter.paused || record.paused.is_some())
-        })
-        .collect();
-    Ok(records)
+    Ok(environments(settings).list_out(&filter)?)
 }
 
 pub fn get(settings: &SparkSettings, delegation_id: &str) -> WorkspaceResult<DelegationOut> {
