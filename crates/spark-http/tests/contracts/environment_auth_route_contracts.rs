@@ -1851,6 +1851,7 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
             cancel_acknowledged_at: None,
             created_at: String::new(),
             updated_at: String::new(),
+            submitted_at: None,
         })
         .expect("pending delegation");
     let polled = send(
@@ -1981,6 +1982,183 @@ async fn artifact_downloads_are_exact_attachments_the_browser_does_not_sniff() {
     assert_eq!(json(preview).await, json!("{\"ok\": true}\n"));
     let binary_preview = send(&app, "GET", &uri("capture.bin"), Some(LOCAL), &[], None).await;
     assert_eq!(binary_preview.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+#[tokio::test]
+async fn delegation_routes_refuse_dot_identifiers_before_contacting_the_peer() {
+    use spark_storage::environment::{DelegationOut, EnvironmentLink, EnvironmentRepository};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cfg = settings(temp.path());
+    let app = crate::store_app_default(cfg.clone());
+    // The linked environment: it records each request line and answers.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind upstream");
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let recorded = seen.clone();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = header.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+            }
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            recorded.lock().unwrap().push(line.trim_end().to_string());
+            let body = r#"{"ok":true}"#;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    let environments = EnvironmentRepository::new(&cfg.data_dir);
+    environments
+        .save_link(
+            &EnvironmentLink {
+                environment_id: "env-b".into(),
+                origin,
+                label: "B".into(),
+                created_at: spark_storage::environment::now(),
+            },
+            "stored-peer-token",
+        )
+        .unwrap();
+    let id = "00000000-0000-4000-8000-000000000001";
+    environments
+        .create_out(&DelegationOut {
+            delegation_id: id.into(),
+            environment_id: "env-b".into(),
+            project_path: "/b/project".into(),
+            kind: "flow".into(),
+            request: json!({}),
+            request_sha256: "digest".into(),
+            caller: "owner".into(),
+            request_key: "ask".into(),
+            owner_conversation_id: None,
+            phase: "created".into(),
+            target_id: None,
+            last_state: None,
+            result: None,
+            paused: None,
+            cancel_requested_at: None,
+            cancel_acknowledged_at: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+            submitted_at: None,
+        })
+        .unwrap();
+    assert!(environments.accept_out(id, "run-1").unwrap());
+    // Paused, so the server's follower leaves the peer alone.
+    assert!(environments.pause_out(id, "Held by the test.").unwrap());
+
+    let answer = Some(r#"{"selected_value":"yes"}"#);
+    for (uri, body) in [
+        (
+            "/workspace/api/environments/links/env-b/flows/./files",
+            None,
+        ),
+        (
+            "/workspace/api/environments/links/env-b/flows/../files",
+            None,
+        ),
+        (
+            "/workspace/api/environments/links/env-b/flows/a/../b/files",
+            None,
+        ),
+        (
+            "/workspace/api/environments/links/env-b/flows/%2e%2e/files",
+            None,
+        ),
+        (
+            "/workspace/api/environments/links/env-b/flows/ops/%2E/run/files",
+            None,
+        ),
+        (
+            &*format!("/workspace/api/delegations/{id}/questions/./answer"),
+            answer,
+        ),
+        (
+            &*format!("/workspace/api/delegations/{id}/questions/../answer"),
+            answer,
+        ),
+        (
+            &*format!("/workspace/api/delegations/{id}/questions/%2e%2e/answer"),
+            answer,
+        ),
+        (
+            &*format!("/workspace/api/delegations/{id}/questions/a%2F..%2Fb/answer"),
+            answer,
+        ),
+        (
+            "/workspace/api/delegations/%2e%2e/questions/q-1/answer",
+            answer,
+        ),
+    ] {
+        let method = if body.is_some() { "POST" } else { "GET" };
+        let refused = send(&app, method, uri, Some(LOCAL), &[], body).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{uri}");
+    }
+    assert_eq!(*seen.lock().unwrap(), Vec::<String>::new());
+
+    let files = send(
+        &app,
+        "GET",
+        "/workspace/api/environments/links/env-b/flows/software-development/implement-change/files",
+        Some(LOCAL),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(files.status(), StatusCode::OK);
+    let answered = send(
+        &app,
+        "POST",
+        &format!("/workspace/api/delegations/{id}/questions/q-1.2/answer"),
+        Some(LOCAL),
+        &[],
+        answer,
+    )
+    .await;
+    assert_eq!(answered.status(), StatusCode::OK);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            "GET /workspace/api/flows/software-development%2Fimplement-change/files HTTP/1.1"
+                .to_string(),
+            format!(
+                "POST /workspace/api/delegations/incoming/{id}/questions/q-1.2/answer HTTP/1.1"
+            ),
+        ]
+    );
+
+    // An incoming cancel names a delegation by UUID and leaves nothing for
+    // another ID.
+    let cancel = send(
+        &app,
+        "POST",
+        "/workspace/api/delegations/incoming/not-a-uuid/cancel",
+        Some(LOCAL),
+        &[],
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(cancel.status(), StatusCode::BAD_REQUEST);
+    assert!(environments.in_("not-a-uuid").unwrap().is_none());
 }
 
 fn request(

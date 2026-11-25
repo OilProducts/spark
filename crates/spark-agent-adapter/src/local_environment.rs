@@ -774,6 +774,17 @@ fn spawn_with_lifeline(mut command: Command) -> std::io::Result<Child> {
     let group = rustix::process::Pid::from_raw(child.id() as i32)
         .ok_or_else(|| std::io::Error::other("no process ID"))
         .and_then(|pid| Ok(rustix::process::getpgid(Some(pid))?));
+    // macOS hides an exiting child from getpgid (ESRCH) a moment before wait can
+    // reap it; still unreaped, its pid is ours, so ESRCH means it is gone.
+    if matches!(&group, Err(e) if e.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()))
+    {
+        // wait closes stdin; keep it, as the try_wait path below does, for
+        // callers that take it.
+        let stdin = child.stdin.take();
+        child.wait()?;
+        child.stdin = stdin;
+        return Ok(child);
+    }
     let tied = group.and_then(|group| {
         if group == rustix::process::getpgrp() {
             return Err(std::io::Error::other("it shares Spark's process group"));
