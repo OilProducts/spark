@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '@/App'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { useStartPipeline } from '@/features/launch'
+import { requestRunsTransportReconnect } from '@/features/runs/services/runsTransportReconnect'
 import { useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import {
     EXPECTED_PROTOCOL_VERSION,
@@ -436,6 +437,103 @@ describe('Same-window multi-environment switching', () => {
         expect(workspaceMounted()).toBe(remoteShell)
     })
 
+    const winLive = () => MockEventSource.instances.filter((source) => !source.closed && source.url.startsWith(`${WIN}/workspace/api/live/events`)).at(-1)
+    async function mountWindows(routes: Record<string, Route> = {}) {
+        const user = userEvent.setup()
+        const backend = stubBackend(routes)
+        render(<App />)
+        await user.click(await screen.findByTestId('environment-tab-env-win'))
+        await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-win'))
+        await waitFor(() => expect(winLive()).toBeDefined())
+        return { user, backend, remoteShell: workspaceMounted(), checks: () => backend.requests.filter((request) => request.url === WIN_AUTH).length }
+    }
+
+    it('checks a reconnected remote anew while its outage\'s check still runs, and keeps what the new check found', async () => {
+        const routes: Record<string, Route> = {}
+        const { checks } = await mountWindows(routes)
+        const before = checks()
+        const outage = deferred<Response>()
+        routes[WIN_AUTH] = () => outage.promise
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+
+        // Back, upgraded past this bundle, while the outage's check has no answer yet.
+        routes[WIN_AUTH] = () => json(descriptor('env-win', { ui_api_version: 3 }))
+        act(() => winLive()!.onopen?.(new Event('open')))
+        expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent('Version mismatch with Windows Workstation')
+        expect(checks()).toBe(before + 2)
+
+        // The outage's check answering late, from before the upgrade, changes nothing.
+        await act(async () => outage.resolve(json(WIN_ENV)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'incompatible' })
+        expect(screen.getByTestId('remote-environment-gate')).toBeInTheDocument()
+    })
+
+    it('checks a remote whose failed live connection Try again restarted', async () => {
+        const routes: Record<string, Route> = {}
+        await mountWindows(routes)
+        const failed = winLive()!
+        act(() => failed.onerror?.(new Event('error')))
+        await act(async () => {})
+        act(() => requestRunsTransportReconnect())
+        await waitFor(() => expect(winLive()).toBeDefined())
+
+        routes[WIN_AUTH] = () => json(descriptor('env-win', { ui_api_version: 3 }))
+        act(() => winLive()!.onopen?.(new Event('open')))
+        expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent('Version mismatch with Windows Workstation')
+    })
+
+    it('applies nothing a reconnected remote sends until its check passes, and keeps a connection that fails it closed until Retry', async () => {
+        const routes: Record<string, Route> = {}
+        const { user, remoteShell } = await mountWindows(routes)
+        const applied = vi.fn()
+        const refreshed = vi.fn()
+        window.addEventListener('spark:harness-checked', applied)
+        window.addEventListener('spark:settings-live-event', refreshed)
+        const frame = new MessageEvent('message', { data: JSON.stringify({ type: 'harness.checked' }) })
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+        await act(async () => {})
+
+        // Its first frame arrives before its check answers: neither it nor the reconnect's reloads apply yet.
+        const failing = winLive()!
+        const check = deferred<Response>()
+        routes[WIN_AUTH] = () => check.promise
+        refreshed.mockClear()
+        act(() => {
+            failing.onopen?.(new Event('open'))
+            failing.onmessage?.(frame)
+        })
+        expect(applied).not.toHaveBeenCalled()
+        expect(refreshed).not.toHaveBeenCalled()
+
+        // It came back re-paired as another environment: the frame never applies and the connection stays closed.
+        await act(async () => check.resolve(json(descriptor('env-other'))))
+        expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent('answered as environment env-other')
+        expect(failing.closed).toBe(true)
+        await act(() => new Promise((resolve) => setTimeout(resolve, 600)))
+        expect(winLive()).toBeUndefined()
+        expect(applied).not.toHaveBeenCalled()
+        expect(refreshed).not.toHaveBeenCalled()
+
+        // Retry passes: a new connection opens, and what it sends applies once its own check passes.
+        delete routes[WIN_AUTH]
+        await user.click(screen.getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(winLive()).toBeDefined())
+        expect(remoteShell).toBeVisible()
+        const recovered = winLive()!
+        act(() => {
+            recovered.onopen?.(new Event('open'))
+            recovered.onmessage?.(frame)
+        })
+        expect(applied).not.toHaveBeenCalled()
+        await waitFor(() => expect(applied).toHaveBeenCalledTimes(1))
+        expect(refreshed).toHaveBeenCalled()
+        window.removeEventListener('spark:harness-checked', applied)
+        window.removeEventListener('spark:settings-live-event', refreshed)
+    })
+
     it('keeps a mounted remote\'s failed re-check for a return from another environment\'s failed check', async () => {
         const user = userEvent.setup()
         const gpu = deferred<void>()
@@ -467,6 +565,44 @@ describe('Same-window multi-environment switching', () => {
         expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'unreachable' })
         expect(workspaceMounted()).toBe(remoteShell)
         expect(remoteShell).not.toBeVisible()
+    })
+
+    it.each([
+        ['the Run Flow dialog', async () => {
+            act(() => { window.dispatchEvent(new CustomEvent('spark:run-flow', { detail: {} })) })
+            await screen.findByTestId('run-flow-dialog')
+        }, true],
+        // The switch's confirmation takes the shared dialog's place.
+        ['a confirmation', async (user: ReturnType<typeof userEvent.setup>) => {
+            await user.click(await screen.findByRole('button', { name: 'Remove link GPU' }))
+            await screen.findByRole('alertdialog', { name: 'Remove environment link?' })
+        }, false],
+    ])('keeps the gate usable over %s left open in the workspace as a re-check failed, and its confirmation over the gate', async (_dialog, openDialog, staysOpen) => {
+        const routes: Record<string, Route> = { [`${WIN}${LINKS}`]: () => json({ links: [GPU_LINK] }) }
+        const { user, remoteShell } = await mountWindows(routes)
+        await openSystemSettings()
+        await user.type(await screen.findByLabelText('Command-line server URL'), 'http://draft.example')
+        await openDialog(user)
+
+        routes[WIN_AUTH] = () => json({ detail: 'Unauthorized' }, 401)
+        act(() => winLive()!.onerror?.(new Event('error')))
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(screen.getByRole('dialog', { name: 'Couldn’t connect to Windows Workstation' })).toContainElement(gate)
+        expect(gate).toBeVisible()
+
+        // Leaving asks about the unsaved settings over the gate; keeping them keeps the gate.
+        await user.click(within(gate).getByRole('button', { name: 'Return to this machine' }))
+        const confirmation = await screen.findByRole('alertdialog', { name: 'Discard unsaved settings?' })
+        await user.click(within(confirmation).getByRole('button', { name: 'Keep editing' }))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'unreachable' })
+
+        // Retry shows the same workspace with its draft, and the dialog it left open still there.
+        delete routes[WIN_AUTH]
+        await user.click(within(screen.getByTestId('remote-environment-gate')).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(remoteShell).toBeVisible())
+        expect(workspaceMounted()).toBe(remoteShell)
+        expect(screen.getByLabelText('Command-line server URL')).toHaveValue('http://draft.example')
+        if (staysOpen) expect(screen.getByTestId('run-flow-dialog')).toBeVisible()
     })
 
     describe.each([
@@ -622,6 +758,43 @@ describe('Same-window multi-environment switching', () => {
         expect(tabs()).toEqual(['mac-studio(local)', 'GPU'])
         await act(async () => release())
         expect(tabs()).toEqual(['mac-studio(local)', 'GPU'])
+    })
+
+    it.each([
+        ['passes', () => json(WIN_ENV)],
+        // As the proxy answers once the link is gone.
+        ['fails', () => json({ detail: 'Not Found' }, 404)],
+    ])('drops a switch from the tab bar whose destination Settings removed during its check, which then %s', async (_outcome, answer) => {
+        const user = userEvent.setup()
+        const check = deferred<void>()
+        let links = [WIN_LINK, GPU_LINK]
+        stubBackend({
+            [LINKS]: () => json({ links }),
+            [WIN_AUTH]: () => check.promise.then(answer),
+            [`DELETE ${LINKS}/env-win`]: () => {
+                links = links.filter((row) => row.environment_id !== 'env-win')
+                return json({ environment_id: 'env-win', removed: true })
+            },
+        }, links)
+        render(<App />)
+        await screen.findByTestId('environment-tab-env-win')
+        await openSystemSettings()
+        const shell = workspaceMounted()
+
+        await user.click(tab('env-win'))
+        await screen.findByTestId('environment-checking')
+        await user.click(await screen.findByRole('button', { name: 'Remove link Windows Workstation' }))
+        await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Remove link' }))
+        await waitFor(() => expect(tabs()).toEqual(['mac-studio(local)', 'GPU']))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready' })
+        expect(screen.queryByTestId('environment-checking')).not.toBeInTheDocument()
+
+        await act(async () => check.resolve())
+        await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready' })
+        expect(screen.queryByTestId('remote-environment-gate')).not.toBeInTheDocument()
+        expect(workspaceMounted()).toBe(shell)
+        expect(shell).toBeVisible()
     })
 
     it.each(['launch', 'continuation'])('lets a %s answered during another environment\'s check land in its still-open workspace, and drops one answered after the switch', async (kind) => {

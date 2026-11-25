@@ -331,27 +331,32 @@ describe('onChatComposerSubmit', () => {
                 expect(sendConversationTurnValidated).not.toHaveBeenCalled()
             })
 
-            it('keeps a send its settings failed as the draft, once, with why, when its workspace shows again after the connection failed', async () => {
-                const { checked, switching } = await settingsRefusedWhileChecking()
-                checked.reject(new Error('unreachable'))
-                await expect(switching).rejects.toThrow()
-                await switchEnvironment(null)
+            // The workspace never closed, so nothing else happens in it as it shows again: no reload, no edit.
+            const returns = [
+                ['after the connection failed', async ({ checked, switching }: Awaited<ReturnType<typeof refusedWhileChecking>>) => {
+                    checked.reject(new Error('unreachable'))
+                    await expect(switching).rejects.toThrow()
+                    await switchEnvironment(null)
+                }],
+                ['on a return that cancels the switch during its check', async ({ checked, switching }: Awaited<ReturnType<typeof refusedWhileChecking>>) => {
+                    await switchEnvironment(null)
+                    checked.resolve()
+                    await expect(switching).rejects.toThrow()
+                }],
+            ] as const
 
-                loadProjects('conversation-1')
+            it.each(returns)('keeps a send its settings failed as the draft, once, with why, as its workspace shows again %s', async (_when, returnHere) => {
+                await returnHere(await settingsRefusedWhileChecking())
+
                 expect(draft()).toBe('Hello there')
                 expect(attachmentsOf('conversation-1')).toEqual([entry])
                 expect(panelError()).toBe(SETTINGS_REFUSAL)
                 expect(sendConversationTurnValidated).not.toHaveBeenCalled()
             })
 
-            it('puts it back once its workspace shows again after the connection failed', async () => {
-                const { checked, switching } = await refusedWhileChecking()
-                checked.reject(new Error('unreachable'))
-                await expect(switching).rejects.toThrow()
-                await switchEnvironment(null)
+            it.each(returns)('puts it back as its workspace shows again %s', async (_when, returnHere) => {
+                await returnHere(await refusedWhileChecking())
 
-                // Its projects load again as its workspace opens.
-                loadProjects('conversation-1')
                 expect(attachmentsOf('conversation-1')).toEqual([entry])
                 expect(panelError()).toBe('Unable to send the project chat turn.')
             })

@@ -83,7 +83,10 @@ type PromptDialogRequest = PromptDialogOptions & {
   resolve: (value: string | null) => void
 }
 
-type DialogRequest = AlertDialogRequest | ConfirmDialogRequest | PromptDialogRequest
+// Each confirmation or alert is its own layer, so one asked while another layer is open, such as an environment's error
+// gate over a question the workspace left open, opens over it.
+type DialogRequest = (AlertDialogRequest | ConfirmDialogRequest | PromptDialogRequest) & { id: number }
+let dialogRequests = 0
 
 const DialogControllerContext = createContext<DialogController | null>(null)
 
@@ -127,6 +130,7 @@ export function DialogProvider({ children }: PropsWithChildren) {
     alert: (options) => new Promise<void>((resolve) => {
       setCurrentDialog({
         kind: 'alert',
+        id: ++dialogRequests,
         confirmLabel: 'OK',
         confirmVariant: 'default',
         ...options,
@@ -136,6 +140,7 @@ export function DialogProvider({ children }: PropsWithChildren) {
     confirm: (options) => new Promise<boolean>((resolve) => {
       setCurrentDialog({
         kind: 'confirm',
+        id: ++dialogRequests,
         confirmLabel: 'Confirm',
         cancelLabel: 'Cancel',
         confirmVariant: 'default',
@@ -147,6 +152,7 @@ export function DialogProvider({ children }: PropsWithChildren) {
       setPromptValue(options.defaultValue ?? '')
       setCurrentDialog({
         kind: 'prompt',
+        id: ++dialogRequests,
         confirmLabel: 'Save',
         cancelLabel: 'Cancel',
         confirmVariant: 'default',
@@ -201,6 +207,7 @@ export function DialogProvider({ children }: PropsWithChildren) {
       {children}
       {currentDialog && currentDialog.kind !== 'prompt' ? (
         <AlertDialog
+          key={currentDialog.id}
           open
           onOpenChange={(isOpen) => {
             if (!isOpen) {

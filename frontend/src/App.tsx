@@ -105,14 +105,15 @@ function WorkspaceShell() {
 
 function App() {
   const { activeEnvironmentId, status } = useActiveEnvironment()
-  // A failed check hides the workspace without unmounting it, so its unsaved edits wait for Retry or Return.
+  // A failed check hides the workspace without unmounting it, so its unsaved edits wait for Retry or Return; the gate
+  // brings the switcher bar along.
   const blocked = status === 'incompatible' || status === 'unreachable'
 
   return (
     <DialogProvider>
       <EnvironmentBootstrap />
       <div className="h-screen flex flex-col antialiased bg-ground text-foreground">
-        <EnvironmentSwitcherBar />
+        {blocked ? null : <EnvironmentSwitcherBar />}
         <div hidden={blocked} className="flex min-h-0 flex-1 flex-col">
           <WorkspaceShell key={activeEnvironmentId ?? 'local'} />
         </div>

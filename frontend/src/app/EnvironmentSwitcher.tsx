@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { AlertTriangle, Laptop, Loader2, RefreshCw, Server } from 'lucide-react'
+import { Dialog as DialogPrimitive } from 'radix-ui'
 import { Button } from '@/components/ui/button'
 import { useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
 import { resetModelOptionsCache } from '@/components/model-chooser/useModelOptions'
@@ -165,6 +166,8 @@ export function EnvironmentSwitcherBar() {
 /**
  * Shown, with the workspace hidden but still mounted, when a linked environment fails its check: unreachable, a
  * rejected credential or another identity, or a `ui_api_version` / `protocol_version` this bundle does not speak.
+ * It is a modal layer, with the switcher bar, over any dialog the workspace left open, which waits under it; a
+ * switch's confirmation opens over it in turn.
  */
 export function RemoteEnvironmentGate() {
     const { activeEnvironmentId, selectedEnvironmentId, status, error, links, localDescriptor, remoteDescriptor } = useActiveEnvironment()
@@ -174,46 +177,58 @@ export function RemoteEnvironmentGate() {
     const returnTo = selectedEnvironmentId === activeEnvironmentId ? null : activeEnvironmentId
 
     return (
-        <main
-            data-testid="remote-environment-gate"
-            className="flex flex-1 min-h-0 flex-col items-center justify-center p-6 text-center outline-none"
-        >
-            <div className="w-full max-w-md space-y-4 rounded-xl border border-border bg-background p-6 shadow-sm">
-                <div className="flex items-center justify-center gap-2 text-sm font-semibold text-foreground">
-                    <AlertTriangle aria-hidden="true" className="size-4 text-warning" />
-                    <span>
-                        {status === 'incompatible'
-                            ? `Version mismatch with ${name}`
-                            : `Couldn’t connect to ${name}`}
-                    </span>
-                </div>
-                {error ? (
-                    <p role="alert" className="text-sm text-muted-foreground">
-                        {error}
-                    </p>
-                ) : null}
-                {status === 'incompatible' && localDescriptor && remoteDescriptor ? (
-                    <dl className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-ground p-3 text-left text-xs">
-                        <div>
-                            <dt className="font-medium text-foreground">This Spark</dt>
-                            <dd className="text-muted-foreground">{describeEnvironmentVersion(localDescriptor)}</dd>
+        <DialogPrimitive.Root open>
+            <DialogPrimitive.Portal>
+                <DialogPrimitive.Content
+                    aria-describedby={undefined}
+                    className="fixed inset-0 z-50 flex flex-col bg-ground text-foreground antialiased outline-none"
+                >
+                    <EnvironmentSwitcherBar />
+                    <main
+                        data-testid="remote-environment-gate"
+                        className="flex flex-1 min-h-0 flex-col items-center justify-center p-6 text-center outline-none"
+                    >
+                        <div className="w-full max-w-md space-y-4 rounded-xl border border-border bg-background p-6 shadow-sm">
+                            <div className="flex items-center justify-center gap-2 text-sm font-semibold text-foreground">
+                                <AlertTriangle aria-hidden="true" className="size-4 text-warning" />
+                                <DialogPrimitive.Title asChild>
+                                    <span>
+                                        {status === 'incompatible'
+                                            ? `Version mismatch with ${name}`
+                                            : `Couldn’t connect to ${name}`}
+                                    </span>
+                                </DialogPrimitive.Title>
+                            </div>
+                            {error ? (
+                                <p role="alert" className="text-sm text-muted-foreground">
+                                    {error}
+                                </p>
+                            ) : null}
+                            {status === 'incompatible' && localDescriptor && remoteDescriptor ? (
+                                <dl className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-ground p-3 text-left text-xs">
+                                    <div>
+                                        <dt className="font-medium text-foreground">This Spark</dt>
+                                        <dd className="text-muted-foreground">{describeEnvironmentVersion(localDescriptor)}</dd>
+                                    </div>
+                                    <div>
+                                        <dt className="font-medium text-foreground">{name}</dt>
+                                        <dd className="text-muted-foreground">{describeEnvironmentVersion(remoteDescriptor)}</dd>
+                                    </div>
+                                </dl>
+                            ) : null}
+                            <div className="flex flex-wrap justify-center gap-2">
+                                <Button type="button" size="sm" variant="outline" onClick={() => void retrySelectedEnvironment()}>
+                                    <RefreshCw aria-hidden="true" className="size-3.5" />
+                                    Retry
+                                </Button>
+                                <Button type="button" size="sm" onClick={() => void selectEnvironment(returnTo)}>
+                                    Return to {returnTo === null ? 'this machine' : nameOf(returnTo)}
+                                </Button>
+                            </div>
                         </div>
-                        <div>
-                            <dt className="font-medium text-foreground">{name}</dt>
-                            <dd className="text-muted-foreground">{describeEnvironmentVersion(remoteDescriptor)}</dd>
-                        </div>
-                    </dl>
-                ) : null}
-                <div className="flex flex-wrap justify-center gap-2">
-                    <Button type="button" size="sm" variant="outline" onClick={() => void retrySelectedEnvironment()}>
-                        <RefreshCw aria-hidden="true" className="size-3.5" />
-                        Retry
-                    </Button>
-                    <Button type="button" size="sm" onClick={() => void selectEnvironment(returnTo)}>
-                        Return to {returnTo === null ? 'this machine' : nameOf(returnTo)}
-                    </Button>
-                </div>
-            </div>
-        </main>
+                    </main>
+                </DialogPrimitive.Content>
+            </DialogPrimitive.Portal>
+        </DialogPrimitive.Root>
     )
 }

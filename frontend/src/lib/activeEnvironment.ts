@@ -120,8 +120,9 @@ let refreshSequence = 0
 let resetHandler: ((targetEnvironmentId: string | null) => void) | null = null
 // What the mounted environment's own last check found; a switch that does not go through shows it again.
 let activeCheck: Check = READY_LOCAL
-// The mounted environment a re-check is running for.
-let reverifying: string | null = null
+// The latest re-check of the mounted environment, and whether one is running.
+let reverifySequence = 0
+let reverifying = false
 
 function emit() {
     listeners.forEach((listener) => listener())
@@ -164,6 +165,12 @@ export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]
         // A listing already in flight may predate the change; the reload this event starts replaces it.
         refreshSequence += 1
         updateState({ links: update(state.links) })
+        // A destination removed while it is checked is no longer one to switch to, whatever its check answers.
+        const pending = state.selectedEnvironmentId
+        if (pending !== null && pending !== state.activeEnvironmentId && !state.links.some((link) => link.environment_id === pending)) {
+            switchSequence += 1
+            showActiveEnvironment()
+        }
     }
     window.dispatchEvent(new Event(ENVIRONMENT_LINKS_CHANGED_EVENT))
 }
@@ -316,30 +323,35 @@ export function retrySelectedEnvironment(): Promise<boolean> {
 }
 
 /**
- * Checks the mounted linked environment again, as when its live connection fails or comes back after an error: one
+ * Checks the mounted linked environment again, as when its live connection fails or opens again after failing: one
  * that was upgraded, re-paired as another environment or revoked this Spark's credential shows the gate's error, now
- * or, while a switch elsewhere is pending, once that switch comes back to it. It leaves a pending switch alone, and
- * no answer at all to the live connection's retries.
+ * or, while a switch elsewhere is pending, once that switch comes back to it. It leaves a pending switch alone.
+ * Resolves whether the mounted environment passed, or `null` with no answer. A failing connection's checks run one at a
+ * time; a `fresh` one, for a connection that opened again, starts anew and outdates any still running.
  */
-export async function reverifyActiveEnvironment(): Promise<void> {
+export async function reverifyActiveEnvironment(fresh = false): Promise<boolean | null> {
     const environmentId = state.activeEnvironmentId
-    // An error already found stays until Retry or Return; one check at a time.
-    if (environmentId === null || activeCheck.status !== 'ready' || reverifying === environmentId) return
-    reverifying = environmentId
+    if (environmentId === null) return true
+    // An error already found stays until Retry or Return.
+    if (activeCheck.status !== 'ready') return false
+    if (reverifying && !fresh) return null
+    const seq = ++reverifySequence
+    reverifying = true
     let check: Check
     try {
         check = await checkRemoteEnvironment(environmentId)
     } catch {
-        return
+        return null
     } finally {
-        if (reverifying === environmentId) reverifying = null
+        if (seq === reverifySequence) reverifying = false
     }
-    if (state.activeEnvironmentId !== environmentId) return
+    if (seq !== reverifySequence || state.activeEnvironmentId !== environmentId) return null
     activeCheck = check
     if (state.selectedEnvironmentId === environmentId) updateState(check)
+    return check.status === 'ready'
 }
 
-function subscribe(listener: () => void) {
+export function subscribeActiveEnvironment(listener: () => void) {
     listeners.add(listener)
     return () => {
         listeners.delete(listener)
@@ -347,14 +359,15 @@ function subscribe(listener: () => void) {
 }
 
 export function useActiveEnvironment(): ActiveEnvironmentState {
-    return useSyncExternalStore(subscribe, getActiveEnvironmentState, getActiveEnvironmentState)
+    return useSyncExternalStore(subscribeActiveEnvironment, getActiveEnvironmentState, getActiveEnvironmentState)
 }
 
 export function resetActiveEnvironmentForTests() {
     switchSequence += 1
     refreshSequence += 1
     activeCheck = READY_LOCAL
-    reverifying = null
+    reverifySequence += 1
+    reverifying = false
     state = { ...INITIAL_STATE }
     emit()
 }

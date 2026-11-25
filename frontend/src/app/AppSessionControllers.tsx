@@ -26,7 +26,7 @@ import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import type { AppState } from '@/state/store-types'
 import { openByItself, opensByItself } from '@/state/homeSessionSlice'
-import { getActiveEnvironmentId, reverifyActiveEnvironment } from '@/lib/activeEnvironment'
+import { getActiveEnvironmentId, getActiveEnvironmentState, reverifyActiveEnvironment, subscribeActiveEnvironment } from '@/lib/activeEnvironment'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { reportRunsTransportLost, requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { addsEntry, closesTrigger, missionKey, parsePlaceHash, placeHash, placeOf, roleKey, type Place } from './runsRouting'
@@ -262,6 +262,8 @@ export function TriggersSessionController() {
 
 export function WorkspaceLiveEventsController() {
     const reconnectSignal = useRunsTransportReconnectSignal(true)
+    // The live connection failed since one last opened and passed its check; it outlasts restarts, such as Try again's.
+    const unverified = useRef(false)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const projectSessionsByPath = useStore((state) => state.projectSessionsByPath)
     const selectedRunId = useStore(selectSelectedRunId)
@@ -322,6 +324,9 @@ export function WorkspaceLiveEventsController() {
         let closed = false
         // Failed connects in a row: two or more mean Spark was unreachable, not a routine drop.
         let failedConnects = 0
+        // What a reconnected linked environment sends before its check passes, which applies it.
+        let held: MessageEvent<string>[] | null = null
+        let stopWaiting = () => {}
 
         // Summary changes that arrive before a cursorless connection's snapshot wait for it.
         let awaitingSummarySnapshot = false
@@ -385,6 +390,10 @@ export function WorkspaceLiveEventsController() {
 
         const handleMessage = (event: MessageEvent<string>, source: EventSource) => {
             if (!isCurrent(source)) return
+            if (held) {
+                held.push(event)
+                return
+            }
             failedConnects = 0
             try {
                 const envelope = JSON.parse(event.data) as {
@@ -532,21 +541,53 @@ export function WorkspaceLiveEventsController() {
                 return
             }
             eventSource?.close()
+            held = null
             const source = new EventSource(buildUrlWithCursors())
             eventSource = source
-            source.onopen = () => {
-                if (!isCurrent(source)) return
+            const reconnect = () => {
+                if (reconnectTimer !== null) {
+                    window.clearTimeout(reconnectTimer)
+                }
+                reconnectTimer = window.setTimeout(open, 500)
+            }
+            const connected = () => {
                 // This connection's first frames restore whatever is still thinking; the rest ended unseen.
                 useLiveThinkingStore.getState().clear()
                 window.dispatchEvent(new Event('spark:settings-live-event'))
-                // Back after an error: a linked environment may since have been upgraded or re-paired, so check it again.
-                if (failedConnects > 0) void reverifyActiveEnvironment()
                 // Back after an outage: reload what failed meanwhile, as Reconnect would.
                 if (failedConnects >= 2) {
                     refreshAttention()
                     requestRunsTransportReconnect()
                 }
                 failedConnects = 0
+                unverified.current = false
+            }
+            source.onopen = () => {
+                if (!isCurrent(source)) return
+                if (!unverified.current || getActiveEnvironmentId() === null) return connected()
+                // Back after an error, a linked environment may since have been upgraded, re-paired or have revoked this
+                // Spark's credential: what this connection sends, and the reloads it starts, wait for a check made now.
+                held = []
+                void reverifyActiveEnvironment(true).then((verified) => {
+                    if (!isCurrent(source)) return
+                    const frames = held ?? []
+                    held = null
+                    if (verified) {
+                        connected()
+                        frames.forEach((frame) => handleMessage(frame, source))
+                        return
+                    }
+                    source.close()
+                    eventSource = null
+                    if (verified === null) return reconnect()
+                    // It failed: the connection stays closed, its workspace behind the gate, until Retry passes a check.
+                    stopWaiting = subscribeActiveEnvironment(() => {
+                        const { activeEnvironmentId, selectedEnvironmentId, status } = getActiveEnvironmentState()
+                        if (selectedEnvironmentId !== activeEnvironmentId || status !== 'ready') return
+                        stopWaiting()
+                        open()
+                    })
+                })
             }
             source.onmessage = (event) => handleMessage(event, source)
             source.onerror = () => {
@@ -556,21 +597,20 @@ export function WorkspaceLiveEventsController() {
                 source.close()
                 eventSource = null
                 failedConnects += 1
+                unverified.current = true
                 // A linked environment that revoked this Spark's credential refuses every reconnect and never opens.
                 // ponytail: a check per failed attempt while a peer is down; back off if that load matters.
                 void reverifyActiveEnvironment()
                 // Spark is unreachable: runs say so instead of looking live.
                 if (failedConnects === 2) reportRunsTransportLost()
-                if (reconnectTimer !== null) {
-                    window.clearTimeout(reconnectTimer)
-                }
-                reconnectTimer = window.setTimeout(open, 500)
+                reconnect()
             }
         }
 
         open()
         return () => {
             closed = true
+            stopWaiting()
             if (reconnectTimer !== null) {
                 window.clearTimeout(reconnectTimer)
             }
