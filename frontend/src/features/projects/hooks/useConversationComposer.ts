@@ -18,18 +18,18 @@ import {
     type ConversationBatch,
     type ConversationChatMode,
     updateConversationSettingsValidated,
-    updateProjectStateValidated,
 } from '@/lib/workspaceClient'
 import { randomHexId } from '@/lib/utils'
 import { homeSessionStart } from '@/state/homeSessionSlice'
 import { useStore, whenEnvironmentShown } from '@/store'
 import type { PendingConversationTurnState, PendingUserMessage } from '../model/conversationState'
-import { toHydratedProjectRecord, type NormalizedConversationRecord } from '../model/projectsHomeState'
+import type { NormalizedConversationRecord } from '../model/projectsHomeState'
 import type { ComposerAttachment } from '../model/types'
 import { clearSentAttachments, restoreRefusedAttachments } from './useComposerAttachments'
 
 // Prevents duplicate turn submits while a turn waits for an in-flight settings save to commit. A chat
-// is one in its environment: the same conversation ID elsewhere is another chat.
+// is one in its environment's chats as shown: the same conversation ID elsewhere, or once a switch away
+// and back starts them anew, is another chat.
 const awaitingSettingsTurn = new Set<string>()
 
 export type ConversationComposerCommand =
@@ -154,7 +154,7 @@ export function useConversationComposer({
 }: UseConversationComposerArgs) {
     const awaitSettingsReady = async (conversationId: string, environmentId: string | null): Promise<boolean | string> => {
         if (!waitForPendingSettingsSave) return true
-        const key = `${environmentId ?? 'local'}\n${conversationId}`
+        const key = `${environmentId ?? 'local'}\n${homeSessionStart()}\n${conversationId}`
         if (awaitingSettingsTurn.has(key)) return false
         awaitingSettingsTurn.add(key)
         try {
@@ -167,6 +167,13 @@ export function useConversationComposer({
     // A request goes to the environment it started in, captured before any await; once another
     // environment is shown, its answer changes nothing there.
     const isShown = (environmentId: string | null) => getActiveEnvironmentId() === environmentId
+    // Nor, once a switch away and back has started the chats anew, does a send begun before then: it
+    // shows in the chats it started in, never in a newer send's pending and sending state.
+    const showsHere = () => {
+        const environmentId = getActiveEnvironmentId()
+        const session = homeSessionStart()
+        return () => isShown(environmentId) && homeSessionStart() === session
+    }
 
     // The `/plan` and `/chat` commands and the header's mode control take the same path.
     const switchChatMode = async (conversationId: string, chatMode: ConversationChatMode) => {
@@ -279,6 +286,7 @@ export function useConversationComposer({
             return
         }
         const environmentId = getActiveEnvironmentId()
+        const live = showsHere()
         const conversationId = ensureConversationId()
         if (!conversationId) {
             return
@@ -297,7 +305,7 @@ export function useConversationComposer({
             return
         }
         // Switched away while settings saved: the message still goes, but nothing here shows it.
-        if (isShown(environmentId)) setPanelError(null)
+        if (live()) setPanelError(null)
         const messageToSend = parsedCommand?.kind === 'switch_and_send'
             ? parsedCommand.message
             : parsedCommand?.kind === 'switch_mode' ? '' : trimmed
@@ -308,7 +316,7 @@ export function useConversationComposer({
         // replaced in place and a resent request cannot add a second turn.
         const clientTurnId = `turn-${randomHexId()}`
         const updatePendingMessages = (update: (messages: PendingUserMessage[]) => PendingUserMessage[]) => {
-            if (!isShown(environmentId)) return
+            if (!live()) return
             const store = useStore.getState()
             store.updateHomeConversationSession(conversationId, {
                 pendingMessages: update(store.homeConversationSessionsById[conversationId]?.pendingMessages ?? []),
@@ -330,10 +338,10 @@ export function useConversationComposer({
         const setDraft = (draft: string) => {
             if (isShown(environmentId)) useStore.getState().updateHomeProjectSession(activeProjectPath, { chatDraft: draft })
         }
-        if (currentDraft() === chatDraft) {
+        if (live() && currentDraft() === chatDraft) {
             setDraft('')
         }
-        const accepted = await runTurn(conversationId, environmentId, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
+        const accepted = await runTurn(conversationId, environmentId, live, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
             project_path: activeProjectPath,
             message: messageToSend,
             client_turn_id: clientTurnId,
@@ -346,21 +354,8 @@ export function useConversationComposer({
         if (!accepted) {
             updatePendingMessages((messages) => messages.filter((message) => message.id !== clientTurnId))
             whenEnvironmentShown(environmentId, () => {
-                const draft = [chatDraft, currentDraft()].filter(Boolean).join('\n\n')
-                // Attachments belong to the chat they were sent in, which opens again to hold them, as choosing
-                // it does: one whose first message was refused is in no list, and another may be open.
-                if (sending.length > 0 && getCurrentConversationId(activeProjectPath) !== conversationId) {
-                    useStore.getState().updateProjectSessionState(activeProjectPath, { conversationId })
-                    void updateProjectStateValidated({
-                        project_path: activeProjectPath,
-                        active_conversation_id: conversationId,
-                        last_accessed_at: new Date().toISOString(),
-                    }).then((project) => {
-                        if (isShown(environmentId)) useStore.getState().upsertProjectRegistryEntry(toHydratedProjectRecord(project))
-                    }, () => undefined)
-                }
-                if (sending.length > 0) restoreRefusedAttachments(conversationId, sending)
-                setDraft(draft)
+                setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n'))
+                if (sending.length > 0) restoreRefusedAttachments(activeProjectPath, conversationId, sending)
             })
         }
     }
@@ -372,17 +367,19 @@ export function useConversationComposer({
             return
         }
         const environmentId = getActiveEnvironmentId()
+        const live = showsHere()
         if (!(await awaitSettingsReady(conversationId, environmentId))) {
             return
         }
-        if (isShown(environmentId)) setPanelError(null)
-        await runTurn(conversationId, environmentId, 'Unable to retry the project chat turn.', () => retryConversationTurnValidated(conversationId, turnId, activeProjectPath, environmentId))
+        if (live()) setPanelError(null)
+        await runTurn(conversationId, environmentId, live, 'Unable to retry the project chat turn.', () => retryConversationTurnValidated(conversationId, turnId, activeProjectPath, environmentId))
     }
 
     /** Starts a turn through `start`, tracking it as running until the server answers. */
     const runTurn = async (
         conversationId: string,
         environmentId: string | null,
+        live: () => boolean,
         failure: string,
         start: () => Promise<ConversationAcceptance>,
         onAccepted?: () => void,
@@ -396,24 +393,25 @@ export function useConversationComposer({
             whenEnvironmentShown(environmentId, () => setPanelError(message))
             return false
         }
-        // Nothing here shows a turn from an environment switched away from.
-        if (!isShown(environmentId)) {
+        // Nothing here shows a turn from chats left since it began, even ones of this environment shown
+        // again: its answer never ends a newer send's pending and sending state, nor merges into them.
+        if (!live()) {
             return start().then(() => true, report)
         }
-        // Nor, once a switch away and back has started the chats anew, one from before: its answer never
-        // ends a newer send's pending and sending state, nor merges into the chats shown now.
-        const session = homeSessionStart()
-        const inSession = () => isShown(environmentId) && homeSessionStart() === session
         const afterRevision = getConversationRecord(conversationId)?.latestRevision ?? '0'
         setPendingConversationTurn({ conversationId, afterRevision })
+        // The project's pending turn is its open chat's: once another chat opens, it is that chat's send.
+        const endPending = () => {
+            if (getCurrentConversationId(activeProjectPath) === conversationId) setPendingConversationTurn(null)
+        }
         // The activity bar follows the turn even after the chat is left.
         const { setSendingChat } = useStore.getState()
         setSendingChat(conversationId, true)
         try {
             const acceptance = await start()
-            if (!inSession()) return true
+            if (!live()) return true
             onAccepted?.()
-            setPendingConversationTurn(null)
+            endPending()
             const shouldKeepFocusOnReplyThread = getCurrentConversationId(activeProjectPath) === conversationId
             // The accepted user turn carries the sent client_turn_id, so it replaces the pending
             // message in place; a resend of that id returns the same acceptance and rows.
@@ -424,8 +422,8 @@ export function useConversationComposer({
         } catch (error) {
             return report(error)
         } finally {
-            if (inSession()) {
-                setPendingConversationTurn(null)
+            if (live()) {
+                endPending()
                 setSendingChat(conversationId, false)
             }
         }

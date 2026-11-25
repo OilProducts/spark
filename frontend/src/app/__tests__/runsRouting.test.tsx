@@ -8,6 +8,7 @@ import { useActiveEnvironment } from '@/lib/activeEnvironment'
 import { addsEntry, buildRunsHash, missionKey, parsePlaceHash, placeHash, roleKey, type Place } from '@/app/runsRouting'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- triggerKey names a trigger; it calls no API
 import { triggerKey, type TriggerResponse } from '@/lib/workspaceClient'
+import { toHydratedProjectRecord } from '@/features/projects/model/projectsHomeState'
 import { ROUTE_STATE_STORAGE_KEY, VIEW_MODE_SESSION_KEY } from '@/state/store-helpers'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { switchEnvironment } from '@/test/environments'
@@ -556,6 +557,48 @@ describe('routing across environments', () => {
         await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
         expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
         expect(useStore.getState().projectSessionsByPath['/tmp/project']?.conversationId).toBe('chat-2')
+    })
+
+    it('adds a clean entry of this machine\'s own for a settings category chosen here while a remote environment\'s entry shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        act(() => useStore.getState().setViewMode('settings'))
+        await waitFor(() => expect(window.location.hash).toBe('#/settings'))
+        act(() => window.history.go(-2))
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        act(() => useStore.getState().setSettingsCategory('appearance'))
+        await waitFor(() => expect(window.location.hash).toBe('#/settings'))
+        expect(window.history.state).toEqual({ sparkPlace: { envId: null, view: 'settings' } })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(useStore.getState().settingsCategory).toBe('appearance')
+    })
+
+    it('leaves Back and Forward as they are when this machine\'s projects load, opening one and its chat, while a remote environment\'s entry shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        const entries = window.history.length
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        act(() => useStore.getState().hydrateProjectRegistry([
+            toHydratedProjectRecord({ project_path: '/tmp/project', is_favorite: false, active_conversation_id: 'chat-1', last_accessed_at: '2026-09-01T00:00:00Z' }),
+        ]))
+        expect(useStore.getState().activeProjectPath).toBe('/tmp/project')
+        expect(useStore.getState().projectSessionsByPath['/tmp/project']?.conversationId).toBe('chat-1')
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.history.length).toBe(entries)
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
     })
 
     it('keeps a remote environment\'s entries for Back and Forward to reach once it shows again', async () => {

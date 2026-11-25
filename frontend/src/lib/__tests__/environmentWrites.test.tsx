@@ -6,6 +6,7 @@ import { completePreferenceInteraction } from '@/features/settings/services/clie
 import { useConversationComposer } from '@/features/projects/hooks/useConversationComposer'
 import { useProjectConversationCache } from '@/features/projects/hooks/useProjectConversationCache'
 import { useProjectsHomeController } from '@/features/projects/hooks/useProjectsHomeController'
+import { useProjectRegistryBootstrap } from '@/features/projects/hooks/useProjectRegistryBootstrap'
 import { useProjectsHomeInteractionState } from '@/features/projects/hooks/useProjectsHomeInteractionState'
 import { applyConversationPageToCache, type NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
@@ -543,6 +544,65 @@ it('leaves a newer send in the same chat pending and sending when a retired work
     turns[1].resolve(accept(1))
     await waitFor(() => expect(useStore.getState().sendingChats).toEqual({}))
     expect(pendingTurn()).toBeNull()
+    shown.unmount()
+})
+
+it('puts a refused first attachment-only send back in the chat chosen since, with every project loaded again on return', async () => {
+    const project = (path: string, active: string | null) => ({ project_id: path, project_path: path, display_name: path, is_favorite: false, active_conversation_id: active })
+    let serverChat = 'conversation-1'
+    const turn = deferred<unknown>()
+    const uploads = () => sent.filter((request) => request.startsWith('POST') && request.includes('/attachments'))
+    answer = (url, method) => {
+        if (url.includes('/projects/chat-models')) return { providers: { codex: { status: 'available', error: null, label: 'Codex' } }, models: [
+            { provider: 'codex', id: 'gpt-5.4', display: 'GPT-5.4', is_default: true, supported_reasoning_efforts: ['medium'], default_reasoning_effort: 'medium' },
+        ] }
+        if (url.endsWith('/workspace/api/settings')) return { models: { scope: 'project', source: 'workspace', revision: '1', stored: null,
+            effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null } } }
+        if (method === 'GET' && url.endsWith('/workspace/api/projects')) return [project(PROJECT, serverChat), project('/tmp/other', null)]
+        if (method === 'PATCH' && url.endsWith('/projects/state')) {
+            serverChat = (bodies.at(-1) as { active_conversation_id?: string }).active_conversation_id ?? serverChat
+            return project(PROJECT, serverChat)
+        }
+        if (method === 'POST' && url.includes('/attachments')) return { id: `attachment-${uploads().length}`, filename: 'shot.png', media_type: 'image/png', size_bytes: 5 }
+        if (method === 'POST' && url.endsWith('/turns')) return turn.promise
+        return {}
+    }
+    // The Chats view's workspace: it loads every project while it has none.
+    const useWorkspace = () => {
+        const hydrateProjectRegistry = useStore((state) => state.hydrateProjectRegistry)
+        useProjectRegistryBootstrap({ hydrateProjectRegistry, enabled: useStore((state) => Object.keys(state.projectRegistry).length === 0) })
+        return useProjectsHomeController()
+    }
+    const loaded = (workspace: { result: { current: ReturnType<typeof useWorkspace> } }) => waitFor(() => {
+        expect(Object.keys(useStore.getState().projectRegistry)).toEqual([PROJECT, '/tmp/other'])
+        expect(workspace.result.current.surfaceProps.isChatSendDisabled).toBe(false)
+    })
+    useStore.setState({ activeProjectPath: PROJECT })
+    const left = renderHook(useWorkspace, { wrapper: DialogProvider })
+    await loaded(left)
+    act(() => left.result.current.surfaceProps.onAddAttachments([new File(['image'], 'shot.png', { type: 'image/png' })]))
+    await waitFor(() => expect(left.result.current.surfaceProps.attachments).toMatchObject([{ status: 'uploaded' }]))
+    act(() => left.result.current.surfaceProps.onChatComposerSubmit())
+    await waitFor(() => expect(sent).toContain(`POST /workspace/api/conversations/conversation-1/turns`))
+    // Another chat opens, then another environment shows; the send is refused meanwhile.
+    act(() => left.result.current.sidebarProps.onSelectConversationThread(PROJECT, 'conversation-2'))
+    await waitFor(() => expect(serverChat).toBe('conversation-2'))
+    await switchEnvironment('env-r')
+    resetStoreForEnvironmentSwitch(false)
+    left.unmount()
+    turn.resolve(json({ detail: 'unavailable' }, 503))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    const shown = renderHook(useWorkspace, { wrapper: DialogProvider })
+    await loaded(shown)
+    expect(useStore.getState().projectSessionsByPath[PROJECT]?.conversationId).toBe('conversation-2')
+    await waitFor(() => expect(shown.result.current.surfaceProps.attachments).toMatchObject([{ status: 'uploaded', attachment: { id: 'attachment-2' } }]))
+    expect(uploads().at(-1)).toContain('/workspace/api/conversations/conversation-2/attachments')
+    expect(shown.result.current.surfaceProps.panelError).toBe('unavailable')
+    expect(sent.filter((request) => request.startsWith('PATCH'))).toHaveLength(1)
+    expect(serverChat).toBe('conversation-2')
     shown.unmount()
 })
 
