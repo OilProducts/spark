@@ -740,6 +740,45 @@ fn acp_pinned_instructions_reach_every_harness() {
         .contains("exact"));
 }
 
+/// A declared channel's `PATH` follows Spark's tool directory, and the
+/// harness, registered by bare name, is found and launched on that `PATH`.
+#[test]
+fn acp_channel_path_follows_sparks_tool_directory() {
+    let _env = super::test_support::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let fake = Path::new(FAKE);
+    let fake_dir = fake.parent().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut channel = request(
+        dir.path(),
+        json!({"log_env": ["PATH"]}),
+        json!({
+            "executable": fake.file_name().unwrap().to_str().unwrap(),
+            "system_instructions": {"env": {
+                "PATH": {"text": fake_dir},
+                "FAKE_TEXT": {"text": "{{instructions}}"},
+            }},
+        }),
+    );
+    channel.metadata.insert(
+        AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
+        json!("Be brief."),
+    );
+    run(&channel, |_| {})
+        .0
+        .expect("the harness launches from the channel's PATH");
+    let path = log(dir.path())[0]["env"]["PATH"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+    let exe_dir = std::env::current_exe().unwrap();
+    assert_eq!(entries.len(), 2, "{path}");
+    assert_eq!(entries[0], exe_dir.parent().unwrap(), "{path}");
+    assert_eq!(entries[1], fake_dir, "{path}");
+}
+
 #[test]
 fn acp_unsupported_settings_fail_before_the_prompt() {
     let options = json!([{

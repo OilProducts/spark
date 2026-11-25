@@ -3852,13 +3852,27 @@ fn sdk_agent_shell_sees_sparks_home_and_api() {
     }
     let output = command.output().unwrap();
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(dir.path().join("agent-env")).expect("the shell ran"),
-        format!(
-            "{}|{SDK_AGENT_API_BASE_URL}|set:|set:|set:",
-            dir.path().join("spark-home").display()
-        )
+    let dump = fs::read(dir.path().join("agent-env")).expect("the shell ran");
+    // Windows' `cmd /U` writes the dump as UTF-16.
+    #[cfg(windows)]
+    let dump = String::from_utf16(
+        &dump
+            .chunks_exact(2)
+            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+            .collect::<Vec<_>>(),
     );
+    #[cfg(not(windows))]
+    let dump = String::from_utf8(dump);
+    let env = super::local_environment_contracts::env_lines(&dump.expect("environment dump text"));
+    let spark_home = dir.path().join("spark-home").display().to_string();
+    let mut expected = vec![
+        ("SPARK_HOME", spark_home.as_str()),
+        ("SPARK_API_BASE_URL", SDK_AGENT_API_BASE_URL),
+    ];
+    expected.extend(spark_agent_adapter::MANAGED_AGENT_API_KEYS.map(|key| (key, "")));
+    for (key, value) in expected {
+        assert_eq!(env.get(key).map(String::as_str), Some(value), "{key}");
+    }
 }
 
 /// The turn `sdk_agent_shell_sees_sparks_home_and_api` runs. A no-op in the
@@ -3876,6 +3890,11 @@ fn sdk_agent_env_role() {
         loopback_url: None,
     })
     .unwrap();
+    // The default shell writes the environment it gives commands.
+    #[cfg(windows)]
+    const DUMP_ENV: &str = "cmd /U /C set > agent-env";
+    #[cfg(not(windows))]
+    const DUMP_ENV: &str = "env > agent-env";
     let (client, calls) = scripted_client(|index, _| {
         Ok(match index {
             0 => reply(
@@ -3883,7 +3902,7 @@ fn sdk_agent_env_role() {
                 vec![ToolCall::new(
                     "call-env",
                     "shell",
-                    json!({"command": "printf '%s|%s|%s|%s|%s' \"$SPARK_HOME\" \"$SPARK_API_BASE_URL\" \"${SPARK_AGENT_API_TOKEN+set:$SPARK_AGENT_API_TOKEN}\" \"${SPARK_AGENT_API_ORIGIN+set:$SPARK_AGENT_API_ORIGIN}\" \"${SPARK_AGENT_LOOPBACK_URL+set:$SPARK_AGENT_LOOPBACK_URL}\" > agent-env"}),
+                    json!({"command": DUMP_ENV}),
                 )],
             ),
             _ => reply("Done.", Vec::new()),

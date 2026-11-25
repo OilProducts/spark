@@ -793,22 +793,25 @@ pub fn program_found(program: &str, inheritance: EnvironmentInheritancePolicy) -
         &harness,
         inheritance,
         None,
-        spark_path(&harness, inheritance),
+        spark_path(&harness, inheritance, &[]),
     ))
 }
 
 /// The `PATH` binding that puts Spark's own tool directories, `spark` among
 /// them, ahead of the `PATH` `harness` otherwise gives its child under
-/// `inheritance`, as every backend's agents get them. Its setup and launches
-/// all bind it, so they find the same program.
+/// `inheritance` with `channel_env`, its instruction channel's rendered
+/// variables, as every backend's agents get them. Its setup and launches all
+/// bind it, so they find the same program.
 fn spark_path(
     harness: &AcpHarness,
     inheritance: EnvironmentInheritancePolicy,
+    channel_env: &[(String, String)],
 ) -> Option<(String, OsString)> {
     let inherited = crate::local_environment::inherited_environment(inheritance);
     let path = inherited
         .iter()
         .chain(&harness.env)
+        .chain(channel_env.iter().map(|(key, value)| (key, value)))
         .filter(|(key, _)| crate::local_environment::is_path_key(key))
         .last()
         .map(|(_, value)| value.as_str());
@@ -1878,6 +1881,7 @@ fn launch_command(
             .map_err(|error| format!("ACP harness {harness_id} system_instructions: {error}"))?,
         None => Default::default(),
     };
+    let spark_path = spark_path(harness, inheritance, &channel_env);
     let mut command = harness_command(
         harness,
         inheritance,
@@ -1885,7 +1889,7 @@ fn launch_command(
         channel_env
             .into_iter()
             .map(|(key, value)| (key, OsString::from(value)))
-            .chain(spark_path(harness, inheritance))
+            .chain(spark_path)
             .chain(crate::agent::agent_turn_env(metadata)),
     );
     command.args(&harness.args).args(channel_args);
@@ -3847,7 +3851,12 @@ pub fn read_antigravity_usage(
     harness: &AcpHarness,
     inheritance: EnvironmentInheritancePolicy,
 ) -> Result<Vec<crate::UsageWindow>, String> {
-    let mut command = harness_command(harness, inheritance, None, spark_path(harness, inheritance));
+    let mut command = harness_command(
+        harness,
+        inheritance,
+        None,
+        spark_path(harness, inheritance, &[]),
+    );
     ensure_found(&command)
         .map_err(|error| format!("Could not launch {}: {error}", harness.executable))?;
     crate::local_environment::configure_process_group(&mut command);

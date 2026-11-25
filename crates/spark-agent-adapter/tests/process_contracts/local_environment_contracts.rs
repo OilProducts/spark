@@ -95,7 +95,7 @@ fn printed_env(result: &ExecResult) -> BTreeMap<String, String> {
 }
 
 /// `KEY=VALUE` lines as a map.
-fn env_lines(text: &str) -> BTreeMap<String, String> {
+pub(super) fn env_lines(text: &str) -> BTreeMap<String, String> {
     text.lines()
         .filter_map(|line| line.split_once('='))
         .map(|(key, value)| (key.to_string(), value.to_string()))
