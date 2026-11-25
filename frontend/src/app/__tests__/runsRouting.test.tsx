@@ -11,11 +11,12 @@ import { triggerKey, type TriggerResponse } from '@/lib/workspaceClient'
 import { toHydratedProjectRecord } from '@/features/projects/model/projectsHomeState'
 import { useAddProject } from '@/features/projects/hooks/useAddProject'
 import { useConversationComposer } from '@/features/projects/hooks/useConversationComposer'
+import { useProjectConversationCache } from '@/features/projects/hooks/useProjectConversationCache'
 import { markProjectUsed, usePersistProjectState } from '@/features/projects/hooks/usePersistProjectState'
 import { ROUTE_STATE_STORAGE_KEY, VIEW_MODE_SESSION_KEY } from '@/state/store-helpers'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { deferred, switchEnvironment } from '@/test/environments'
-import { summarySnapshot } from '@/test/conversationWire'
+import { conversationMutationAck, summarySnapshot } from '@/test/conversationWire'
 
 // A fresh entry, so no Forward entries are left from an earlier test.
 const resetHash = () => {
@@ -948,11 +949,14 @@ describe('routing across environments', () => {
         await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
     })
 
-    it('leaves Back and Forward as they are when a new chat\'s refused first send opens it again by itself while a remote environment\'s entry shows', async () => {
+    it('leaves Back and Forward as they are, and the chat and its draft, when a new chat\'s refused first send opens it again by itself while a remote environment\'s entry shows, and when the mode change of the chat it replaced answers after', async () => {
         const turn = deferred<Response>()
-        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => (String(input).endsWith('/conversations/chat-new/turns')
-            ? turn.promise
-            : new Response('{}', { status: 404 }))))
+        const modeSaved = deferred<Response>()
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            if (String(input).endsWith('/conversations/chat-new/turns')) return turn.promise
+            if (String(input).endsWith('/conversations/chat-1/settings')) return modeSaved.promise
+            return new Response('{}', { status: 404 })
+        }))
         const turns = () => vi.mocked(fetch).mock.calls.filter(([input]) => String(input).endsWith('/conversations/chat-new/turns'))
         const loadProjects = () => act(() => useStore.getState().hydrateProjectRegistry([
             toHydratedProjectRecord({ project_path: '/tmp/home', is_favorite: false, is_default: true }),
@@ -977,18 +981,43 @@ describe('routing across environments', () => {
         await showEnvironment(null)
         loadProjects()
         await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        // The chat its projects loaded on changes mode; Back is taken before the change answers.
+        const cache = renderHook(() => useProjectConversationCache({
+            persistProjectState: async () => {},
+            projectSessionsByPath: useStore((state) => state.projectSessionsByPath),
+            updateProjectSessionState: useStore.getState().updateProjectSessionState,
+        }))
+        const switching = useConversationComposer({
+            activeProjectPath: '/tmp/project', chatDraft: '', attachments: [], isUploadBlocking: false, isChatInputDisabled: false,
+            ensureConversationId: () => 'chat-1', getCurrentConversationId: openChat, getConversationRecord: () => undefined,
+            applyConversationBatch: cache.result.current.applyConversationBatch, formatErrorMessage: (_error, fallback) => fallback,
+            setChatDraft: vi.fn(), setPanelError: vi.fn(), setPendingConversationTurn: vi.fn(),
+        }).onSwitchChatMode('plan')
+        await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith('/conversations/chat-1/settings'))).toBe(true))
         const entries = window.history.length
         act(() => window.history.back())
         await waitFor(() => expect(window.location.hash).toBe(remote))
+        const leftAsTheyAre = async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(openChat()).toBe('chat-new')
+            expect(useStore.getState().homeProjectSessionsByPath['/tmp/project']?.chatDraft).toBe('Hello there')
+            expect(window.history.length).toBe(entries)
+            expect(window.location.hash).toBe(remote)
+            expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        }
 
         // Refused now, on the chat its projects loaded on: the app opens the refused chat again by itself.
         await act(async () => turn.resolve(new Response(JSON.stringify({ detail: 'unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json' } })))
         await waitFor(() => expect(openChat()).toBe('chat-new'))
-        expect(useStore.getState().homeProjectSessionsByPath['/tmp/project']?.chatDraft).toBe('Hello there')
-        await new Promise((resolve) => setTimeout(resolve, 0))
-        expect(window.history.length).toBe(entries)
-        expect(window.location.hash).toBe(remote)
-        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        await leftAsTheyAre()
+        // The mode change answers after: it changes its own chat's mode, and nothing shown.
+        await act(async () => {
+            modeSaved.resolve(new Response(JSON.stringify(conversationMutationAck({ conversation_id: 'chat-1', project_path: '/tmp/project', revision: 2, chat_mode: 'plan' })), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+            await switching
+        })
+        expect(useStore.getState().homeConversationCache.conversationsById['chat-1']?.chat_mode).toBe('plan')
+        await leftAsTheyAre()
+        cache.unmount()
         act(() => window.history.forward())
         await waitFor(() => expect(window.location.hash).toBe('#/chats'))
         expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })

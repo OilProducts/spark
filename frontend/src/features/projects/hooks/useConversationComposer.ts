@@ -240,16 +240,15 @@ export function useConversationComposer({
         if (isShown(environmentId)) setPanelError(null)
         try {
             // Changed and unchanged settings both answer with the conversation row; the reducer
-            // keeps whichever of it and a live update is newer.
+            // keeps whichever of it and a live update is newer. It changes that chat's mode only: a chat
+            // opened since, by you or by the app, stays open.
             const ack = await updateConversationSettingsValidated(conversationId, {
                 project_path: activeProjectPath,
                 chat_mode: chatMode,
                 expected_revision: expectedRevision,
             }, environmentId)
             if (!isShown(environmentId)) return
-            applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'settings-response', {
-                forceWorkspaceSync: true,
-            })
+            applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'settings-response')
         } catch (error) {
             const message = formatErrorMessage(error, 'Unable to switch the project chat mode.')
             if (isShown(environmentId)) setPanelError(message)
