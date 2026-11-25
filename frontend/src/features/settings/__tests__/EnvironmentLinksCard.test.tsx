@@ -1343,12 +1343,14 @@ it('keeps a local action failure off a remote card after switching and shows it 
     backend.replies['POST /workspace/api/environment/pairing-codes'] = () => new Promise<Response>((resolve) => {
         failCode = () => resolve(json({ detail: 'local pairing store locked' }, 500))
     })
-    backend.replies[`${LINKS}/env-gpu/proxy/environment`] = {
+    const gpuDescriptor = {
         environment_id: 'env-gpu',
         display_name: 'GPU box',
         protocol_version: 1,
         ui_api_version: descriptor.ui_api_version,
     }
+    backend.replies[`${LINKS}/env-gpu/proxy/environment`] = gpuDescriptor
+    backend.replies[`${LINKS}/env-gpu/proxy/workspace/api/environment`] = gpuDescriptor
     backend.replies[`${LINKS}/env-gpu/proxy${TOKENS}`] = { tokens: [] }
     backend.replies[`${LINKS}/env-gpu/proxy${LINKS}`] = { links: [] }
     render(<WorkspaceLikeApp />)
