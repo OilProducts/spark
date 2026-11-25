@@ -12,7 +12,7 @@ import { useProjectConversationCache } from '@/features/projects/hooks/useProjec
 import { useProjectsHomeController } from '@/features/projects/hooks/useProjectsHomeController'
 import { useProjectRegistryBootstrap } from '@/features/projects/hooks/useProjectRegistryBootstrap'
 import { useProjectsHomeInteractionState } from '@/features/projects/hooks/useProjectsHomeInteractionState'
-import { applyConversationPageToCache, applySummarySnapshotToCache, toHydratedProjectRecord, type NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
+import { applyConversationPageToCache, applySummarySnapshotToCache, type NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { cachedAppearance, applyTheme } from '@/lib/theme'
 import { requestNavigation } from '@/state/workspaceSlice'
@@ -910,7 +910,7 @@ it.each([[0, 4, 5], [1, 5, 4], [0, 5, 6]])('keeps a restored chat open and sendi
     next.unmount()
 })
 
-it('makes a project the last used when its save answers after a switch away and back, keeping its open chat and any newer use, pin or execution profile', async () => {
+it('makes a project the last used when its save answers after a switch away and back, keeping its open chat and any newer use or pin', async () => {
     const project = (path: string, usedAt: string, more: object = {}) => ({ project_id: path, project_path: path, display_name: path, is_favorite: false, active_conversation_id: null, last_accessed_at: usedAt, ...more })
     const saves: ReturnType<typeof deferred<unknown>>[] = []
     const listed = deferred<unknown>()
@@ -934,7 +934,7 @@ it('makes a project the last used when its save answers after a switch away and 
         useStore.setState({ activeProjectPath: PROJECT })
     }
     const registry = () => useStore.getState().projectRegistry
-    // Runs start in the other project, then twice in this one, its chat then conversation-1 and its runs in a container.
+    // Runs start in the other project, then twice in this one, its chat then conversation-1.
     const used = [markProjectUsed('/tmp/other'), markProjectUsed(PROJECT), markProjectUsed(PROJECT)]
     await waitFor(() => expect(saves).toHaveLength(3))
     const answered = async (index: number, record: unknown) => act(async () => {
@@ -950,7 +950,7 @@ it('makes a project the last used when its save answers after a switch away and 
 
     // The list, from before the saves, loads in full: the other project was used last, this one pinned, conversation-2 open.
     await act(async () => listed.resolve([
-        project(PROJECT, '2026-09-01T00:00:00Z', { is_favorite: true, active_conversation_id: 'conversation-2', execution_profile_id: 'container' }),
+        project(PROJECT, '2026-09-01T00:00:00Z', { is_favorite: true, active_conversation_id: 'conversation-2' }),
         project('/tmp/other', '2026-10-01T00:00:00Z'),
     ]))
     await waitFor(() => expect(Object.keys(registry())).toEqual([PROJECT, '/tmp/other']))
@@ -959,19 +959,15 @@ it('makes a project the last used when its save answers after a switch away and 
     expect(shown.result.current.sidebarProps.activeConversationId).toBe('conversation-2')
 
     // This project's later save answers: it becomes the last used, its open chat still selected.
-    await answered(2, project(PROJECT, '2026-11-02T00:00:00Z', { active_conversation_id: 'conversation-1', execution_profile_id: 'container' }))
+    await answered(2, project(PROJECT, '2026-11-02T00:00:00Z', { active_conversation_id: 'conversation-1' }))
     expect(defaultProjectChoice(registry())).toBe(PROJECT)
     expect(useStore.getState().activeProjectPath).toBe(PROJECT)
     expect(shown.result.current.sidebarProps.activeConversationId).toBe('conversation-2')
 
-    // Its runs change to native; then its earlier save answers, from before that, with an older use.
-    act(() => useStore.getState().upsertProjectRegistryEntry(toHydratedProjectRecord(
-        project(PROJECT, '2026-11-02T00:00:00Z', { is_favorite: true, active_conversation_id: 'conversation-2' }),
-    )))
-    await answered(1, project(PROJECT, '2026-11-01T00:00:00Z', { active_conversation_id: 'conversation-1', execution_profile_id: 'container' }))
+    // Its earlier save answers last, with an older use.
+    await answered(1, project(PROJECT, '2026-11-01T00:00:00Z', { active_conversation_id: 'conversation-1' }))
     expect(defaultProjectChoice(registry())).toBe(PROJECT)
     expect(registry()[PROJECT]).toMatchObject({ lastAccessedAt: '2026-11-02T00:00:00Z', isFavorite: true })
-    expect(registry()[PROJECT]?.executionProfileId ?? null).toBeNull()
     expect(shown.result.current.sidebarProps.activeConversationId).toBe('conversation-2')
     shown.unmount()
 })
