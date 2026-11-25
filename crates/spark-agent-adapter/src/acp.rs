@@ -791,7 +791,10 @@ pub fn program_found(program: &str, path: Option<&str>) -> bool {
 
 /// `harness`'s program in `cwd` (else Spark's own directory) with the
 /// environment it inherits under `inheritance`, its own `env`, then
-/// `bindings`, applied in that order.
+/// `bindings`, applied in that order. A program its child finds is named as
+/// found; launch no other, since the system's own search would look past the
+/// child's `PATH`, as Windows does through Spark's, or in the work area for an
+/// empty entry.
 fn harness_command(
     harness: &AcpHarness,
     inheritance: EnvironmentInheritancePolicy,
@@ -813,15 +816,17 @@ fn harness_command(
         command
     };
     let named = command(harness.executable.as_ref());
-    // Launching a bare name on Windows tries only `.exe`, so the launch names
-    // the file its child finds, such as a project's npm `.cmd` shim.
-    match cfg!(windows)
-        .then(|| crate::local_environment::child_program(&named))
-        .flatten()
-    {
+    // So setup and turns run the file their child finds, such as a project's
+    // npm `.cmd` shim, which a Windows launch of a bare name would not try.
+    match crate::local_environment::child_program(&named) {
         Some(program) => command(program.as_os_str()),
         None => named,
     }
+}
+
+/// Whether `command` from [`harness_command`] runs a program its child finds.
+fn found(command: &Command) -> bool {
+    crate::local_environment::child_program(command).is_some()
 }
 
 /// The configuration generation a launch of `harness` records: its
@@ -1001,18 +1006,17 @@ fn probe(
         .collect();
     // Only a program its child cannot find is missing; one that exists but
     // cannot start, such as a script whose interpreter is gone, failed.
-    let missing = crate::local_environment::child_program(&command).is_none();
-    let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
-        probe_protocol(endpoints, cwd, program, method, done)
-    })
-    .map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound if missing => ProbeFailure {
+    if !found(&command) {
+        return Err(ProbeFailure {
             missing: true,
             message: format!("executable not found: {}", harness.executable),
             ..Default::default()
-        },
-        _ => format!("launch failed: {error}").into(),
-    })?;
+        });
+    }
+    let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
+        probe_protocol(endpoints, cwd, program, method, done)
+    })
+    .map_err(|error| format!("launch failed: {error}"))?;
     let (timeout, step) = match sign_in {
         Some(_) => (SIGN_IN_TIMEOUT, "signing in"),
         None => (PROBE_TIMEOUT, "setup"),
@@ -1646,6 +1650,12 @@ fn turn(
                 work.plan.instructions.as_deref(),
                 &request.metadata,
             )?;
+            if !found(&command) {
+                return Err(format!(
+                    "ACP harness {harness_id} executable not found: {}",
+                    harness.executable
+                ));
+            }
             let (turns_tx, turns_rx) = tokio::sync::mpsc::unbounded_channel();
             let alive = Arc::new(AtomicBool::new(true));
             let parked = Arc::new(tokio::sync::Notify::new());
@@ -1666,16 +1676,7 @@ fn turn(
                     pending_worker,
                 )
             })
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    format!(
-                        "ACP harness {harness_id} executable not found: {}",
-                        harness.executable
-                    )
-                } else {
-                    format!("ACP harness {harness_id} launch failed: {error}")
-                }
-            })?;
+            .map_err(|error| format!("ACP harness {harness_id} launch failed: {error}"))?;
             attach_stop(&live, &connection);
             let launched = LiveWorker {
                 connection,
@@ -1819,25 +1820,23 @@ fn launch_command(
             .map(|(key, value)| (key, OsString::from(value)))
             .chain(crate::agent::agent_turn_env(metadata)),
     );
+    command.args(&harness.args).args(channel_args);
     // Windows runs a batch file through cmd.exe, which takes no line break in
-    // an argument, and Spark's instructions have several. Setup checks the
-    // declared channel, so it fails as every launch would.
+    // an argument, as multiline instructions would bring.
     let program = Path::new(command.get_program());
-    let batch = crate::local_environment::is_batch_file(program);
-    let raw_argument = harness
-        .system_instructions
-        .iter()
-        .flat_map(|channel| &channel.args)
-        .any(|arg| arg.contains(spark_common::agent_settings::INSTRUCTIONS_PLACEHOLDER));
-    if cfg!(windows) && batch && raw_argument {
+    if cfg!(windows)
+        && crate::local_environment::is_batch_file(program)
+        && command
+            .get_args()
+            .any(|arg| arg.to_string_lossy().contains(['\r', '\n']))
+    {
         return Err(format!(
             "ACP harness {harness_id} runs the batch file {}, to which Windows cannot pass \
-             multiline instructions as an argument. Pass them through \
+             an argument with line breaks, such as multiline instructions. Pass them through \
              {{{{instructions_file}}}} or an environment variable instead.",
             program.display()
         ));
     }
-    command.args(&harness.args).args(channel_args);
     Ok((command, instruction_file))
 }
 
@@ -3777,6 +3776,12 @@ pub fn read_antigravity_usage(
     inheritance: EnvironmentInheritancePolicy,
 ) -> Result<Vec<crate::UsageWindow>, String> {
     let mut command = harness_command(harness, inheritance, None, []);
+    if !found(&command) {
+        return Err(format!(
+            "Could not launch {}: not found",
+            harness.executable
+        ));
+    }
     crate::local_environment::configure_process_group(&mut command);
     command
         .args(["-p", "/usage", "--output-format", "json"])

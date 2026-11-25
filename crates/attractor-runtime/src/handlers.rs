@@ -4523,6 +4523,9 @@ mod activity_tests {
             let file = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
             std::fs::create_dir_all(dir).unwrap();
             std::fs::write(&file, "").unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
             file
         };
         shell(&second, "sh");

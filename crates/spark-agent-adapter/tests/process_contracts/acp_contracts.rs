@@ -118,9 +118,9 @@ fn other(events: &[TurnStreamEvent], kind: &str) -> Vec<TurnStreamEvent> {
 
 /// Elsewhere than Windows a launch searches PATH as the system does: an entry
 /// relative to the work area, such as `node_modules/.bin`, finds the project's
-/// program, and a file it cannot run earlier on PATH is passed over. A program
-/// on no PATH entry is not installed; one found whose interpreter is missing
-/// failed to launch.
+/// program, and a file it cannot run earlier on PATH is passed over. An empty
+/// entry adds no search of the work area. A program on no PATH entry is not
+/// installed; one found whose interpreter is missing failed to launch.
 #[cfg(unix)]
 #[test]
 fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
@@ -132,6 +132,7 @@ fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
         std::fs::create_dir_all(dir).unwrap();
     }
     std::os::unix::fs::symlink(FAKE, bin.join("agent")).unwrap();
+    std::os::unix::fs::symlink(FAKE, project.join("stray")).unwrap();
     std::fs::write(blocker.join("agent"), "not a program").unwrap();
     let broken = bin.join("broken");
     std::fs::write(&broken, "#!/missing/interpreter\n").unwrap();
@@ -140,7 +141,7 @@ fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
         let harness = serde_json::from_value(json!({
             "name": "Project agent",
             "executable": executable,
-            "env": {"PATH": format!("{}:node_modules/.bin", blocker.display())},
+            "env": {"PATH": format!("{}::node_modules/.bin", blocker.display())},
         }))
         .unwrap();
         acp::discover(
@@ -153,8 +154,14 @@ fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
 
     let found = discover("agent");
     assert_eq!(found.setup_status, "ready", "{:?}", found.error);
-    let missing = discover("missing-agent");
-    assert_eq!(missing.setup_status, "not_installed", "{:?}", missing.error);
+    for executable in ["missing-agent", "stray"] {
+        let missing = discover(executable);
+        assert_eq!(
+            missing.setup_status, "not_installed",
+            "{executable}: {:?}",
+            missing.error
+        );
+    }
     for executable in ["broken", broken.to_str().unwrap()] {
         let failed = discover(executable);
         assert_eq!(failed.setup_status, "unreachable", "{executable}");
@@ -170,8 +177,9 @@ fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
 }
 
 /// Windows runs a batch shim through cmd.exe, which takes no line break in an
-/// argument: setup rejects a raw `{{instructions}}` argument as a chat's
-/// launch does, and instructions through a file reach the agent whole.
+/// argument: a raw `{{instructions}}` argument launches for setup and a chat
+/// without pinned instructions, a launch with multiline ones fails first, and
+/// instructions through a file reach the agent whole.
 #[cfg(windows)]
 #[test]
 fn acp_windows_batch_shim_takes_instructions_through_a_file_not_an_argument() {
@@ -179,27 +187,32 @@ fn acp_windows_batch_shim_takes_instructions_through_a_file_not_an_argument() {
     let shim = dir.path().join("agent.cmd");
     std::fs::write(&shim, format!("@\"{FAKE}\" %*\r\n")).unwrap();
     let instructions = "Be exact.\nSay so twice.";
-    let chat = |args: Value| {
+    let chat = |args: Value, instructions: Option<&str>| {
         let mut chat = request(
             dir.path(),
             json!({}),
             json!({"executable": shim, "system_instructions": {"args": args}}),
         );
-        chat.metadata.insert(
-            AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
-            json!(instructions),
-        );
+        if let Some(instructions) = instructions {
+            chat.metadata.insert(
+                AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
+                json!(instructions),
+            );
+        }
         (setup(&chat), run(&chat, |_| {}).0)
     };
 
-    let (found, turn) = chat(json!(["--system", "{{instructions}}"]));
-    assert_eq!(found.setup_status, "unreachable");
-    for error in [found.error.unwrap(), turn.err().unwrap()] {
-        assert!(error.contains("{{instructions_file}}"), "{error}");
-    }
-    assert_eq!(launches(dir.path()), 0);
+    let raw = json!(["--system", "{{instructions}}"]);
+    let (found, turn) = chat(raw.clone(), None);
+    assert_eq!(found.setup_status, "ready", "{:?}", found.error);
+    turn.expect("turn without instructions");
+    let before = launches(dir.path());
+    let (_, turn) = chat(raw, Some(instructions));
+    let error = turn.err().unwrap();
+    assert!(error.contains("{{instructions_file}}"), "{error}");
+    assert_eq!(launches(dir.path()), before + 1, "only setup launched");
 
-    let (found, turn) = chat(json!(["{{instructions_file}}"]));
+    let (found, turn) = chat(json!(["{{instructions_file}}"]), Some(instructions));
     assert_eq!(found.setup_status, "ready", "{:?}", found.error);
     turn.expect("turn");
     let startup = log(dir.path())

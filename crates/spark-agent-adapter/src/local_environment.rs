@@ -985,9 +985,10 @@ pub fn terminate_process_group(process_group_id: u32, mut child: Option<&mut Chi
 
 /// `name` as a launch finds it: an explicit path (absolute, or with a
 /// separator) as given if it is a file, else the first match on
-/// `path_override` (else Spark's own `PATH`). On Windows a bare name without a
-/// runnable extension tries each `PATHEXT` extension before the name itself,
-/// as `cmd` does, so a `rg.cmd` shim wins over an extensionless `rg` script.
+/// `path_override` (else Spark's own `PATH`). A name with an extension is
+/// matched as written. On Windows a bare name tries, in `PATHEXT`'s order,
+/// each extension a launch can run before the name itself, so a `rg.cmd` shim
+/// wins over an extensionless `rg` script and an npm `.ps1` shim hides nothing.
 pub fn find_executable_on_path(
     name: &str,
     path_override: Option<&std::ffi::OsStr>,
@@ -1007,26 +1008,32 @@ pub fn find_executable_in_directories(
     find_executable_in(name, directories, pathext.as_deref())
 }
 
+/// Windows' `PATHEXT` where none is set.
+const DEFAULT_PATHEXT: &str = ".EXE;.BAT;.CMD";
+
 /// Spark's own `PATHEXT`, else Windows' default.
 pub(crate) fn own_pathext() -> std::ffi::OsString {
-    env::var_os("PATHEXT").unwrap_or_else(|| std::ffi::OsString::from(".EXE;.BAT;.CMD"))
+    env::var_os("PATHEXT").unwrap_or_else(|| DEFAULT_PATHEXT.into())
 }
 
-/// The file `command`'s program names as its child finds it, by the `PATH` and
-/// `PATHEXT` the child receives (else Spark's own): an explicit path from the
-/// child's directory, else the first match on `PATH`, whose relative entries
-/// resolve from the child's directory too.
-pub fn child_program(command: &Command) -> Option<PathBuf> {
+/// The file `command`'s program names as its child finds it, by only the
+/// `PATH` and `PATHEXT` `command` sets, whose whole environment its caller
+/// sets after `env_clear`: an explicit path from the child's directory, else
+/// the first match on `PATH`, whose relative entries resolve from that
+/// directory too. Nothing the child does not receive, such as Spark's own
+/// `PATH`, and no empty `PATH` entry makes a directory a search location.
+pub(crate) fn child_program(command: &Command) -> Option<PathBuf> {
     let child_var = |name: &str| {
         command
             .get_envs()
             .filter(|(key, _)| key.to_str().is_some_and(|key| names_var(key, name)))
             .last()
-            .map(|(_, value)| value.unwrap_or_default().to_os_string())
-            .or_else(|| env::var_os(name))
+            .and_then(|(_, value)| value)
+            .map(std::ffi::OsStr::to_os_string)
     };
     let path = child_var("PATH").unwrap_or_default();
-    let pathext = cfg!(windows).then(|| child_var("PATHEXT").unwrap_or_else(own_pathext));
+    let pathext =
+        cfg!(windows).then(|| child_var("PATHEXT").unwrap_or_else(|| DEFAULT_PATHEXT.into()));
     let directory = command.get_current_dir().unwrap_or(Path::new(""));
     let program = Path::new(command.get_program());
     let program = if program.components().count() > 1 {
@@ -1036,7 +1043,9 @@ pub fn child_program(command: &Command) -> Option<PathBuf> {
     };
     find_executable_in(
         program.to_str()?,
-        env::split_paths(&path).map(|entry| directory.join(entry)),
+        env::split_paths(&path)
+            .filter(|entry| !entry.as_os_str().is_empty())
+            .map(|entry| directory.join(entry)),
         pathext.as_deref(),
     )
 }
@@ -1073,33 +1082,44 @@ fn find_executable_in(
     let pathext = pathext
         .map(std::ffi::OsStr::to_string_lossy)
         .unwrap_or_default();
-    let extensions = pathext
+    // A launch runs an image or, through cmd.exe, a batch file; other
+    // extensions, such as an npm `.ps1` shim's, cannot start.
+    let names = pathext
         .split(';')
-        .filter(|extension| !extension.is_empty())
-        .collect::<Vec<_>>();
-    let runnable = candidate.extension().is_some_and(|extension| {
-        extensions.iter().any(|known| {
-            known
-                .strip_prefix('.')
-                .is_some_and(|known| extension.eq_ignore_ascii_case(known))
+        .filter(|extension| {
+            candidate.extension().is_none()
+                && [".com", ".exe", ".bat", ".cmd"]
+                    .iter()
+                    .any(|runnable| extension.eq_ignore_ascii_case(runnable))
         })
-    });
-    let names = extensions
-        .iter()
-        .filter(|_| !runnable)
         .map(|extension| format!("{name}{extension}"))
         .chain([name.to_string()])
         .collect::<Vec<_>>();
-    directories.into_iter().find_map(|directory| {
-        names
-            .iter()
-            .map(|name| directory.join(name))
-            .find(|candidate| is_executable(candidate))
-    })
+    // An empty entry would search the launch's own directory.
+    directories
+        .into_iter()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .find_map(|directory| {
+            names
+                .iter()
+                .map(|name| directory.join(name))
+                .find(|candidate| is_executable(candidate))
+        })
 }
 
+/// Whether `path` is a file a launch can run: elsewhere than Windows, one
+/// with an execute bit, as the system's own search requires.
 fn is_executable(path: &Path) -> bool {
-    path.is_file()
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
 }
 
 fn absolutize(path: &Path) -> PathBuf {
@@ -1276,48 +1296,65 @@ mod tests {
         );
     }
 
+    /// An empty file a launch can run, with an execute bit outside Windows.
+    fn executable(path: &Path) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    }
+
     #[test]
     fn a_pathext_shim_wins_over_an_extensionless_script() {
         let temp = tempfile::tempdir().expect("tempdir");
         let (first, second) = (temp.path().join("first"), temp.path().join("second"));
         for file in [
             first.join("rg"),
+            first.join("rg.ps1"),
             first.join("rg.cmd"),
+            first.join("rg.cmd.exe"),
             second.join("rg.exe"),
         ] {
-            fs::create_dir_all(file.parent().unwrap()).unwrap();
-            fs::write(file, "").unwrap();
+            executable(&file);
         }
         let path = env::join_paths([temp.path(), &first, &second]).unwrap();
         // Lowercase, so a case-insensitive file system returns the files as named.
-        let windows = Some(std::ffi::OsStr::new(".com;.exe;.bat;.cmd"));
+        let pathext = |pathext| Some(std::ffi::OsStr::new(pathext));
+        let windows = pathext(".com;.exe;.ps1;.bat;.cmd");
         let find = |name: &str, pathext| find_executable_in(name, env::split_paths(&path), pathext);
 
-        // Windows runs the shim beside the script; elsewhere the script runs.
+        // Windows runs the shim beside the script, past an npm PowerShell
+        // shim a launch cannot start; elsewhere the script runs.
         assert_eq!(find("rg", windows), Some(first.join("rg.cmd")));
         assert_eq!(find("rg", None), Some(first.join("rg")));
-        // A name with a runnable extension is taken as is.
+        // A name with an extension is taken as written, whatever PATHEXT holds.
         assert_eq!(find("rg.exe", windows), Some(second.join("rg.exe")));
-        // Explicit paths resolve as given, never through PATH.
+        assert_eq!(find("rg.cmd", pathext(".exe")), Some(first.join("rg.cmd")));
+        // Explicit paths resolve as given, never through PATH, and elsewhere
+        // than Windows only to a file with an execute bit.
         let explicit = second.join("rg.exe");
         assert_eq!(
             find(explicit.to_str().unwrap(), windows),
             Some(explicit.clone())
         );
         assert_eq!(find("first/rg", windows), None);
-        assert_eq!(find("src/lib.rs", None), Some(PathBuf::from("src/lib.rs")));
+        assert_eq!(find("src/lib.rs", None).is_some(), cfg!(windows));
     }
 
-    /// A child's program is found by the `PATH` and `PATHEXT` it receives, in
-    /// any spelling on Windows, and an explicit relative path from its
-    /// directory.
+    /// A child's program is found by only the `PATH` and `PATHEXT` it
+    /// receives, in any spelling on Windows, and an explicit relative path
+    /// from its directory, which no empty entry adds to the search.
     #[test]
     fn child_program_follows_the_child_environment_and_directory() {
         let temp = tempfile::tempdir().expect("tempdir");
         let bin = temp.path().join("bin");
-        fs::create_dir_all(&bin).unwrap();
-        for name in ["agent", "agent.bat", "agent.cmd"] {
-            fs::write(bin.join(name), "").unwrap();
+        for file in [
+            temp.path().join("agent"),
+            bin.join("agent"),
+            bin.join("agent.bat"),
+            bin.join("agent.cmd"),
+        ] {
+            executable(&file);
         }
 
         let mut explicit = Command::new(Path::new("bin").join("agent"));
@@ -1328,10 +1365,20 @@ mod tests {
         let mut bare = Command::new("agent");
         bare.current_dir(temp.path())
             .env_clear()
-            .env("PATH", "bin")
+            .env("PATH", env::join_paths(["", "bin"]).unwrap())
             .env("Pathext", ".cmd;.bat");
         let found = if cfg!(windows) { "agent.cmd" } else { "agent" };
         assert_eq!(child_program(&bare), Some(bin.join(found)));
+
+        // Without a PATH of its own the child finds nothing, not the work
+        // area's program nor one on Spark's own PATH.
+        let shell = if cfg!(windows) { "cmd" } else { "sh" };
+        assert!(find_executable_on_path(shell, None).is_some());
+        for name in ["agent", shell] {
+            let mut unset = Command::new(name);
+            unset.current_dir(temp.path()).env_clear();
+            assert_eq!(child_program(&unset), None, "{name}");
+        }
     }
 
     /// cmd.exe would start a batch file in the Windows directory instead of a
