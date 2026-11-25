@@ -20,6 +20,7 @@ import {
     ENVIRONMENT_LINKS_CHANGED_EVENT,
     getActiveEnvironmentId,
     getActiveEnvironmentState,
+    refreshLocalEnvironments,
     useActiveEnvironment,
     type EnvironmentLink,
 } from '@/lib/activeEnvironment'
@@ -36,7 +37,7 @@ type Failure = { requestKey: string; message: string }
 
 /**
  * An environment's drafts, the questions answered there, and its refused replies, each by question,
- * its failed cancels by delegation, each shown on its row until a refresh shows it sealed or canceling with no seal to retry,
+ * its failed cancels by delegation, each shown on its row while it can still be canceled or sealed,
  * and a reload after a change that failed while no card showed the environment, for the next one to show.
  */
 type Answers = {
@@ -82,6 +83,8 @@ const LIVE_REFRESH_MS = 4000
 const errorText = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback)
 // Delegation IDs are UUIDs, so the first ':' ends the delegation part.
 const ackKey = (delegationId: string, questionId: string) => `${delegationId}:${questionId}`
+// A delegation can be canceled, or sealed once paused with its cancel pending, until it seals.
+const cancelable = (record: DelegationOut) => record.phase !== 'sealed' && (!record.cancel_requested_at || record.paused !== null)
 // Mirrors the server's list filter (spark-workspace delegations::list).
 const inFilter = (record: DelegationOut, filter: Filter) => (
     filter === 'all' || (filter === 'open' ? record.phase !== 'sealed' : record.paused !== null)
@@ -332,13 +335,19 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             setSeen(seenRef.current)
             setChangedLinks(null)
             setLoadError(null)
-            // A paused delegation with a cancel pending can still be sealed, so its failed seal stays.
             updateAnswers(env, ({ cancelErrors }) => ({
                 cancelErrors: Object.fromEntries(Object.entries(cancelErrors).filter(([id]) => {
                     const record = records.find((row) => row.delegation_id === id)
-                    return !record || (record.phase !== 'sealed' && (!record.cancel_requested_at || record.paused !== null))
+                    return !record || cancelable(record)
                 })),
             }))
+            // A delegation listed as resumed through a link this machine's links lack shows them stale, as
+            // when their reload failed after a link was added: each refresh rereads them until they show it.
+            const local = getActiveEnvironmentState()
+            if (env === '' && local.linksLoaded && records.some((row) => row.phase !== 'sealed' && !row.paused
+                && !local.links.some((link) => link.environment_id === row.environment_id))) {
+                void refreshLocalEnvironments()
+            }
             forgetUnasked(env, records, coversOpen)
         } catch (err) {
             if (current() || afterChange) throw err
@@ -404,16 +413,18 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         if (active) void refresh()
     }, [active, filter, refresh])
 
-    // Adding or removing one of this machine's links pauses or resumes the delegations through it.
+    // Adding or removing one of this machine's links pauses or resumes the delegations through it. A card
+    // on another Settings tab keeps its rows, so it notes the change and reloads too, superseding any
+    // list requested before it.
     useEffect(() => {
-        if (!active || activeEnvironmentId !== null) return
+        if (activeEnvironmentId !== null) return
         const onLinksChanged = () => {
             setChangedLinks(getActiveEnvironmentState().links)
             void refresh()
         }
         window.addEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, onLinksChanged)
         return () => window.removeEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, onLinksChanged)
-    }, [active, activeEnvironmentId, refresh])
+    }, [activeEnvironmentId, refresh])
 
     const rows = loaded?.filter === filter ? loaded.records : null
     const questionsOf = (record: DelegationOut) => (record.phase === 'accepted'
@@ -609,7 +620,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                         {record.paused ? (
                                             <div className="text-xs text-warning">{record.paused}</div>
                                         ) : null}
-                                        {cancelErrors[record.delegation_id] ? <InlineError>{cancelErrors[record.delegation_id]}</InlineError> : null}
+                                        {/* Shown while another try can be made: one that arrives after another try sealed it is moot. */}
+                                        {cancelable(record) && cancelErrors[record.delegation_id] ? <InlineError>{cancelErrors[record.delegation_id]}</InlineError> : null}
                                         {questions.length > 0 && !answerable ? (
                                             <p className="text-xs text-muted-foreground">
                                                 {record.cancel_requested_at
