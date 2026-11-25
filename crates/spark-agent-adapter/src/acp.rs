@@ -819,7 +819,8 @@ fn harness_command(
     // A Windows launch of a bare name tries only `.exe`, so there the launch
     // names the file its child finds, such as a project's npm `.cmd` shim.
     // Elsewhere the system's own search runs, as from a shell. Either way
-    // [`ensure_found`] stops a program the child does not find.
+    // [`ensure_found`] stops a launch the system would look for past the
+    // child's `PATH`.
     match cfg!(windows)
         .then(|| crate::local_environment::child_program(&named))
         .flatten()
@@ -834,12 +835,25 @@ fn found(command: &Command) -> bool {
     crate::local_environment::child_program(command).is_some()
 }
 
-/// Stops a launch of a program its child does not find, which the system
-/// would look for past the child's `PATH`: on Windows, such as on Spark's
-/// own, and elsewhere, without one, on the system's default path. So a launch
-/// fails exactly when [`program_found`] reports the program missing.
+/// Stops a launch the system would look for past the child's `PATH`: on
+/// Windows any program its child does not find, such as one on Spark's own
+/// `PATH`, and elsewhere a bare name the child has no `PATH` for, which the
+/// system would look for on its default path, so that launch fails exactly
+/// when [`program_found`] reports the program missing. Any other launch
+/// elsewhere is the system's own, which starts what [`found`] cannot inspect
+/// and says why a file it finds cannot start, such as a script without
+/// execute permission.
 fn ensure_found(command: &Command) -> std::io::Result<()> {
-    if !found(command) {
+    let pathless_name = || {
+        Path::new(command.get_program()).components().count() == 1
+            && !command.get_envs().any(|(key, value)| {
+                value.is_some()
+                    && key
+                        .to_str()
+                        .is_some_and(crate::local_environment::is_path_key)
+            })
+    };
+    if (cfg!(windows) || pathless_name()) && !found(command) {
         return Err(std::io::ErrorKind::NotFound.into());
     }
     Ok(())
@@ -3957,8 +3971,8 @@ mod tests {
             (EnvironmentInheritancePolicy::InheritNone, false),
         ] {
             assert_eq!(program_found(shell, inheritance), found, "{inheritance:?}");
-            // A launch fails exactly when Settings reports the program missing,
-            // even where the system would search a default path without PATH.
+            // A bare name launches exactly when Settings finds it, even where
+            // the system would search a default path without PATH.
             let launch = ensure_found(&harness_command(&harness, inheritance, None, []));
             assert_eq!(launch.is_ok(), found, "{inheritance:?}");
             if let Err(error) = launch {
@@ -3975,6 +3989,50 @@ mod tests {
             explicit.to_str().unwrap(),
             EnvironmentInheritancePolicy::InheritNone
         ));
+    }
+
+    /// Elsewhere than Windows setup refuses only a bare name its child has
+    /// no PATH for; a configured path launches as the system does, which says
+    /// why a script without execute permission cannot start.
+    #[cfg(unix)]
+    #[test]
+    fn unix_setup_leaves_a_configured_path_to_the_system() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("agent");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let setup = |executable: &str| {
+            let harness = AcpHarness {
+                name: String::new(),
+                executable: executable.to_string(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                permission_policy: Default::default(),
+                system_instructions: None,
+            };
+            discover(
+                "agent",
+                &harness,
+                EnvironmentInheritancePolicy::InheritNone,
+                temp.path(),
+            )
+        };
+
+        let unrunnable = setup(script.to_str().unwrap());
+        assert_eq!(unrunnable.setup_status, "unreachable");
+        assert!(
+            unrunnable
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("Permission denied")),
+            "{:?}",
+            unrunnable.error
+        );
+        let pathless = setup("sh");
+        assert_eq!(
+            pathless.setup_status, "not_installed",
+            "{:?}",
+            pathless.error
+        );
     }
 
     #[test]
