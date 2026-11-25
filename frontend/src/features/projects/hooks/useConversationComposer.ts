@@ -28,10 +28,11 @@ import type { NormalizedConversationRecord } from '../model/projectsHomeState'
 import type { ComposerAttachment } from '../model/types'
 import { clearSentAttachments, keptAttachments, refusedAttachmentsFit, restoreRefusedAttachments } from './useComposerAttachments'
 
-// Prevents duplicate turn submits while a turn waits for an in-flight settings save to commit. A chat
-// is one in its environment's chats as shown: the same conversation ID elsewhere, or once a switch away
-// and back starts them anew, is another chat.
-const awaitingSettingsTurn = new Set<string>()
+// Prevents duplicate turn submits while a turn waits for an in-flight settings save to commit, and says
+// whether it is a message's or a mode switch's. A chat is one in its environment's chats as shown: the same
+// conversation ID elsewhere, or once a switch away and back starts them anew, is another chat.
+const awaitingSettingsTurn = new Map<string, boolean>()
+const chatKey = (environmentId: string | null, conversationId: string) => `${environmentId ?? 'local'}\n${homeSessionStart()}\n${conversationId}`
 // Each chat's turns in flight, oldest first, as its environment's chats show it: the newest ends its pending
 // turn, and the last to settle its sending state.
 const turnsInFlight = new Map<string, object[]>()
@@ -195,11 +196,11 @@ export function useConversationComposer({
     setPanelError,
     setPendingConversationTurn,
 }: UseConversationComposerArgs) {
-    const awaitSettingsReady = async (conversationId: string, environmentId: string | null): Promise<boolean | string> => {
+    const awaitSettingsReady = async (conversationId: string, environmentId: string | null, message = false): Promise<boolean | string> => {
         if (!waitForPendingSettingsSave) return true
-        const key = `${environmentId ?? 'local'}\n${homeSessionStart()}\n${conversationId}`
+        const key = chatKey(environmentId, conversationId)
         if (awaitingSettingsTurn.has(key)) return false
-        awaitingSettingsTurn.add(key)
+        awaitingSettingsTurn.set(key, message)
         try {
             return await waitForPendingSettingsSave(conversationId)
         } finally {
@@ -351,11 +352,14 @@ export function useConversationComposer({
         // ponytail: held for the page's life if a listed chat never opens again, as when it is deleted.
         const putBack = (error: string) => {
             const openChat = () => useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId ?? null
-            // The chats' showing in which the open chat sent while this waited: it waits for their next showing.
+            // The chats' showing in which the open chat sent, or had a message wait on its settings, while this
+            // waited: it waits for their next showing.
             let sentWhileWaiting: number | null = null
             const unchosen = () => {
                 const open = openChat()
-                if (open && useStore.getState().sendingChats[open]) sentWhileWaiting = homeSessionStart()
+                if (open && (useStore.getState().sendingChats[open] || awaitingSettingsTurn.get(chatKey(environmentId, open)))) {
+                    sentWhileWaiting = homeSessionStart()
+                }
                 return sentWhileWaiting !== homeSessionStart() && openedByLoad.has(activeProjectPath) && !currentDraft()
                     && !(open && useStore.getState().homeConversationSessionsById[open]?.attachments.length)
             }
@@ -393,7 +397,7 @@ export function useConversationComposer({
             await switchChatMode(conversationId, parsedCommand.chatMode)
             return
         }
-        if (!(await awaitSettingsReady(conversationId, environmentId))) {
+        if (!(await awaitSettingsReady(conversationId, environmentId, true))) {
             // Its settings didn't save, so it stays unsent. Shown still, its draft is as it was; once its chats
             // were left, they no longer hold it.
             if (!live()) putBack('The message was not sent: its chat settings did not save.')
@@ -459,7 +463,7 @@ export function useConversationComposer({
         }
         const environmentId = getActiveEnvironmentId()
         const live = showsHere()
-        if (!(await awaitSettingsReady(conversationId, environmentId))) {
+        if (!(await awaitSettingsReady(conversationId, environmentId, true))) {
             return
         }
         if (live()) setPanelError(null)
@@ -490,7 +494,7 @@ export function useConversationComposer({
         }
         const afterRevision = getConversationRecord(conversationId)?.latestRevision ?? '0'
         setPendingConversationTurn({ conversationId, afterRevision })
-        const key = `${getActiveEnvironmentId() ?? 'local'}\n${homeSessionStart()}\n${conversationId}`
+        const key = chatKey(getActiveEnvironmentId(), conversationId)
         const turn = {}
         const turns = turnsInFlight.get(key) ?? []
         turns.push(turn)
@@ -514,6 +518,12 @@ export function useConversationComposer({
             applyConversationBatch(activeProjectPath, conversationId, acceptance.changes, 'mutation', 'send-response', {
                 forceWorkspaceSync: shouldKeepFocusOnReplyThread,
             })
+            // An earlier turn's answer that carries the chat past a newer turn's start leaves that turn pending.
+            const pending = useStore.getState().homeProjectSessionsByPath[activeProjectPath]?.pendingConversationTurn
+            const latestRevision = getConversationRecord(conversationId)?.latestRevision
+            if (!newest() && pending?.conversationId === conversationId && latestRevision && latestRevision !== pending.afterRevision) {
+                setPendingConversationTurn({ conversationId, afterRevision: latestRevision })
+            }
             return null
         } catch (error) {
             return refusal(error)
