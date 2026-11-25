@@ -817,9 +817,9 @@ fn harness_command(
     };
     let named = command(harness.executable.as_ref());
     // A Windows launch of a bare name tries only `.exe`, so there the launch
-    // names the file its child finds, such as a project's npm `.cmd` shim, and
-    // [`ensure_found`] stops any other. Elsewhere the system's own search
-    // runs, as from a shell.
+    // names the file its child finds, such as a project's npm `.cmd` shim.
+    // Elsewhere the system's own search runs, as from a shell. Either way
+    // [`ensure_found`] stops a program the child does not find.
     match cfg!(windows)
         .then(|| crate::local_environment::child_program(&named))
         .flatten()
@@ -834,10 +834,12 @@ fn found(command: &Command) -> bool {
     crate::local_environment::child_program(command).is_some()
 }
 
-/// Stops a Windows launch of a program its child does not find, which the
-/// system would look for past the child's `PATH`, such as on Spark's own.
+/// Stops a launch of a program its child does not find, which the system
+/// would look for past the child's `PATH`: on Windows, such as on Spark's
+/// own, and elsewhere, without one, on the system's default path. So a launch
+/// fails exactly when [`program_found`] reports the program missing.
 fn ensure_found(command: &Command) -> std::io::Result<()> {
-    if cfg!(windows) && !found(command) {
+    if !found(command) {
         return Err(std::io::ErrorKind::NotFound.into());
     }
     Ok(())
@@ -3941,12 +3943,27 @@ mod tests {
     #[test]
     fn program_found_follows_the_inheritance_policy() {
         let shell = if cfg!(windows) { "cmd" } else { "sh" };
+        let harness = AcpHarness {
+            name: String::new(),
+            executable: shell.to_string(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            permission_policy: Default::default(),
+            system_instructions: None,
+        };
         for (inheritance, found) in [
             (EnvironmentInheritancePolicy::InheritAll, true),
             (EnvironmentInheritancePolicy::InheritCoreOnly, true),
             (EnvironmentInheritancePolicy::InheritNone, false),
         ] {
             assert_eq!(program_found(shell, inheritance), found, "{inheritance:?}");
+            // A launch fails exactly when Settings reports the program missing,
+            // even where the system would search a default path without PATH.
+            let launch = ensure_found(&harness_command(&harness, inheritance, None, []));
+            assert_eq!(launch.is_ok(), found, "{inheritance:?}");
+            if let Err(error) = launch {
+                assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+            }
         }
         let exe = std::env::current_exe().unwrap();
         let explicit = if cfg!(windows) {

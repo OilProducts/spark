@@ -3233,21 +3233,22 @@ fn resolve_posix_shell_from(
         }
         wsl.get_or_insert(shell);
     }
-    let git_roots = git_paths
-        .into_iter()
-        .filter_map(|git| Some(git.parent()?.parent()?.to_path_buf()));
-    for git_root in git_roots {
-        for segments in [
-            &["bin", "bash.exe"][..],
-            &["bin", "sh.exe"][..],
-            &["usr", "bin", "bash.exe"][..],
-            &["usr", "bin", "sh.exe"][..],
-        ] {
-            let candidate = segments
-                .iter()
-                .fold(git_root.to_path_buf(), |path, seg| path.join(seg));
-            if candidate.is_file() {
-                return Ok(candidate);
+    // `git.exe` sits up to three levels inside its install, as in
+    // `cmd\git.exe` or `ucrt64\bin\git.exe`: each is searched nearest first.
+    for git in git_paths {
+        for git_root in git.ancestors().skip(1).take(3) {
+            for segments in [
+                &["bin", "bash.exe"][..],
+                &["bin", "sh.exe"][..],
+                &["usr", "bin", "bash.exe"][..],
+                &["usr", "bin", "sh.exe"][..],
+            ] {
+                let candidate = segments
+                    .iter()
+                    .fold(git_root.to_path_buf(), |path, seg| path.join(seg));
+                if candidate.is_file() {
+                    return Ok(candidate);
+                }
             }
         }
     }
@@ -4508,6 +4509,29 @@ mod activity_tests {
         ] {
             assert_eq!(is_wsl_launcher(Path::new(shell)), wsl, "{shell}");
         }
+    }
+
+    /// A Git whose `git.exe` sits deeper, as in `D:\Git\ucrt64\bin\git.exe`,
+    /// still has its `D:\Git\usr\bin\bash.exe` beat the WSL launcher.
+    #[test]
+    fn resolve_posix_shell_finds_git_bash_three_levels_above_git() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let git_root = temp.path().join("D").join("Git");
+        let git_exe = git_root.join("ucrt64").join("bin").join("git.exe");
+        let git_bash = git_root.join("usr").join("bin").join("bash.exe");
+        let wsl = temp
+            .path()
+            .join("Windows")
+            .join("System32")
+            .join("bash.exe");
+        for file in [&git_exe, &git_bash, &wsl] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "").unwrap();
+        }
+        assert_eq!(
+            resolve_posix_shell_from(None, Some(wsl), Some(git_exe), &[]).unwrap(),
+            git_bash
+        );
     }
 
     /// Each PATH entry is searched whole, so a quoted Windows directory

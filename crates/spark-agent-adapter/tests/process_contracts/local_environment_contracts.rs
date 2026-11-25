@@ -249,6 +249,88 @@ fn local_environment_exec_command_inherit_none_omits_parent_environment_but_keep
     assert!(!result.timed_out);
 }
 
+/// Every Windows system variable on the core allowlist that Spark has
+/// reaches a child under `InheritCoreOnly`, on any platform, since the list
+/// is the same everywhere.
+#[test]
+fn local_environment_inherit_core_only_passes_windows_system_variables_to_the_child() {
+    let _env_guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let tempdir = tempdir().expect("tempdir");
+    let keys = [
+        "APPDATA",
+        "COMPUTERNAME",
+        "COMSPEC",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LOCALAPPDATA",
+        "NUMBER_OF_PROCESSORS",
+        "OS",
+        "PATHEXT",
+        "PROCESSOR_ARCHITECTURE",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PSMODULEPATH",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "USERNAME",
+        "USERPROFILE",
+        "WINDIR",
+    ];
+    // Windows keeps its own values, so its shell still starts; any key
+    // missing, as elsewhere, is set for the check.
+    let mut missing = Vec::new();
+    let expected = keys.map(|key| {
+        let value = std::env::var_os(key)
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|| {
+                missing.push(key);
+                let value = format!("{key}-value");
+                std::env::set_var(key, &value);
+                value
+            });
+        (key, value)
+    });
+
+    let result = LocalExecutionEnvironment::with_options(
+        tempdir.path(),
+        5_000,
+        60_000,
+        EnvironmentInheritancePolicy::InheritCoreOnly,
+    )
+    .into_execution_environment()
+    .exec_command(
+        PRINT_ENV,
+        CommandOptions {
+            timeout_ms: Some(60_000),
+            ..CommandOptions::default()
+        },
+    );
+    for key in missing {
+        std::env::remove_var(key);
+    }
+
+    let env = printed_env(&result.expect("env command"));
+    for (key, value) in expected {
+        // Windows spells some differently, such as `SystemRoot`.
+        let received = env
+            .iter()
+            .find(|(name, _)| {
+                if cfg!(windows) {
+                    name.eq_ignore_ascii_case(key)
+                } else {
+                    name.as_str() == key
+                }
+            })
+            .map(|(_, value)| value.as_str());
+        assert_eq!(received, Some(value.as_str()), "{key}: {env:?}");
+    }
+}
+
 /// Windows names are case-insensitive, so a caller's `PATH` replaces the
 /// inherited `Path`; elsewhere `Path` is another variable and stays.
 #[test]

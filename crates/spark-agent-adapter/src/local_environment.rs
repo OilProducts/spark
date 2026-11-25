@@ -701,8 +701,9 @@ fn inherit(
 }
 
 /// Sets `vars` over `environment`. With `ignore_case`, as Windows treats
-/// names, a caller's `PATH` replaces an inherited `Path` instead of both
-/// reaching the child, where the inherited one could win.
+/// names, beyond ASCII too, a caller's `PATH` replaces an inherited `Path`,
+/// and `ÄVAR` an `äVAR`, instead of both reaching the child, where the
+/// inherited one could win.
 pub(crate) fn merge_env<V>(
     environment: &mut BTreeMap<String, V>,
     vars: impl IntoIterator<Item = (String, V)>,
@@ -710,7 +711,11 @@ pub(crate) fn merge_env<V>(
 ) {
     for (key, value) in vars {
         if ignore_case {
-            environment.retain(|existing, _| !existing.eq_ignore_ascii_case(&key));
+            // ponytail: full Unicode uppercase also equates a few names
+            // Windows keeps apart, such as `ß` and `SS`; compare per-char
+            // simple mappings if one matters.
+            let upper = key.to_uppercase();
+            environment.retain(|existing, _| existing.to_uppercase() != upper);
         }
         environment.insert(key, value);
     }
@@ -987,8 +992,9 @@ pub fn terminate_process_group(process_group_id: u32, mut child: Option<&mut Chi
 /// separator) as given if it is a file, else the first match on
 /// `path_override` (else Spark's own `PATH`). A name with an extension is
 /// matched as written. On Windows a bare name tries, in `PATHEXT`'s order,
-/// each extension a launch can run, then the name itself only if it is an
-/// image, so a `rg.cmd` shim wins over a native `rg` beside it, and neither an
+/// each extension a launch can run, then `.exe`, which a launch always tries,
+/// if `PATHEXT` omits it, then the name itself only if it is an image, so a
+/// `rg.cmd` shim wins over a native `rg` beside it, and neither an
 /// extensionless script, such as one a WSL npm install writes, nor an npm
 /// `.ps1` shim hides a later runnable match.
 pub fn find_executable_on_path(
@@ -1094,14 +1100,19 @@ fn find_executable_in(
         .map(std::ffi::OsStr::to_string_lossy)
         .unwrap_or_default();
     // A launch runs an image or, through cmd.exe, a batch file; other
-    // extensions, such as an npm `.ps1` shim's, cannot start.
-    let names = pathext
-        .split(';')
+    // extensions, such as an npm `.ps1` shim's, cannot start. It always tries
+    // `.exe`, so that follows when `PATHEXT` omits it.
+    let extensions = pathext.split(';').collect::<Vec<_>>();
+    let exe =
+        (bare && !extensions.iter().any(|e| e.eq_ignore_ascii_case(".exe"))).then_some(".exe");
+    let names = extensions
+        .into_iter()
         .filter(|extension| {
             [".com", ".exe", ".bat", ".cmd"]
                 .iter()
                 .any(|runnable| extension.eq_ignore_ascii_case(runnable))
         })
+        .chain(exe)
         .map(|extension| format!("{name}{extension}"))
         .chain([name.to_string()])
         .collect::<Vec<_>>();
@@ -1482,9 +1493,13 @@ mod tests {
             BTreeMap::from([
                 ("Path".to_string(), "inherited".to_string()),
                 ("HOME".to_string(), "home".to_string()),
+                ("äVAR".to_string(), "host".to_string()),
             ])
         };
-        let caller = BTreeMap::from([("PATH".to_string(), "caller".to_string())]);
+        let caller = BTreeMap::from([
+            ("PATH".to_string(), "caller".to_string()),
+            ("ÄVAR".to_string(), "caller".to_string()),
+        ]);
 
         let mut windows = inherited();
         merge_env(&mut windows, caller.clone(), true);
@@ -1493,6 +1508,7 @@ mod tests {
             BTreeMap::from([
                 ("HOME".to_string(), "home".to_string()),
                 ("PATH".to_string(), "caller".to_string()),
+                ("ÄVAR".to_string(), "caller".to_string()),
             ])
         );
 
@@ -1500,6 +1516,24 @@ mod tests {
         merge_env(&mut unix, caller, false);
         assert_eq!(unix.get("Path").map(String::as_str), Some("inherited"));
         assert_eq!(unix.get("PATH").map(String::as_str), Some("caller"));
+        assert_eq!(unix.get("äVAR").map(String::as_str), Some("host"));
+        assert_eq!(unix.get("ÄVAR").map(String::as_str), Some("caller"));
+    }
+
+    /// A Windows launch of a bare name always tries `.exe`, so the lookup
+    /// does too when `PATHEXT` omits it.
+    #[test]
+    fn a_bare_name_finds_its_exe_whatever_pathext_holds() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        executable(&temp.path().join("claude.exe"));
+        assert_eq!(
+            find_executable_in(
+                "claude",
+                [temp.path().to_path_buf()],
+                Some(std::ffi::OsStr::new(".CMD"))
+            ),
+            Some(temp.path().join("claude.exe"))
+        );
     }
 
     #[test]

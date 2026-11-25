@@ -302,12 +302,10 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
-    use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().expect("tempdir");
-    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let root = spark_common::paths::canonicalize_clean(temp.path()).expect("canonical tempdir");
     let ui_dir = root.join("ui");
     let home = root.join("home");
     let dumps = root.join("agent-env");
@@ -316,7 +314,19 @@ fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
     }
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
     // Each fake agent records the environment Spark launched it with, then exits.
+    #[cfg(windows)]
     let fake = |name: &str| {
+        let path = root.join(format!("{name}.cmd"));
+        fs::write(
+            &path,
+            format!("@echo off\r\nset > \"{}\"\r\n", dumps.join(name).display()),
+        )
+        .expect("fake agent");
+        path
+    };
+    #[cfg(unix)]
+    let fake = |name: &str| {
+        use std::os::unix::fs::PermissionsExt;
         let path = root.join(name);
         fs::write(
             &path,
