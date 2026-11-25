@@ -198,13 +198,16 @@ export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]
  * A mounted environment no longer linked fails for good, its live connection closed, until Retry passes or you leave it;
  * one linked anew since a check failed, until Retry checks the new link. This Spark's own mismatch wins over both.
  */
+const sameRow = (a: EnvironmentLink, b: EnvironmentLink) =>
+    a.environment_id === b.environment_id && a.origin === b.origin && a.created_at === b.created_at
+
 function dropRemovedDestination(previous: EnvironmentLink[]) {
     const linked = (environmentId: string, links = state.links) => links.find((link) => link.environment_id === environmentId)
     const active = state.activeEnvironmentId
     const now = active === null ? undefined : linked(active)
     const before = active === null ? undefined : linked(active, previous)
     const gone = active !== null && state.linksLoaded && !now
-    const replaced = now && before && (now.origin !== before.origin || now.created_at !== before.created_at)
+    const replaced = now && before && !sameRow(now, before)
     if (gone || replaced) {
         // Checks still running, sent for the link as it was, find nothing for it: automatic ones, and a Retry's, which
         // runs only while it is the one chosen. A switch elsewhere awaiting approval carries on.
@@ -220,7 +223,7 @@ function dropRemovedDestination(previous: EnvironmentLink[]) {
     const pending = state.selectedEnvironmentId
     if (pending === null || pending === active) return
     const current = linked(pending)
-    if (!current || (destination && (current.origin !== destination.origin || current.created_at !== destination.created_at))) {
+    if (!current || (destination && !sameRow(current, destination))) {
         switchSequence += 1
         showActiveEnvironment()
     }
@@ -399,9 +402,13 @@ export async function selectEnvironment(
     options?: { onActivated?: () => void; link?: EnvironmentLink },
 ): Promise<boolean> {
     const seq = ++switchSequence
-    // The link Settings switches to names it in the switcher and remote guidance, though their listing lacks it.
+    // The link Settings switches to, as Settings lists it, names it in the switcher and remote guidance, though their
+    // listing lacks it or still shows the row it replaced.
     const link = options?.link
-    if (link && !state.links.some((entry) => entry.environment_id === link.environment_id)) updateState({ links: [...state.links, link] })
+    if (link && !state.links.some((entry) => sameRow(entry, link))) {
+        const listed = state.links.some((entry) => entry.environment_id === link.environment_id)
+        updateState({ links: listed ? state.links.map((entry) => (entry.environment_id === link.environment_id ? link : entry)) : [...state.links, link] })
+    }
     destination = link ?? state.links.find((entry) => entry.environment_id === environmentId)
     const active = state.activeEnvironmentId
     if (environmentId === active && (state.selectedEnvironmentId !== active || state.status === 'ready')) {
@@ -449,8 +456,8 @@ export function retrySelectedEnvironment(): Promise<boolean> {
 export async function reverifyActiveEnvironment(fresh = false): Promise<boolean | null> {
     const environmentId = state.activeEnvironmentId
     if (environmentId === null) return true
-    // A final error stays until Retry or Return, or until a connection that opens again passes a check then. One found
-    // unreachable is checked again, which can find it final while no connection opens.
+    // A final error stays until Retry or Return. One found unreachable is checked again, which can find it final while
+    // no connection opens.
     if (isFinalCheck(state.activeCheck) && !fresh) return false
     if (reverifying && !fresh) return null
     const seq = ++reverifySequence
@@ -466,6 +473,8 @@ export async function reverifyActiveEnvironment(fresh = false): Promise<boolean 
     // A newer check decides, apart from a final failure found here, which stands unless it was outdated: a newer one
     // that gets no conclusive answer leaves it to take effect.
     if (seq <= outdated || state.activeEnvironmentId !== environmentId || (seq !== reverifySequence && !isFinalCheck(check))) return null
+    // A final error shown meanwhile, such as the link found gone, stays though this check, sent before it, passes.
+    if (check.status === 'ready' && isFinalCheck(state.activeCheck)) return false
     if (check.status !== 'unreachable') outdated = seq
     applyActiveCheck(check)
     return check.status === 'ready'

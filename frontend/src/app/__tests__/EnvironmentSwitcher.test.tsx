@@ -810,6 +810,47 @@ describe('Same-window multi-environment switching', () => {
         await waitFor(() => expect(winLive()).toBeDefined())
     })
 
+    it('keeps a remote behind the unlinked gate, its live connection closed, once a reconnect\'s check finds both its descriptors gone, though the check of a connection opened meanwhile passes after it is linked again, until Retry passes', async () => {
+        const routes: Record<string, Route> = {}
+        const { user, remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        // Another tab removes the link, which this tab's listing doesn't show yet: the failed connection's check finds
+        // both descriptors missing at this Spark's proxy, and answers late.
+        const noLink = () => json({ detail: 'No link to environment "env-win".' }, 404)
+        const gone = deferred<void>()
+        routes[WIN_AUTH] = () => gone.promise.then(noLink)
+        routes[WIN_PUBLIC] = noLink
+        const before = checks()
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+
+        // Linked again meanwhile: the connection opens again, and its check, which passes, answers after that one.
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+        const passes = deferred<void>()
+        routes[WIN_AUTH] = () => passes.promise.then(() => json(WIN_ENV))
+        act(() => winLive()!.onopen?.(new Event('open')))
+        await waitFor(() => expect(checks()).toBe(before + 2))
+
+        await act(async () => gone.resolve())
+        const gate = await screen.findByTestId('remote-environment-gate')
+        await waitFor(() => expect(gate).toHaveTextContent('This Spark no longer links'))
+        const tried = connects()
+        await act(async () => passes.resolve())
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'refused', activeCheck: { status: 'refused' } })
+        expect(gate).toHaveTextContent('This Spark no longer links')
+        expect(remoteShell).not.toBeVisible()
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+
+        // Only Retry lifts the gate.
+        delete routes[WIN_AUTH]
+        delete routes[WIN_PUBLIC]
+        await user.click(within(gate).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(remoteShell).toBeVisible())
+        await waitFor(() => expect(winLive()).toBeDefined())
+    })
+
     it('keeps a remote behind its gate, its live connection closed, when the listing replaces its link while Retry checks the old one, until Retry passes for the current link', async () => {
         let links = [WIN_LINK]
         const routes: Record<string, Route> = { [LINKS]: () => json({ links }) }
@@ -1782,6 +1823,44 @@ describe('Same-window multi-environment switching', () => {
         act(() => { window.dispatchEvent(new Event('focus')) })
         await waitFor(() => expect(tab('env-win')).toHaveAttribute('title', 'Windows Workstation (http://env-win-new:8000)'))
         await user.click(tab('env-win'))
+        await screen.findByTestId('environment-checking')
+
+        // The removal answers late: the new link and the switch to it stay.
+        await act(async () => removal.resolve())
+        await waitFor(() => expect(changed).toHaveBeenCalled())
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: 'env-win', status: 'checking', links: [WIN_RELINKED] })
+        await act(async () => check.resolve())
+        await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-win'))
+        expect(getActiveEnvironmentState().links).toEqual([WIN_RELINKED])
+        window.removeEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, changed)
+    })
+
+    it('lets a switch from Settings to a link listed anew finish when Settings\' removal of the link it replaced answers late, though the switcher still lists the old link', async () => {
+        const user = userEvent.setup()
+        const removal = deferred<void>()
+        const check = deferred<void>()
+        let links = [WIN_LINK]
+        const backend = stubBackend({
+            [LINKS]: () => json({ links }),
+            [WIN_AUTH]: () => check.promise.then(() => json(WIN_ENV)),
+            [`DELETE ${LINKS}/env-win`]: () => removal.promise.then(() => json({ environment_id: 'env-win', removed: true })),
+        })
+        const changed = vi.fn()
+        window.addEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, changed)
+        render(<App />)
+        await screen.findByTestId('environment-tab-env-win')
+        await openSystemSettings()
+        await user.click(await screen.findByRole('button', { name: 'Remove link Windows Workstation' }))
+        await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Remove link' }))
+        await waitFor(() => expect(backend.requests.some((request) => request.method === 'DELETE')).toBe(true))
+
+        // Linked anew elsewhere: Settings, opened again, lists the new link before the switcher does, and switches to it.
+        links = [WIN_RELINKED]
+        act(() => useStore.getState().setViewMode('runs'))
+        await openSystemSettings()
+        expect(await screen.findByText('http://env-win-new:8000 · env-win')).toBeVisible()
+        expect(getActiveEnvironmentState().links).toEqual([WIN_LINK])
+        await user.click(screen.getByRole('button', { name: 'Switch to Windows Workstation' }))
         await screen.findByTestId('environment-checking')
 
         // The removal answers late: the new link and the switch to it stay.
