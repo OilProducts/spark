@@ -728,8 +728,8 @@ export function RefusedFlowSaveNotices() {
             : save.unshowable ? 'The canvas can’t show these edits, so the flow opened as saved; copy them from here.'
             : status === 'changed' ? 'It may have changed since, so these edits weren’t saved over it. Copy them from here.'
                 : status === 'unchanged' ? `${action} opens these edits in the editor, unsaved.`
-                    // Edits with nothing known to compare, such as a refused creation's, can't be recovered.
-                    : save.baseFiles !== null || save.baseline !== null ? 'Open the flow to recover these edits.' : ''
+                    // Edits over files not known, such as a refused creation's, can't be recovered.
+                    : save.baseFiles !== null ? 'Open the flow to recover these edits.' : ''
         return [
             <AppNotice
                 key={`${save.projectPath}\n${save.name}`}
