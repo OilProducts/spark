@@ -513,6 +513,37 @@ describe('onChatComposerSubmit', () => {
             expect(setPanelError.mock.calls).toEqual([[null], ['Unable to send the project chat turn.']])
         })
 
+        it('opens a late-refused unlisted chat again, here and now, when refused only once the chat its projects loaded on has finished sending', async () => {
+            await show('env-r')
+            loadProjects(null)
+            listChats('conversation-1')
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId: 'conversation-new' })
+            useStore.getState().updateHomeConversationSession('conversation-new', { attachments: [entry] })
+            const first = deferred<ConversationAcceptance>()
+            const second = deferred<ConversationAcceptance>()
+            vi.mocked(sendConversationTurnValidated).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+            const setPanelError = vi.fn()
+            composer({ attachments: [entry], setPanelError, ensureConversationId: () => 'conversation-new', getCurrentConversationId: openChat }).onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalledTimes(1))
+
+            // Away and back, its projects load on another chat, which sends a message that is accepted; then the first send is refused.
+            await show(null)
+            await show('env-r')
+            loadProjects('conversation-1')
+            useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: 'Second' })
+            composer({ chatDraft: 'Second', getCurrentConversationId: openChat }).onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalledTimes(2))
+            second.resolve(accept(1))
+            await vi.waitFor(() => expect(useStore.getState().sendingChats).toEqual({}))
+            expect(pending).toBeNull()
+            first.reject(new Error('offline'))
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(openChat(projectPath)).toBe('conversation-new')
+            expect(draft()).toBe('Hello there')
+            expect(attachmentsOf('conversation-new')).toEqual([entry])
+            expect(setPanelError.mock.calls).toEqual([[null], ['Unable to send the project chat turn.']])
+        })
+
         it('opens a late-refused unlisted chat again, here and now, when the chat its projects loaded on only opens the model picker with /model', async () => {
             await show('env-r')
             loadProjects(null)

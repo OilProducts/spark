@@ -344,13 +344,16 @@ export function useConversationComposer({
         // open, now or once it opens again, ahead of anything added since, once its files fit there with those
         // added since; another chat, or a new one, opened meanwhile keeps its own draft. A chat no list names, as
         // before its first send, opens again for them in place of the chat its environment's projects loaded on
-        // while you have neither chosen another nor written anything there.
+        // while you have neither chosen another nor written anything there, nor sent from there while it waits.
         // ponytail: held for the page's life if a listed chat never opens again, as when it is deleted.
         const putBack = (error: string) => {
             const openChat = () => useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId ?? null
+            // The chats' showing in which the open chat sent while this waited: it waits for their next showing.
+            let sentWhileWaiting: number | null = null
             const unchosen = () => {
                 const open = openChat()
-                return openedByLoad.has(activeProjectPath) && !currentDraft()
+                if (open && useStore.getState().sendingChats[open]) sentWhileWaiting = homeSessionStart()
+                return sentWhileWaiting !== homeSessionStart() && openedByLoad.has(activeProjectPath) && !currentDraft()
                     && !(open && useStore.getState().homeConversationSessionsById[open]?.attachments.length)
             }
             let held = false
@@ -399,13 +402,8 @@ export function useConversationComposer({
         // Files removed while its settings saved stay out of it, and with them gone it may carry nothing.
         const kept = keptAttachments(sending)
         if (!messageToSend && kept.length === 0) return
-        // Switched away while settings saved: the message still goes, but nothing here shows it. Shown, its turn
-        // is written in the project's chats from now, even once it clears the draft: a refused chat no list names
-        // waits for their next load.
-        if (live()) {
-            setPanelError(null)
-            openedByLoad.delete(activeProjectPath)
-        }
+        // Switched away while settings saved: the message still goes, but nothing here shows it.
+        if (live()) setPanelError(null)
         const chatMode = parsedCommand?.chatMode ?? null
         const sentAttachments = kept.map((entry) => entry.attachment!)
         const attachmentIds = sentAttachments.map((attachment) => attachment.id)
@@ -428,11 +426,7 @@ export function useConversationComposer({
             status: 'pending',
             ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
         }])
-        // The message shows in the transcript now, so the composer clears now; a refused send puts it back.
-        if (live() && currentDraft() === chatDraft) {
-            setDraft('')
-        }
-        const refusal = await runTurn(conversationId, live, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
+        const turn = runTurn(conversationId, live, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
             project_path: activeProjectPath,
             message: messageToSend,
             client_turn_id: clientTurnId,
@@ -442,6 +436,12 @@ export function useConversationComposer({
             // Accepted: clear what was sent, keeping anything attached meanwhile.
             clearSentAttachments(conversationId, kept.map((entry) => entry.localId))
         })
+        // The message shows in the transcript, and its chat as sending, now, so the composer clears now; a refused
+        // send puts it back.
+        if (live() && currentDraft() === chatDraft) {
+            setDraft('')
+        }
+        const refusal = await turn
         if (refusal !== null) {
             updatePendingMessages((messages) => messages.filter((message) => message.id !== clientTurnId))
             putBack(refusal)
@@ -459,11 +459,7 @@ export function useConversationComposer({
         if (!(await awaitSettingsReady(conversationId, environmentId))) {
             return
         }
-        // A retried turn, like a sent one, is written in the project's chats.
-        if (live()) {
-            setPanelError(null)
-            openedByLoad.delete(activeProjectPath)
-        }
+        if (live()) setPanelError(null)
         const refusal = await runTurn(conversationId, live, 'Unable to retry the project chat turn.', () => retryConversationTurnValidated(conversationId, turnId, activeProjectPath, environmentId))
         // Its error shows in its environment's chats, now or once they show again.
         if (refusal !== null) whenShownAndReady(environmentId, projectShown, () => setPanelError(refusal))
