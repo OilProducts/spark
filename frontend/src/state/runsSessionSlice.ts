@@ -1,3 +1,4 @@
+import { normalizeProjectPath } from '@/lib/projectPaths'
 import { runKind, searchHidesRun } from '@/features/runs/model/runOverviewModel'
 import { unconfirmRunQuestions } from './runsSessionScope'
 import { type StateCreator } from 'zustand'
@@ -20,7 +21,7 @@ function filtersHiding(session: RunsListSessionState, runId: string): Partial<Ru
     const run = session.runs.find((candidate) => candidate.run_id === runId)
     return {
         ...session.statusFilter && (!run || runKind(run) !== session.statusFilter) ? { statusFilter: null } : {},
-        ...session.projectFilter && run?.project_path !== session.projectFilter ? { projectFilter: null } : {},
+        ...session.projectFilter && normalizeProjectPath(run?.project_path ?? '') !== session.projectFilter ? { projectFilter: null } : {},
         ...searchHidesRun(session.runs, runId, session.searchQuery?.trim().toLowerCase() ?? '') ? { searchQuery: '' } : {},
     }
 }

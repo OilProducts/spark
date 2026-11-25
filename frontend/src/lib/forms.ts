@@ -234,7 +234,8 @@ function checkField(field: FormField, value: FormValue): string | null {
  * are omitted; false, zero, '' and [] are values.
  */
 export function draftReply(fields: FormField[], draft: FormDraft): { reply: FormReply } | { field: string; error: string } {
-    const content: Record<string, FormValue> = {}
+    // Collected as entries: assigning a field named "__proto__" to an object would drop it.
+    const content: Array<[string, FormValue]> = []
     for (const field of fields) {
         const entered = draft[field.name]
         const numeric = field.kind === 'number' || field.kind === 'integer'
@@ -250,9 +251,9 @@ export function draftReply(fields: FormField[], draft: FormDraft): { reply: Form
                     : entered as string
         const error = checkField(field, value)
         if (error) return { field: field.name, error }
-        content[field.name] = value
+        content.push([field.name, value])
     }
-    return { reply: { action: 'accept', content } }
+    return { reply: { action: 'accept', content: Object.fromEntries(content) } }
 }
 
 export function parseFormReply(value: unknown): FormReply | null {

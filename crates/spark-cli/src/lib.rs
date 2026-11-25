@@ -33,7 +33,8 @@ pub const EXIT_NOT_FOUND: i32 = 3;
 pub const DEFAULT_API_BASE_URL: &str = spark_common::source_checkout::DEFAULT_API_BASE_URL;
 
 /// The client's limit on one request, and so on a `run events` stream
-/// without `--until-done`.
+/// without `--until-done`. Longer than the 20 s a server gives a linked
+/// environment, so a stalled one's error reaches the CLI first.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +50,8 @@ pub enum HttpMethod {
 pub struct ApiRequestPlan {
     pub method: HttpMethod,
     pub base_url: String,
-    /// Where `base_url` came from: `flag`, `env`, `saved` or `default`.
+    /// Where `base_url` came from: `flag`, `env`, `companion`, `saved` or
+    /// `default`.
     pub target_source: &'static str,
     pub path: String,
     pub body: Option<Value>,
@@ -205,7 +207,7 @@ where
     let (names, matches) = parse(&args)?;
     let names = names.iter().map(String::as_str).collect::<Vec<_>>();
     let mut stdin = RuntimeStdin::new(Some(stdin_text.into()));
-    match route(&names, &matches, &mut stdin)? {
+    match route(&names, &matches, env, &mut stdin)? {
         Route::Api(plan) => with_target(plan, &names, &matches, env),
         Route::ValidateDir { .. } => Err(json_error(
             "spark flow validate --dir runs locally; it sends no request.",
@@ -233,7 +235,7 @@ fn run_agent_shell(
         Err(output) => return output,
     };
     let names = names.iter().map(String::as_str).collect::<Vec<_>>();
-    let plan = match route(&names, &matches, stdin) {
+    let plan = match route(&names, &matches, env, stdin) {
         Ok(Route::Api(plan)) => plan,
         Ok(Route::ValidateDir { dir, project, text }) => {
             return validate_flow_dir(&dir, project.as_deref(), text, env)
@@ -338,7 +340,7 @@ fn run_command() -> Command {
             value(
                 "conversation",
                 "HANDLE",
-                "Start from this conversation, in its project and under its mission or role budget",
+                "Start from this conversation, in its project and under its mission or role budget; defaults to SPARK_CONVERSATION_HANDLE when --project is omitted",
             ),
             project("Start in this project, with no conversation"),
             value("flow", "NAME", "Flow to run, from spark flow list").required(true),
@@ -356,13 +358,7 @@ fn run_command() -> Command {
             "execution-profile",
             "ID",
             "Execution profile to run on",
-        ))
-        .group(
-            ArgGroup::new("origin")
-                .args(["conversation", "project"])
-                .required(true)
-                .multiple(true),
-        ),
+        )),
         leaf("list", "List runs.").arg(project("Only this project's runs")),
         leaf("get", "Print a run's status and details.").arg(run_id()),
         leaf("cancel", "Cancel a run.").arg(run_id()),
@@ -371,7 +367,7 @@ fn run_command() -> Command {
             value(
                 "conversation",
                 "HANDLE",
-                "Conversation that asks for the retry",
+                "Conversation that asks for the retry; defaults to SPARK_CONVERSATION_HANDLE",
             ),
         ]),
         leaf("continue", "Start a new run from a node of an earlier run.")
@@ -386,7 +382,7 @@ fn run_command() -> Command {
                 value(
                     "conversation",
                     "HANDLE",
-                    "Conversation that asks for the run",
+                    "Conversation that asks for the run; defaults to SPARK_CONVERSATION_HANDLE when --project is omitted",
                 ),
                 project("Project to run in"),
             ])
@@ -432,7 +428,11 @@ fn send_command() -> Command {
         .arg_required_else_help(true)
         .args([
             value("to", "HANDLE", "Conversation to message").required(true),
-            value("from", "HANDLE", "Your own conversation's handle").required(true),
+            value(
+                "from",
+                "HANDLE",
+                "Your own conversation's handle; defaults to SPARK_CONVERSATION_HANDLE",
+            ),
             text_value("message", "TEXT", "Message text").required(true),
         ])
 }
@@ -449,7 +449,7 @@ fn mission_command() -> Command {
                 value(
                     "conversation",
                     "HANDLE",
-                    "Create it from this conversation, in its project",
+                    "Create it from this conversation, in its project; defaults to SPARK_CONVERSATION_HANDLE when --project is omitted",
                 ),
                 value(
                     "json",
@@ -458,11 +458,7 @@ fn mission_command() -> Command {
                 )
                 .required(true),
             ])
-            .group(
-                ArgGroup::new("origin")
-                    .args(["project", "conversation"])
-                    .required(true),
-            ),
+            .group(ArgGroup::new("origin").args(["project", "conversation"])),
         leaf("update", "Change a mission's fields.").args([
             mission_id(),
             project(),
@@ -924,7 +920,12 @@ fn request(method: HttpMethod, path: String) -> ApiRequestPlan {
 
 /// Everything that needs no server, JSON inputs included, before a target
 /// is resolved.
-fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Route, CommandOutput> {
+fn route(
+    names: &[&str],
+    m: &ArgMatches,
+    env: &impl Environment,
+    stdin: &mut RuntimeStdin,
+) -> Result<Route, CommandOutput> {
     use HttpMethod::{Delete, Get, Patch, Post};
     let id = value_of(m, "id").unwrap_or_default();
     let enc_id = encode(&id);
@@ -989,10 +990,21 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
             },
         },
         ["run", "start"] => {
-            let conversation = value_of(m, "conversation");
-            if conversation.is_some() && project.is_some() {
+            let explicit_conversation = value_of(m, "conversation");
+            if explicit_conversation.is_some() && project.is_some() {
                 return Err(usage_error(
                     "spark run start takes --conversation or --project, not both: a run started from a conversation runs in that conversation's project, under its mission or role budget. Drop --project.",
+                ));
+            }
+            let conversation = explicit_conversation.or_else(|| {
+                project
+                    .is_none()
+                    .then(|| env_conversation_handle(env))
+                    .flatten()
+            });
+            if conversation.is_none() && project.is_none() {
+                return Err(usage_error(
+                    "spark run start requires --conversation <HANDLE> (or SPARK_CONVERSATION_HANDLE) or --project <PATH>.",
                 ));
             }
             let mut launch = launch_body(m, stdin)?;
@@ -1020,7 +1032,7 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
             put(
                 &mut retry,
                 "conversation_handle",
-                value_of(m, "conversation"),
+                value_of(m, "conversation").or_else(|| env_conversation_handle(env)),
             );
             ApiRequestPlan {
                 body: body(retry),
@@ -1043,7 +1055,12 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
             put(
                 &mut resume,
                 "conversation_handle",
-                value_of(m, "conversation"),
+                value_of(m, "conversation").or_else(|| {
+                    project
+                        .is_none()
+                        .then(|| env_conversation_handle(env))
+                        .flatten()
+                }),
             );
             model_fields(&mut resume, m);
             ApiRequestPlan {
@@ -1088,19 +1105,27 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
                 )
             }
         }
-        ["send"] => ApiRequestPlan {
-            body: Some(json!({
-                "conversation_handle": value_of(m, "from"),
-                "message": value_of(m, "message"),
-            })),
-            ..request(
-                Post,
-                format!(
-                    "/workspace/api/conversations/by-handle/{}/messages",
-                    encode(&value_of(m, "to").unwrap_or_default())
-                ),
-            )
-        },
+        ["send"] => {
+            let from = value_of(m, "from").or_else(|| env_conversation_handle(env));
+            let Some(from) = from else {
+                return Err(usage_error(
+                    "spark send requires --from <HANDLE> (or SPARK_CONVERSATION_HANDLE).",
+                ));
+            };
+            ApiRequestPlan {
+                body: Some(json!({
+                    "conversation_handle": from,
+                    "message": value_of(m, "message"),
+                })),
+                ..request(
+                    Post,
+                    format!(
+                        "/workspace/api/conversations/by-handle/{}/messages",
+                        encode(&value_of(m, "to").unwrap_or_default())
+                    ),
+                )
+            }
+        }
         ["mission", leaf] => {
             let mut path = "/workspace/api/missions".to_string();
             if !matches!(*leaf, "list" | "create") {
@@ -1109,8 +1134,24 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
             if matches!(*leaf, "start" | "wait" | "close") {
                 path = format!("{path}/{leaf}");
             }
+            let conversation = if *leaf == "create" {
+                let resolved = value_of(m, "conversation").or_else(|| {
+                    project
+                        .is_none()
+                        .then(|| env_conversation_handle(env))
+                        .flatten()
+                });
+                if resolved.is_none() && project.is_none() {
+                    return Err(usage_error(
+                        "spark mission create requires --conversation <HANDLE> (or SPARK_CONVERSATION_HANDLE) or --project <PATH>.",
+                    ));
+                }
+                resolved
+            } else {
+                value_of(m, "conversation")
+            };
             path.push_str(&query(&[
-                ("conversation_handle", value_of(m, "conversation")),
+                ("conversation_handle", conversation),
                 ("project_path", project.clone()),
             ]));
             let mission = match *leaf {
@@ -1272,10 +1313,19 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
                 ("target-project", "project_path"),
                 ("request-key", "request_key"),
                 ("run", "run_id"),
-                ("conversation", "conversation_handle"),
             ] {
                 put(&mut task, key, value_of(m, flag));
             }
+            put(
+                &mut task,
+                "conversation_handle",
+                value_of(m, "conversation").or_else(|| {
+                    value_of(m, "run")
+                        .is_none()
+                        .then(|| env_conversation_handle(env))
+                        .flatten()
+                }),
+            );
             ApiRequestPlan {
                 body: body(task),
                 ..request(Post, "/workspace/api/delegations".to_string())
@@ -1358,6 +1408,12 @@ fn launch_body(
         value_of(m, "execution-profile"),
     );
     Ok(body)
+}
+
+fn env_conversation_handle(env: &impl Environment) -> Option<String> {
+    env.get_var(spark_common::project::CONVERSATION_HANDLE_ENV)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn model_fields(body: &mut Map<String, Value>, m: &ArgMatches) {
@@ -1454,8 +1510,8 @@ fn encode(value: &str) -> String {
     encoded
 }
 
-/// `--base-url`, then `SPARK_API_BASE_URL`, then the saved target, then the
-/// default; a source checkout refuses the default.
+/// `--base-url`, then `SPARK_API_BASE_URL` (or its loopback companion), then
+/// the saved target, then the default; a source checkout refuses the default.
 fn with_target(
     plan: ApiRequestPlan,
     names: &[&str],
@@ -1482,7 +1538,10 @@ fn with_target(
         .filter(|url| !url.is_empty());
     let (base_url, target_source) = match (flag, env_url) {
         (Some(url), _) => (url, "flag"),
-        (None, Some(url)) => (url, "env"),
+        (None, Some(url)) => match companion(env, &url) {
+            Some(companion) => (companion, "companion"),
+            None => (url, "env"),
+        },
         (None, None) => {
             let fail = |error: String| json_error(error, EXIT_GENERAL_FAILURE);
             let bootstrap =
@@ -1508,20 +1567,64 @@ fn with_target(
     })
 }
 
+/// The same server's loopback URL, for a managed agent whose shell dropped
+/// the automatic bearer but kept the advertised target `env_url` unchanged.
+fn companion(env: &impl Environment, env_url: &str) -> Option<String> {
+    if env_value(env, "SPARK_AGENT_API_TOKEN").is_some()
+        || env_value(env, "SPARK_API_TOKEN").is_some()
+    {
+        return None;
+    }
+    let advertised = origin_url(&env_value(env, "SPARK_AGENT_API_ORIGIN")?)?;
+    let loopback = env_value(env, "SPARK_AGENT_LOOPBACK_URL")?;
+    let url = origin_url(&loopback)?;
+    let host = url
+        .host_str()?
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let literal_loopback = host
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback());
+    let unchanged = origin_url(env_url) == Some(advertised);
+    (unchanged && url.scheme() == "http" && literal_loopback).then_some(loopback)
+}
+
+/// `value` as an http(s) URL naming only an origin: the root path, and no
+/// query, fragment or user information.
+fn origin_url(value: &str) -> Option<reqwest::Url> {
+    let url = reqwest::Url::parse(value).ok()?;
+    let origin_only = matches!(url.scheme(), "http" | "https")
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.username().is_empty()
+        && url.password().is_none();
+    origin_only.then_some(url)
+}
+
+fn env_value(env: &impl Environment, key: &str) -> Option<String> {
+    env.get_var(key)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 // ---------------------------------------------------------------------------
 // Sending a request and printing its response.
 
-/// The bearer a human sets to reach a remote server; agents on their own
-/// server's loopback need none.
-fn api_token(env: &impl Environment) -> Option<String> {
-    env.get_var("SPARK_API_TOKEN")
-        .map(|token| token.trim().to_string())
-        .filter(|token| !token.is_empty())
+/// The bearers a command may send: the one a human sets to reach a remote
+/// server, and the one Spark gives its agents, pinned to its advertised
+/// origin. Agents on their own server's loopback need neither.
+struct Tokens {
+    manual: Option<String>,
+    automatic: Option<(String, reqwest::Url)>,
 }
 
 fn execute(plan: &ApiRequestPlan, env: &impl Environment, out: &mut dyn Write) -> CommandOutput {
-    let token = api_token(env);
-    let token = token.as_deref();
+    let token = &Tokens {
+        manual: env_value(env, "SPARK_API_TOKEN"),
+        automatic: env_value(env, "SPARK_AGENT_API_TOKEN")
+            .zip(env_value(env, "SPARK_AGENT_API_ORIGIN").and_then(|origin| origin_url(&origin))),
+    };
     let payload = match &plan.view {
         View::Events {
             run_id,
@@ -1537,6 +1640,22 @@ fn execute(plan: &ApiRequestPlan, env: &impl Environment, out: &mut dyn Write) -
         Ok(payload) => payload,
         Err(error) => return failure_output(plan, error, token),
     };
+    let shaped = match plan.view {
+        View::FlowListText => payload.is_array(),
+        View::FlowFilesText | View::FlowInputs => payload["files"].is_array(),
+        _ => true,
+    };
+    if !shaped {
+        return failure(
+            format!(
+                "The server answered with JSON this command cannot read: {}",
+                payload.to_string().chars().take(200).collect::<String>()
+            ),
+            EXIT_GENERAL_FAILURE,
+            None,
+            Some((&plan.base_url, plan.target_source)),
+        );
+    }
     match plan.view {
         View::FlowListText => CommandOutput::stdout(0, flow_list_text(&payload)),
         View::FlowFilesText => CommandOutput::stdout(0, flow_files_text(&payload)),
@@ -1557,16 +1676,30 @@ fn transport(error: reqwest::Error) -> Failure {
     Failure::Transport(format!("Request failed: {error}"))
 }
 
+/// Sends the automatic bearer only to its pinned origin, else any manual
+/// one. A request carrying the automatic bearer or sent to the loopback
+/// companion goes direct and follows no redirect, so neither a proxy nor a
+/// `Location` can take it elsewhere.
 fn send(
     plan: &ApiRequestPlan,
-    token: Option<&str>,
+    token: &Tokens,
     timeout: Option<Duration>,
 ) -> Result<reqwest::blocking::Response, Failure> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(transport)?;
     let url = format!("{}{}", plan.base_url.trim_end_matches('/'), plan.path);
+    let automatic = token.automatic.as_ref().filter(|(_, origin)| {
+        reqwest::Url::parse(&url).is_ok_and(|url| url.origin() == origin.origin())
+    });
+    let bearer = automatic
+        .map(|(bearer, _)| bearer)
+        .or(token.manual.as_ref());
+    let managed = automatic.is_some() || plan.target_source == "companion";
+    let mut client = reqwest::blocking::Client::builder().timeout(timeout);
+    if managed {
+        client = client
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none());
+    }
+    let client = client.build().map_err(transport)?;
     let mut request = match plan.method {
         HttpMethod::Get => client.get(&url),
         HttpMethod::Post => client.post(&url),
@@ -1576,10 +1709,20 @@ fn send(
     if let Some(body) = &plan.body {
         request = request.json(body);
     }
-    if let Some(token) = token {
-        request = request.bearer_auth(token);
+    if let Some(bearer) = bearer {
+        request = request.bearer_auth(bearer);
     }
-    request.send().map_err(transport)
+    let response = request.send().map_err(transport)?;
+    let status = response.status();
+    if managed && status.is_redirection() {
+        return Err(Failure::Http(
+            status.as_u16(),
+            format!(
+                "The server answered {status}; a Spark-managed request does not follow redirects."
+            ),
+        ));
+    }
+    Ok(response)
 }
 
 /// The response, or the server's error from it.
@@ -1598,18 +1741,26 @@ fn check_status(
     ))
 }
 
+/// The response's JSON; a success that is not JSON is an error, never an
+/// empty result.
 fn read_payload(response: reqwest::blocking::Response) -> Result<Value, Failure> {
+    let status = response.status();
     let text = check_status(response)?.text().map_err(transport)?;
-    Ok(serde_json::from_str(&text).unwrap_or_else(|_| json!({ "detail": text })))
+    serde_json::from_str(&text).map_err(|_| {
+        Failure::Transport(format!(
+            "The server answered {status} with a body that is not JSON: {:?}",
+            text.chars().take(200).collect::<String>()
+        ))
+    })
 }
 
-fn request_json(plan: &ApiRequestPlan, token: Option<&str>) -> Result<Value, Failure> {
+fn request_json(plan: &ApiRequestPlan, token: &Tokens) -> Result<Value, Failure> {
     read_payload(send(plan, token, Some(REQUEST_TIMEOUT))?)
 }
 
 /// The failure as JSON on stderr, naming the target, with the plan's hint
 /// when the server's error is the one it answers.
-fn failure_output(plan: &ApiRequestPlan, error: Failure, token: Option<&str>) -> CommandOutput {
+fn failure_output(plan: &ApiRequestPlan, error: Failure, token: &Tokens) -> CommandOutput {
     let target = Some((plan.base_url.as_str(), plan.target_source));
     let (status, mut message) = match error {
         Failure::Transport(message) => return failure(message, EXIT_GENERAL_FAILURE, None, target),
@@ -1646,11 +1797,7 @@ fn failure_output(plan: &ApiRequestPlan, error: Failure, token: Option<&str>) ->
 /// The project of the conversation with this handle.
 // ponytail: reads every conversation's summary row, only after a flow 404;
 // add a by-handle read route if this path gets hot.
-fn conversation_project(
-    plan: &ApiRequestPlan,
-    handle: &str,
-    token: Option<&str>,
-) -> Option<String> {
+fn conversation_project(plan: &ApiRequestPlan, handle: &str, token: &Tokens) -> Option<String> {
     let list = ApiRequestPlan {
         method: HttpMethod::Get,
         path: "/workspace/api/projects/conversations".to_string(),
@@ -1672,7 +1819,7 @@ fn similar_flows(
     plan: &ApiRequestPlan,
     name: &str,
     project: Option<String>,
-    token: Option<&str>,
+    token: &Tokens,
 ) -> Option<String> {
     let wanted = name.strip_suffix(".dot").unwrap_or(name).trim_matches('/');
     let list = ApiRequestPlan {
@@ -1705,7 +1852,7 @@ fn stream_events(
     after: Option<u64>,
     text: bool,
     until_done: bool,
-    token: Option<&str>,
+    token: &Tokens,
     out: &mut dyn Write,
 ) -> CommandOutput {
     let done = CommandOutput::stdout(0, String::new());
@@ -1807,7 +1954,7 @@ fn is_run_end(envelope: &Value) -> bool {
 fn last_sequence_if_ended(
     plan: &ApiRequestPlan,
     run_id: &str,
-    token: Option<&str>,
+    token: &Tokens,
 ) -> Result<Option<u64>, Failure> {
     let read = |path: String| ApiRequestPlan {
         method: HttpMethod::Get,
@@ -1833,7 +1980,7 @@ const DELEGATION_SERVER_WAIT: Duration = Duration::from_secs(25);
 fn wait_for_delegation(
     plan: &ApiRequestPlan,
     timeout: Option<Duration>,
-    token: Option<&str>,
+    token: &Tokens,
 ) -> CommandOutput {
     let started = std::time::Instant::now();
     loop {
@@ -1859,7 +2006,7 @@ fn wait_for_delegation(
 /// Sends an answer once. A request whose response is lost is reported as
 /// uncertain and never resent; `spark delegation get` shows whether the
 /// question closed.
-fn answer_once(plan: &ApiRequestPlan, token: Option<&str>) -> CommandOutput {
+fn answer_once(plan: &ApiRequestPlan, token: &Tokens) -> CommandOutput {
     let mut plan = plan.clone();
     if plan.view == View::AnswerOpenQuestion {
         let read = ApiRequestPlan {

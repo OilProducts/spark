@@ -274,7 +274,7 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
         }
     }
     result["agents"]["acp_harnesses"] = acp_harnesses_view(&path, &document);
-    result["agents"]["detected_acp_harnesses"] = detected_acp_harnesses_view(&document);
+    result["agents"]["detected_acp_harnesses"] = detected_acp_harnesses_view(&path, &document);
     result["agents"]["active_startup"] = json!({"codex_runtime_root":settings.agents.native.codex_runtime_root, "codex_seed_dir":settings.agents.native.codex_seed_dir, "claude_config_dir":settings.agents.native.claude_config_dir});
     let mut utility = json!({"scope":"workspace", "source":"workspace", "revision":document.revision,
         "stored":document.values.get("utility_models"), "effective":null, "sources":{}, "restart_fields":[], "validation_errors":[]});
@@ -389,8 +389,12 @@ fn stored_registrations(document: &SettingsDocument) -> Option<&toml::Table> {
         .as_table()
 }
 
-/// Known ACP agent CLIs found on `PATH` that are not yet registered.
-fn detected_acp_harnesses_view(document: &SettingsDocument) -> Value {
+/// Known ACP agent CLIs not yet registered that a registration of each would
+/// find under the configured inheritance, as its setup and launches do.
+fn detected_acp_harnesses_view(path: &std::path::Path, document: &SettingsDocument) -> Value {
+    let inheritance = spark_storage::settings::agents_section(path, document)
+        .map(|(agents, _)| agents.environment_inheritance)
+        .unwrap_or_default();
     const KNOWN: [(&str, &str, &str, &[&str]); 4] = [
         ("opencode", "OpenCode", "opencode", &["acp"]),
         ("agy", "Antigravity", "agy", &["acp"]),
@@ -420,7 +424,7 @@ fn detected_acp_harnesses_view(document: &SettingsDocument) -> Value {
             .into_iter()
             .filter(|(id, _, executable, _)| {
                 !already_registered(id, executable)
-                    && spark_agent_adapter::acp::program_found(executable, None)
+                    && spark_agent_adapter::acp::program_found(executable, inheritance)
             })
             .map(|(id, name, executable, args)| {
                 json!({
@@ -599,8 +603,9 @@ pub fn validate_workspace_settings_update(
             .map(|value| validate_model_settings(settings, value))
             .transpose()
             .map(|_| ()),
+        // The server resolves saved roots with its own environment on restart.
         WorkspaceSettingsSection::Runtime(value) => value
-            .validate()
+            .validate_with_env(&spark_common::paths::ProcessEnvironment)
             .map_err(|error| WorkspaceError::Validation(error.to_string())),
     }
 }

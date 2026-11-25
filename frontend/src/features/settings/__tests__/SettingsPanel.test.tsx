@@ -3,6 +3,7 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
+import { resetActiveEnvironmentForTests } from '@/lib/activeEnvironment'
 import { useStore } from '@/store'
 import { fetchModelSettings, saveModelSettings, type ModelSettings } from '@/lib/api/settingsApi'
 import { fetchClientPreferences } from '../services/clientPreferences'
@@ -35,7 +36,41 @@ beforeEach(() => {
     vi.mocked(fetchClientPreferences).mockResolvedValue({ client_id: 'browser-test', revision: 'one', stored: { editor_mode: null, editor_sidebar_width: null }, effective: { editor_mode: 'structured', editor_sidebar_width: 288 } })
     vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', failed: true, payload: { models: [], providers: { codex: { status: 'unavailable', error: 'offline' } } } })
 })
-afterEach(() => cleanup())
+afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    resetActiveEnvironmentForTests()
+})
+
+it('leaves the System cards unfetched on other tabs and loads them on entering System', async () => {
+    const user = userEvent.setup()
+    const replies: Record<string, unknown> = {
+        '/environment': { environment_id: 'env-local-1', display_name: 'mac-studio', protocol_version: 1, ui_api_version: 1, spark_version: '0.1.0' },
+        '/workspace/api/environment/tokens': { tokens: [{ token_id: 'tok-ci', label: 'CI runner', created_at: '2026-11-23T00:00:00Z', revoked_at: null }] },
+        '/workspace/api/environments/links': { links: [{ environment_id: 'env-build', origin: 'https://build.example:8000', label: 'Build box', created_at: '2026-11-23T00:00:00Z' }] },
+        '/workspace/api/delegations': { delegations: [] },
+    }
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(replies[url] ?? { detail: `No route for ${url}` }), {
+        status: url in replies ? 200 : 404,
+        headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const systemRequests = () => fetchMock.mock.calls.map(([url]) => url).filter((url) => url in replies).sort()
+
+    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    await waitFor(() => expect(card('Model defaults (workspace)').getByRole('button', { name: /^Model:/ })).toBeEnabled())
+    expect(systemRequests()).toEqual([])
+    await user.click(screen.getByRole('tab', { name: 'Preferences' }))
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Show advanced controls' })).toBeEnabled())
+    expect(systemRequests()).toEqual([])
+
+    await user.click(screen.getByRole('tab', { name: 'System' }))
+    expect(await screen.findByText('env-local-1')).toBeVisible()
+    expect(card('Environment pairing & links').getByText('CI runner')).toBeVisible()
+    expect(card('Environment pairing & links').getByText('Build box')).toBeVisible()
+    expect(await card('Outgoing delegations').findByText('No matching delegations.')).toBeVisible()
+    expect(systemRequests()).toEqual(Object.keys(replies).sort())
+})
 
 it('has local default selection, semantic headings, keyboard tabs, and mounted hidden panels', async () => {
     const user = userEvent.setup()

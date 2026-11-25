@@ -159,15 +159,6 @@ export function asProjectGitMetadataField(value: unknown): string | null {
     return trimmed.length > 0 ? trimmed : null
 }
 
-export function formatProjectListLabel(projectPath: string) {
-    const normalizedPath = normalizeProjectPath(projectPath)
-    const segments = normalizedPath.split(/[/\\]/).filter(Boolean)
-    if (segments.length === 0) {
-        return normalizedPath
-    }
-    return segments[segments.length - 1]
-}
-
 export function toHydratedProjectRecord(project: {
     created_at?: string
     project_path: string
@@ -594,7 +585,8 @@ function mergeSummaryRows(current: ProjectConversationCacheState, rows: Conversa
             tombstones = { ...tombstones, [row.id]: row.revision }
             return
         }
-        const filedPath = scopePath ?? path ?? row.payload.project_path
+        // A row's own path is the server's native spelling (C:\repo); lists are keyed like the registry (C:/repo).
+        const filedPath = scopePath ?? path ?? normalizeProjectPath(row.payload.project_path)
         const summary = { ...conversationSummaryFromRow({ ...row, payload: row.payload }), project_path: filedPath }
         lists[summary.project_path] = upsertConversationSummary(lists[summary.project_path] ?? [], summary)
         pathById.set(row.id, summary.project_path)

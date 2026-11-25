@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
@@ -187,13 +187,7 @@ pub fn server_host_for_settings(settings: &DesktopServerSettings) -> &'static st
 }
 
 pub fn frontend_url_for_addr(addr: SocketAddr) -> String {
-    let host = match addr.ip() {
-        IpAddr::V4(ip) if ip.is_unspecified() => LOCAL_BIND_HOST.to_string(),
-        IpAddr::V6(ip) if ip.is_unspecified() => LOCAL_BIND_HOST.to_string(),
-        IpAddr::V6(ip) => format!("[{ip}]"),
-        ip => ip.to_string(),
-    };
-    format!("http://{host}:{}/", addr.port())
+    format!("{}/", spark_http::listener_url(addr))
 }
 
 pub fn settings_view(
@@ -238,13 +232,24 @@ pub fn start_desktop_server(
     start_desktop_server_with_before_build(settings, bind_host, |_| Ok(()))
 }
 
-/// Starts the embedded desktop server, invoking `before_build` with its bound
-/// loopback URL before building the HTTP app (and before startup recovery or
-/// admitted delegations can launch any agent process).
+/// The app's embedded server: every agent it launches, from startup
+/// recovery on, gets this Spark's home and the server's own URL.
+pub fn start_app_server(settings: SparkSettings, bind_host: &str) -> Result<DesktopServer, String> {
+    spark_agent_adapter::configure_codex_spark_home(&settings.data_dir)?;
+    start_desktop_server_with_before_build(
+        settings,
+        bind_host,
+        spark_agent_adapter::configure_agent_api,
+    )
+}
+
+/// Starts the embedded desktop server. With the home lock held and before
+/// startup recovery or admitted delegations can launch any agent process,
+/// it hands `before_build` how local agents reach the server.
 pub fn start_desktop_server_with_before_build(
     mut settings: SparkSettings,
     bind_host: &str,
-    before_build: impl FnOnce(&str) -> Result<(), String>,
+    before_build: impl FnOnce(spark_agent_adapter::AgentApi) -> Result<(), String> + Send + 'static,
 ) -> Result<DesktopServer, String> {
     let listener = TcpListener::bind((bind_host, 0))
         .map_err(|error| format!("Unable to bind desktop server on {bind_host}:0: {error}"))?;
@@ -255,7 +260,6 @@ pub fn start_desktop_server_with_before_build(
         .local_addr()
         .map_err(|error| format!("Unable to read desktop server address: {error}"))?;
     let url = frontend_url_for_addr(local_addr);
-    before_build(&url)?;
     // Desktop owns its listener and client target; remote access still requires
     // the native confirmation boundary. Report that effective choice separately.
     settings.startup_sources.insert(
@@ -299,24 +303,25 @@ pub fn start_desktop_server_with_before_build(
                 };
                 let client = spark_server::rust_llm_client_from_settings(&settings);
                 // A failed build has already released the home lock and database.
-                let (app, notify) =
-                    match spark_http::build_app_with_rust_llm_client_and_settings_notifications(
-                        settings, client,
-                    ) {
-                        Ok(built) => built,
-                        Err(error) => {
-                            let _ = startup_tx
-                                .send(Err(format!("Unable to initialize desktop server: {error}")));
-                            return;
-                        }
-                    };
+                let (app, notify) = match spark_http::build_served_app(
+                    settings,
+                    client,
+                    local_addr,
+                    None,
+                    before_build,
+                ) {
+                    Ok(built) => built,
+                    Err(error) => {
+                        let _ = startup_tx
+                            .send(Err(format!("Unable to initialize desktop server: {error}")));
+                        return;
+                    }
+                };
                 let _ = startup_tx.send(Ok(Box::new(notify)));
-                // The trust rule reads each request's peer address.
-                let app = app.into_make_service_with_connect_info::<SocketAddr>();
-                let server = axum::serve(listener, app).with_graceful_shutdown(async {
+                let _ = spark_http::serve(listener, app, async {
                     let _ = shutdown_rx.await;
-                });
-                let _ = server.await;
+                })
+                .await;
             });
         })
         .map_err(|error| format!("Unable to spawn desktop server thread: {error}"))?;

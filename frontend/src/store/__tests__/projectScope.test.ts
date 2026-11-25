@@ -279,6 +279,83 @@ describe('project scope store behavior', () => {
     expect(next.runDetailSessionsByRunId['run-b']?.record?.run_id).toBe('run-b')
   })
 
+  it('keeps the runs and run selection of a project registered inside a removed one', () => {
+    const store = useStore.getState()
+    store.registerProject('/tmp/work')
+    store.registerProject('/tmp/work/child')
+    store.updateRunsListSession({ runs: [buildRunRecord('run-parent', '/tmp/work', 'a.dot'), buildRunRecord('run-child', '/tmp/work/child', 'b.dot')] })
+    store.updateRunDetailSession('run-child', { record: buildRunRecord('run-child', '/tmp/work/child', 'b.dot') })
+    store.setRunsSelectedRunId('run-child')
+
+    store.removeProject('/tmp/work', '/tmp/work/child')
+
+    const next = useStore.getState()
+    expect(next.runsListSession.runs.map((run) => run.run_id)).toEqual(['run-child'])
+    expect(selectSelectedRunId(next)).toBe('run-child')
+    expect(next.runDetailSessionsByRunId['run-child']).toBeDefined()
+  })
+
+  it('keeps another project\'s run that worked inside the removed project, and drops the removed project\'s own runs', () => {
+    const store = useStore.getState()
+    store.registerProject('/tmp/project-a')
+    store.registerProject('/tmp/project-b')
+    const crossRun = { ...buildRunRecord('run-b', '/tmp/project-b', 'b.dot'), working_directory: '/tmp/project-a/scratch' }
+    const ownRun = { ...buildRunRecord('run-a', '/tmp/project-a', 'a.dot'), working_directory: '/tmp/elsewhere/worktree' }
+    const unownedRun = { ...buildRunRecord('run-loose', '/tmp/project-a', 'loose.dot'), project_path: null }
+    store.updateRunsListSession({ runs: [crossRun, ownRun, unownedRun] })
+    // Opening a run creates its detail session.
+    store.setRunsSelectedRunId('run-a')
+    store.setRunsSelectedRunId('run-b')
+    expect(Object.keys(useStore.getState().runDetailSessionsByRunId)).toEqual(expect.arrayContaining(['run-a', 'run-b']))
+
+    store.removeProject('/tmp/project-a', '/tmp/project-b')
+
+    const next = useStore.getState()
+    expect(next.runsListSession.runs.map((run) => run.run_id)).toEqual(['run-b'])
+    expect(selectSelectedRunId(next)).toBe('run-b')
+    expect(next.runDetailSessionsByRunId['run-b']).toBeDefined()
+    expect(next.runDetailSessionsByRunId['run-a']).toBeUndefined()
+  })
+
+  it('keeps a run started in an unregistered child folder when its parent C:/work is removed', () => {
+    const store = useStore.getState()
+    store.registerProject('C:\\work')
+    store.registerProject('C:\\other')
+    // Started with `spark run start --project C:\\work\\child`; that folder has no registry entry.
+    const childRun = { ...buildRunRecord('run-child', 'C:\\work\\child', 'child.dot'), working_directory: 'C:\\work\\child' }
+    const ownRun = buildRunRecord('run-work', 'C:\\work', 'work.dot')
+    store.updateRunsListSession({ runs: [childRun, ownRun] })
+    store.setRunsSelectedRunId('run-work')
+    store.setRunsSelectedRunId('run-child')
+    expect(Object.keys(useStore.getState().runDetailSessionsByRunId)).toEqual(expect.arrayContaining(['run-work', 'run-child']))
+
+    store.removeProject('C:/work', 'C:/other')
+
+    const next = useStore.getState()
+    expect(next.runsListSession.runs.map((run) => run.run_id)).toEqual(['run-child'])
+    expect(selectSelectedRunId(next)).toBe('run-child')
+    expect(next.runDetailSessionsByRunId['run-child']).toBeDefined()
+    expect(next.runDetailSessionsByRunId['run-work']).toBeUndefined()
+  })
+
+  it('keeps a POSIX run from /tmp/team\\repo, its selection and unsent gate answer, when /tmp/team/repo is removed', () => {
+    const store = useStore.getState()
+    store.registerProject('/tmp/team/repo')
+    store.registerProject('/tmp/team\\repo')
+    expect(Object.keys(useStore.getState().projectRegistry)).toEqual(expect.arrayContaining(['/tmp/team/repo', '/tmp/team\\repo']))
+    const backslashRun = buildRunRecord('run-backslash', '/tmp/team\\repo', 'b.dot')
+    store.updateRunsListSession({ runs: [backslashRun, buildRunRecord('run-slash', '/tmp/team/repo', 'a.dot')] })
+    store.setRunsSelectedRunId('run-backslash')
+    store.updateRunDetailSession('run-backslash', { freeformAnswersByGateId: { gate: 'unsent answer' } })
+
+    store.removeProject('/tmp/team/repo', '/tmp/team\\repo')
+
+    const next = useStore.getState()
+    expect(next.runsListSession.runs.map((run) => run.run_id)).toEqual(['run-backslash'])
+    expect(selectSelectedRunId(next)).toBe('run-backslash')
+    expect(next.runDetailSessionsByRunId['run-backslash']?.freeformAnswersByGateId).toEqual({ gate: 'unsent answer' })
+  })
+
   it('drops the removed project missions and selection but keeps other projects', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')
@@ -292,6 +369,41 @@ describe('project scope store behavior', () => {
     const next = useStore.getState()
     expect(next.missionBoard.map((entry) => entry.id)).toEqual(['m-b'])
     expect(next.selectedMission).toBeNull()
+  })
+
+  it('removes conversations, missions and runs recorded with the native Windows path of a removed project', () => {
+    const store = useStore.getState()
+    store.registerProject('C:\\Users\\chris\\repo')
+    store.registerProject('C:\\Users\\chris\\other')
+    expect(useStore.getState().projectRegistry['C:/Users/chris/repo']).toBeDefined()
+    store.commitHomeConversationCache((cache) => {
+      const withRepo = applyConversationWindow(cache, 'conversation-a', 'C:\\Users\\chris\\repo')
+      return applyConversationWindow(withRepo, 'conversation-b', 'C:\\Users\\chris\\other')
+    })
+    store.updateHomeConversationSession('conversation-a', { scrollTop: 120 })
+    store.updateHomeConversationSession('conversation-b', { scrollTop: 240 })
+    // While registered, each chat is listed under its project's registry key.
+    const listed = (projectPath: string) => useStore.getState().homeConversationCache.summariesByProjectPath[projectPath]?.map((summary) => summary.conversation_id)
+    expect(listed('C:/Users/chris/repo')).toEqual(['conversation-a'])
+    expect(listed('C:/Users/chris/other')).toEqual(['conversation-b'])
+    const mission = (id: string, projectPath: string) => ({ id, project_path: projectPath, revision: 1, fields: { title: id, description: '', archived: false }, activity: [] })
+    store.setMissionBoard(() => [mission('m-a', 'C:\\Users\\chris\\repo'), mission('m-b', 'C:\\Users\\chris\\other')])
+    store.setSelectedMission({ id: 'm-a', projectPath: 'C:\\Users\\chris\\repo' })
+    store.updateRunsListSession({ projectFilter: 'C:/Users/chris/repo', runs: [buildRunRecord('run-a', 'C:\\Users\\chris\\repo', 'a.dot')] })
+
+    store.removeProject('C:/Users/chris/repo', 'C:/Users/chris/other')
+
+    const next = useStore.getState()
+    expect(next.homeConversationCache.conversationsById['conversation-a']).toBeUndefined()
+    expect(next.homeConversationCache.conversationsById['conversation-b']).toBeDefined()
+    expect(next.homeConversationCache.summariesByProjectPath['C:/Users/chris/repo']).toBeUndefined()
+    expect(listed('C:/Users/chris/other')).toEqual(['conversation-b'])
+    expect(next.homeConversationSessionsById['conversation-a']).toBeUndefined()
+    expect(next.homeConversationSessionsById['conversation-b']?.scrollTop).toBe(240)
+    expect(next.missionBoard.map((entry) => entry.id)).toEqual(['m-b'])
+    expect(next.selectedMission).toBeNull()
+    expect(next.runsListSession.runs).toEqual([])
+    expect(next.runsListSession.projectFilter).toBeNull()
   })
 
   it('renames normalized home conversation cache entries with project path updates', () => {

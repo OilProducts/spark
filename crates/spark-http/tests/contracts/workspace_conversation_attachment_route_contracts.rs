@@ -64,7 +64,7 @@ async fn request_raw(
         .uri(uri)
         .body(Body::from(body))
         .expect("request");
-    let response = app.oneshot(request).await.expect("response");
+    let response = app.oneshot(crate::local(request)).await.expect("response");
     let status = response.status();
     let headers = response.headers().clone();
     let bytes = to_bytes(response.into_body(), usize::MAX)

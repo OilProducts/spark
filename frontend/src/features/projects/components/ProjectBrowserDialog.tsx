@@ -34,29 +34,20 @@ type BreadcrumbSegment = {
 }
 
 function buildBreadcrumbSegments(path: string): BreadcrumbSegment[] {
-    if (path === '/') {
-        return [{ label: '/', path }]
-    }
-
-    const windowsMatch = path.match(/^([A-Za-z]:)(\/.*)?$/)
-    if (windowsMatch) {
-        const drive = `${windowsMatch[1]}/`
-        const segments = (windowsMatch[2] || '').split('/').filter(Boolean)
-        return [
-            { label: drive, path: drive },
-            ...segments.map((segment, index) => ({
-                label: segment,
-                path: `${drive}${segments.slice(0, index + 1).join('/')}`,
-            })),
-        ]
-    }
-
-    const segments = path.split('/').filter(Boolean)
+    // A Windows path roots at its drive (C:\) or UNC share (\\server\share), and its crumbs keep the path's own separator.
+    // A POSIX path such as /\Team is not UNC: there a backslash is part of the folder name.
+    const windows = path.match(/^(?:([A-Za-z]:)|(?:\\\\|\/\/)([^/\\]+)[/\\]+([^/\\]+))/)
+    const separator = windows && path.includes('\\') ? '\\' : '/'
+    const root = !windows ? '/'
+        : windows[1] ? `${windows[1]}${separator}`
+            : `${separator}${separator}${windows[2]}${separator}${windows[3]}`
+    const segments = path.slice(windows?.[0].length ?? 0).split(windows ? /[/\\]/ : '/').filter(Boolean)
+    const base = root.endsWith(separator) ? root : `${root}${separator}`
     return [
-        { label: '/', path: '/' },
+        { label: root, path: root },
         ...segments.map((segment, index) => ({
             label: segment,
-            path: `/${segments.slice(0, index + 1).join('/')}`,
+            path: `${base}${segments.slice(0, index + 1).join(separator)}`,
         })),
     ]
 }

@@ -91,7 +91,7 @@ fn spark_exit_role() {
 }
 
 #[cfg(unix)]
-fn running(pid: u32) -> bool {
+pub(crate) fn running(pid: u32) -> bool {
     let output = Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
         .output()
@@ -101,7 +101,7 @@ fn running(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
-fn running(pid: u32) -> bool {
+pub(crate) fn running(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,

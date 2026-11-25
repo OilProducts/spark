@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
@@ -867,6 +867,58 @@ fn core_runtime_paths_are_loaded_again_on_restart_and_keep_override_precedence()
     assert!(resolve_server_settings_with_executable_path(&overrides, &env, None).is_err());
 }
 
+/// Runs in a child process without home variables: they are process-wide.
+#[cfg(unix)]
+#[test]
+fn saved_project_roots_load_with_the_supplied_environment_home() {
+    const CHILD: &str = "SPARK_SERVER_NO_PROCESS_HOME_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "server_shell_contracts::saved_project_roots_load_with_the_supplied_environment_home",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("SPARK_TEST_ENV_ISOLATED", "1")
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let home = root.join("home");
+    fs::create_dir_all(home.join("config")).unwrap();
+    let path = home.join("config/spark.toml");
+    let profile = root.join("profile");
+    let overrides = SettingsOverrides {
+        data_dir: Some(home),
+        ..Default::default()
+    };
+    let supplied = BTreeMap::from([("USERPROFILE".to_string(), profile.display().to_string())]);
+    let load = |env: &BTreeMap<String, String>| {
+        resolve_server_settings_with_executable_path(&overrides, env, None)
+    };
+    fs::write(&path, "[runtime]\nproject_roots = ['~/projects']\n").unwrap();
+    assert_eq!(
+        load(&supplied).unwrap().project_roots,
+        vec![profile.join("projects")]
+    );
+    // A root that stays relative after expansion is still rejected.
+    let error = load(&BTreeMap::new()).unwrap_err().to_string();
+    assert!(error.contains("absolute"), "{error}");
+    fs::write(&path, "[runtime]\nproject_roots = ['relative/projects']\n").unwrap();
+    let error = load(&supplied).unwrap_err().to_string();
+    assert!(error.contains("absolute"), "{error}");
+}
+
 #[test]
 fn persisted_connections_apply_on_restart_with_cli_and_environment_precedence() {
     let temp = tempfile::tempdir().unwrap();
@@ -1029,13 +1081,47 @@ fn worker_run_node_gives_agents_the_resolved_spark_home() {
     }
 }
 
+/// An executable script at `dir/name` (`name.cmd` on Windows) that runs
+/// `sh` under `/bin/sh`, or `cmd` under cmd.exe.
+pub(crate) fn fake_agent(dir: &Path, name: &str, sh: &str, cmd: &str) -> PathBuf {
+    #[cfg(windows)]
+    let (path, script) = (
+        dir.join(format!("{name}.cmd")),
+        format!("@echo off\r\n{}\r\n", cmd.replace('\n', "\r\n")),
+    );
+    #[cfg(not(windows))]
+    let (path, script) = (dir.join(name), format!("#!/bin/sh\n{sh}\n"));
+    let _ = (sh, cmd);
+    fs::write(&path, script).expect("fake agent");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    path
+}
+
+/// A fake agent that writes the environment it was launched with, whole, to
+/// the returned `dir/name.env`, and exits.
+fn env_dumping_agent(dir: &Path, name: &str) -> (PathBuf, PathBuf) {
+    let dump = dir.join(format!("{name}.env"));
+    let to = dump.display();
+    let agent = fake_agent(
+        dir,
+        name,
+        &format!("env > '{to}.'$$ && mv '{to}.'$$ '{to}'"),
+        &format!("set \"PART={to}.%RANDOM%\"\nset > \"%PART%\"\nmove /y \"%PART%\" \"{to}\" > nul"),
+    );
+    (agent, dump)
+}
+
 /// A server on all interfaces prints, and gives its agents, a loopback base
-/// URL, where they need no token; a relayed request still needs one.
-#[cfg(unix)]
+/// URL, where they need no token; a relayed request still needs one. The
+/// first agent, launched by startup for a delegation admitted while no
+/// server ran, already has it, and reaches the protected API through it.
 #[test]
 fn serve_on_all_interfaces_gives_agents_a_loopback_base_url() {
     use std::io::{BufRead, BufReader, Read};
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
     struct Server(std::process::Child);
@@ -1061,20 +1147,42 @@ fn serve_on_all_interfaces_gives_agents_a_loopback_base_url() {
     }
 
     let temp = tempfile::tempdir().expect("tempdir");
-    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let root = spark_common::paths::canonicalize_clean(temp.path()).expect("canonical tempdir");
     let (ui_dir, home) = (root.join("ui"), root.join("home"));
     fs::create_dir_all(&ui_dir).expect("ui dir");
     fs::create_dir_all(&home).expect("home");
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
     // Each fake agent records the environment Spark launched it with.
-    let fake = |name: &str| {
-        let path = root.join(name);
-        let dump = root.join(format!("{name}.env"));
-        fs::write(&path, format!("#!/bin/sh\nenv > '{}'\n", dump.display())).expect("fake");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
-        (path, dump)
-    };
-    let ((codex, codex_env), (claude, claude_env)) = (fake("codex"), fake("claude"));
+    let ((codex, codex_env), (claude, claude_env)) = (
+        env_dumping_agent(&root, "codex"),
+        env_dumping_agent(&root, "claude"),
+    );
+    // A chat delegated to this home while no server ran: startup launches
+    // its turn, through Codex, before serving anything.
+    let data_dir = root.join("spark-home");
+    let project = root.join("project");
+    fs::create_dir_all(&project).expect("project");
+    let project = project.to_string_lossy().into_owned();
+    spark_storage::ProjectRegistry::new(&data_dir)
+        .ensure_project_paths(&project)
+        .expect("register project");
+    spark_storage::environment::EnvironmentRepository::new(&data_dir)
+        .admit_in(&spark_storage::environment::DelegationIn {
+            delegation_id: "00000000-0000-4000-8000-000000000001".into(),
+            origin_environment_id: "environment-a".into(),
+            project_path: project.clone(),
+            kind: "conversation".into(),
+            request: json!({"message": "Report your environment."}),
+            request_sha256: "sha".into(),
+            target_kind: "conversation".into(),
+            target_id: "00000000-0000-4000-8000-000000000002".into(),
+            phase: "accepted".into(),
+            result: None,
+            created_at: spark_storage::environment::now(),
+            sealed_at: None,
+            canceled_at: None,
+        })
+        .expect("admit delegation");
     let mut server = Server(
         Command::new(env!("CARGO_BIN_EXE_spark-server"))
             .args(["serve", "--host", "0.0.0.0", "--port", "0", "--data-dir"])
@@ -1124,6 +1232,48 @@ fn serve_on_all_interfaces_gives_agents_a_loopback_base_url() {
         "{startup:?}"
     );
 
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !codex_env.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "startup launched no agent"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let launched = fs::read_to_string(&codex_env).expect("startup agent env");
+    let exported = |key: &str| {
+        launched
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("{key} is not exported: {launched}"))
+            .to_string()
+    };
+    assert_eq!(exported("SPARK_API_BASE_URL"), base_url, "{launched}");
+    let mut request = reqwest::blocking::Client::new().get(format!(
+        "{}/workspace/api/projects",
+        exported("SPARK_API_BASE_URL")
+    ));
+    // cmd's `set` omits empty variables: a missing line is no token.
+    let token = launched
+        .lines()
+        .find_map(|line| line.strip_prefix("SPARK_AGENT_API_TOKEN="))
+        .unwrap_or_default();
+    if !token.is_empty() {
+        request = request.bearer_auth(token);
+    }
+    let projects = request.send().expect("agent request");
+    assert_eq!(projects.status(), reqwest::StatusCode::OK);
+    let projects: Value = projects.json().expect("projects");
+    assert!(
+        projects
+            .as_array()
+            .expect("projects")
+            .iter()
+            .any(|record| record["project_path"] == project.as_str()),
+        "{projects}"
+    );
+    fs::remove_file(&codex_env).expect("remove startup dump");
+
     // Model discovery launches both agents over the loopback address, in the
     // background: listed until neither is still being checked.
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
@@ -1159,18 +1309,33 @@ fn serve_on_all_interfaces_gives_agents_a_loopback_base_url() {
     assert!(relayed.contains(r#"{"detail":"A peer token is required."}"#));
 }
 
-#[cfg(unix)]
 #[test]
 fn serve_on_ipv6_loopback_brackets_its_agent_and_listening_urls() {
     use std::io::{BufRead, BufReader};
-    use std::process::Stdio;
     use std::time::Duration;
 
-    if std::net::TcpListener::bind(("::1", 0)).is_err() {
+    // Only a host without IPv6 loopback skips; any other failure fails.
+    if let Err(error) = std::net::TcpListener::bind(("::1", 0)) {
+        // EAFNOSUPPORT: 97 on Linux, WSAEAFNOSUPPORT on Windows, 47 elsewhere.
+        let no_ipv6 = if cfg!(target_os = "linux") {
+            97
+        } else if cfg!(windows) {
+            10047
+        } else {
+            47
+        };
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
+            ) || error.raw_os_error() == Some(no_ipv6),
+            "binding [::1] failed: {error}"
+        );
+        eprintln!("skipped: this host has no IPv6 loopback ({error})");
         return;
     }
     let temp = tempfile::tempdir().expect("tempdir");
-    let root = temp.path().canonicalize().expect("canonical");
+    let root = spark_common::paths::canonicalize_clean(temp.path()).expect("canonical");
     let ui_dir = root.join("ui");
     let home = root.join("home");
     fs::create_dir_all(&ui_dir).expect("ui");
@@ -1195,7 +1360,7 @@ fn serve_on_ipv6_loopback_brackets_its_agent_and_listening_urls() {
             .env_remove("SPARK_HOME")
             .env_remove("SPARK_API_BASE_URL")
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .expect("spawn spark-server serve"),
     );
@@ -1216,8 +1381,13 @@ fn serve_on_ipv6_loopback_brackets_its_agent_and_listening_urls() {
         }
         startup.push(line);
     };
+    let base_url = format!("http://[::1]:{port}");
     assert!(
-        startup.contains(&format!("Spark agent base URL http://[::1]:{port}")),
+        startup.contains(&format!("Spark agent base URL {base_url}")),
         "{startup:?}"
     );
+    // The advertised endpoint serves a protected route to this machine.
+    let projects = reqwest::blocking::get(format!("{base_url}/workspace/api/projects"))
+        .expect("request over IPv6");
+    assert_eq!(projects.status(), reqwest::StatusCode::OK);
 }

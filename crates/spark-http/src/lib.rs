@@ -33,6 +33,155 @@ mod delegations;
 mod environment_auth;
 mod workspace;
 
+pub use environment_auth::ListenerAddr;
+
+/// The base URL that reaches a server listening on `addr`, at its actual
+/// port. A wildcard bind is reached over loopback of its family.
+pub fn listener_url(addr: std::net::SocketAddr) -> String {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    let ip = match addr.ip().to_canonical() {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        _ => addr.ip(),
+    };
+    format!("http://{}", SocketAddr::new(ip, addr.port()))
+}
+
+/// Serves `app` on `listener` until `shutdown` completes, attaching to each
+/// request the listener's address and the connection's peer address, which
+/// the trust rule reads.
+pub async fn serve(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    let addr = listener.local_addr()?;
+    let app = app.layer(axum::Extension(ListenerAddr(addr)));
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+}
+
+/// Builds the app a process serves on `listener`, and on `companion`, a
+/// loopback listener beside a specific non-loopback one. With the home lock
+/// held and before any startup work can launch an agent, it hands
+/// `install_agent_api` how local agents reach this server: a non-loopback
+/// listener's URL with a fresh owner token and the companion's URL, or a
+/// loopback URL, whose start clears any earlier token.
+pub fn build_served_app(
+    settings: SparkSettings,
+    client: unified_llm_adapter::Client,
+    listener: std::net::SocketAddr,
+    companion: Option<std::net::SocketAddr>,
+    install_agent_api: impl FnOnce(spark_agent_adapter::AgentApi) -> Result<(), String>,
+) -> Result<(Router, impl Fn(&str) + Send + Sync + 'static), String> {
+    let conversation_store =
+        spark_storage::ConversationStore::open(&settings.data_dir).map_err(|e| e.to_string())?;
+    let base_url = listener_url(listener);
+    let bound = listener.ip().to_canonical();
+    let environment = spark_storage::environment::EnvironmentRepository::new(&settings.data_dir);
+    let token = if bound.is_loopback() || bound.is_unspecified() {
+        environment.clear_agent_token().map_err(|e| e.to_string())?;
+        None
+    } else {
+        Some(
+            environment
+                .provision_agent_token()
+                .map_err(|e| e.to_string())?,
+        )
+    };
+    install_agent_api(spark_agent_adapter::AgentApi {
+        base_url,
+        token,
+        loopback_url: companion.map(listener_url),
+    })?;
+    let (app, publisher) = build_app_on_store(
+        settings,
+        conversation_store,
+        attractor_api::rust_llm_runtime_handler_runner_factory(client.clone()),
+        Arc::new(RustLlmAgentTurnBackend::new(client)),
+    );
+    Ok((app, move |revision: &str| {
+        publisher.publish_settings_change(
+            "workspace",
+            "desktop",
+            None,
+            serde_json::json!(revision),
+        );
+    }))
+}
+
+/// Whether `headers` carry exactly one JSON media type: `application/json`
+/// or `application/<name>+json`. Whitespace around unquoted `;` is dropped
+/// for the MIME parser, which does not skip it; an unquoted comma, an
+/// unclosed quote and an empty unquoted parameter value are refused.
+pub(crate) fn is_json_content_type(headers: &HeaderMap) -> bool {
+    let mut values = headers.get_all(header::CONTENT_TYPE).iter();
+    let (Some(value), None) = (values.next(), values.next()) else {
+        return false;
+    };
+    let Ok(value) = value.to_str() else {
+        return false;
+    };
+    let mut normalized = String::with_capacity(value.len());
+    let (mut quoted, mut escaped, mut after_semicolon) = (false, false, false);
+    for c in value.chars() {
+        if quoted {
+            normalized.push(c);
+            (quoted, escaped) = match c {
+                _ if escaped => (true, false),
+                '\\' => (true, true),
+                '"' => (false, false),
+                _ => (true, false),
+            };
+            continue;
+        }
+        match c {
+            ',' => return false,
+            ';' => {
+                normalized.truncate(normalized.trim_end_matches([' ', '\t']).len());
+                after_semicolon = true;
+                normalized.push(c);
+            }
+            ' ' | '\t' if after_semicolon => {}
+            c => {
+                after_semicolon = false;
+                quoted = c == '"';
+                normalized.push(c);
+            }
+        }
+    }
+    let Ok(mime) = normalized.parse::<mime::Mime>() else {
+        return false;
+    };
+    let essence = mime.essence_str();
+    !quoted
+        && mime.params().all(|(_, value)| !value.as_str().is_empty())
+        && (essence == "application/json"
+            || essence
+                .strip_prefix("application/")
+                .and_then(|subtype| subtype.strip_suffix("+json"))
+                .is_some_and(|stem| !stem.is_empty()))
+}
+
+/// The response to a JSON body sent without a JSON media type.
+pub(crate) fn unsupported_media_type() -> Response {
+    json_detail(
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "Expected Content-Type: application/json.",
+    )
+}
+
+pub use delegations::ProxyTimeouts;
+
+/// Names the environment that answered, on every response, so a linking
+/// proxy can tell the environment it paired with from one now at its origin.
+pub(crate) const ENVIRONMENT_ID_HEADER: header::HeaderName =
+    header::HeaderName::from_static("x-spark-environment-id");
+
 /// Builders open the Spark home's conversation store and hold its exclusive
 /// home lock for the app's lifetime; a second app on the same home fails here
 /// with [`spark_storage::StorageError::HomeLocked`]. A failed build releases
@@ -58,26 +207,6 @@ pub fn build_app_with_rust_llm_client(
         attractor_api::rust_llm_runtime_handler_runner_factory(client),
         agent_turn_backend,
     )
-}
-
-/// Native settings writes share the HTTP app's existing live transport.
-pub fn build_app_with_rust_llm_client_and_settings_notifications(
-    settings: SparkSettings,
-    client: unified_llm_adapter::Client,
-) -> Result<(Router, impl Fn(&str) + Send + Sync + 'static), spark_storage::StorageError> {
-    let (app, publisher) = build_app_with_live_hub(
-        settings,
-        attractor_api::rust_llm_runtime_handler_runner_factory(client.clone()),
-        Arc::new(RustLlmAgentTurnBackend::new(client)),
-    )?;
-    Ok((app, move |revision: &str| {
-        publisher.publish_settings_change(
-            "workspace",
-            "desktop",
-            None,
-            serde_json::json!(revision),
-        );
-    }))
 }
 
 pub fn build_app_with_agent_turn_backend(
@@ -261,6 +390,8 @@ fn build_app_on_store(
         state.settings.clone(),
         environment_auth::require_trust,
     );
+    let environment_id = HeaderValue::from_str(state.conversation_store.environment_id())
+        .expect("the environment ID is a UUID");
     let app = Router::new()
         .route("/", get(serve_index).layer(CompressionLayer::new()))
         .route(
@@ -293,7 +424,18 @@ fn build_app_on_store(
         .route("/attractor/{*path}", any(attractor_dispatch))
         .fallback(product_fallback)
         .with_state(state)
-        .layer(trust);
+        .layer(trust)
+        .layer(axum::middleware::map_response(
+            move |mut response: Response| {
+                let environment_id = environment_id.clone();
+                async move {
+                    response
+                        .headers_mut()
+                        .insert(ENVIRONMENT_ID_HEADER, environment_id);
+                    response
+                }
+            },
+        ));
     (app, live_hub)
 }
 
@@ -1031,6 +1173,7 @@ async fn attractor_dispatch(
     State(state): State<HttpAppState>,
     method: Method,
     uri: Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let settings = state.settings.clone();
@@ -1050,6 +1193,7 @@ async fn attractor_dispatch(
         method.as_str(),
         path,
         &body,
+        is_json_content_type(&headers),
         (*settings).clone(),
         state.runtime_handler_runner_factory.clone(),
         state.run_event_observer.0.clone(),
@@ -1062,6 +1206,17 @@ async fn attractor_dispatch(
             path_run_sequence,
             &response.body,
         );
+    }
+    if let Some((disposition, content)) = response.download {
+        return (
+            [
+                (header::CONTENT_TYPE, response.content_type),
+                (header::CONTENT_DISPOSITION, disposition),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            ],
+            content,
+        )
+            .into_response();
     }
     let content_type = response.content_type.clone();
     let status =
@@ -1583,10 +1738,18 @@ mod live_queue_tests {
             "/workspace/api/live/events?include_settings=true&include_conversations=true&conversations_project_path={}",
             project.replace('/', "%2F")
         );
+        // A direct loopback client of the listener, as a served app sees it.
+        let listener = std::net::SocketAddr::from(([127, 0, 0, 1], 8000));
         let response = app
             .oneshot(
                 axum::http::Request::builder()
                     .uri(uri)
+                    .header(header::HOST, listener.to_string())
+                    .extension(ListenerAddr(listener))
+                    .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                        [127, 0, 0, 1],
+                        40000,
+                    ))))
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )

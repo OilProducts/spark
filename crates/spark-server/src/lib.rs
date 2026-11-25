@@ -353,7 +353,7 @@ fn rust_llm_client_from_env() -> unified_llm_adapter::Client {
 }
 
 pub fn rust_llm_client_from_settings(settings: &SparkSettings) -> unified_llm_adapter::Client {
-    let env = std::env::vars().collect::<std::collections::BTreeMap<_, _>>();
+    let env = spark_common::paths::utf8_env_vars();
     unified_llm_adapter::Client::from_env_map_and_profiles(&env, &settings.config_dir, None)
         .and_then(|client| {
             client.with_execution_environment(&settings.providers.execution_environment(&env))
@@ -673,18 +673,6 @@ fn find_on_path(name: &str, env: &impl Environment) -> Option<PathBuf> {
         if is_executable_file(&candidate) {
             return Some(candidate);
         }
-        #[cfg(windows)]
-        {
-            let pathext = env
-                .get_var("PATHEXT")
-                .unwrap_or_else(|| ".EXE;.BAT;.CMD".to_string());
-            for ext in pathext.split(';').filter(|ext| !ext.is_empty()) {
-                let candidate = dir.join(format!("{name}{ext}"));
-                if is_executable_file(&candidate) {
-                    return Some(candidate);
-                }
-            }
-        }
     }
     None
 }
@@ -852,49 +840,83 @@ fn run_serve_process(
         .build()
         .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
     runtime.block_on(async move {
+        let fail = |error: std::io::Error| {
+            CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n"))
+        };
         let listener = tokio::net::TcpListener::bind((bind_host.as_str(), config.port))
             .await
-            .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
+            .map_err(fail)?;
         // `--port 0` binds a free port; everything after this uses the real one.
-        let local_addr = listener
-            .local_addr()
-            .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
+        let local_addr = listener.local_addr().map_err(fail)?;
         let port = local_addr.port();
+        // A specific non-loopback bind also listens on loopback, at the same
+        // port when it is free, for the owner's UI and local tools, which
+        // need no token there.
+        let bound = local_addr.ip().to_canonical();
+        let companion = if bound.is_loopback() || bound.is_unspecified() {
+            None
+        } else {
+            let loopback: std::net::IpAddr = match local_addr.ip() {
+                std::net::IpAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
+                std::net::IpAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
+            };
+            let companion = match tokio::net::TcpListener::bind((loopback, port)).await {
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    tokio::net::TcpListener::bind((loopback, 0)).await
+                }
+                bound => bound,
+            }
+            .map_err(fail)?;
+            Some(companion)
+        };
+        let companion_addr = match &companion {
+            Some(companion) => Some(companion.local_addr().map_err(fail)?),
+            None => None,
+        };
+        let local_url = spark_http::listener_url(companion_addr.unwrap_or(local_addr));
         let mut settings = config.settings;
         settings.connections.server_port = Some(port);
-        // Agents and local clients reach an all-interfaces server over
-        // loopback, where they need no token; bracket IPv6 addresses.
-        let agent_ip = match local_addr.ip() {
-            std::net::IpAddr::V4(ip) if ip.is_unspecified() => {
-                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
-            }
-            std::net::IpAddr::V6(ip) if ip.is_unspecified() => {
-                std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
-            }
-            ip => ip,
-        };
-        let local_base_url = format!("http://{}", std::net::SocketAddr::new(agent_ip, port));
         if config.port == 0 {
-            settings.connections.client_api_base_url = Some(local_base_url.clone());
+            settings.connections.client_api_base_url = Some(local_url.clone());
         }
-        let _ = spark_agent_adapter::configure_codex_api_base_url(local_base_url.clone());
         let client = rust_llm_client_from_settings(&settings);
         // Fails before serving, e.g. when another server holds this home.
-        let app =
-            spark_http::build_app_with_rust_llm_client(settings, client).map_err(|error| {
-                CommandOutput::stderr(
-                    EXIT_GENERAL_FAILURE,
-                    format!("Unable to initialize Spark server: {error}\n"),
-                )
-            })?;
+        let (app, _) = spark_http::build_served_app(
+            settings,
+            client,
+            local_addr,
+            companion_addr,
+            spark_agent_adapter::configure_agent_api,
+        )
+        .map_err(|error| {
+            CommandOutput::stderr(
+                EXIT_GENERAL_FAILURE,
+                format!("Unable to initialize Spark server: {error}\n"),
+            )
+        })?;
         let listen_host = if config.host.contains(':') && !config.host.starts_with('[') {
             format!("[{}]", config.host)
         } else {
             config.host.clone()
         };
-        println!("Spark agent base URL {local_base_url}");
+        println!(
+            "Spark agent base URL {}",
+            spark_http::listener_url(local_addr)
+        );
+        if companion.is_some() {
+            println!("Spark local UI {local_url}");
+        }
         println!("Spark server listening on http://{listen_host}:{port}");
-        axum_serve(listener, app).await
+        let primary = spark_http::serve(listener, app.clone(), std::future::pending());
+        let served = match companion {
+            Some(companion) => tokio::try_join!(
+                primary,
+                spark_http::serve(companion, app, std::future::pending())
+            )
+            .map(|_| ()),
+            None => primary.await,
+        };
+        served.map_err(fail)
     })
 }
 
@@ -1043,19 +1065,6 @@ fn next_value(
     Ok(value.to_string())
 }
 
-async fn axum_serve(
-    listener: tokio::net::TcpListener,
-    app: axum::Router,
-) -> std::result::Result<(), CommandOutput> {
-    // The trust rule reads each request's peer address.
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await
-    .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))
-}
-
 fn usage_error(message: impl AsRef<str>) -> CommandOutput {
     CommandOutput::stderr(
         EXIT_USAGE_ERROR,
@@ -1112,5 +1121,30 @@ fn write_process_output(output: &CommandOutput) {
     }
     if !output.stderr.is_empty() {
         let _ = std::io::stderr().write_all(output.stderr.as_bytes());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[test]
+    fn find_on_path_returns_only_executable_files_on_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let (empty, bin) = (temp.path().join("empty"), temp.path().join("bin"));
+        fs::create_dir_all(&empty).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        let tool = bin.join("systemctl");
+        fs::write(&tool, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(bin.join("notes"), "").unwrap();
+        let path = std::env::join_paths([&empty, &bin]).unwrap();
+        let env = [("PATH".to_string(), path.into_string().unwrap())];
+
+        assert_eq!(find_on_path("systemctl", &env), Some(tool));
+        assert_eq!(find_on_path("notes", &env), None, "no execute bit");
+        assert_eq!(find_on_path("missing", &env), None);
     }
 }

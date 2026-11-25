@@ -117,11 +117,10 @@ impl WorkspaceFlowService {
             .resolve_flow(flow_name)
             .map_err(error)?;
         let texts = attractor_dsl::read_flow_dir_texts(&resolved.path).map_err(error)?;
-        let path = resolved.path.canonicalize().unwrap_or(resolved.path);
         Ok(WorkspaceFlowFiles {
             name: resolved.name,
             layer: resolved.layer.to_string(),
-            path: path.to_string_lossy().into_owned(),
+            path: crate::conversations::absolute_path_string(&resolved.path),
             files: attractor_dsl::flow_file_list(texts),
         })
     }
@@ -151,12 +150,11 @@ impl WorkspaceFlowService {
             ),
             Err(error) => attractor_api::flow_source_error_preview(&error),
         };
-        let path = resolved.path.canonicalize().unwrap_or(resolved.path);
         let mut payload = Map::new();
         payload.insert("name".to_string(), Value::String(resolved.name));
         payload.insert(
             "path".to_string(),
-            Value::String(path.to_string_lossy().into_owned()),
+            Value::String(crate::conversations::absolute_path_string(&resolved.path)),
         );
         if let Value::Object(preview_payload) = preview.body {
             payload.extend(preview_payload);

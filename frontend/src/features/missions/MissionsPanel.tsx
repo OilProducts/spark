@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { fetchSpark } from '@/lib/fetchSpark'
+import { normalizeProjectPath } from '@/lib/projectPaths'
 import { workspaceUrl } from '@/lib/api/apiClient'
 import { extractHttpError } from '@/lib/api/shared'
 import { Button } from '@/components/ui/button'
@@ -16,6 +17,7 @@ import { SheetEmpty, ViewLayout } from '@/components/app/view-layout'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState'
+import { selectMission } from '@/app/useAttention'
 
 export type Budget = { concurrent_runs: number; total_runs: number }
 export type Fields = { title: string; description: string; archived: boolean; budget?: Budget; playbook?: string | null }
@@ -35,6 +37,8 @@ export type Mission = {
 type Draft = { editing: Mission | null; fields: Fields; conflict: boolean }
 export type Board = { missions: Mission[] }
 const empty: Fields = { title: '', description: '', archived: false }
+// Missions carry native paths (C:\repo); a selection restored from storage holds the normalized one (C:/repo).
+const sameProjectPath = (left: string, right: string) => normalizeProjectPath(left) === normalizeProjectPath(right)
 export const groups: [Status, string][] = [['needs_you', 'Needs you'], ['running', 'Running'], ['draft', 'Drafts'], ['closed', 'Closed']]
 export const statusLabels: Record<Status, string> = { needs_you: 'Needs you', running: 'Running', draft: 'Draft', closed: 'Closed' }
 export class MissionConflict extends Error {}
@@ -133,7 +137,8 @@ export function MissionsPanel({ active }: { active: boolean }) {
         if (busy) return
         origin.current = trigger
         setNewProject(mission ? null : project)
-        useStore.getState().setSelectedMission(mission ? { id: mission.id, projectPath: mission.project_path } : null)
+        if (mission) selectMission(mission.id, mission.project_path)
+        else useStore.getState().setSelectedMission(null)
         setFocusRequest(value => value + 1)
         preserveDraft()
         const cached = drafts.current.get(mission?.id ?? `new:${project ?? ''}`)
@@ -172,7 +177,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
             drafts.current.delete(editing?.id ?? newKey)
             upsert(saved)
             if (!editing) void markProjectUsed(saved.project_path)
-            if (archive === undefined) { reset(saved); setMode('read'); useStore.getState().setSelectedMission({ id: saved.id, projectPath: saved.project_path }) }
+            if (archive === undefined) { reset(saved); setMode('read'); selectMission(saved.id, saved.project_path) }
             else { setEditing(saved); setDraft(current => ({ ...current, archived: saved.fields.archived })) }
             await refresh()
         } catch (e) { setError((e as Error).message); if (e instanceof MissionConflict) { setConflict(true); await refresh() } } finally { setBusy(false) }
@@ -199,7 +204,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
         // Back to the list closes the mission open to read; an editor keeps its edits.
         if (!selectedMission) { if (editing && mode === 'read' && !busy) setEditing(undefined); return }
         if (busy || (editing && editing.id === selectedMission.id)) return
-        const mission = missions.find(m => m.id === selectedMission.id && m.project_path === selectedMission.projectPath)
+        const mission = missions.find(m => m.id === selectedMission.id && sameProjectPath(m.project_path, selectedMission.projectPath))
         // An open editor or new-mission draft is kept, as when picking from the list.
         if (mission && editing !== undefined && mode === 'edit') open(mission, origin.current)
         else if (mission) { setMode('read'); setEditing(mission); setDraft(mission.fields); setConflict(false); setError('') }
@@ -209,8 +214,8 @@ export function MissionsPanel({ active }: { active: boolean }) {
     // A removed project takes its open mission and unsaved drafts with it.
     useEffect(() => {
         if (!Object.keys(registry).length) return
-        for (const [key, saved] of drafts.current) if (!registry[saved.editing?.project_path ?? key.slice('new:'.length)]) drafts.current.delete(key)
-        const project = editing ? editing.project_path : editing === null ? newProject : null
+        for (const [key, saved] of drafts.current) if (!registry[normalizeProjectPath(saved.editing?.project_path ?? key.slice('new:'.length))]) drafts.current.delete(key)
+        const project = editing ? normalizeProjectPath(editing.project_path) : editing === null ? newProject : null
         if (project && !registry[project]) { setEditing(undefined); setNewProject(null); setMode('read'); setDraft({ ...empty }); setConflict(false); setError('') }
     }, [registry, editing, newProject])
     const latest = editing ? board.missions.find(t => t.id === editing.id) : undefined
@@ -219,7 +224,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
     const visible = board.missions.filter(mission => (archived || !mission.fields.archived) && mission.fields.title.toLowerCase().includes(search.toLowerCase()))
     const project = editing?.project_path ?? newProject ?? ''
     // A link to a mission that is gone says so, instead of reading as nothing picked.
-    const missing = Boolean(selectedMission && loaded && !missions.some(m => m.id === selectedMission.id && m.project_path === selectedMission.projectPath))
+    const missing = Boolean(selectedMission && loaded && !missions.some(m => m.id === selectedMission.id && sameProjectPath(m.project_path, selectedMission.projectPath)))
     const missionsPanel = <div ref={boardScroll} className="flex flex-col gap-3">
         <div className="flex items-center gap-1">
             <div className="relative min-w-0 flex-1">

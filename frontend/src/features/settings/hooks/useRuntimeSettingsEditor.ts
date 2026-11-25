@@ -26,15 +26,9 @@ export function useRuntimeSettingsEditor() {
         window.addEventListener('focus', refresh)
         return () => { cancelled = true; window.removeEventListener('spark:settings-live-event', refresh); window.removeEventListener('focus', refresh) }
     }, [saved?.revision, dirty, pending])
-    const isAbsoluteRoot = (path: string) =>
-        path.startsWith('/')
-        || path.startsWith('~/')
-        || path.startsWith('~\\')
-        || path.startsWith('\\\\')
-        || /^[A-Za-z]:[/\\]/.test(path)
-    const invalidRoots = draft?.project_roots.some((path) => !isAbsoluteRoot(path)) ?? false
+    // The backend validates project roots for its own OS; its rejection shows in the error alert.
     const save = async () => {
-        if (!saved || !draft || pending || invalidRoots) return
+        if (!saved || !draft || pending) return
         setPending(true); setError(''); setMessage('')
         try {
             const value = await saveRuntimeSettings(saved.revision, draft)
@@ -51,5 +45,5 @@ export function useRuntimeSettingsEditor() {
         } catch (error) { setError(error instanceof Error ? error.message : 'Unable to reload settings.') }
         finally { setPending(false) }
     }
-    return { saved, draft, setDraft, pending, error, message, setMessage, dirty, invalidRoots, save, discard }
+    return { saved, draft, setDraft, pending, error, message, setMessage, dirty, save, discard }
 }

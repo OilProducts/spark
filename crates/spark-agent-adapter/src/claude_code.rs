@@ -1623,13 +1623,22 @@ pub(crate) fn claude_code_executable() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("claude"))
 }
 
+/// The Claude Code program every launch runs: the configured one, else
+/// [`claude_code_executable`], named as discovery finds it, so a Windows
+/// `claude.cmd` shim runs.
+pub(crate) fn claude_program(native: Option<&NativeAgentSettings>) -> PathBuf {
+    crate::local_environment::launch_program(
+        native
+            .and_then(|config| config.claude_binary.as_ref())
+            .map(PathBuf::from)
+            .unwrap_or_else(claude_code_executable),
+    )
+}
+
 /// The CLI as every Spark launch sees it: the configured binary and config
 /// dir, which is where Claude Code keeps its sign-in.
-fn claude_command(native: Option<&NativeAgentSettings>) -> (PathBuf, Command) {
-    let executable = native
-        .and_then(|config| config.claude_binary.as_ref())
-        .map(PathBuf::from)
-        .unwrap_or_else(claude_code_executable);
+pub(crate) fn claude_command(native: Option<&NativeAgentSettings>) -> (PathBuf, Command) {
+    let executable = claude_program(native);
     let mut command = Command::new(&executable);
     // Its own process group, so a forced stop also ends the agent's tools.
     crate::local_environment::configure_process_group(&mut command);
@@ -1653,7 +1662,7 @@ pub(crate) fn claude_config_dir(native: Option<&NativeAgentSettings>) -> PathBuf
             .and_then(|value| non_empty(&value).map(str::to_string)),
     };
     configured.map(PathBuf::from).unwrap_or_else(|| {
-        let mut env_map = env::vars().collect::<BTreeMap<_, _>>();
+        let mut env_map = crate::codex_app_server::process_environment();
         env_map.extend(crate::codex_app_server::spark_agent_environment(None));
         let dir = crate::codex_app_server::spark_runtime_dir(&env_map, "claude");
         let _ = std::fs::create_dir_all(&dir);

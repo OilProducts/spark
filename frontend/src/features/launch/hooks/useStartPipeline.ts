@@ -6,6 +6,7 @@ import {
     fetchPipelineStartValidated,
     type PipelineStartResponse,
 } from '@/lib/attractorClient'
+import { normalizeProjectPath } from '@/lib/projectPaths'
 import { fetchProjectMetadataValidated } from '@/lib/workspaceClient'
 import {
     buildPipelineContinuePayload,
@@ -23,6 +24,9 @@ export interface GitPolicyGateResult {
     allowed: boolean
     warning: string | null
 }
+
+// A run record's native path (C:\repo) finds the registry entry keyed by its normalized form (C:/repo).
+const isRegisteredProject = (projectPath: string) => Boolean(useStore.getState().projectRegistry[normalizeProjectPath(projectPath)])
 
 const logUnexpectedLaunchError = (error: unknown) => {
     if (error instanceof ApiHttpError) {
@@ -78,7 +82,7 @@ export function useStartPipeline() {
         }
         const runId = typeof runData.pipeline_id === 'string' ? runData.pipeline_id : null
         const queued = runData.status === 'queued'
-        if (runId && (!projectWasRegistered || useStore.getState().projectRegistry[projectPath])) {
+        if (runId && (!projectWasRegistered || isRegisteredProject(projectPath))) {
             setRunsSelectedRunId(runId)
         }
         return { runId, queued }
@@ -90,7 +94,7 @@ export function useStartPipeline() {
         options: { onGitPolicyWarning?: (warning: string | null) => void } = {},
     ): Promise<StartPipelineResult> => {
         const environmentId = getActiveEnvironmentId()
-        const projectWasRegistered = Boolean(useStore.getState().projectRegistry[form.projectPath])
+        const projectWasRegistered = isRegisteredProject(form.projectPath)
         const gate = await confirmGitPolicyGate(form.projectPath, environmentId)
         options.onGitPolicyWarning?.(gate.warning)
         if (!gate.allowed) {
@@ -117,7 +121,7 @@ export function useStartPipeline() {
         options: { onGitPolicyWarning?: (warning: string | null) => void } = {},
     ): Promise<StartPipelineResult> => {
         const environmentId = getActiveEnvironmentId()
-        const projectWasRegistered = Boolean(useStore.getState().projectRegistry[form.projectPath])
+        const projectWasRegistered = isRegisteredProject(form.projectPath)
         const gate = await confirmGitPolicyGate(form.projectPath, environmentId)
         options.onGitPolicyWarning?.(gate.warning)
         if (!gate.allowed) {

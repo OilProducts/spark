@@ -43,7 +43,8 @@ pub struct UsageWindow {
 pub use agent::{
     AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
     AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
-    AGENT_INSTRUCTIONS_METADATA_KEY, PROJECT_WORK_DIR_METADATA_KEY,
+    AGENT_INSTRUCTIONS_METADATA_KEY, CONVERSATION_HANDLE_METADATA_KEY,
+    PROJECT_WORK_DIR_METADATA_KEY,
 };
 pub use attachments::{AgentAttachment, AGENT_ATTACHMENTS_METADATA_KEY};
 pub use claude_code::{
@@ -61,10 +62,10 @@ pub use codergen::{
     SESSION_NAME_METADATA_KEY,
 };
 pub use codex_app_server::{
-    build_codex_runtime_environment, codex_models_from_list_result, configure_codex_api_base_url,
+    build_codex_runtime_environment, codex_models_from_list_result, configure_agent_api,
     configure_codex_spark_home, list_available_codex_models, parse_jsonrpc_line,
-    process_codex_app_server_message, CodexAppServerBackend, CodexAppServerClient,
-    CodexAppServerError, CodexAppServerTurnState, CodexModelMetadata,
+    process_codex_app_server_message, AgentApi, CodexAppServerBackend, CodexAppServerClient,
+    CodexAppServerError, CodexAppServerTurnState, CodexModelMetadata, MANAGED_AGENT_API_KEYS,
 };
 pub use config::SessionConfig;
 pub use context::{

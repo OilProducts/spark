@@ -373,6 +373,7 @@ export function TriggersPanel() {
                   <Well className="mt-6 space-y-2 text-sm">
                     <SectionHeading>Calling this webhook</SectionHeading>
                     <div className="text-muted-foreground">Send a POST request with a JSON body to <code>{SHARED_WEBHOOK_ENDPOINT}</code> and these headers:</div>
+                    <div className="font-mono text-xs text-foreground">Content-Type: application/json</div>
                     <div className="font-mono text-xs text-foreground">
                       X-Spark-Webhook-Key: {String(selectedTrigger.source.webhook_key ?? '')}
                     </div>

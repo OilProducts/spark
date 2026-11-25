@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from 'vitest'
-import { TriggersSessionController } from '@/app/AppSessionControllers'
+import { HistoryRoutingController, TriggersSessionController } from '@/app/AppSessionControllers'
+import { missionKey, placeHash } from '@/app/runsRouting'
+import { openAttentionItem } from '@/app/useAttention'
 import { TriggersPanel } from '@/features/triggers/TriggersPanel'
 import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
 import { MissionsPanel } from '../MissionsPanel'
@@ -229,6 +231,63 @@ it('replaces the open mission with not found when a link names a mission that is
     act(() => useStore.getState().setSelectedMission({ projectPath: '/project', id: 'gone' }))
     expect(await screen.findByText('Mission not found')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Mission details' })).not.toBeInTheDocument()
+})
+
+it('restores and removes a mission recorded with a native Windows path by its normalized project', async () => {
+    task = mission({ project_path: 'C:\\Users\\chris\\repo', status: 'running', conversation_id: 'task-1', started_at: 't' })
+    useStore.setState({
+        projectRegistry: { ...useStore.getState().projectRegistry, 'C:/Users/chris/repo': { directoryPath: 'C:/Users/chris/repo', isFavorite: false, lastAccessedAt: null } },
+        // A selection restored from storage holds the normalized path.
+        selectedMission: { id: 'task-1', projectPath: 'C:/Users/chris/repo' },
+    })
+    render(<MissionsPanel active />)
+    const region = await screen.findByRole('region', { name: 'Mission details' })
+    expect(within(region).getByRole('heading', { name: 'Deliver search' })).toBeInTheDocument()
+    expect(screen.queryByText('Mission not found')).not.toBeInTheDocument()
+
+    act(() => useStore.getState().removeProject('C:/Users/chris/repo', '/project'))
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Mission details' })).not.toBeInTheDocument())
+    expect(useStore.getState().selectedMission).toBeNull()
+    expect(useStore.getState().missionBoard).toEqual([])
+})
+
+it('keeps the route and history when an open mission recorded with a native Windows path is clicked again', async () => {
+    task = mission({ project_path: 'C:\\work\\repo' })
+    useStore.setState({ projectRegistry: { ...useStore.getState().projectRegistry, 'C:/work/repo': { directoryPath: 'C:/work/repo', isFavorite: false, lastAccessedAt: null } } })
+    // A link names the project normalized, or, from an earlier version, with native backslashes.
+    for (const projectPath of ['C:/work/repo', 'C:\\work\\repo']) {
+        useStore.setState({ selectedMission: null })
+        window.history.pushState(null, '', placeHash({ view: 'missions', missionId: missionKey({ projectPath, id: 'task-1' }) }))
+        const view = render(<><HistoryRoutingController /><MissionsPanel active /></>)
+        await screen.findByRole('region', { name: 'Mission details' })
+        const hash = window.location.hash
+        const start = window.history.length
+
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Deliver search' })) })
+        expect(window.location.hash).toBe(hash)
+        expect(window.history.length).toBe(start)
+        view.unmount()
+    }
+})
+
+it('keeps the route and history when the Inbox opens a Windows mission already open from the board', async () => {
+    task = mission({ project_path: 'C:\\work\\repo', status: 'needs_you', conversation_id: 'task-1', started_at: 't' })
+    useStore.setState({ projectRegistry: { ...useStore.getState().projectRegistry, 'C:/work/repo': { directoryPath: 'C:/work/repo', isFavorite: false, lastAccessedAt: null } } })
+    window.history.pushState(null, '', '#/missions')
+    render(<><HistoryRoutingController /><MissionsPanel active /></>)
+    await act(async () => { fireEvent.click(within(await screen.findByRole('region', { name: 'Needs you' })).getByRole('button', { name: 'Deliver search' })) })
+    await screen.findByRole('region', { name: 'Mission details' })
+    const hash = window.location.hash
+    const start = window.history.length
+
+    // The Inbox's item carries the mission's native path.
+    await act(async () => { openAttentionItem({ kind: 'mission', id: 'task-1', title: 'Deliver search', project_path: 'C:\\work\\repo', updated_at: 't' }) })
+    expect(window.location.hash).toBe(hash)
+    expect(window.history.length).toBe(start)
+    // One Back returns to the board.
+    act(() => window.history.back())
+    await waitFor(() => expect(window.location.hash).toBe('#/missions'))
+    expect(useStore.getState().selectedMission).toBeNull()
 })
 
 it('asks before closing or canceling a mission, and does nothing when kept open', async () => {

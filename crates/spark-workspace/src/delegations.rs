@@ -6,7 +6,8 @@
 //! environment (B) seals it, delivers the outcome to the owner conversation's
 //! inbox once. B admits each delegation ID at most once, launches it through
 //! the ordinary flow or turn path, and reports its state, questions and seal.
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Read;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 use spark_storage::conversation::NewInboxEvent;
+pub use spark_storage::environment::DelegationListFilter;
 use spark_storage::environment::{
     now, seal_out_on, DelegationIn, DelegationOut, EnvironmentLink, EnvironmentRepository,
     PROTOCOL_VERSION,
@@ -35,8 +37,20 @@ pub const FOLLOW_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// The longest one `wait` request holds.
 pub const MAX_WAIT: Duration = Duration::from_secs(30);
+/// The longest one request to another environment takes, answer included:
+/// under the `spark` CLI's 30 s request limit, so a stalled peer's error,
+/// naming it, reaches the CLI before the CLI gives up on this server.
+pub const PEER_TIMEOUT: Duration = Duration::from_secs(20);
 /// Provenance of a run B launched for a delegation.
 pub const DELEGATION_CONTEXT_KEY: &str = "context.spark_delegation";
+/// The most a linked environment's answer may hold; a larger one is refused
+/// as it streams in, before it is decoded.
+// ponytail: one cap for every answer; a result that outgrows it retries until
+// it is raised, so raise it or page results if real ones get near it.
+pub const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
+/// The most question notifications one delegation may have outstanding in
+/// its owner's inbox: not yet taken by the owner, or still open on B.
+pub const MAX_OUTSTANDING_QUESTIONS: usize = 20;
 const INCOMING_PATH: &str = "/workspace/api/delegations/incoming";
 
 fn validation(message: impl Into<String>) -> WorkspaceError {
@@ -228,6 +242,7 @@ fn linked_get(
                 "No link to environment {environment_id:?}; add one with spark environment link add."
             ))
         })?;
+    check_route(&link.origin, path)?;
     call(Method::GET, &link.origin, path, Some(&token), None).map_err(|error| match error {
         PeerError::Status(404, detail) => WorkspaceError::NotFound(detail),
         PeerError::Status(409, detail) => WorkspaceError::Conflict(detail),
@@ -276,7 +291,7 @@ pub fn link_flow_files(
     }
     let path = format!(
         "/workspace/api/flows/{}/files{}",
-        encode(flow_name),
+        route_id("flow_name", flow_name)?,
         project_query(project_path)
     );
     linked_get(settings, environment_id, &path)
@@ -286,7 +301,7 @@ pub fn link_flow_files(
 
 #[derive(Debug)]
 enum PeerError {
-    /// The request may or may not have arrived.
+    /// No usable answer: the request may or may not have taken effect.
     Network(String),
     Status(u16, String),
 }
@@ -314,7 +329,7 @@ fn call(
             reqwest::blocking::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(30))
+                .timeout(PEER_TIMEOUT)
                 .build()
                 .map_err(|error| error.to_string())
         })
@@ -327,20 +342,47 @@ fn call(
     if let Some(body) = body {
         request = request.json(body);
     }
-    let response = request
-        .send()
-        .map_err(|error| PeerError::Network(error.to_string()))?;
+    let response = request.send().map_err(|error| {
+        PeerError::Network(if error.is_timeout() {
+            format!("{path} did not answer within {PEER_TIMEOUT:?}.")
+        } else {
+            error.to_string()
+        })
+    })?;
     let status = response.status().as_u16();
-    let text = response
-        .text()
-        .map_err(|error| PeerError::Network(error.to_string()))?;
-    let value = serde_json::from_str::<Value>(&text).unwrap_or(Value::Null);
-    if (200..300).contains(&status) {
-        return Ok(value);
+    let too_large = || {
+        PeerError::Network(format!(
+            "{origin}{path} answered with more than {MAX_RESPONSE_BYTES} bytes; the answer was refused."
+        ))
+    };
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES)
+    {
+        return Err(too_large());
     }
-    let detail = value["detail"]
-        .as_str()
-        .map(str::to_string)
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| PeerError::Network(error.to_string()))?;
+    if bytes.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(too_large());
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let value = serde_json::from_str::<Value>(&text);
+    if (200..300).contains(&status) {
+        // Every Spark route answers JSON: any other success is no answer.
+        return value.map_err(|_| {
+            PeerError::Network(format!(
+                "{path} answered {status} with a body that is not JSON: {:?}",
+                text.chars().take(200).collect::<String>()
+            ))
+        });
+    }
+    let detail = value
+        .ok()
+        .and_then(|value| value["detail"].as_str().map(str::to_string))
         .unwrap_or_else(|| text.chars().take(500).collect());
     Err(PeerError::Status(status, detail))
 }
@@ -531,6 +573,7 @@ pub fn start(
             cancel_acknowledged_at: None,
             created_at: String::new(),
             updated_at: String::new(),
+            submitted_at: None,
         })?
     };
     if stored.request_sha256 != request_sha256 || stored.environment_id != environment_id {
@@ -542,45 +585,23 @@ pub fn start(
     Ok(stored)
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DelegationListFilter {
-    #[serde(default)]
-    pub environment_id: Option<String>,
-    #[serde(default)]
-    pub phase: Option<String>,
-    #[serde(default)]
-    pub open: bool,
-    #[serde(default)]
-    pub paused: bool,
-}
-
 pub fn list(
     settings: &SparkSettings,
     filter: DelegationListFilter,
 ) -> WorkspaceResult<Vec<DelegationOut>> {
-    let environment_id = non_empty(filter.environment_id.as_deref());
-    let phase = non_empty(filter.phase.as_deref());
-    if let Some(phase) = phase.as_deref() {
+    let filter = DelegationListFilter {
+        environment_id: non_empty(filter.environment_id.as_deref()),
+        phase: non_empty(filter.phase.as_deref()),
+        ..filter
+    };
+    if let Some(phase) = filter.phase.as_deref() {
         if !matches!(phase, "created" | "accepted" | "sealed") {
             return Err(validation(format!(
                 "phase must be created, accepted or sealed, not {phase:?}."
             )));
         }
     }
-    let records = environments(settings)
-        .list_out()?
-        .into_iter()
-        .filter(|record| {
-            environment_id
-                .as_deref()
-                .is_none_or(|env| record.environment_id == env)
-                && phase.as_deref().is_none_or(|p| record.phase == p)
-                && (!filter.open || record.phase != "sealed")
-                && (!filter.paused || record.paused.is_some())
-        })
-        .collect();
-    Ok(records)
+    Ok(environments(settings).list_out(&filter)?)
 }
 
 pub fn get(settings: &SparkSettings, delegation_id: &str) -> WorkspaceResult<DelegationOut> {
@@ -590,19 +611,23 @@ pub fn get(settings: &SparkSettings, delegation_id: &str) -> WorkspaceResult<Del
 }
 
 /// Records the owner's cancellation; the follower sends it to B until B
-/// acknowledges, and keeps following until B seals the task. A delegation
-/// that is already paused (unlinked, revoked or refused by B) is sealed
-/// locally as `canceled` right away so it does not stay stuck open.
+/// acknowledges, and keeps following until B seals the task. A paused
+/// delegation (unlinked, revoked or refused by B) that was never submitted
+/// is sealed locally as `canceled` right away, since B never saw it; one B
+/// may have keeps its cancel pending, sent once a link resumes it.
 pub fn cancel(
     settings: &SparkSettings,
     store: &Arc<ConversationStore>,
     delegation_id: &str,
 ) -> WorkspaceResult<DelegationOut> {
+    environments(settings).request_cancel_out(delegation_id)?;
+    // Read after the cancel is recorded, so a pause that committed first is
+    // seen. Storage checks the pause and submission again as it seals, so a
+    // relink that commits before the seal leaves the record open.
     let record = get(settings, delegation_id)?;
     if record.phase == "sealed" {
         return Ok(record);
     }
-    environments(settings).request_cancel_out(delegation_id)?;
     if let Some(reason) = record.paused.as_deref() {
         let target_kind = if record.kind == "flow" {
             "run"
@@ -617,7 +642,7 @@ pub fn cancel(
             "status": "canceled",
             "detail": format!("Canceled locally while paused: {reason}"),
         });
-        seal_out_and_notify(settings, store, &record, &state, result)?;
+        seal_out_and_notify(settings, store, &record, &state, result, true)?;
     }
     get(settings, delegation_id)
 }
@@ -644,6 +669,11 @@ pub fn answer(
     question_id: &str,
     request: DelegationAnswerRequest,
 ) -> WorkspaceResult<Value> {
+    let path = format!(
+        "{INCOMING_PATH}/{}/questions/{}/answer",
+        route_id("delegation_id", delegation_id)?,
+        route_id("question_id", question_id)?
+    );
     let record = get(settings, delegation_id)?;
     if record.phase != "accepted" {
         return Err(WorkspaceError::Conflict(format!(
@@ -656,10 +686,7 @@ pub fn answer(
         .ok_or_else(|| {
             WorkspaceError::Conflict(format!("No link to environment {}.", record.environment_id))
         })?;
-    let path = format!(
-        "{INCOMING_PATH}/{delegation_id}/questions/{}/answer",
-        encode(question_id)
-    );
+    check_route(&link.origin, &path)?;
     let body = serde_json::to_value(&request).map_err(internal)?;
     call(Method::POST, &link.origin, &path, Some(&token), Some(&body)).map_err(|error| match error {
         PeerError::Status(404, detail) => WorkspaceError::NotFound(detail),
@@ -670,6 +697,33 @@ pub fn answer(
             "The answer's outcome is unknown ({error}); it was not resent. Read the delegation to see whether the question closed."
         )),
     })
+}
+
+/// An identifier for one segment of a peer's route, percent-encoded. Refused
+/// when a `/`-separated part of it is empty, `.` or `..`, or it holds a
+/// backslash or control character, so it never names another route.
+fn route_id(name: &str, id: &str) -> WorkspaceResult<String> {
+    if id.split('/').any(|part| matches!(part, "" | "." | ".."))
+        || id.chars().any(|c| c == '\\' || c.is_control())
+    {
+        return Err(validation(format!(
+            "{name} {id:?} is not a valid identifier."
+        )));
+    }
+    Ok(encode(id))
+}
+
+/// Refuses, before anything is sent, a route that does not parse back to
+/// exactly `origin` and `path`: one that normalizing would move to another
+/// route or origin.
+fn check_route(origin: &str, path: &str) -> WorkspaceResult<()> {
+    let url = format!("{origin}{path}");
+    match reqwest::Url::parse(&url) {
+        Ok(parsed) if parsed.as_str() == url => Ok(()),
+        _ => Err(validation(format!(
+            "{path:?} does not stay on its route at {origin}."
+        ))),
+    }
 }
 
 /// Percent-encodes one path segment.
@@ -689,16 +743,32 @@ fn encode(segment: &str) -> String {
 #[derive(Default)]
 pub struct Follower {
     backoff: HashMap<String, (Instant, Duration)>,
+    /// Fault injection for contracts: the worker following this environment
+    /// panics.
+    #[doc(hidden)]
+    pub panic_environment: Option<String>,
+    /// Fault injection for contracts: following this delegation panics.
+    #[doc(hidden)]
+    pub panic_delegation: Option<String>,
 }
 
 impl Follower {
     /// One pass over every open record whose follow is due. Environments are
-    /// polled in parallel so one unreachable peer does not stall healthy ones.
-    // ponytail: scoped threads per tick; move to independent per-environment
-    // tasks if a single slow timeout delaying the next tick ever matters.
-    pub fn tick(&mut self, settings: &SparkSettings, store: &Arc<ConversationStore>) {
+    /// polled in parallel so one unreachable peer does not stall healthy
+    /// ones, and each record is followed on its own, so one failing or
+    /// panicking record backs off alone. Returns the diagnostics it printed
+    /// for records that failed and for records and workers that panicked;
+    /// their records back off.
+    // ponytail: scoped threads per tick, one request per due record; move to
+    // independent per-environment tasks if a slow peer delaying the next tick
+    // ever matters.
+    pub fn tick(
+        &mut self,
+        settings: &SparkSettings,
+        store: &Arc<ConversationStore>,
+    ) -> Vec<String> {
         let Ok(records) = environments(settings).followed_out() else {
-            return;
+            return Vec::new();
         };
         self.backoff
             .retain(|id, _| records.iter().any(|record| &record.delegation_id == id));
@@ -717,37 +787,77 @@ impl Follower {
                 .or_default()
                 .push(record);
         }
-        let follow_env = |env_records: Vec<DelegationOut>| -> Vec<(String, Result<(), String>)> {
-            let mut results = Vec::with_capacity(env_records.len());
-            let mut failed: Option<String> = None;
-            for record in env_records {
-                let id = record.delegation_id.clone();
-                if let Some(error) = &failed {
-                    results.push((id, Err(error.clone())));
+        let (panic_environment, panic_delegation) = (
+            self.panic_environment.as_deref(),
+            self.panic_delegation.as_deref(),
+        );
+        let lost = || Err::<(), _>("The follower panicked.".to_string());
+        let follow_env = |env: &str, records: &[DelegationOut]| {
+            if panic_environment == Some(env) {
+                panic!("Injected follower panic for environment {env}.");
+            }
+            let mut reported = Vec::new();
+            let outcomes: Vec<_> = records
+                .iter()
+                .map(|record| {
+                    let id = &record.delegation_id;
+                    // A panic loses only this record's outcome.
+                    let followed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if panic_delegation == Some(id.as_str()) {
+                            panic!("Injected follower panic for delegation {id}.");
+                        }
+                        follow(settings, store, record)
+                    }));
+                    let outcome = match followed {
+                        Ok(Err(error)) => {
+                            reported.push(format!(
+                                "Following delegation {id} on environment {env} failed; it \
+                                 retries after a backoff: {error}"
+                            ));
+                            Err(error)
+                        }
+                        Ok(outcome) => outcome,
+                        Err(_) => {
+                            reported.push(format!(
+                                "The delegation follower panicked following delegation {id} on \
+                                 environment {env}; it retries after a backoff."
+                            ));
+                            lost()
+                        }
+                    };
+                    (id.clone(), outcome)
+                })
+                .collect();
+            (outcomes, reported)
+        };
+        let mut diagnostics = Vec::new();
+        let outcomes = std::thread::scope(|scope| {
+            let workers: Vec<_> = by_env
+                .iter()
+                .map(|(env, records)| (env, records, scope.spawn(|| follow_env(env, records))))
+                .collect();
+            let mut outcomes = Vec::new();
+            for (env, records, worker) in workers {
+                if let Ok((followed, reported)) = worker.join() {
+                    outcomes.extend(followed);
+                    diagnostics.extend(reported);
                     continue;
                 }
-                let outcome = follow(settings, store, &record);
-                if let Err(error) = &outcome {
-                    failed = Some(error.clone());
-                }
-                results.push((id, outcome));
+                // A panic outside any one record loses the worker's outcomes:
+                // report it, and back its records off.
+                let ids: Vec<_> = records.iter().map(|r| r.delegation_id.clone()).collect();
+                diagnostics.push(format!(
+                    "The delegation follower for environment {env} panicked; delegations {} \
+                     retry after a backoff.",
+                    ids.join(", ")
+                ));
+                outcomes.extend(ids.into_iter().map(|id| (id, lost())));
             }
-            results
-        };
-        let outcomes: Vec<_> = if by_env.len() <= 1 {
-            by_env.into_values().flat_map(follow_env).collect()
-        } else {
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = by_env
-                    .into_values()
-                    .map(|env_records| scope.spawn(move || follow_env(env_records)))
-                    .collect();
-                handles
-                    .into_iter()
-                    .flat_map(|handle| handle.join().unwrap_or_default())
-                    .collect()
-            })
-        };
+            outcomes
+        });
+        for diagnostic in &diagnostics {
+            eprintln!("{diagnostic}");
+        }
         let finished = Instant::now();
         for (id, outcome) in outcomes {
             match outcome {
@@ -763,6 +873,7 @@ impl Follower {
                 }
             }
         }
+        diagnostics
     }
 }
 
@@ -787,12 +898,19 @@ fn follow(
     let peer = |method: Method, path: &str, body: Option<Value>| {
         call(method, &link.origin, path, Some(&token), body.as_ref())
     };
-    let cancel = record.cancel_requested_at.is_some() && record.cancel_acknowledged_at.is_none();
+    // A created record with a cancel is never submitted: its cancel is sent
+    // again until B's answer moves it on, even once acknowledged.
+    let cancel = record.cancel_requested_at.is_some()
+        && (record.cancel_acknowledged_at.is_none() || record.phase == "created");
     let response = if cancel {
         // Sent first, so a task B never admitted is tombstoned, not launched.
         let body = json!({"origin_environment_id": store.environment_id()});
         peer(Method::POST, &format!("{path}/cancel"), Some(body))
     } else if record.phase == "created" {
+        // Noted first, so a cancel while paused knows B may have it.
+        if !repository.submit_out(id).map_err(|e| e.to_string())? {
+            return Ok(());
+        }
         let body = json!({
             "delegation_id": id,
             "origin_environment_id": store.environment_id(),
@@ -821,10 +939,14 @@ fn follow(
             return Ok(());
         }
     };
+    apply(settings, store, record, &state).map_err(|error| error.to_string())?;
+    // Only once B's answer is stored, so a failed apply resends the cancel.
     if cancel {
-        let _ = repository.acknowledge_cancel_out(id);
+        repository
+            .acknowledge_cancel_out(id)
+            .map_err(|error| error.to_string())?;
     }
-    apply(settings, store, record, &state).map_err(|error| error.to_string())
+    Ok(())
 }
 
 fn delegation_inbox_payload(record: &DelegationOut, state: &Value) -> Value {
@@ -849,23 +971,28 @@ fn live_owner<'a>(
         .filter(|owner| matches!(conversations.conversation_project_path(owner), Ok(Some(_))))
 }
 
-/// Seals an outgoing record and delivers its one `delegation.result` inbox
-/// event in the same transaction when its owner conversation still exists.
+/// Seals an outgoing record (see `seal_out_on` for `unsubmitted`) and
+/// stores its one `delegation.result` inbox event in the same transaction
+/// when its owner conversation still exists, then delivers it. Once both
+/// are committed a delivery failure is only reported: the event stays in
+/// the inbox for the next delivery or startup recovery. Returns whether it
+/// sealed.
 fn seal_out_and_notify(
     settings: &SparkSettings,
     store: &Arc<ConversationStore>,
     record: &DelegationOut,
     state: &Value,
     result: Value,
-) -> WorkspaceResult<()> {
+    unsubmitted: bool,
+) -> WorkspaceResult<bool> {
     let id = &record.delegation_id;
     let conversations = ConversationRepository::new(store.clone());
     let Some(owner) = live_owner(&conversations, record) else {
-        environments(settings).seal_out(id, &result)?;
-        return Ok(());
+        return Ok(environments(settings).seal_out(id, &result, unsubmitted)?);
     };
     let mut payload = delegation_inbox_payload(record, state);
     payload["result"] = result.clone();
+    let mut sealed = false;
     conversations.append_inbox_event_with(
         owner,
         NewInboxEvent {
@@ -874,13 +1001,26 @@ fn seal_out_and_notify(
             source: id.clone(),
             payload,
         },
-        |connection| seal_out_on(connection, id, &result),
+        |connection| {
+            sealed = seal_out_on(connection, id, &result, unsubmitted)?;
+            Ok(sealed)
+        },
     )?;
-    inbox::process_conversation(settings, store, owner)
+    if sealed {
+        if let Err(error) = inbox::process_conversation(settings, store, owner) {
+            eprintln!(
+                "Delegation {id} sealed, but delivering its result to conversation {owner} failed: {error}. The event waits in its inbox."
+            );
+        }
+    }
+    Ok(sealed)
 }
 
 /// Stores B's view of a record: its target once B acknowledges, new
-/// questions in the owner's inbox, and the seal with its inbox event.
+/// questions in the owner's inbox, and the seal with its inbox event. A view
+/// that would leave more than `MAX_OUTSTANDING_QUESTIONS` question
+/// notifications outstanding is refused before anything is stored, so the
+/// record backs off and keeps its last view.
 fn apply(
     settings: &SparkSettings,
     store: &Arc<ConversationStore>,
@@ -889,32 +1029,61 @@ fn apply(
 ) -> WorkspaceResult<()> {
     let repository = environments(settings);
     let id = &record.delegation_id;
+    let sealed = state["phase"] == "sealed";
+    let conversations = ConversationRepository::new(store.clone());
+    let owner = live_owner(&conversations, record).filter(|_| !sealed);
+    let prefix = format!("delegation:{id}:question:");
+    // B's open questions, each under its notification ID.
+    let questions: Vec<(String, &Value)> = state["questions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|question| {
+            Some((
+                format!("{prefix}{}", question["question_id"].as_str()?),
+                question,
+            ))
+        })
+        .collect();
+    if let Some(owner) = owner {
+        let pending = conversations.pending_inbox_events(owner)?;
+        let outstanding: BTreeSet<&str> = questions
+            .iter()
+            .map(|(event_id, _)| event_id.as_str())
+            .chain(pending.iter().map(|event| event.id.as_str()))
+            .filter(|event_id| event_id.starts_with(&prefix))
+            .collect();
+        if outstanding.len() > MAX_OUTSTANDING_QUESTIONS {
+            return Err(WorkspaceError::Conflict(format!(
+                "The environment's view of delegation {id} would leave {} questions outstanding \
+                 in its owner's inbox, more than {MAX_OUTSTANDING_QUESTIONS}; it was not stored. \
+                 It is taken once the owner has taken earlier questions and they have closed.",
+                outstanding.len()
+            )));
+        }
+    }
     if record.phase == "created" {
         if let Some(target_id) = non_empty(state["target_id"].as_str()) {
             repository.accept_out(id, &target_id)?;
         }
     }
     repository.set_out_state(id, state)?;
-    if state["phase"] == "sealed" {
+    if sealed {
         let result = state.get("result").cloned().unwrap_or(Value::Null);
-        return seal_out_and_notify(settings, store, record, state, result);
+        return seal_out_and_notify(settings, store, record, state, result, false).map(drop);
     }
-    let conversations = ConversationRepository::new(store.clone());
-    let Some(owner) = live_owner(&conversations, record) else {
+    let Some(owner) = owner else {
         return Ok(());
     };
     let mut payload = delegation_inbox_payload(record, state);
     let mut changed = false;
-    for question in state["questions"].as_array().into_iter().flatten() {
-        let Some(question_id) = question["question_id"].as_str() else {
-            continue;
-        };
+    for (event_id, question) in questions {
         payload["question"] = question.clone();
         changed |= inbox::append(
             store,
             owner,
             InboxPost {
-                id: Some(format!("delegation:{id}:question:{question_id}")),
+                id: Some(event_id),
                 kind: "delegation.question".to_string(),
                 source: Some(id.clone()),
                 payload: payload.clone(),
@@ -949,6 +1118,13 @@ pub struct IncomingCancel {
     pub origin_environment_id: String,
 }
 
+/// The canonical form of a delegation ID A sends, which must be a UUID.
+fn delegation_uuid(delegation_id: &str) -> WorkspaceResult<String> {
+    Ok(uuid::Uuid::parse_str(delegation_id.trim())
+        .map_err(|_| validation("delegation_id must be a UUID."))?
+        .to_string())
+}
+
 /// Serializes admission, cancellation, sealing and startup launch.
 fn incoming_lock() -> MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
@@ -962,9 +1138,7 @@ pub fn admit(
     conversations: &WorkspaceConversationService,
     request: IncomingDelegation,
 ) -> WorkspaceResult<Value> {
-    let delegation_id = uuid::Uuid::parse_str(request.delegation_id.trim())
-        .map_err(|_| validation("delegation_id must be a UUID."))?
-        .to_string();
+    let delegation_id = delegation_uuid(&request.delegation_id)?;
     if request.request_sha256
         != request_digest(&request.project_path, &request.kind, &request.request)
     {
@@ -1301,7 +1475,7 @@ fn conversation_view(
         .filter(|segment| segment["kind"] == "request_user_input" && segment["status"] == "pending")
         .filter_map(|segment| {
             let request = &segment["request_user_input"];
-            let question_id = conversation_question_id(request)?;
+            let question_id = conversation_question_id(&segment)?;
             let mut question = json!({
                 "question_id": question_id,
                 "questions": request["questions"],
@@ -1341,27 +1515,13 @@ fn conversation_view(
     Ok((status.to_string(), questions, result))
 }
 
-/// The lookup ID `ConversationRepository::find_question` matches: the request's
-/// `request_id`, or its first question's `id` when `request_id` is absent.
-fn conversation_question_id(request: &Value) -> Option<&str> {
-    request["request_id"]
-        .as_str()
-        .filter(|id| !id.is_empty())
-        .or_else(|| {
-            request["questions"]
-                .as_array()?
-                .iter()
-                .find_map(|question| question["id"].as_str().filter(|id| !id.is_empty()))
-        })
-}
-
-fn conversation_matches_question(request: &Value, question_id: &str) -> bool {
-    request["request_id"].as_str() == Some(question_id)
-        || request["questions"].as_array().is_some_and(|questions| {
-            questions
-                .iter()
-                .any(|question| question["id"].as_str() == Some(question_id))
-        })
+/// A conversation request's question ID in a delegation: its adapter's
+/// `request_id`, or, without one, the ID of the segment that stores it, so
+/// two requests never share one.
+fn conversation_question_id(segment: &Value) -> Option<&str> {
+    [&segment["request_user_input"]["request_id"], &segment["id"]]
+        .into_iter()
+        .find_map(|id| id.as_str().filter(|id| !id.is_empty()))
 }
 
 /// Ends what a canceled conversation waits for from its owner, through the
@@ -1414,6 +1574,7 @@ pub fn cancel_incoming(
     delegation_id: &str,
     request: IncomingCancel,
 ) -> WorkspaceResult<Value> {
+    let delegation_id = &delegation_uuid(delegation_id)?;
     let _lock = incoming_lock();
     let repository = environments(conversations.settings());
     match repository.in_(delegation_id)? {
@@ -1526,9 +1687,11 @@ pub fn answer_incoming(
         .find(|segment| {
             segment["kind"] == "request_user_input"
                 && segment["status"] == "pending"
-                && conversation_matches_question(&segment["request_user_input"], question_id)
+                && conversation_question_id(segment) == Some(question_id)
         })
         .ok_or_else(unknown)?;
+    // Answered under its segment, the one stored request this question names.
+    let segment_id = segment["id"].as_str().ok_or_else(unknown)?;
     if segment["request_user_input"]["form"].is_object() && request.form.is_none() {
         return Err(validation(format!(
             "Request {question_id} is a form: reply with form."
@@ -1554,7 +1717,7 @@ pub fn answer_incoming(
     };
     conversations.submit_request_user_input_answer(
         &row.target_id,
-        question_id,
+        segment_id,
         ConversationRequestUserInputAnswerRequest {
             project_path: row.project_path.clone(),
             answers,

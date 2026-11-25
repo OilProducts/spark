@@ -108,10 +108,10 @@ export function ProjectPage({
                         <Plus className="size-3.5" />
                         New chat
                     </Button>
-                    {/* Paths wrap after a slash or backslash, not mid-word. */}
+                    {/* Paths wrap after a slash, not mid-word; registry paths are normalized to forward slashes. */}
                     <p data-testid="project-page-path" className="w-full break-words font-mono text-xs text-muted-foreground">
-                        {projectPath.split(/([/\\])/).map((part, index) => (
-                            <span key={index}>{part === '/' || part === '\\' ? <>{part}<wbr /></> : part}</span>
+                        {projectPath.split(/(\/)/).map((part, index) => (
+                            <span key={index}>{part === '/' ? <>{part}<wbr /></> : part}</span>
                         ))}
                     </p>
                 </div>

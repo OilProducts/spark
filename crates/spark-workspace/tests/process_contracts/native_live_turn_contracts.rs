@@ -422,7 +422,7 @@ fn acp_chat(temp: &std::path::Path, mut script: Value) -> (WorkspaceConversation
         toml::to_string(&agents).unwrap(),
     )
     .unwrap();
-    let project = project.canonicalize().unwrap();
+    let project = spark_common::paths::canonicalize_clean(project).unwrap();
     (
         crate::conversations(settings),
         project.to_string_lossy().into_owned(),
@@ -1350,7 +1350,7 @@ fn acp_discovery_probes_harnesses_without_prompting_and_caches_by_generation() {
         toml::to_string(&agents).unwrap(),
     )
     .unwrap();
-    let project = project.canonicalize().unwrap();
+    let project = spark_common::paths::canonicalize_clean(project).unwrap();
     let discover = || {
         settled(|| {
             spark_workspace::models::chat_models_with_codex_result(&settings, &project, Ok(vec![]))

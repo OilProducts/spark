@@ -2111,6 +2111,68 @@ fn acp_flow_session_controls_reach_the_resolved_harness_exactly_or_fail_before_p
     assert_eq!(acp_launches(&log), 0);
 }
 
+/// A workflow on an ACP harness completes when Spark's HOME is not UTF-8,
+/// with the backend the server's runner builds from the run's captured
+/// settings and profiles. HOME is process-wide, so the run is in a child.
+#[cfg(unix)]
+#[test]
+fn acp_workflow_with_captured_profiles_runs_under_a_non_utf8_home() {
+    use std::os::unix::ffi::OsStrExt;
+    const CHILD: &str = "SPARK_NON_UTF8_HOME_RUNTIME_CONTRACT";
+    let temp = tempdir().unwrap();
+    if std::env::var_os(CHILD).is_none() {
+        let home = temp.path().join(std::ffi::OsStr::from_bytes(b"home-\xff"));
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "codergen_runtime_contracts::acp_workflow_with_captured_profiles_runs_under_a_non_utf8_home",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    assert!(std::env::var_os("HOME").unwrap().to_str().is_none());
+    let log = temp.path().join("acp.log");
+    let script = json!({"log": log, "answers": [r#"{"decision": "done"}"#]});
+    let harness = json!({"name": "Fake ACP", "executable": FAKE_ACP,
+        "env": {"SPARK_FAKE_ACP": script.to_string()}});
+    let runner = RuntimeHandlerRunner::new().with_rust_llm_client(Client::new());
+    let result = attractor_runtime::PipelineExecutor::new(runner)
+        .execute(attractor_runtime::ExecuteRunRequest {
+            store: attractor_runtime::RunStore::for_runs_dir(temp.path().join("runs")),
+            record: attractor_core::RunRecord::new("run-acp", temp.path().to_string_lossy()),
+            flow: session_flow(json!({"start": start_to("task"), "done": exit_node(),
+                "task": acp_task(None, "Ship it.", "done")})),
+            flow_definition_json: None,
+            launch_context: attractor_core::LaunchContext::empty(),
+            runtime_context: ContextMap::from([
+                (
+                    "internal.execution_configuration_snapshot".to_string(),
+                    json!({"providers": {}, "agents": {"acp_harnesses": {"fake": harness}}}),
+                ),
+                ("internal.llm_profiles_snapshot".to_string(), json!({})),
+            ]),
+            max_steps: None,
+            start: Default::default(),
+        })
+        .expect("run executes");
+    assert_eq!(result.status, "completed", "{}", result.failure_reason);
+    let log = std::fs::read_to_string(log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect::<Vec<serde_json::Value>>();
+    assert_eq!(acp_prompts(&log).len(), 1);
+}
+
 #[test]
 fn acp_repairs_and_session_nodes_keep_their_context_across_fresh_sessions() {
     let answers = json!([

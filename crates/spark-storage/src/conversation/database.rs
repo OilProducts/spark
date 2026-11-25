@@ -23,7 +23,7 @@ use crate::error::{Result, StorageError};
 /// File name of the state database inside the Spark home.
 pub const STATE_DATABASE_FILE_NAME: &str = "state.sqlite3";
 /// Schema version written to `store_meta`; any other stored version fails open.
-pub const STATE_DATABASE_SCHEMA_VERSION: i64 = 6;
+pub const STATE_DATABASE_SCHEMA_VERSION: i64 = 7;
 /// Maximum rows returned by one catch-up before a resync is required.
 pub const CATCH_UP_MAX_ROWS: usize = 1000;
 /// Maximum payload bytes returned by one catch-up before a resync is required.
@@ -272,6 +272,8 @@ CREATE TABLE delegations_out (
     result TEXT CHECK (result IS NULL OR json_valid(result)),
     -- Why following stopped, until a link to the environment is saved again.
     paused TEXT,
+    -- Set before the follower first sends the record; NULL means B never saw it.
+    submitted_at TEXT,
     cancel_requested_at TEXT,
     cancel_acknowledged_at TEXT,
     created_at TEXT NOT NULL,
@@ -887,7 +889,7 @@ pub fn open_state_database(spark_home: &Path) -> Result<Connection> {
     std::fs::create_dir_all(spark_home)
         .map_err(|source| StorageError::io("create directory", spark_home, source))?;
     let path = spark_home.join(STATE_DATABASE_FILE_NAME);
-    let mut connection = Connection::open(&path)?;
+    let mut connection = connect(&path)?;
     configure(&connection, &path)?;
     let version = |connection: &Connection| -> Result<Option<i64>> {
         let initialized: bool = connection.query_row(
@@ -934,6 +936,136 @@ pub fn open_state_database(spark_home: &Path) -> Result<Connection> {
         });
     }
     Ok(connection)
+}
+
+#[cfg(not(unix))]
+fn connect(path: &Path) -> Result<Connection> {
+    Ok(Connection::open(path)?)
+}
+
+/// Opens the state database only after making it and its present sidecars
+/// owner-only. SQLite opens the resolved file without creating it or
+/// following a link, so a file that disappears in between fails instead of
+/// being recreated with the default mode; new sidecars inherit its mode.
+#[cfg(unix)]
+fn connect(path: &Path) -> Result<Connection> {
+    use rusqlite::OpenFlags;
+    let resolved = prepare_private_files(path)?;
+    let flags =
+        (OpenFlags::default() - OpenFlags::SQLITE_OPEN_CREATE) | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    Ok(Connection::open_with_flags(resolved, flags)?)
+}
+
+/// Owner read and write: the state database holds bearer secrets.
+#[cfg(unix)]
+const PRIVATE_MODE: rustix::fs::Mode = rustix::fs::Mode::RUSR.union(rustix::fs::Mode::WUSR);
+
+/// Publishes an empty owner-only file at `path` unless something, even a
+/// dangling link, is already there, then restricts the resolved file and its
+/// present `-wal`, `-shm` and `-journal` siblings. Returns the resolved path,
+/// so an existing link to a relocated database stays in place.
+#[cfg(unix)]
+fn prepare_private_files(path: &Path) -> Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt as _;
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let dir = path.parent().unwrap_or(Path::new("."));
+            let temp = tempfile::NamedTempFile::new_in(dir)
+                .map_err(|source| StorageError::io("create", dir, source))?;
+            temp.as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|source| StorageError::io("restrict access to", temp.path(), source))?;
+            // Another opener's file wins.
+            if let Err(error) = temp.into_temp_path().persist_noclobber(path) {
+                if error.error.kind() != std::io::ErrorKind::AlreadyExists {
+                    return Err(StorageError::io("create", path, error.error));
+                }
+            }
+        }
+        Err(source) => return Err(StorageError::io("inspect", path, source)),
+    }
+    let resolved =
+        std::fs::canonicalize(path).map_err(|source| StorageError::io("resolve", path, source))?;
+    let (Some(dir), Some(name)) = (resolved.parent(), resolved.file_name()) else {
+        return Err(StorageError::io(
+            "open",
+            &resolved,
+            std::io::Error::other("not a regular file"),
+        ));
+    };
+    let directory =
+        std::fs::File::open(dir).map_err(|source| StorageError::io("open", dir, source))?;
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let mut file_name = name.to_os_string();
+        file_name.push(suffix);
+        match restrict_access(&directory, &file_name) {
+            Ok(true) => {}
+            // Only a sidecar may be absent.
+            Ok(false) if !suffix.is_empty() => {}
+            Ok(false) => {
+                let source = std::io::ErrorKind::NotFound.into();
+                return Err(StorageError::io("open", &resolved, source));
+            }
+            Err(source) => {
+                return Err(StorageError::io(
+                    "restrict access to",
+                    dir.join(&file_name),
+                    source,
+                ));
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+/// Sets `name` in `dir` to [`PRIVATE_MODE`] without following a final link;
+/// `Ok(false)` if it is absent. An `O_PATH` descriptor pins the inode, and
+/// closing one keeps SQLite's POSIX locks on it, unlike an ordinary
+/// descriptor. Linux `fchmodat` cannot refuse links, so chmod goes through
+/// the descriptor's `/proc` entry.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn restrict_access(dir: &std::fs::File, name: &std::ffi::OsStr) -> std::io::Result<bool> {
+    use rustix::fs::{chmod, fstat, openat, Mode, OFlags};
+    use std::os::fd::AsRawFd as _;
+    let flags = OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let file = match openat(dir, name, flags, Mode::empty()) {
+        Ok(file) => file,
+        Err(rustix::io::Errno::NOENT) => return Ok(false),
+        Err(errno) => return Err(errno.into()),
+    };
+    if needs_private_mode(fstat(&file)?.st_mode)? {
+        chmod(format!("/proc/self/fd/{}", file.as_raw_fd()), PRIVATE_MODE)?;
+    }
+    Ok(true)
+}
+
+/// Sets `name` in `dir` to [`PRIVATE_MODE`] without following a final link,
+/// by path so no descriptor on a SQLite file is opened and closed; `Ok(false)`
+/// if it is absent.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn restrict_access(dir: &std::fs::File, name: &std::ffi::OsStr) -> std::io::Result<bool> {
+    use rustix::fs::{chmodat, statat, AtFlags};
+    let stat = match statat(dir, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => stat,
+        Err(rustix::io::Errno::NOENT) => return Ok(false),
+        Err(errno) => return Err(errno.into()),
+    };
+    if needs_private_mode(stat.st_mode)? {
+        chmodat(dir, name, PRIVATE_MODE, AtFlags::SYMLINK_NOFOLLOW)?;
+    }
+    Ok(true)
+}
+
+/// Whether a regular file's mode differs from [`PRIVATE_MODE`]; any other
+/// file type, including a link, is an error.
+#[cfg(unix)]
+fn needs_private_mode(st_mode: rustix::fs::RawMode) -> std::io::Result<bool> {
+    use rustix::fs::{FileType, Mode};
+    if FileType::from_raw_mode(st_mode) != FileType::RegularFile {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    Ok(Mode::from_raw_mode(st_mode) != PRIVATE_MODE)
 }
 
 /// Run a checkpoint and require it to be complete: not busy, with every WAL

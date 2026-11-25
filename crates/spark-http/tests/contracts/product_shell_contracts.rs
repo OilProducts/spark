@@ -160,7 +160,7 @@ async fn api_and_legacy_root_paths_do_not_fall_back_to_html() {
 async fn request_bytes(app: axum::Router, uri: &str) -> (StatusCode, String, Vec<u8>) {
     let request = Request::builder().uri(uri);
     let response = app
-        .oneshot(request.body(Body::empty()).expect("request"))
+        .oneshot(crate::local(request.body(Body::empty()).expect("request")))
         .await
         .expect("response");
     let status = response.status();
@@ -243,7 +243,7 @@ async fn ui_is_gzipped_on_request_and_only_hashed_bundles_are_cached_for_good() 
                 .header("accept-encoding", "gzip")
                 .body(Body::empty())
                 .expect("request");
-            let response = app.oneshot(request).await.expect("response");
+            let response = app.oneshot(crate::local(request)).await.expect("response");
             let header = |name: &str| {
                 response
                     .headers()

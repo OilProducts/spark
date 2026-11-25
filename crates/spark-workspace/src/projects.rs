@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use spark_common::paths::{normalize_path, resolve_runtime_workspace_path};
+use spark_common::paths::{expand_tilde, normalize_path, resolve_runtime_workspace_path};
 use spark_common::project::{normalize_project_path, run_git};
 use spark_common::settings::SparkSettings;
 use spark_storage::{DeletedProjectRecord, ProjectRecord, ProjectRecordUpdate, ProjectRegistry};
@@ -72,7 +72,16 @@ impl WorkspaceProjectService {
     /// Startup: registers the user's home folder as the default Home project.
     pub fn ensure_home_project(&self) -> WorkspaceResult<ProjectRecord> {
         let home = service_home_dir().map_err(WorkspaceError::Validation)?;
-        let home = normalize_project_path_or_400(&home.to_string_lossy())?;
+        // Project paths are stored as text, and a lossy home would register
+        // another folder. The run owner chose this error over storing non-UTF-8
+        // paths (Batch 2 review), which would change storage and API types.
+        let home = home.to_str().ok_or_else(|| {
+            WorkspaceError::Validation(format!(
+                "The home folder {} is not valid UTF-8, so it can't be the Home project.",
+                home.display()
+            ))
+        })?;
+        let home = normalize_project_path_or_400(home)?;
         self.registry()
             .ensure_home_project(&home)
             .map_err(Into::into)
@@ -431,11 +440,18 @@ impl WorkspaceProjectService {
     }
 }
 
-fn normalize_project_path_or_400(project_path: &str) -> WorkspaceResult<String> {
-    normalize_project_path(project_path)
+pub(crate) fn normalize_project_path_or_400(project_path: &str) -> WorkspaceResult<String> {
+    let path = normalize_project_path(project_path)
         .map_err(|error| WorkspaceError::Validation(error.to_string()))?
-        .map(|path| path.to_string_lossy().into_owned())
-        .ok_or_else(|| WorkspaceError::Validation("Project path is required.".to_string()))
+        .ok_or_else(|| WorkspaceError::Validation("Project path is required.".to_string()))?;
+    // Project paths are stored as text, so a folder that is not UTF-8, as a
+    // UTF-8 symlink can resolve to, is reported: a lossy spelling names another.
+    path.into_os_string().into_string().map_err(|path| {
+        WorkspaceError::Validation(format!(
+            "The project folder {} is not valid UTF-8.",
+            Path::new(&path).display()
+        ))
+    })
 }
 
 fn normalize_project_directory(directory: &str) -> WorkspaceResult<PathBuf> {
@@ -454,10 +470,6 @@ fn normalize_project_directory(directory: &str) -> WorkspaceResult<PathBuf> {
     normalize_path(expanded).map_err(|error| WorkspaceError::Validation(error.to_string()))
 }
 
-fn expand_tilde(path: &Path) -> PathBuf {
-    spark_common::paths::expand_tilde_with_env(path, &spark_common::paths::ProcessEnvironment)
-}
-
 fn service_home_dir() -> std::result::Result<PathBuf, String> {
     spark_common::paths::user_home_dir()
         .ok_or_else(|| "HOME or USERPROFILE is not set.".to_string())
@@ -467,5 +479,82 @@ fn work_area(project_path: Option<&str>) -> WorkspaceResult<PathBuf> {
     match project_path {
         Some(project_path) => Ok(PathBuf::from(normalize_project_path_or_400(project_path)?)),
         None => service_home_dir().map_err(WorkspaceError::Validation),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    /// Runs in child processes: HOME is process-wide. Project paths are stored
+    /// as text, so a home folder that is not UTF-8, itself or behind a UTF-8
+    /// symlink, is reported by name. It is never reported as unset, and never
+    /// registered or routed to under a lossy spelling that names another folder.
+    #[test]
+    fn a_non_utf8_home_is_kept_and_never_registered_lossily() {
+        const EXPECTED_HOME: &str = "SPARK_NON_UTF8_HOME_PROJECT_TEST";
+        let Some(expected) = std::env::var_os(EXPECTED_HOME) else {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let folder = root.join(OsStr::from_bytes(b"home-\xff"));
+            // Some filesystems refuse the name; a symlink still resolves to it.
+            let _ = std::fs::create_dir(&folder);
+            let link = root.join("home-link");
+            std::os::unix::fs::symlink(&folder, &link).unwrap();
+            for home in [&folder, &link] {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "projects::tests::a_non_utf8_home_is_kept_and_never_registered_lossily",
+                        "--nocapture",
+                    ])
+                    .env_clear()
+                    .env(EXPECTED_HOME, &folder)
+                    .env("HOME", home)
+                    .env("SPARK_HOME", root.join("spark-home"))
+                    .output()
+                    .unwrap();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    output.status.success() && stdout.contains("1 passed"),
+                    "HOME={}\n{stdout}\n{}",
+                    home.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            return;
+        };
+        let home = service_home_dir().unwrap();
+        assert_eq!(normalize_path(&home).unwrap(), PathBuf::from(&expected));
+        assert_eq!(work_area(None).unwrap(), home);
+        let data_dir = PathBuf::from(std::env::var_os("SPARK_HOME").unwrap());
+        let settings = SparkSettings {
+            startup_sources: Default::default(),
+            connections: Default::default(),
+            providers: Default::default(),
+            agents: Default::default(),
+            project_root: data_dir.join("source"),
+            data_dir: data_dir.clone(),
+            config_dir: data_dir.join("config"),
+            runtime_dir: data_dir.join("runtime"),
+            runs_dir: None,
+            ui_dir: None,
+            project_roots: Vec::new(),
+        };
+        let service = WorkspaceProjectService::new(settings.clone());
+        assert_eq!(service.normalize_browse_path(None).unwrap(), expected);
+        let error = service.ensure_home_project().unwrap_err().to_string();
+        assert!(error.contains("not valid UTF-8"), "{error}");
+        // A new chat with no project would go to the Home project.
+        let store = spark_storage::ConversationStore::open(&data_dir).unwrap();
+        let chats = WorkspaceConversationService::new(settings, store);
+        let error = chats
+            .bound_chat_project_path("new-chat", "")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not valid UTF-8"), "{error}");
+        assert!(service.list_projects().unwrap().is_empty());
     }
 }

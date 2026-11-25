@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -68,13 +68,11 @@ fn serve_binary_process_exposes_product_shell_and_mount_boundaries() {
     assert!(workspace_base.header("content-type").is_none());
     assert!(workspace_base.body.is_empty());
 
-    let hostname_redirect =
+    // A Host that does not name the listener gets no tokenless redirect.
+    let foreign_host =
         try_http_get_with_host(server.port, "/workspace", "testserver").expect("HTTP response");
-    assert_eq!(hostname_redirect.status, 307);
-    assert_eq!(
-        hostname_redirect.header("location"),
-        Some("http://testserver/workspace/")
-    );
+    assert_eq!(foreign_host.status, 401);
+    assert!(foreign_host.header("location").is_none());
 
     let workspace_slash = http_get(server.port, "/workspace/");
     assert_eq!(workspace_slash.status, 404);
@@ -107,6 +105,210 @@ fn serve_binary_process_exposes_product_shell_and_mount_boundaries() {
     assert_eq!(api_missing.header("content-type"), Some("application/json"));
     assert_eq!(api_missing.body_text(), r#"{"detail":"Not Found"}"#);
     assert!(!api_missing.body_text().contains("process ui"));
+}
+
+/// A specific non-loopback bind serves the public shell there and requires a
+/// bearer on protected routes, even from this machine. The printed loopback
+/// companion serves the owner without one, at the same port when it is free.
+/// The local agents' token is replaced on each such start and cleared when
+/// the server starts on loopback.
+#[test]
+fn a_specific_non_loopback_bind_serves_the_owner_on_a_loopback_companion() {
+    let Some(ip) = local_non_loopback_ip() else {
+        eprintln!("skipped: this machine has no non-loopback address");
+        return;
+    };
+    let temp = tempfile::tempdir().expect("tempdir");
+    let ui_dir = temp.path().join("ui");
+    fs::create_dir_all(&ui_dir).expect("ui");
+    fs::write(ui_dir.join("index.html"), "companion ui\n").expect("index");
+    let data_dir = temp.path().join("spark-home");
+    let agent_token = || {
+        let database = rusqlite::Connection::open(data_dir.join("state.sqlite3")).expect("state");
+        let token: Vec<String> = database
+            .prepare("SELECT token_sha256 FROM peer_tokens WHERE token_id = 'spark-agent'")
+            .expect("query")
+            .query_map([], |row| row.get(0))
+            .expect("rows")
+            .collect::<Result<_, _>>()
+            .expect("token");
+        token
+    };
+
+    let (mut server, lines) = serve_on(temp.path(), &ui_dir, &ip.to_string(), 0);
+    let agent_url = startup_url(&lines, "Spark agent base URL ");
+    let local_ui = startup_url(&lines, "Spark local UI ");
+    let primary = agent_url
+        .trim_start_matches("http://")
+        .parse()
+        .expect("primary");
+    let companion: SocketAddr = local_ui
+        .trim_start_matches("http://")
+        .parse()
+        .expect("companion");
+    assert_eq!(
+        agent_url,
+        format!("http://{}", SocketAddr::new(ip, companion.port()))
+    );
+    assert!(companion.ip().is_loopback());
+
+    let shell = http_to(primary, "GET", "/", None);
+    assert_eq!(
+        (shell.status, shell.body_text()),
+        (200, "companion ui\n".to_string())
+    );
+    let descriptor = http_to(primary, "GET", "/environment", None);
+    let environment_id = serde_json::from_slice::<Value>(&descriptor.body).expect("descriptor")
+        ["environment_id"]
+        .clone();
+    let protected = http_to(primary, "GET", "/workspace/api/projects", None);
+    assert_eq!(protected.status, 401);
+    assert_eq!(
+        http_to(companion, "GET", "/workspace/api/projects", None).status,
+        200
+    );
+    let code = http_to(
+        companion,
+        "POST",
+        "/workspace/api/environment/pairing-codes",
+        Some("{}"),
+    );
+    assert_eq!(code.status, 200);
+    let code: Value = serde_json::from_slice(&code.body).expect("code");
+    assert_eq!(code["environment_id"], environment_id);
+    let first = agent_token();
+    assert_eq!(first.len(), 1);
+    server.kill().expect("stop");
+    server.wait().expect("reap");
+
+    // With the loopback port taken, the companion takes a free one, and
+    // only a Host naming that port is the owner's.
+    let taken = std::net::TcpListener::bind((companion.ip(), 0)).expect("occupy");
+    let port = taken.local_addr().expect("taken").port();
+    let (mut server, lines) = serve_on(temp.path(), &ui_dir, &ip.to_string(), port);
+    let companion: SocketAddr = startup_url(&lines, "Spark local UI ")
+        .trim_start_matches("http://")
+        .parse()
+        .expect("companion");
+    assert_ne!(companion.port(), port);
+    assert_eq!(
+        http_to(companion, "GET", "/workspace/api/projects", None).status,
+        200
+    );
+    let stale_host = format!("{}:{port}", companion.ip());
+    let stale = http_with_host(
+        companion,
+        "GET",
+        "/workspace/api/projects",
+        &stale_host,
+        None,
+    );
+    assert_eq!(stale.status, 401);
+    let second = agent_token();
+    assert_eq!(second.len(), 1);
+    assert_ne!(second, first);
+    server.kill().expect("stop");
+    server.wait().expect("reap");
+    drop(taken);
+
+    let (mut server, lines) = serve_on(temp.path(), &ui_dir, "127.0.0.1", 0);
+    assert!(lines
+        .iter()
+        .all(|line| !line.starts_with("Spark local UI ")));
+    assert_eq!(agent_token(), Vec::<String>::new());
+    server.kill().expect("stop");
+    server.wait().expect("reap");
+}
+
+/// The address this machine would send from, if it has a route off-host;
+/// connecting a UDP socket sends nothing.
+fn local_non_loopback_ip() -> Option<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("192.0.2.1:9").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// Starts `serve` on `host:port` and returns its startup lines, through the
+/// one saying it is listening.
+fn serve_on(root: &Path, ui_dir: &Path, host: &str, port: u16) -> (Child, Vec<String>) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_spark-server"))
+        .env("HOME", root)
+        .args([
+            "serve",
+            "--host",
+            host,
+            "--port",
+            &port.to_string(),
+            "--data-dir",
+        ])
+        .arg(root.join("spark-home"))
+        .arg("--ui-dir")
+        .arg(ui_dir)
+        .current_dir(repo_root())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn spark-server serve");
+    let stdout = BufReader::new(child.stdout.take().expect("server stdout"));
+    let (sender, started) = mpsc::channel();
+    thread::spawn(move || {
+        let mut lines = Vec::new();
+        for line in stdout.lines().map_while(Result::ok) {
+            let listening = line.starts_with("Spark server listening");
+            lines.push(line);
+            if listening {
+                let _ = sender.send(lines);
+                return;
+            }
+        }
+    });
+    match started.recv_timeout(Duration::from_secs(180)) {
+        Ok(lines) => (child, lines),
+        Err(error) => {
+            let _ = child.kill();
+            let mut stderr = String::new();
+            if let Some(mut stream) = child.stderr.take() {
+                let _ = stream.read_to_string(&mut stderr);
+            }
+            panic!("spark-server did not start on {host}:{port} ({error}): {stderr}");
+        }
+    }
+}
+
+fn startup_url(lines: &[String], prefix: &str) -> String {
+    lines
+        .iter()
+        .find_map(|line| line.strip_prefix(prefix))
+        .unwrap_or_else(|| panic!("no {prefix:?} line in {lines:?}"))
+        .to_string()
+}
+
+fn http_to(address: SocketAddr, method: &str, path: &str, body: Option<&str>) -> HttpResponse {
+    http_with_host(address, method, path, &address.to_string(), body)
+}
+
+fn http_with_host(
+    address: SocketAddr,
+    method: &str,
+    path: &str,
+    host: &str,
+    body: Option<&str>,
+) -> HttpResponse {
+    let mut stream = TcpStream::connect(address).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .expect("read timeout");
+    let body = body.unwrap_or_default();
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("request");
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).expect("response");
+    parse_http_response(&bytes).expect("http response")
 }
 
 /// Help prints and exits: it never writes to the Spark home it inherited,
@@ -302,12 +504,10 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
-    use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().expect("tempdir");
-    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let root = spark_common::paths::canonicalize_clean(temp.path()).expect("canonical tempdir");
     let ui_dir = root.join("ui");
     let home = root.join("home");
     let dumps = root.join("agent-env");
@@ -316,7 +516,23 @@ fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
     }
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
     // Each fake agent records the environment Spark launched it with, then exits.
+    // cmd reads a script in the console's code page, so the Windows one names
+    // its dump by its own directory, `%~dp0`, rather than by a path written in
+    // it, and `cmd /U` writes the values as UTF-16, keeping a home such as
+    // `C:\Users\René` exact.
+    #[cfg(windows)]
     let fake = |name: &str| {
+        let path = root.join(format!("{name}.cmd"));
+        fs::write(
+            &path,
+            format!("@echo off\r\ncmd /U /C set > \"%~dp0agent-env\\{name}\"\r\n"),
+        )
+        .expect("fake agent");
+        path
+    };
+    #[cfg(unix)]
+    let fake = |name: &str| {
+        use std::os::unix::fs::PermissionsExt;
         let path = root.join(name);
         fs::write(
             &path,
@@ -356,8 +572,18 @@ fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
 
     let data_dir = root.join("spark-home");
     let agent_env = |name: &str| -> BTreeMap<String, String> {
-        fs::read_to_string(dumps.join(name))
-            .unwrap_or_else(|error| panic!("{name} was not launched: {error}"))
+        let dump = fs::read(dumps.join(name))
+            .unwrap_or_else(|error| panic!("{name} was not launched: {error}"));
+        #[cfg(windows)]
+        let dump = String::from_utf16(
+            &dump
+                .chunks_exact(2)
+                .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                .collect::<Vec<_>>(),
+        );
+        #[cfg(unix)]
+        let dump = String::from_utf8(dump);
+        dump.expect("environment dump text")
             .lines()
             .filter_map(|line| line.split_once('='))
             .map(|(key, value)| (key.to_string(), value.to_string()))
@@ -366,10 +592,14 @@ fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
     let codex_env = agent_env("codex");
     let data_dir_text = data_dir.to_string_lossy().into_owned();
     assert_eq!(codex_env.get("SPARK_HOME"), Some(&data_dir_text));
-    assert_eq!(
-        codex_env.get("HOME").map(PathBuf::from),
-        Some(data_dir.join("runtime/codex"))
-    );
+    // Windows tools find the home through USERPROFILE.
+    for home in ["HOME", "USERPROFILE"] {
+        assert_eq!(
+            codex_env.get(home).map(PathBuf::from),
+            Some(data_dir.join("runtime/codex")),
+            "{home}"
+        );
+    }
     let claude_env = agent_env("claude");
     assert_eq!(claude_env.get("SPARK_HOME"), Some(&data_dir_text));
     assert_eq!(

@@ -3,11 +3,9 @@
 //! ends with exactly one result in A's owner conversation and at most one
 //! launch on B, whichever server stops, loses its link or is canceled on the
 //! way.
-#![cfg(unix)]
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -22,6 +20,8 @@ struct Server {
     root: PathBuf,
     port: u16,
     codex: PathBuf,
+    /// An agent that fails at once.
+    agent: PathBuf,
     child: Option<Child>,
 }
 
@@ -29,11 +29,10 @@ struct Server {
 /// are answered, and ends interrupted when stopped.
 fn fake_codex() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
-    exe.parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("spark-agent-fake-codex-app-server")
+    exe.parent().unwrap().parent().unwrap().join(format!(
+        "spark-agent-fake-codex-app-server{}",
+        std::env::consts::EXE_SUFFIX
+    ))
 }
 
 impl Server {
@@ -41,16 +40,16 @@ impl Server {
     fn new(root: PathBuf, codex: Option<PathBuf>) -> Self {
         fs::create_dir_all(root.join("ui")).unwrap();
         fs::write(root.join("ui/index.html"), "<!doctype html>\n").unwrap();
-        let agent = root.join("agent");
-        fs::write(&agent, "#!/bin/sh\nexit 1\n").unwrap();
-        fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).unwrap();
+        let agent =
+            crate::server_shell_contracts::fake_agent(&root, "agent", "exit 1", "exit /b 1");
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
             .port();
         let mut server = Self {
-            codex: codex.unwrap_or_else(|| root.join("agent")),
+            codex: codex.unwrap_or_else(|| agent.clone()),
+            agent,
             root,
             port,
             child: None,
@@ -74,7 +73,7 @@ impl Server {
                 "SPARK_FAKE_CODEX_APP_SERVER_MODE",
                 "interruptible-questions",
             )
-            .env("SPARK_CLAUDE_CODE_BIN", self.root.join("agent"))
+            .env("SPARK_CLAUDE_CODE_BIN", &self.agent)
             .args(["serve", "--host", "127.0.0.1", "--port"])
             .arg(self.port.to_string())
             .arg("--data-dir")
@@ -313,7 +312,7 @@ impl Pair {
 #[test]
 fn every_delegation_seals_once_whatever_stops_on_the_way() {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
+    let root = spark_common::paths::canonicalize_clean(temp.path()).unwrap();
     let mut pair = Pair::new(&root);
 
     // B is down when A records two tasks and cancels one of them, and a third
@@ -507,7 +506,7 @@ fn every_delegation_seals_once_whatever_stops_on_the_way() {
 #[test]
 fn a_flow_tool_delegates_through_its_own_server() {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
+    let root = spark_common::paths::canonicalize_clean(temp.path()).unwrap();
     let pair = Pair::new(&root);
     let saved = root.join("a/.spark/config");
     fs::create_dir_all(&saved).unwrap();
@@ -531,7 +530,7 @@ fn a_flow_tool_delegates_through_its_own_server() {
                     "env_map": {"SPARK_RUN_ID": "internal.run_id"},
                     "command": format!(
                         "spark delegation start --run \"$SPARK_RUN_ID\" --request-key handoff \
-                         --environment {} --target-project {} --kind flow --flow tests/hold-1 --summary Handoff",
+                         --environment {} --target-project '{}' --kind flow --flow tests/hold-1 --summary Handoff",
                         pair.b_id,
                         pair.b_project.display()
                     ),

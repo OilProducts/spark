@@ -5,6 +5,7 @@ import {
     type ExecutionPlacementProfile,
     type WorkspaceSettingsResponse,
 } from '@/lib/workspaceClient'
+import { normalizeProjectPath } from '@/lib/projectPaths'
 import { useStore } from '@/store'
 
 /** Where a profile's mode runs work, in plain words. */
@@ -79,7 +80,7 @@ export function useExecutionPlacement(enabled: boolean, projectPath: string | nu
 
     const executionPlacement = workspaceSettings?.execution_placement ?? null
     const projectDefaultProfileId = projectPath
-        ? projectRegistry[projectPath]?.executionProfileId || null
+        ? projectRegistry[normalizeProjectPath(projectPath)]?.executionProfileId || null
         : null
     const defaultProfileId = projectDefaultProfileId
         || executionPlacement?.default_execution_profile_id
