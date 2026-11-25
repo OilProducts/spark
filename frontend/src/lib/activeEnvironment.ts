@@ -368,9 +368,10 @@ export async function selectEnvironment(
     if (environmentId !== active) updateState({ selectedEnvironmentId: environmentId, status: 'checking', error: null })
     const check = await checkRemoteEnvironment(environmentId).catch((error: unknown) => unreachable(errorText(error)))
     if (seq !== switchSequence) return false
-    if (environmentId === active) {
-        // A Retry's check outdates the mounted environment's automatic ones still running, as one sent with a
-        // credential pairing again since replaced.
+    if (environmentId === active && check.status !== 'unreachable') {
+        // A Retry's conclusive check outdates the mounted environment's automatic ones still running, as one sent with
+        // a credential pairing again since replaced. One with no conclusive answer leaves theirs to land, such as a
+        // refused credential.
         reverifySequence += 1
         reverifying = false
     }
