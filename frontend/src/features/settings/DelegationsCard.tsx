@@ -35,6 +35,9 @@ const EMPTY_DRAFT: AnswerDraft = { text: '', answers: {}, sending: false, error:
 /** A reply the linked environment refused. */
 type Failure = { requestKey: string; message: string }
 
+/** A failed cancel. Each failure is its own entry, so a list retires only the one it was requested beside, not a later retry's. */
+type CancelError = { message: string }
+
 /**
  * An environment's drafts, the questions answered there, and its refused replies, each by question,
  * its failed cancels by delegation, each shown on its row until a refresh requested since shows it sealed, or canceling
@@ -45,7 +48,7 @@ type Answers = {
     drafts: Record<string, AnswerDraft>
     acknowledged: ReadonlySet<string>
     failures: Record<string, Failure>
-    cancelErrors: Record<string, string>
+    cancelErrors: Record<string, CancelError>
     missedReload?: string
 }
 
@@ -91,10 +94,14 @@ const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: t
 const LIVE_REFRESH_MS = 4000
 
 const errorText = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback)
-// Delegation IDs are UUIDs, so the first ':' ends the delegation part.
-const ackKey = (delegationId: string, questionId: string) => `${delegationId}:${questionId}`
-// A delegation can be canceled, or sealed once paused with its cancel pending, until it seals.
-const cancelable = (record: DelegationOut) => record.phase !== 'sealed' && (!record.cancel_requested_at || record.paused !== null)
+// Delegation IDs are UUIDs, so the first ':' ends the delegation part. Child runs may share question IDs,
+// so a question is known by its run as well.
+const ackKey = (delegationId: string, question: DelegationQuestion) => `${delegationId}:${JSON.stringify([question.run_id ?? '', question.question_id])}`
+// Canceling seals locally only a paused delegation its environment never saw (spark-storage seal_out_on);
+// one it may have keeps its cancel pending until a link resumes it.
+const sealable = (record: DelegationOut) => Boolean(record.paused) && !record.submitted_at
+// A delegation can be canceled, or sealed locally with its cancel pending, until it seals.
+const cancelable = (record: DelegationOut) => record.phase !== 'sealed' && (!record.cancel_requested_at || sealable(record))
 // Mirrors the server's list filter (spark-workspace delegations::list).
 const inFilter = (record: DelegationOut, filter: Filter) => (
     filter === 'all' || (filter === 'open' ? record.phase !== 'sealed' : record.paused !== null)
@@ -118,7 +125,7 @@ const forgetUnasked = (env: string, records: DelegationOut[], coversOpen: boolea
         const record = records.find((row) => key.startsWith(`${row.delegation_id}:`))
         if (!record) return !coversOpen
         return record.phase !== 'sealed'
-            && (record.last_state?.questions ?? []).some((question) => ackKey(record.delegation_id, question.question_id) === key)
+            && (record.last_state?.questions ?? []).some((question) => ackKey(record.delegation_id, question) === key)
     }
     updateAnswers(env, ({ drafts, acknowledged }) => ({
         drafts: Object.fromEntries(Object.entries(drafts).filter(([key]) => asked(key))),
@@ -137,7 +144,7 @@ function delegationStatus(record: DelegationOut, acknowledged: ReadonlySet<strin
     if (record.cancel_requested_at) return { label: 'canceling', tone: 'neutral' }
     if (record.paused) return { label: 'paused', tone: 'warning' }
     // A question answered here waits on nothing, though a snapshot may still list it.
-    if ((record.last_state?.questions ?? []).some((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))) {
+    if ((record.last_state?.questions ?? []).some((question) => !acknowledged.has(ackKey(record.delegation_id, question)))) {
         return { label: 'waiting on answer', tone: 'warning' }
     }
     if (record.last_state?.status) return { label: record.last_state.status, tone: 'info' }
@@ -166,6 +173,13 @@ function QuestionResponder({
     onAnswer: (body: DelegationAnswerBody) => Promise<boolean>
 }) {
     const label = question.prompt || question.form?.message || question.questions?.map((sub) => sub.question).join(' ') || 'Question'
+    // A child run's gates may share a prompt, so its flow, node and run tell them apart.
+    const context = [
+        question.flow_name && `flow ${question.flow_name}`,
+        question.node_id && `node ${question.node_id}`,
+        question.run_id && `run ${question.run_id}`,
+        where,
+    ].filter(Boolean).join(' · ')
 
     const submitAnswers = (subs: NonNullable<DelegationQuestion['questions']>) => {
         const trimmed = Object.fromEntries(subs.map((sub) => [sub.id, answerOf(draft.answers, sub.id).trim()]))
@@ -182,7 +196,7 @@ function QuestionResponder({
     const restricted = options.length > 0 && question.origin !== 'agent_clarification' && question.question_type !== 'FREEFORM'
 
     return (
-        <div role="group" aria-label={`${requestKey}: ${label} (${where})`} className="space-y-2 border-t border-border pt-2">
+        <div role="group" aria-label={`${requestKey}: ${label} (${context})`} className="space-y-2 border-t border-border pt-2">
             {/* FormQuestionFields keeps its stored draft until the reply is accepted. */}
             {question.form ? (
                 <FormQuestionFields
@@ -296,6 +310,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const requestSeqRef = useRef(0)
     // The last rows loaded and the filter they answer: another filter's rows are never shown.
     const [loaded, setLoaded] = useState<{ filter: Filter; records: DelegationOut[] } | null>(null)
+    // Whether a list of every open delegation (All, Open) has loaded: until one has, the card can't tell none is in flight.
+    const [openListed, setOpenListed] = useState(false)
     const { activeEnvironmentId, links: sharedLinks, linksLoaded } = useActiveEnvironment()
     const env = activeEnvironmentId ?? ''
     const { drafts, acknowledged, failures, cancelErrors } = useDelegationAnswers((all) => all[env] ?? NO_ANSWERS)
@@ -303,8 +319,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     // the ref lets a cancel confirmation act on what is true when it closes.
     const [seen, setSeen] = useState<Record<string, DelegationOut>>({})
     const seenRef = useRef(seen)
-    // The rows this card shows a failed cancel on while System is shown, as shown.
-    const errorRowsRef = useRef<Record<string, DelegationOut>>({})
+    // The rows this card shows a failed cancel on while System is shown, as shown, with that failure.
+    const errorRowsRef = useRef<Record<string, { row: DelegationOut; error: CancelError }>>({})
     // A card left behind when Settings closes neither shows nor prunes with what its requests return.
     const mountedRef = useRef(false)
     useEffect(() => {
@@ -346,6 +362,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             setLoaded({ filter: requested, records: fetched === requested ? records : records.filter((row) => inFilter(row, requested)) })
             // A list of every open delegation (All, Open) shows that one seen open but left out has sealed since.
             const coversOpen = fetched !== 'paused'
+            if (coversOpen) setOpenListed(true)
             const kept = coversOpen
                 ? Object.fromEntries(Object.entries(seenRef.current).filter(([, row]) => row.phase === 'sealed'))
                 : seenRef.current
@@ -353,13 +370,13 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             setSeen(seenRef.current)
             setLinkChange((change) => (change && change.seq >= seq ? change : null))
             setLoadError(null)
-            // Only a failure the card showed when this list was requested retires: not one that arrived since, or
-            // before a reopened card's first list.
+            // Only a failure the card showed when this list was requested retires: not one that arrived since,
+            // a retry's included, or before a reopened card's first list.
             updateAnswers(env, ({ cancelErrors }) => ({
-                cancelErrors: Object.fromEntries(Object.entries(cancelErrors).filter(([id]) => {
+                cancelErrors: Object.fromEntries(Object.entries(cancelErrors).filter(([id, error]) => {
                     const record = records.find((row) => row.delegation_id === id)
                     const shown = errorRows[id]
-                    return !record || cancelable(record) || !shown || (record.phase !== 'sealed' && !cancelable(shown))
+                    return !record || cancelable(record) || shown?.error !== error || (record.phase !== 'sealed' && !cancelable(shown.row))
                 })),
             }))
             // A delegation listed as resumed through a link this machine's links lack shows them stale, as
@@ -411,6 +428,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             // clears pauses, still ends it.
             // ponytail: updated_at has whole seconds, so another change in the answer's second loses to it until the next refresh.
             const shown = updated && seenRef.current[updated.delegation_id]
+            // A response older than a seal the row shows has nothing to add: the seal's announcement, if any, stays.
+            if (shown?.phase === 'sealed' && updated?.phase !== 'sealed') return
             if (updated && !(shown && (shown.phase === 'sealed' || Date.parse(shown.updated_at) > Date.parse(updated.updated_at)))) {
                 const next = shown && shown.paused && !updated.paused && updated.phase !== 'sealed'
                     && Date.parse(shown.updated_at) >= Date.parse(updated.updated_at)
@@ -462,19 +481,22 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     // that refresh, like a reopened card's first, retires only failures shown before it.
     useEffect(() => {
         errorRowsRef.current = active
-            ? Object.fromEntries((rows ?? []).filter((row) => cancelErrors[row.delegation_id]).map((row) => [row.delegation_id, row]))
+            ? Object.fromEntries((rows ?? []).flatMap((row) => {
+                const error = cancelErrors[row.delegation_id]
+                return error ? [[row.delegation_id, { row, error }]] : []
+            }))
             : {}
     }, [active, rows, cancelErrors])
     const links = knownLinks(sharedLinks, linksRead)
     const questionsOf = (record: DelegationOut) => (record.phase === 'accepted'
-        ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))
+        ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question)))
         : [])
     // A refused reply shows on its responder, or on the card when its question closed or the filter hides it.
-    const shownKeys = new Set(rows?.flatMap((record) => questionsOf(record).map((question) => ackKey(record.delegation_id, question.question_id))))
+    const shownKeys = new Set(rows?.flatMap((record) => questionsOf(record).map((question) => ackKey(record.delegation_id, question))))
     // The Paused view can't see the open delegations that may pause, so every delegation seen under
-    // any filter decides there, as it does until a filter's first load succeeds. A card no list has
-    // loaded for yet can't tell, so it keeps trying.
-    const live = loaded === null || (filter === 'paused' || rows === null ? Object.values(seen) : rows).some((record) => record.phase !== 'sealed')
+    // any filter decides there, as it does until a filter's first load succeeds. A card no All or Open
+    // list has loaded for yet can't tell, so it keeps trying.
+    const live = !openListed || (filter === 'paused' || rows === null ? Object.values(seen) : rows).some((record) => record.phase !== 'sealed')
     useEffect(() => {
         if (!active || !live) return
         const timer = window.setInterval(() => {
@@ -491,24 +513,27 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     }
 
     const handleCancel = async (record: DelegationOut) => {
-        // A refresh while the dialog is open can find the delegation paused (sealed locally on cancel)
-        // or linked again (asked remotely): confirm again until the prompt matches what will happen.
+        // A refresh while the dialog is open can find the delegation paused (sealed locally on cancel if
+        // never submitted) or linked again (asked remotely): confirm again until the prompt matches what will happen.
         // ponytail: a pause the server sees between this check and the request still seals locally.
-        let paused: boolean | null = null
+        let asked: string | null = null
         for (;;) {
             const latest = seenRef.current[record.delegation_id] ?? record
-            // A remote cancel already pending needs no second request; a paused one can still be sealed locally.
-            if (latest.cancel_requested_at && !latest.paused) {
+            // A cancel already pending needs no second request; one that can seal locally can still be sealed.
+            if (latest.cancel_requested_at && !sealable(latest)) {
                 setStatus({ text: `Cancellation was already requested for ${record.request_key}.` })
                 return
             }
-            if ((latest.paused !== null) === paused) break
-            paused = latest.paused !== null
+            const description = sealable(latest)
+                ? `${record.request_key} is paused, so it will be sealed locally as canceled.`
+                : latest.paused
+                    ? `${record.request_key} is paused, so its cancellation stays pending until it is linked again.`
+                    : `Spark asks the linked environment to stop ${record.request_key}.`
+            if (description === asked) break
+            asked = description
             const confirmed = await dialogs.confirm({
                 title: `Cancel delegation ${record.request_key}?`,
-                description: paused
-                    ? `${record.request_key} is paused, so it will be sealed locally as canceled.`
-                    : `Spark asks the linked environment to stop ${record.request_key}.`,
+                description,
                 confirmLabel: 'Cancel delegation',
                 cancelLabel: 'Keep delegation',
                 confirmVariant: 'destructive',
@@ -528,7 +553,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             // Kept by environment, so a card reopened meanwhile shows it on the row, sealed or not.
             const message = errorText(err, 'Could not cancel delegation.')
             if (latestCancels.get(attemptKey) === attempt) {
-                updateAnswers(env, ({ cancelErrors }) => ({ cancelErrors: { ...cancelErrors, [record.delegation_id]: message } }))
+                updateAnswers(env, ({ cancelErrors }) => ({ cancelErrors: { ...cancelErrors, [record.delegation_id]: { message } } }))
             }
             setStatus(null)
             setBusy(false)
@@ -548,13 +573,13 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         void shownCards.get(env)?.report(done, updated)
     }
 
-    const handleAnswer = async (record: DelegationOut, questionId: string, body: DelegationAnswerBody) => {
+    const handleAnswer = async (record: DelegationOut, question: DelegationQuestion, body: DelegationAnswerBody) => {
         const env = activeEnv()
-        const key = ackKey(record.delegation_id, questionId)
+        const key = ackKey(record.delegation_id, question)
         editDraft(env, key, { sending: true, error: null })
         setBusy(true)
         try {
-            await answerDelegationQuestion(record.delegation_id, questionId, body)
+            await answerDelegationQuestion(record.delegation_id, question.question_id, body)
         } catch (err) {
             // The draft stays to fix and resend. A refresh that dropped the question meanwhile (it closed
             // or was replaced) took its draft: the question stays closed, and the failure shows on the card.
@@ -636,9 +661,9 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                             </div>
                                             {record.phase !== 'sealed' ? (
                                                 <div className="flex flex-wrap gap-1">
-                                                    {/* A requested cancel can't reach a paused delegation's environment;
-                                                        canceling it again seals it locally (spark-workspace delegations::cancel). */}
-                                                    {record.cancel_requested_at && record.paused ? (
+                                                    {/* A requested cancel can't reach a paused delegation's environment; canceling
+                                                        again seals one it never saw locally (spark-workspace delegations::cancel). */}
+                                                    {record.cancel_requested_at && sealable(record) ? (
                                                         <Button
                                                             size="sm"
                                                             variant="ghost"
@@ -664,7 +689,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                         {record.paused ? (
                                             <div className="text-xs text-warning">{record.paused}</div>
                                         ) : null}
-                                        {cancelErrors[record.delegation_id] ? <InlineError>{cancelErrors[record.delegation_id]}</InlineError> : null}
+                                        {cancelErrors[record.delegation_id] ? <InlineError>{cancelErrors[record.delegation_id].message}</InlineError> : null}
                                         {questions.length > 0 && !answerable ? (
                                             <p className="text-xs text-muted-foreground">
                                                 {unlinked
@@ -677,11 +702,11 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                             </p>
                                         ) : null}
                                         {questions.map((question) => {
-                                            const key = ackKey(record.delegation_id, question.question_id)
+                                            const key = ackKey(record.delegation_id, question)
                                             const draft = drafts[key] ?? EMPTY_DRAFT
                                             return (
                                                 <QuestionResponder
-                                                    key={question.question_id}
+                                                    key={key}
                                                     // Linked homes may share delegation and question IDs, so stored form values are kept by environment.
                                                     draftKey={JSON.stringify([env, key])}
                                                     requestKey={record.request_key}
@@ -691,7 +716,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                                     draft={draft}
                                                     error={draft.error ?? failures[key]?.message ?? null}
                                                     onDraft={(patch) => editDraft(env, key, patch)}
-                                                    onAnswer={(body) => handleAnswer(record, question.question_id, body)}
+                                                    onAnswer={(body) => handleAnswer(record, question, body)}
                                                 />
                                             )
                                         })}

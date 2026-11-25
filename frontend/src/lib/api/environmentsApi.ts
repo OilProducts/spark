@@ -57,6 +57,10 @@ export type DelegationQuestion = {
     options?: DelegationQuestionOption[]
     questions?: DelegationSubQuestion[]
     form?: FormQuestion
+    // A child run's gate names its run, node and flow: children may share question IDs and prompts.
+    run_id?: string
+    node_id?: string
+    flow_name?: string
 }
 
 export type DelegationLastState = {
@@ -78,6 +82,8 @@ export type DelegationOut = {
     paused: string | null
     cancel_requested_at: string | null
     created_at: string
+    // When the follower first sent it; null means the linked environment never saw it.
+    submitted_at: string | null
     updated_at: string
     last_state: DelegationLastState | null
     result: Record<string, unknown> | null
@@ -166,6 +172,9 @@ function parseQuestions(value: unknown): DelegationQuestion[] {
             options: parseOptions(record?.options),
             questions: subQuestions && subQuestions.length > 0 ? subQuestions : undefined,
             form: parseFormQuestion(record?.form) ?? undefined,
+            run_id: asOptionalString(record?.run_id),
+            node_id: asOptionalString(record?.node_id),
+            flow_name: asOptionalString(record?.flow_name),
         })
     }
     return questions
@@ -194,6 +203,7 @@ function parseDelegation(payload: unknown, endpoint: string): DelegationOut {
         paused: asOptionalNullableString(row.paused) ?? null,
         cancel_requested_at: asOptionalNullableString(row.cancel_requested_at) ?? null,
         created_at: asOptionalString(row.created_at) ?? '',
+        submitted_at: asOptionalNullableString(row.submitted_at) ?? null,
         updated_at: asOptionalString(row.updated_at) ?? '',
         last_state,
         result: asUnknownRecord(row.result),
