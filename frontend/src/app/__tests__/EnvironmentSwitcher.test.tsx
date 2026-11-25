@@ -922,10 +922,13 @@ describe('Same-window multi-environment switching', () => {
         expect(winLive()).toBeUndefined()
     })
 
-    it('shows this Spark upgraded under the page, with reload guidance and its live connection closed, when a reconnect\'s check, which the remote answers 503, gets this Spark\'s upgraded descriptor after a listing found the remote unlinked', async () => {
+    it.each([
+        ['gives no descriptor', () => json({ detail: 'unavailable' }, 503)],
+        ['answers as it ran before, first', () => json(LOCAL_ENV)],
+    ])('shows this Spark upgraded under the page, with reload guidance and its live connection closed, when a reconnect\'s check, which the remote answers 503, gets this Spark\'s upgraded descriptor after a listing, for which this Spark %s, found the remote unlinked', async (_refresh, refreshAnswer: Route) => {
         let links = [WIN_LINK]
         const routes: Record<string, Route> = { [LINKS]: () => json({ links }) }
-        const { remoteShell, checks } = await mountWindows(routes)
+        const { backend, remoteShell, checks } = await mountWindows(routes)
         const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
 
         // The failed connection's check gets Windows' 503 and waits on this Spark's descriptor.
@@ -936,12 +939,17 @@ describe('Same-window multi-environment switching', () => {
         act(() => winLive()!.onerror?.(new Event('error')))
         await waitFor(() => expect(checks()).toBe(before + 1))
 
-        // Another tab removes the link: this tab's listing shows it, though this Spark gives it no descriptor.
-        routes['/environment'] = () => json({ detail: 'unavailable' }, 503)
+        // Another tab removes the link: this tab's listing shows it, with this Spark's answer to that refresh, if any,
+        // in before the check's.
+        const localAsked = () => backend.requests.filter((request) => request.url === '/environment').length
+        routes['/environment'] = refreshAnswer
+        const asked = localAsked()
         links = []
         act(() => { window.dispatchEvent(new Event('focus')) })
         const gate = await screen.findByTestId('remote-environment-gate')
         await waitFor(() => expect(gate).toHaveTextContent('This Spark no longer links'))
+        expect(localAsked()).toBe(asked + 1)
+        await act(() => new Promise((resolve) => setTimeout(resolve, 20)))
         const tried = connects()
 
         // The check, outdated by that listing, then gets this Spark's upgraded descriptor.

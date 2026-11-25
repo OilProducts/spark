@@ -287,24 +287,26 @@ const overStalePage = (check: Check): Check => {
     return local && !speaksThisBundle(local) ? stalePage(local, check.remoteDescriptor) : check
 }
 
-// This Spark's descriptor requests, numbered as sent, and the latest one whose answer was recorded.
+// This Spark's descriptor requests, numbered as sent, and how many were sent when it last reported a mismatch.
 let localRequests = 0
-let localRecorded = 0
+let mismatchSeenAt = 0
 
 /**
- * Asks this Spark for its descriptor and records the answer, unless one to a request sent later came first: an answer
- * sent before an upgrade can arrive after it. One no longer speaking this bundle's versions fails at once the linked
- * environment mounted, its live connection closed, and the one chosen, even awaiting approval, whatever their checks
- * still running find; a check of the one chosen still running only fills in its versions.
+ * Asks this Spark for its descriptor and records the answer. A mismatch always counts, whatever answered before it; a
+ * compatible answer only to a request sent since the last mismatch was seen, as one sent before an upgrade can arrive
+ * after it. A mismatch fails at once the linked environment mounted, its live connection closed, and the one chosen,
+ * even awaiting approval, whatever their checks still running find; a check of the one chosen still running only fills
+ * in its versions.
  */
 function fetchLocalDescriptor(): Promise<EnvironmentDescriptor> {
     const sent = ++localRequests
     const request = fetchEnvironmentDescriptor(null)
     request.then((local) => {
-        if (sent < localRecorded) return
-        localRecorded = sent
+        const compatible = speaksThisBundle(local)
+        if (compatible && sent <= mismatchSeenAt) return
         updateState({ localDescriptor: local })
-        if (speaksThisBundle(local)) return
+        if (compatible) return
+        mismatchSeenAt = localRequests
         const { activeEnvironmentId: active, selectedEnvironmentId: selected } = state
         if (active !== null) applyActiveCheck(stalePage(local, state.activeCheck.remoteDescriptor))
         if (selected !== null && selected !== active) {
