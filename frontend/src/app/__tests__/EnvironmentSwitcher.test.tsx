@@ -1,12 +1,15 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '@/App'
+import { DialogProvider } from '@/components/app/dialog-controller'
+import { useStartPipeline } from '@/features/launch'
 import { resetActiveEnvironmentForTests } from '@/lib/activeEnvironment'
 import { workspaceLiveEventsUrl, workspaceUrl } from '@/lib/api/apiClient'
 import { attractorUrl } from '@/lib/api/attractorApi'
 import { DEFAULT_ROUTE_STATE, ROUTE_STATE_STORAGE_KEY, saveRouteState } from '@/state/store-helpers'
 import { useStore } from '@/store'
+import { deferred } from '@/test/environments'
 
 class MockEventSource {
     static readonly instances: MockEventSource[] = []
@@ -259,6 +262,74 @@ describe('Same-window multi-environment switching', () => {
         await user.click(screen.getByRole('button', { name: 'Return to this machine' }))
         expect(await screen.findByTestId('app-shell')).toBeVisible()
         expect(workspaceUrl('/projects')).toBe('/workspace/api/projects')
+    })
+
+    it.each(['launch', 'continuation'])('leaves the view, Runs selection and URL to a %s answered once the workspace closed for a connection check, then or after it fails', async (kind) => {
+        const user = userEvent.setup()
+        const checked = deferred<void>()
+        const acks: Array<ReturnType<typeof deferred<Response>>> = []
+        const requested: string[] = []
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = resolveUrl(input)
+            if (url === '/environment') return json(LOCAL_ENV)
+            if (url === '/workspace/api/environments/links') return json(REMOTE_LINKS)
+            if (url === '/workspace/api/environments/links/env-win/proxy/environment') {
+                await checked.promise
+                return json({ detail: 'connection refused' }, 503)
+            }
+            if (init?.method === 'POST' && /\/attractor\/pipelines(\/[^/]+\/continue)?$/.test(url)) {
+                requested.push(url)
+                acks.push(deferred<Response>())
+                return acks.at(-1)!.promise
+            }
+            if (url.includes('/workspace/api/projects/metadata')) return json({ branch: 'main' })
+            if (url.includes('/workspace/api/definitions?')) return json({ items: [] })
+            if (url.includes('/attractor/runs')) return json({ runs: [] })
+            if (url === '/workspace/api/projects') return json([LOCAL_PROJECT])
+            return json({})
+        }))
+        render(<App />)
+        act(() => {
+            useStore.getState().setViewMode('home')
+            useStore.getState().setRunsSelectedRunId('newer')
+        })
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        const { result } = renderHook(() => useStartPipeline(), { wrapper: DialogProvider })
+        const form = { projectPath: '/local/project', workingDirectory: '/local/project', flowSource: 'flow', model: null }
+        const start = () => kind === 'launch'
+            ? result.current.startFlow(form)
+            : result.current.continueFromRun('source', form, { startNodeId: 'review', flowSourceMode: 'snapshot' })
+        const savedRoute = () => window.localStorage.getItem(ROUTE_STATE_STORAGE_KEY)
+        const saved = savedRoute()
+        const unchanged = () => {
+            expect(useStore.getState().viewMode).toBe('home')
+            expect(useStore.getState().runsListSession.selectedRunId).toBe('newer')
+            expect(window.location.hash).toBe('#/chats')
+            expect(savedRoute()).toBe(saved)
+        }
+        const launches = [start(), start()]
+        await waitFor(() => expect(acks).toHaveLength(2))
+
+        // The remote tab closes this workspace while its connection is checked; one start answers meanwhile.
+        await user.click(screen.getByTestId('environment-tab-env-win'))
+        await screen.findByTestId('remote-environment-gate')
+        await act(async () => {
+            acks[0].resolve(json({ status: 'started', pipeline_id: 'old-ack' }, 202))
+            await expect(launches[0]).resolves.toEqual({ status: 'cancelled' })
+        })
+        unchanged()
+
+        // The connection fails; back on this machine its workspace opens on the same store, and the other answers.
+        await act(async () => checked.resolve())
+        await user.click(await screen.findByRole('button', { name: 'Return to this machine' }))
+        await screen.findByTestId('app-shell')
+        await act(async () => {
+            acks[1].resolve(json({ status: 'started', pipeline_id: 'old-ack' }, 202))
+            await expect(launches[1]).resolves.toEqual({ status: 'cancelled' })
+        })
+        unchanged()
+        // Both went to this machine, where they began.
+        expect(requested.every((url) => url.startsWith('/attractor/pipelines'))).toBe(true)
     })
 
     it('shows an error screen when remote is unreachable and recovers on Retry', async () => {

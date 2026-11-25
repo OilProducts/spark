@@ -471,6 +471,17 @@ describe('routing across environments', () => {
     // remounts in the environment switched to.
     const Workspace = () => <HistoryRoutingController key={useActiveEnvironment().activeEnvironmentId ?? 'local'} />
     const showEnvironment = (environmentId: string | null) => act(() => switchEnvironment(environmentId))
+    // Follows another environment's link from here, which gives its entry no place of its own.
+    const followForeignLink = async () => {
+        const link = `${buildRunsHash('foreign-run')}?env=review-a`
+        act(() => {
+            window.location.hash = link
+            window.dispatchEvent(new HashChangeEvent('hashchange'))
+        })
+        await waitFor(() => expect(window.location.hash).toBe(link))
+        expect(window.history.state?.sparkPlace).toBeUndefined()
+        return link
+    }
 
     beforeEach(() => {
         resetHash()
@@ -773,18 +784,41 @@ describe('routing across environments', () => {
     it('keeps a followed link\'s entry of another environment, which has no place of its own, for Back when switching to a third', async () => {
         render(<><EnvironmentBootstrap /><Workspace /></>)
         await waitFor(() => expect(window.location.hash).toBe('#/chats'))
-        const link = `${buildRunsHash('foreign-run')}?env=review-a`
-        act(() => {
-            window.location.hash = link
-            window.dispatchEvent(new HashChangeEvent('hashchange'))
-        })
-        await waitFor(() => expect(window.location.hash).toBe(link))
-        expect(window.history.state?.sparkPlace).toBeUndefined()
+        const link = await followForeignLink()
         const entries = window.history.length
 
         await showEnvironment('review-b')
         expect(window.history.length).toBe(entries + 1)
         act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(link))
+    })
+
+    it('leaves a followed link\'s entry of another environment, which has no place of its own, shown, with Back and Forward, when connecting fails and this machine\'s workspace shows again', async () => {
+        // As the app gates it: the workspace unmounts while another environment connects, or fails to.
+        const Gated = () => {
+            const { activeEnvironmentId, selectedEnvironmentId, status } = useActiveEnvironment()
+            return selectedEnvironmentId === null || (status === 'ready' && activeEnvironmentId === selectedEnvironmentId)
+                ? <div data-testid="workspace"><Workspace /></div>
+                : null
+        }
+        render(<><EnvironmentBootstrap /><Gated /></>)
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        const link = await followForeignLink()
+        const entries = window.history.length
+
+        let connected: boolean | undefined
+        await act(async () => { connected = await selectEnvironment('review-b') })
+        expect(connected).toBe(false)
+        expect(screen.queryByTestId('workspace')).toBeNull()
+        await act(() => selectEnvironment(null))
+        expect(screen.getByTestId('workspace')).toBeTruthy()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.location.hash).toBe(link)
+        expect(window.history.length).toBe(entries)
+
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        act(() => window.history.forward())
         await waitFor(() => expect(window.location.hash).toBe(link))
     })
 
@@ -1175,6 +1209,10 @@ describe('routing across environments', () => {
     })
 
     it('opens nothing from a remote environment\'s link reloaded on this machine', async () => {
+        // Before the reload, routing ran where the link was shown; the reloaded page starts on this machine.
+        await switchEnvironment('env-r')
+        render(<HistoryRoutingController />).unmount()
+        await switchEnvironment(null)
         window.history.replaceState(null, '', `${buildRunsHash('remote-run')}?env=env-r`)
         render(<HistoryRoutingController />)
 

@@ -44,6 +44,16 @@ export function captureShownWorkspace(): () => boolean {
     return () => getActiveEnvironmentId() === environmentId && useStore.getState().activeProjectPath === projectPath
 }
 
+// The workspace's showings: it closes while another environment's connection is checked, and opens anew
+// after, on a fresh store or, when that connection fails, on the same one.
+let workspaceShowings = 0
+/** The workspace's current showing. */
+export const workspaceShowing = () => workspaceShowings
+/** Ends the workspace's current showing, as it closes. */
+export const closeWorkspace = () => {
+    workspaceShowings += 1
+}
+
 /** Reopens the route's run and trigger, which their sessions hold. */
 function restoreRouteSelections(route: RouteState) {
     if (route.selectedRunId) {

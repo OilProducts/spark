@@ -15,7 +15,7 @@ import {
     type PipelineContinueFlowSourceMode,
     type RunInitiationFormState,
 } from '@/lib/pipelineStartPayload'
-import { useStore } from '@/store'
+import { useStore, workspaceShowing } from '@/store'
 
 export type StartPipelineResult =
     | { status: 'launched'; runId: string | null; queued: boolean }
@@ -29,11 +29,13 @@ export interface GitPolicyGateResult {
 // A run record's native path (C:\repo) finds the registry entry keyed by its normalized form (C:/repo).
 const isRegisteredProject = (projectPath: string) => Boolean(useStore.getState().projectRegistry[normalizeProjectPath(projectPath)])
 
-// The workspace a launch began in: its environment, until a switch away and back starts that one anew.
+// The workspace a launch began in: its environment's, until it closes, as while another environment's connection
+// is checked, or a switch away and back starts that environment anew.
 const shownWorkspace = () => {
     const environmentId = getActiveEnvironmentId()
     const session = homeSessionStart()
-    return () => getActiveEnvironmentId() === environmentId && homeSessionStart() === session
+    const showing = workspaceShowing()
+    return () => getActiveEnvironmentId() === environmentId && homeSessionStart() === session && workspaceShowing() === showing
 }
 
 const logUnexpectedLaunchError = (error: unknown) => {
@@ -112,7 +114,7 @@ export function useStartPipeline() {
         const resolvedWorkingDirectory = form.workingDirectory.trim() || form.projectPath
         const payload = buildPipelineStartPayload({ ...form, workingDirectory: resolvedWorkingDirectory })
         const runData = await fetchPipelineStartValidated(payload, environmentId)
-        // Started where the launch began, after a switch away, even one back since: nothing shown follows it.
+        // Started where the launch began, once its workspace closed, even if it opened again: nothing shown follows it.
         if (!shown()) {
             return { status: 'cancelled' }
         }
@@ -139,7 +141,7 @@ export function useStartPipeline() {
         }
         const payload = buildPipelineContinuePayload(form, continuation)
         const runData = await fetchPipelineContinueValidated(sourceRunId, payload, environmentId)
-        // Started where the launch began, after a switch away, even one back since: nothing shown follows it.
+        // Started where the launch began, once its workspace closed, even if it opened again: nothing shown follows it.
         if (!shown()) {
             return { status: 'cancelled' }
         }
