@@ -96,6 +96,8 @@ export default defineConfig({
     proxy: {
       '/attractor': sparkProxy,
       '/workspace': sparkProxy,
+      // The public descriptor the environment switcher reads; Spark serves it to anyone.
+      '/environment': backendUrl,
     }
   }
 })

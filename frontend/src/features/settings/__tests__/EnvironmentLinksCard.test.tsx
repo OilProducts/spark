@@ -12,7 +12,7 @@ const descriptor = {
     environment_id: 'env-local-1',
     display_name: 'mac-studio',
     protocol_version: 1,
-    ui_api_version: 1,
+    ui_api_version: 2,
     spark_version: '0.1.0',
 }
 type Link = { environment_id: string; origin: string; label: string; created_at: string }
@@ -743,8 +743,8 @@ it.each([
 ])('removes a link only from the environment where it was confirmed when a switch %s as its check returns', async (_name, switchFirst) => {
     const user = userEvent.setup()
     const backend = stubBackend({ links: [link('env-build', 'Build box'), link('env-gpu', 'GPU')] })
-    // Switching to GPU waits on its descriptor, relayed through its proxy.
-    const gpuDescriptor = `${LINKS}/env-gpu/proxy/environment`
+    // Switching to GPU waits on its authenticated descriptor, relayed through its proxy.
+    const gpuDescriptor = `${LINKS}/env-gpu/proxy/workspace/api/environment`
     const gpu = { ...descriptor, environment_id: 'env-gpu', display_name: 'gpu-box' }
     let finishSwitch = () => {}
     backend.replies[gpuDescriptor] = () => {
@@ -796,6 +796,7 @@ it('refreshes only cards for the environment a mutation changed once it succeeds
     const user = userEvent.setup()
     const backend = stubBackend({ links: [link('env-build', 'Build box'), link('env-gpu', 'GPU')] })
     backend.replies[`${LINKS}/env-gpu/proxy/environment`] = { ...descriptor, environment_id: 'env-gpu', display_name: 'gpu-box' }
+    backend.replies[`${LINKS}/env-gpu/proxy/workspace/api/environment`] = backend.replies[`${LINKS}/env-gpu/proxy/environment`]
     backend.replies[`${LINKS}/env-gpu/proxy${TOKENS}`] = { tokens: [token('tok-gpu', 'GPU runner')] }
     backend.replies[`${LINKS}/env-gpu/proxy${LINKS}`] = { links: [] }
     let finishDelete = () => {}
@@ -1342,12 +1343,14 @@ it('keeps a local action failure off a remote card after switching and shows it 
     backend.replies['POST /workspace/api/environment/pairing-codes'] = () => new Promise<Response>((resolve) => {
         failCode = () => resolve(json({ detail: 'local pairing store locked' }, 500))
     })
-    backend.replies[`${LINKS}/env-gpu/proxy/environment`] = {
+    const gpuDescriptor = {
         environment_id: 'env-gpu',
         display_name: 'GPU box',
         protocol_version: 1,
         ui_api_version: descriptor.ui_api_version,
     }
+    backend.replies[`${LINKS}/env-gpu/proxy/environment`] = gpuDescriptor
+    backend.replies[`${LINKS}/env-gpu/proxy/workspace/api/environment`] = gpuDescriptor
     backend.replies[`${LINKS}/env-gpu/proxy${TOKENS}`] = { tokens: [] }
     backend.replies[`${LINKS}/env-gpu/proxy${LINKS}`] = { links: [] }
     render(<WorkspaceLikeApp />)

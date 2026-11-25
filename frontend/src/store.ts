@@ -44,8 +44,8 @@ export function captureShownWorkspace(): () => boolean {
     return () => getActiveEnvironmentId() === environmentId && useStore.getState().activeProjectPath === projectPath
 }
 
-// The workspace's showings: it closes while another environment's connection is checked, and opens anew
-// after, on a fresh store or, when that connection fails, on the same one.
+// The workspace's showings: it stays open while another environment's connection is checked, or hidden when
+// that check fails, and closes once a switch to another environment commits, which opens it anew on a fresh store.
 let workspaceShowings = 0
 /** The workspace's current showing. */
 export const workspaceShowing = () => workspaceShowings

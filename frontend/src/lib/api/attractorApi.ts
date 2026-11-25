@@ -21,8 +21,7 @@ import {
 import { notifyAttentionChanged } from './attentionApi'
 import { environmentProxyPrefix, getActiveEnvironmentId } from '../activeEnvironment'
 
-export const ATTRACTOR_BASE = '/attractor'
-export const ATTRACTOR_API_BASE = `${ATTRACTOR_BASE}/api`
+const ATTRACTOR_BASE = '/attractor'
 
 /** An attractor URL in `environmentId` (`null`: this machine), by default the active environment. */
 export function attractorUrl(path: string, environmentId: string | null = getActiveEnvironmentId()): string {
@@ -343,7 +342,7 @@ export interface RunRecordResponse {
     launch_context?: Record<string, unknown> | null
 }
 
-export interface PreviewRequestOptions {
+interface PreviewRequestOptions {
     flowName?: string | null
     projectPath?: string | null
     expandChildren?: boolean
@@ -592,7 +591,7 @@ export function parsePipelineCancelResponse(payload: unknown, endpoint = '/attra
     }
 }
 
-export function parsePipelineSteerResponse(payload: unknown, endpoint = '/attractor/pipelines/{id}/steer'): PipelineSteerResponse {
+function parsePipelineSteerResponse(payload: unknown, endpoint = '/attractor/pipelines/{id}/steer'): PipelineSteerResponse {
     const record = expectObjectRecord(payload, endpoint)
     return {
         status: expectString(record.status, endpoint, 'status'),
@@ -1207,7 +1206,7 @@ export interface ArtifactListResponse {
     artifacts: ArtifactListEntry[]
 }
 
-export function parseArtifactListResponse(
+function parseArtifactListResponse(
     payload: unknown,
     endpoint = '/attractor/pipelines/{id}/artifacts',
 ): ArtifactListResponse {
@@ -1278,7 +1277,7 @@ export interface RunExecutionPrompt {
     content: string
 }
 
-export interface RunSegmentsResponse {
+interface RunSegmentsResponse {
     run_id: string
     segments: RunTranscriptSegment[]
     newest_sequence: number

@@ -1,3 +1,4 @@
+import { DialogProvider } from '@/components/app/dialog-controller'
 import { Editor } from '@/features/editor/Editor'
 import { EditorGraphBridgeProvider } from '@/features/editor/EditorGraphBridgeContext'
 import { GraphSettings } from '@/features/editor/GraphSettings'
@@ -13,6 +14,7 @@ import { HistoryRoutingController, RefusedFlowSaveNotices } from '@/app/AppSessi
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
 import { ApiHttpError } from '@/lib/attractorClient'
 import { switchEnvironment } from '@/test/environments'
+import { getActiveEnvironmentId, getActiveEnvironmentState, resetActiveEnvironmentForTests, subscribeActiveEnvironment } from '@/lib/activeEnvironment'
 import {
   loadEditorFlowFiles,
   loadEditorFlowPayload,
@@ -1207,6 +1209,122 @@ describe('Editor file view', () => {
     await user.click(screen.getByRole('button', { name: 'Restore' }))
     expect(screen.getByTestId('flow-file-editor')).toHaveValue(files[1].content)
     expect(screen.getByTestId('flow-files-save')).toBeDisabled()
+  })
+
+  it('keeps a New file prompt and its Step ID over a switch checked meanwhile that asks about the edits, when kept editing', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 })))
+    render(<DialogProvider><ReactFlowProvider><Editor /></ReactFlowProvider></DialogProvider>)
+    const edited = '---\nid: demo\n---\nThe edited flow.\n'
+    fireEvent.change(await screen.findByTestId('flow-file-editor'), { target: { value: edited } })
+    const checked = createDeferred<void>()
+    const refused = switchEnvironment('env-r', checked.promise, true).catch((error: Error) => error.message)
+
+    await user.click(screen.getByTestId('flow-file-add'))
+    await user.type(screen.getByRole('textbox', { name: 'Step ID' }), 'review')
+    await act(async () => checked.resolve())
+    const leave = await screen.findByRole('alertdialog', { name: 'Discard unsaved flow edits?' })
+    await user.click(within(leave).getByRole('button', { name: 'Keep editing' }))
+    expect(await refused).toBe('Could not switch to env-r.')
+
+    expect(screen.getByRole('textbox', { name: 'Step ID' })).toHaveValue('review')
+    await user.click(screen.getByRole('button', { name: 'Add file' }))
+    expect(screen.getByTestId('flow-file-editor')).toHaveAccessibleName('review.md')
+    await user.click(screen.getByRole('button', { name: /^flow\.md/ }))
+    expect(screen.getByTestId('flow-file-editor')).toHaveValue(edited)
+  })
+
+  it('asks about the flow file and Settings drafts a switch would drop, keeping both if either is kept and switching once when both are discarded', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 })))
+    const dropSettings = vi.fn()
+    const SettingsDraft = () => { useSettingsNavigationProtection(true, false, 'settings', dropSettings); return null }
+    render(<DialogProvider><ReactFlowProvider><Editor /></ReactFlowProvider><SettingsDraft /></DialogProvider>)
+    const edited = '---\nid: demo\n---\nThe edited flow.\n'
+    fireEvent.change(await screen.findByTestId('flow-file-editor'), { target: { value: edited } })
+    const commits: Array<string | null> = []
+    const stop = subscribeActiveEnvironment(() => { if (getActiveEnvironmentId() !== (commits.at(-1) ?? null)) commits.push(getActiveEnvironmentId()) })
+    const answer = async (title: string, button: 'Discard and leave' | 'Keep editing') => {
+      await user.click(within(await screen.findByRole('alertdialog', { name: title })).getByRole('button', { name: button }))
+    }
+    // The switch is held for the editors' answers, so its call reports nothing committed yet.
+    const requestSwitch = () => switchEnvironment('env-r', undefined, true).catch(() => {})
+    try {
+      // Discarding the settings still asks about the flow file; keeping it keeps both.
+      await requestSwitch()
+      await answer('Discard unsaved settings?', 'Discard and leave')
+      await answer('Discard unsaved flow edits?', 'Keep editing')
+      expect(getActiveEnvironmentId()).toBeNull()
+      expect(commits).toEqual([])
+      expect(dropSettings).not.toHaveBeenCalled()
+      expect(screen.getByTestId('flow-file-editor')).toHaveValue(edited)
+
+      await requestSwitch()
+      await answer('Discard unsaved settings?', 'Discard and leave')
+      await answer('Discard unsaved flow edits?', 'Discard and leave')
+      expect(getActiveEnvironmentId()).toBe('env-r')
+      expect(commits).toEqual(['env-r'])
+      expect(dropSettings).toHaveBeenCalledTimes(1)
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    } finally {
+      stop()
+      resetActiveEnvironmentForTests()
+    }
+  })
+
+  it('still asks about a Settings draft once the edits of a flow save refused after a switch started are discarded', async () => {
+    const user = userEvent.setup()
+    let save = createDeferred<Response>()
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => (String(url).endsWith('/api/flows') && init?.method === 'POST'
+      ? save.promise
+      : Promise.resolve(new Response(JSON.stringify({ status: 'ok' }), { status: 200 })))))
+    const dropSettings = vi.fn()
+    const SettingsDraft = () => { useSettingsNavigationProtection(true, false, 'settings', dropSettings); return null }
+    render(<DialogProvider><ReactFlowProvider><Editor /></ReactFlowProvider><SettingsDraft /></DialogProvider>)
+    const edited = '---\nid: demo\n---\nThe edited flow.\n'
+    fireEvent.change(await screen.findByTestId('flow-file-editor'), { target: { value: edited } })
+    const commits: Array<string | null> = []
+    const stop = subscribeActiveEnvironment(() => { if (getActiveEnvironmentId() !== (commits.at(-1) ?? null)) commits.push(getActiveEnvironmentId()) })
+    const answer = async (title: string, button: 'Discard and leave' | 'Keep editing') => {
+      await user.click(within(await screen.findByRole('alertdialog', { name: title })).getByRole('button', { name: button }))
+    }
+    // The flow is saved, the user switches while the save is in flight, and the save is then refused.
+    const switchWhileSaving = async () => {
+      save = createDeferred<Response>()
+      await user.click(screen.getByTestId('flow-files-save'))
+      void switchEnvironment('env-r', undefined, true).catch(() => {})
+      // Checked, the switch waits on the save.
+      await waitFor(() => expect(getActiveEnvironmentState()).toMatchObject({ selectedEnvironmentId: 'env-r', status: 'ready' }))
+      await act(async () => save.resolve(new Response(JSON.stringify({ detail: { status: 'validation_error', error: 'Steps must be a list.' } }), { status: 422 })))
+    }
+    const keptBoth = () => {
+      expect(getActiveEnvironmentId()).toBeNull()
+      expect(commits).toEqual([])
+      expect(dropSettings).not.toHaveBeenCalled()
+      expect(screen.getByTestId('flow-file-editor')).toHaveValue(edited)
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    }
+    try {
+      await switchWhileSaving()
+      await answer('Discard unsaved flow edits?', 'Keep editing')
+      keptBoth()
+
+      await switchWhileSaving()
+      await answer('Discard unsaved flow edits?', 'Discard and leave')
+      await answer('Discard unsaved settings?', 'Keep editing')
+      keptBoth()
+
+      await switchWhileSaving()
+      await answer('Discard unsaved flow edits?', 'Discard and leave')
+      await answer('Discard unsaved settings?', 'Discard and leave')
+      await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-r'))
+      expect(commits).toEqual(['env-r'])
+      expect(dropSettings).toHaveBeenCalledTimes(1)
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    } finally {
+      stop()
+      resetActiveEnvironmentForTests()
+    }
   })
 
   it('links a refused save’s problems to their files, and clears them once the edit is put back', async () => {

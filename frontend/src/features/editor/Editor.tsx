@@ -14,7 +14,7 @@ import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeP
 import '@xyflow/react/dist/style.css';
 
 import { captureShownWorkspace, useStore, type EditorMode, type FlowDefinitionMetadata } from '@/store';
-import { getActiveEnvironmentId } from '@/lib/activeEnvironment';
+import { getActiveEnvironmentId, type NavigationRequest } from '@/lib/activeEnvironment';
 import { LaunchPanel } from '@/features/launch';
 import { defaultProjectChoice, launchWorkingDirectory } from '@/features/projects/model/projectChoices';
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState';
@@ -493,7 +493,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         const { saveState, resetSaveState } = useStore.getState();
         if (saveState === 'error' || saveState === 'conflict') resetSaveState();
     }, [editorMode, fileChangesPending]);
-    useSettingsNavigationProtection(hasUnsavedEdits, false, 'flow edits');
+    const flowEditsGuard = useSettingsNavigationProtection(hasUnsavedEdits, false, 'flow edits');
     // Leaving first sends edits still waiting to save and waits for this environment's saves in
     // flight: a save refused after the click still asks before its edits are dropped, and never
     // lands on the next flow. Another environment's saves only hold up closing the browser.
@@ -502,30 +502,36 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         const waitForSaves = (event: Event) => {
             if (event.defaultPrevented || !sendPendingFlowSaves(environmentId)) return;
             event.preventDefault();
-            const { proceed } = (event as CustomEvent<{ proceed: () => void }>).detail;
+            const leave = (event as CustomEvent<NavigationRequest>).detail;
+            const { proceed, cancel } = leave;
             const shown = captureShownWorkspace();
             void waitForFlowSaves().then(async () => {
                 // A switch away ended the navigation: the save's result stays with its own workspace,
                 // and nothing asks or moves in the one shown now.
-                if (!shown()) return;
+                if (!shown()) return cancel?.();
                 const { saveState, saveErrorMessage, saveErrorProblems } = useStore.getState();
                 if (saveState !== 'error' && saveState !== 'conflict') {
                     // Saved: anything else that guards leaving (file drafts) still gets its say.
-                    requestNavigation(proceed);
+                    requestNavigation(proceed, cancel, leave);
                 } else if (await confirm({
                     title: 'Discard unsaved flow edits?',
                     description: `${saveErrorMessage ? `They weren’t saved: ${(saveErrorProblems?.map((problem) => problem.message) ?? flowProblems(saveErrorMessage)).join(' ')} ` : ''}Your unsaved flow edits will be lost.`,
                     confirmLabel: 'Discard and leave',
                     cancelLabel: 'Keep editing',
                     confirmVariant: 'destructive',
+                    leaving: true,
+                    live: leave.live,
                 })) {
-                    proceed();
+                    // Other editors the leave drops, such as Settings drafts, still ask; the flow's own guard passes.
+                    requestNavigation(proceed, cancel, { ...leave, approved: [...(leave.approved ?? []), flowEditsGuard] });
+                } else {
+                    cancel?.();
                 }
             });
         };
         window.addEventListener('spark:before-navigation', waitForSaves, { capture: true });
         return () => window.removeEventListener('spark:before-navigation', waitForSaves, { capture: true });
-    }, [confirm, environmentId]);
+    }, [confirm, environmentId, flowEditsGuard]);
 
     useEffect(() => {
         expandChildFlowsRef.current = expandChildFlows;

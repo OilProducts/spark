@@ -1,7 +1,19 @@
+import { RemoteEnvironmentGate } from '@/app/EnvironmentSwitcher'
+import { DialogProvider } from '@/components/app/dialog-controller'
 import { Editor, viewportShowingNewStep } from '@/features/editor/Editor'
 import { EditorGraphBridgeProvider } from '@/features/editor/EditorGraphBridgeContext'
 import { GraphSettings } from '@/features/editor/GraphSettings'
 import { Sidebar } from '@/features/editor/Sidebar'
+import {
+  EXPECTED_PROTOCOL_VERSION,
+  EXPECTED_UI_API_VERSION,
+  getActiveEnvironmentId,
+  isWorkspaceBlocked,
+  resetActiveEnvironmentForTests,
+  reverifyActiveEnvironment,
+  selectEnvironment,
+  useActiveEnvironment,
+} from '@/lib/activeEnvironment'
 import { resetFlowSaveBaselines } from '@/lib/flowPersistence'
 import { useStore } from '@/store'
 import { ReactFlowProvider } from '@xyflow/react'
@@ -97,6 +109,7 @@ describe('Editor step deletion', () => {
   })
 
   afterEach(() => {
+    resetActiveEnvironmentForTests()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -123,6 +136,79 @@ describe('Editor step deletion', () => {
     expect(Object.keys(saves[1].flow.nodes)).toContain('held')
     expect(routesTo(saves[1].flow, 'held')).toHaveLength(1)
     await waitFor(() => expect(canvasNode('held')).not.toBeNull())
+  })
+
+  it('leaves the editor behind a failed switch\'s error gate untouched by keys pressed in the gate, and Return shows it as it was', async () => {
+    const user = userEvent.setup()
+    // As the app shows it over the hidden workspace.
+    const Gate = () => (isWorkspaceBlocked(useActiveEnvironment()) ? <RemoteEnvironmentGate /> : null)
+    render(<ReactFlowProvider><Editor /><Gate /></ReactFlowProvider>)
+    await waitFor(() => expect(canvasNode('held')).not.toBeNull())
+    await deleteStep(user, 'held')
+    await waitFor(() => expect(saves).toHaveLength(1))
+    fireEvent.click(canvasNode('work') as HTMLElement)
+
+    // The destination's check fails: its environment answers nothing it can verify.
+    await act(async () => { await selectEnvironment('env-r') })
+    const gate = screen.getByRole('dialog')
+    expect(gate).toContainElement(screen.getByTestId('remote-environment-gate'))
+    expect(gate).toContainElement(document.activeElement as HTMLElement)
+    await user.keyboard('{Meta>}z{/Meta}{Backspace}')
+    await act(() => new Promise((resolve) => setTimeout(resolve, 300)))
+    expect(canvasNode('held')).toBeNull()
+    expect(canvasNode('work')).not.toBeNull()
+    expect(saves).toHaveLength(1)
+
+    await user.click(within(gate).getByRole('button', { name: 'Return to this machine' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await user.keyboard('{Meta>}z{/Meta}')
+    await waitFor(() => expect(saves).toHaveLength(2))
+    expect(Object.keys(saves[1].flow.nodes)).toEqual(expect.arrayContaining(['held', 'work']))
+  })
+
+  it('keeps keys pressed in the confirmation of a departure from a revoked remote\'s gate off its editor, which Retry shows with its refused edit', async () => {
+    const user = userEvent.setup()
+    const Gate = () => (isWorkspaceBlocked(useActiveEnvironment()) ? <RemoteEnvironmentGate /> : null)
+    const remote = '/workspace/api/environments/links/env-r/proxy'
+    const environment = (id: string) => new Response(JSON.stringify({
+      environment_id: id, display_name: id, protocol_version: EXPECTED_PROTOCOL_VERSION, ui_api_version: EXPECTED_UI_API_VERSION, spark_version: '',
+    }), { headers: { 'Content-Type': 'application/json' } })
+    let revoked = false
+    const backend = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (revoked && url.startsWith(`${remote}/`)) return new Response(JSON.stringify({ detail: 'Unauthorized' }), { status: 401 })
+      if (url === '/environment') return environment('local')
+      if (url === `${remote}/workspace/api/environment`) return environment('env-r')
+      return backend(input, init)
+    })
+    await act(async () => { expect(await selectEnvironment('env-r')).toBe(true) })
+    render(<DialogProvider><ReactFlowProvider><Editor /><Gate /></ReactFlowProvider></DialogProvider>)
+    await waitFor(() => expect(canvasNode('held')).not.toBeNull())
+
+    // The remote revokes this Spark's token: it refuses the deletion's save, then the reconnect's check.
+    revoked = true
+    await deleteStep(user, 'held')
+    await waitFor(() => expect(useStore.getState().saveState).toBe('error'))
+    fireEvent.click(canvasNode('work') as HTMLElement)
+    await act(async () => { await reverifyActiveEnvironment() })
+    const gate = screen.getByTestId('remote-environment-gate')
+    await user.click(within(gate).getByRole('button', { name: 'Return to this machine' }))
+    const leave = await screen.findByRole('alertdialog', { name: 'Discard unsaved flow edits?' })
+    expect(leave).toContainElement(document.activeElement as HTMLElement)
+    await user.keyboard('{Control>}z{/Control}{Backspace}')
+    expect(canvasNode('held')).toBeNull()
+    expect(canvasNode('work')).not.toBeNull()
+    await user.click(within(leave).getByRole('button', { name: 'Keep editing' }))
+
+    revoked = false
+    await user.click(within(screen.getByTestId('remote-environment-gate')).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.queryByTestId('remote-environment-gate')).not.toBeInTheDocument())
+    expect(getActiveEnvironmentId()).toBe('env-r')
+    expect(canvasNode('held')).toBeNull()
+    expect(canvasNode('work')).not.toBeNull()
+    expect(useStore.getState().saveState).toBe('error')
+    expect(saves).toEqual([])
   })
 
   it('keeps a step whose ID is spelled like a deleted route\'s', async () => {

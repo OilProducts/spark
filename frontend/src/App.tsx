@@ -5,7 +5,7 @@ import { EditorWorkspace } from "@/features/editor"
 import { ProjectsPanel } from "@/features/projects"
 import { RunStream, RunsPanel } from "@/features/runs"
 import { TriggersPanel } from "@/features/triggers"
-import { useActiveEnvironment } from "@/lib/activeEnvironment"
+import { isWorkspaceBlocked, useActiveEnvironment } from "@/lib/activeEnvironment"
 import { closeWorkspace, useStore } from "@/store"
 import { useNarrowViewport } from "@/lib/useNarrowViewport"
 import { DialogProvider } from "@/components/app/dialog-controller"
@@ -27,7 +27,7 @@ function WorkspaceShell() {
   const isRunsMode = viewMode === 'runs'
   const isTriggersMode = viewMode === 'triggers'
   const isSettingsMode = viewMode === 'settings'
-  // What it started, such as a launch, no longer shows once it closes, even when it opens again on the same store.
+  // What it started, such as a launch, no longer shows once it closes for a switch to another environment.
   useEffect(() => closeWorkspace, [])
 
   return (
@@ -104,19 +104,21 @@ function WorkspaceShell() {
 }
 
 function App() {
-  const { activeEnvironmentId, selectedEnvironmentId, status } = useActiveEnvironment()
-  const workspaceReady = selectedEnvironmentId === null || (status === 'ready' && activeEnvironmentId === selectedEnvironmentId)
+  const environment = useActiveEnvironment()
+  const { activeEnvironmentId } = environment
+  // The gate hides the workspace without unmounting it, so its unsaved edits wait for Retry or Return; the gate brings
+  // the switcher bar along.
+  const blocked = isWorkspaceBlocked(environment)
 
   return (
     <DialogProvider>
       <EnvironmentBootstrap />
       <div className="h-screen flex flex-col antialiased bg-ground text-foreground">
-        <EnvironmentSwitcherBar />
-        {workspaceReady ? (
+        {blocked ? null : <EnvironmentSwitcherBar />}
+        <div hidden={blocked} className="flex min-h-0 flex-1 flex-col">
           <WorkspaceShell key={activeEnvironmentId ?? 'local'} />
-        ) : (
-          <RemoteEnvironmentGate />
-        )}
+        </div>
+        {blocked ? <RemoteEnvironmentGate /> : null}
       </div>
     </DialogProvider>
   )

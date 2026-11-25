@@ -55,9 +55,13 @@ export const resolveExecutionWorkingDirectory = (form: Pick<RunInitiationFormSta
     }
 
     // A relative directory joins the project before normalizing, so its leading .. climbs the project
-    // and the project's style decides what a backslash means.
-    const separator = normalizedProjectPath.endsWith('/') ? '' : '/'
-    return normalizeProjectPath(`${normalizedProjectPath}${separator}${workingDirectory}`)
+    // and the project's style decides what a backslash means. A normalized UNC project (`//server/share/...`)
+    // keeps its share root as an explicit UNC prefix so extra `..` segments cannot turn it into a POSIX path.
+    const base = normalizedProjectPath.startsWith('//')
+        ? `\\\\${normalizedProjectPath.slice(2)}`
+        : normalizedProjectPath
+    const separator = base.endsWith('/') ? '' : '/'
+    return normalizeProjectPath(`${base}${separator}${workingDirectory}`)
 }
 
 export function buildPipelineStartPayload(

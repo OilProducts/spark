@@ -1,8 +1,6 @@
 import { parseFormQuestion, type FormQuestion, type FormReply } from '@/lib/forms'
 import { fetchWorkspaceJsonValidated } from './apiClient'
 import {
-    activeApiPrefix,
-    parseEnvironmentDescriptor,
     parseEnvironmentLink,
     parseEnvironmentLinks,
     type EnvironmentDescriptor,
@@ -15,9 +13,9 @@ import {
     asUnknownRecord,
     expectObjectRecord,
     expectString,
-    fetchJsonWithValidation,
 } from './shared'
 
+export { fetchEnvironmentDescriptor } from '../activeEnvironment'
 export { type EnvironmentDescriptor, type EnvironmentLink }
 
 export type PairingCodeReceipt = {
@@ -35,13 +33,13 @@ export type PeerToken = {
     is_current: boolean
 }
 
-export type DelegationQuestionOption = {
+type DelegationQuestionOption = {
     label: string
     value?: string
     description?: string
 }
 
-export type DelegationSubQuestion = {
+type DelegationSubQuestion = {
     id: string
     header?: string
     question: string
@@ -65,7 +63,7 @@ export type DelegationQuestion = {
     flow_name?: string
 }
 
-export type DelegationLastState = {
+type DelegationLastState = {
     phase?: string
     status?: string
     target_kind?: string
@@ -217,11 +215,6 @@ function parseDelegations(payload: unknown, endpoint: string): DelegationOut[] {
     const record = expectObjectRecord(payload, endpoint)
     const items = Array.isArray(record.delegations) ? record.delegations : []
     return items.map((item) => parseDelegation(item, endpoint))
-}
-
-export function fetchEnvironmentDescriptor(): Promise<EnvironmentDescriptor> {
-    const prefix = activeApiPrefix()
-    return fetchJsonWithValidation(`${prefix}/environment`, undefined, `GET ${prefix}/environment`, parseEnvironmentDescriptor)
 }
 
 export function createPairingCode(label: string): Promise<PairingCodeReceipt> {

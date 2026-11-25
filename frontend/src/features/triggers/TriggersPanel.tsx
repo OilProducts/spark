@@ -1,12 +1,11 @@
 import { ArrowLeft, Plus, RefreshCw, Zap } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { TriggerEditor } from "./components/TriggerEditor"
+import { TriggerEditor, WebhookDestination } from "./components/TriggerEditor"
 import {
   createEmptyTriggerForm,
   formatTriggerResult,
   formatTriggerTimestamp,
-  SHARED_WEBHOOK_ENDPOINT,
   triggerProblem,
   triggerProjectSummary,
   triggerSourceSummary,
@@ -372,7 +371,7 @@ export function TriggersPanel() {
                 {selectedTrigger.source_type === 'webhook' ? (
                   <Well className="mt-6 space-y-2 text-sm">
                     <SectionHeading>Calling this webhook</SectionHeading>
-                    <div className="text-muted-foreground">Send a POST request with a JSON body to <code>{SHARED_WEBHOOK_ENDPOINT}</code> and these headers:</div>
+                    <div className="text-muted-foreground"><WebhookDestination then=", with these headers:" /></div>
                     <div className="font-mono text-xs text-foreground">Content-Type: application/json</div>
                     <div className="font-mono text-xs text-foreground">
                       X-Spark-Webhook-Key: {String(selectedTrigger.source.webhook_key ?? '')}

@@ -404,7 +404,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             const created = await addEnvironmentLink({ origin, expected_id, code, label })
             const before = listedLinksRef.current.filter((seen) => seen.first < sent).map((seen) => seen.link)
             form.reset()
-            if (isLocalEnvironment) notifyEnvironmentLinksChanged()
+            if (isLocalEnvironment) notifyEnvironmentLinksChanged((links) => [...links.filter((row) => row.environment_id !== created.environment_id), created])
             await settleMutation(`Linked ${created.label || created.environment_id}.`, { linked: created, sent, before })
         } catch (err) {
             reportError(errorText(err, 'Could not add environment link.'))
@@ -450,7 +450,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             }
             await removeEnvironmentLink(link.environment_id)
             confirmedRemovals.push({ environmentId: activeEnvironmentId, link, at: lastTicket })
-            if (isLocalEnvironment) notifyEnvironmentLinksChanged()
+            if (isLocalEnvironment) notifyEnvironmentLinksChanged((links) => links.filter((row) => !sameLink(row, link)))
             await settleMutation(`Removed link to ${name}.`, { unlinked: link })
         })
     }
@@ -603,7 +603,9 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                                                             aria-label={`Switch to ${name}`}
                                                             disabled={busy}
                                                             onClick={() => void selectEnvironment(link.environment_id, {
-                                                                onActivated: () => useStore.getState().setViewMode('overview'),
+                                                                link,
+                                                                // The switch already passed this workspace's guards, which still listen until it unmounts.
+                                                                onActivated: () => useStore.setState({ viewMode: 'overview' }),
                                                             })}
                                                         >
                                                             Switch

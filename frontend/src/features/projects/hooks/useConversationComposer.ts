@@ -8,7 +8,7 @@ import {
     selectModelSettings,
     type ModelDiscoveryState,
 } from '@/components/model-chooser/modelSelection'
-import { getActiveEnvironmentId, getActiveEnvironmentState } from '@/lib/activeEnvironment'
+import { getActiveEnvironmentId, getActiveEnvironmentState, subscribeActiveEnvironment } from '@/lib/activeEnvironment'
 import type { ModelSettings } from '@/lib/api/settingsApi'
 import type { LlmProfileMetadata } from '@/lib/llmSuggestions'
 import {
@@ -67,7 +67,8 @@ const workspaceClosed = (environmentId: string | null) => {
  * Applies what a refused turn puts back once its environment is shown and `ready`, such as with its project's
  * chats loaded. A switch away first holds it again for that environment's next showing, which starts its chats anew.
  * Its workspace closes while a connection is checked, its environment still active: it waits then too, so a
- * switch that goes through holds it for that next showing, rather than wiping it with the chats it left.
+ * switch that goes through holds it for that next showing, rather than wiping it with the chats it left, and one
+ * that fails or is cancelled shows it as the workspace opens again.
  */
 function whenShownAndReady(environmentId: string | null, ready: () => boolean, apply: () => void) {
     whenEnvironmentShown(environmentId, () => {
@@ -79,7 +80,8 @@ function whenShownAndReady(environmentId: string | null, ready: () => boolean, a
             if (restarted) whenShownAndReady(environmentId, ready, apply)
             else apply()
         }
-        const stop = useStore.subscribe(attempt)
+        const stops = [useStore.subscribe(attempt), subscribeActiveEnvironment(attempt)]
+        const stop = () => stops.forEach((unsubscribe) => unsubscribe())
         attempt()
     })
 }

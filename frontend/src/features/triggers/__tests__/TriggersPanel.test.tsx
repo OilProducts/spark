@@ -1,7 +1,9 @@
 import { TriggersSessionController } from '@/app/AppSessionControllers'
 import { TriggersPanel } from '@/features/triggers/TriggersPanel'
 import { browserTimeZone, createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
+import { refreshLocalEnvironments } from '@/lib/activeEnvironment'
 import { triggerKey } from '@/lib/workspaceClient'
+import { switchEnvironment } from '@/test/environments'
 import { useStore } from '@/store'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -323,7 +325,7 @@ describe('TriggersPanel', () => {
     renderTriggersPanel()
 
     await user.click(await screen.findByTestId('trigger-row-trigger-webhook'))
-    expect(screen.getByText(/Send a POST request/i)).toBeVisible()
+    expect(screen.getAllByTestId('trigger-webhook-destination')[1]).toHaveTextContent(/, with these headers:$/)
     expect(screen.getAllByText(/webhook-key-1/).length).toBeGreaterThan(0)
 
     await user.click(screen.getByTestId('trigger-regenerate-secret-button'))
@@ -331,6 +333,71 @@ describe('TriggersPanel', () => {
     await waitFor(() => {
       expect(screen.getByText(/new-webhook-secret/)).toBeVisible()
     })
+  })
+
+  it.each([
+    ['this machine', null],
+    ['a linked environment', 'env-win'],
+  ])('names where a webhook on %s is called alike as it is created, edited and shown, never this Spark\'s proxy to a remote', async (_where, environmentId) => {
+    const proxy = '/workspace/api/environments/links/env-win/proxy'
+    const direct = 'https://win-box:8000/workspace/api/webhooks'
+    let links = [{ environment_id: 'env-win', origin: 'https://win-box:8000', label: 'Windows Workstation', created_at: '' }]
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = resolveRequestUrl(input)
+      if (url === '/workspace/api/environments/links') return jsonResponse({ links })
+      if (url.endsWith('/workspace/api/triggers')) {
+        return jsonResponse([makeTrigger({ id: 'trigger-webhook', name: 'Webhook trigger', source_type: 'webhook', source: { webhook_key: 'webhook-key-1' } })])
+      }
+      if (isFlowList(url.replace(proxy, ''))) return jsonResponse(PROJECT_FLOWS)
+      throw new Error(`Unhandled request: ${url}`)
+    })
+    await refreshLocalEnvironments()
+    if (environmentId) await switchEnvironment(environmentId)
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const expectDestinations = (count: number) => {
+      const destinations = screen.getAllByTestId('trigger-webhook-destination')
+      expect(destinations).toHaveLength(count)
+      for (const destination of destinations) {
+        if (environmentId === null) {
+          expect(destination).toHaveTextContent('Another service starts this trigger by sending a POST request with a JSON body to /workspace/api/webhooks')
+          expect(destination).not.toHaveTextContent('runs on')
+        } else {
+          expect(destination).toHaveTextContent(`This trigger runs on Windows Workstation. Another service starts it by sending a POST request with a JSON body directly to ${direct}, not through this Spark`)
+        }
+      }
+      // A remote's page names its webhooks only by their direct URL.
+      const page = document.body.textContent ?? ''
+      if (environmentId) {
+        expect(page.replaceAll(direct, '')).not.toContain('/workspace/api/webhooks')
+        expect(page).not.toContain(proxy)
+        expect(page).not.toContain(window.location.origin)
+      }
+    }
+
+    // The saved trigger's edit form and its details.
+    await user.click(await screen.findByTestId('trigger-row-trigger-webhook'))
+    expect(screen.getAllByTestId('trigger-webhook-destination')[1]).toHaveTextContent(/, with these headers:$/)
+    expectDestinations(2)
+
+    // The create form.
+    const form = await openCreateTriggerForm(user)
+    await user.selectOptions(form.getByLabelText('Starts when'), 'webhook')
+    expect(form.getByTestId('trigger-webhook-destination')).toHaveTextContent(/, with a key and secret that Spark creates for it\.$/)
+    expectDestinations(1)
+    if (!environmentId) return
+
+    // Another tab removed the link: where to call it is no longer known, and nothing names a destination.
+    await user.click(screen.getByTestId('trigger-row-trigger-webhook'))
+    links = []
+    await act(() => refreshLocalEnvironments())
+    const destinations = screen.getAllByTestId('trigger-webhook-destination')
+    expect(destinations).toHaveLength(2)
+    for (const destination of destinations) {
+      expect(destination).toHaveTextContent('This trigger runs on env-win, which this Spark is no longer linked to, so its webhook address is unavailable.')
+    }
+    expect(document.body.textContent).not.toContain('/workspace/api/webhooks')
+    expect(document.body.textContent).not.toContain('https://win-box:8000')
   })
 
   it('shows errors at the field in plain words, and saves an interval in a unit as seconds', async () => {

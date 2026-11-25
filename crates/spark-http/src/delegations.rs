@@ -469,15 +469,18 @@ async fn proxy_linked_environment(
     let verified = answered_as.map_or(public, |id| id.as_bytes() == link.environment_id.as_bytes())
         || (!public && response.status() == StatusCode::UNAUTHORIZED);
     if !verified {
-        return Ok(detail(
+        let answered_as = answered_as.map(|id| String::from_utf8_lossy(id.as_bytes()).into_owned());
+        let detail = format!(
+            "{} answered as environment {:?}, not the linked {:?}; link it again if it moved.",
+            link.origin, answered_as, link.environment_id
+        );
+        // `answered_as` names another environment, which only pairing again fixes, apart
+        // from an answer naming none, such as a gateway's while the peer is down.
+        return Ok((
             StatusCode::BAD_GATEWAY,
-            format!(
-                "{} answered as environment {:?}, not the linked {:?}; link it again if it moved.",
-                link.origin,
-                answered_as.map(|id| String::from_utf8_lossy(id.as_bytes()).into_owned()),
-                link.environment_id
-            ),
-        ));
+            Json(json!({ "detail": detail, "answered_as": answered_as })),
+        )
+            .into_response());
     }
     let status = response.status();
     let mut headers = HeaderMap::new();
