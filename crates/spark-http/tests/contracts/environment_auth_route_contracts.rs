@@ -1494,6 +1494,7 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
             cancel_acknowledged_at: None,
             created_at: String::new(),
             updated_at: String::new(),
+            submitted_at: None,
         })
         .expect("pending delegation");
     let polled = send(
