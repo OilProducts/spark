@@ -223,7 +223,13 @@ pub fn chat_models_with_codex_result(
 fn native_setup(result: &NativeModels, program: &Option<String>) -> &'static str {
     match result {
         Ok(_) => "ready",
-        Err(_) if !acp::program_found(program.as_deref().unwrap_or_default(), None) => {
+        // Codex runs with Spark's own environment.
+        Err(_)
+            if !acp::program_found(
+                program.as_deref().unwrap_or_default(),
+                spark_common::agent_settings::EnvironmentInheritancePolicy::InheritAll,
+            ) =>
+        {
             "not_installed"
         }
         Err(_) => "unreachable",

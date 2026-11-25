@@ -773,28 +773,28 @@ fn live_harness(request: &AgentTurnRequest, harness_id: &str) -> Option<AcpHarne
     agents.acp_harnesses.get(harness_id).cloned()
 }
 
-/// Whether `program` names an executable file: a path that exists, or a bare
-/// name found on `path` (else Spark's own `PATH`), honoring `PATHEXT` on
-/// Windows. A relative path is taken as found, since where it resolves depends
-/// on the launch.
-pub fn program_found(program: &str, path: Option<&str>) -> bool {
+/// Whether a harness registered with `program` and no `env` of its own finds
+/// it under `inheritance`, as its setup and launches do. A relative path is
+/// taken as found, since where it resolves depends on the launch's project.
+pub fn program_found(program: &str, inheritance: EnvironmentInheritancePolicy) -> bool {
     let candidate = Path::new(program);
-    if candidate.is_absolute() {
-        return candidate.is_file();
-    }
-    if candidate.components().count() > 1 {
+    if !candidate.is_absolute() && candidate.components().count() > 1 {
         return true;
     }
-    crate::local_environment::find_executable_on_path(program, path.map(std::ffi::OsStr::new))
-        .is_some()
+    let harness = AcpHarness {
+        name: String::new(),
+        executable: program.to_string(),
+        args: Vec::new(),
+        env: BTreeMap::new(),
+        permission_policy: Default::default(),
+        system_instructions: None,
+    };
+    found(&harness_command(&harness, inheritance, None, []))
 }
 
 /// `harness`'s program in `cwd` (else Spark's own directory) with the
 /// environment it inherits under `inheritance`, its own `env`, then
-/// `bindings`, applied in that order. A program its child finds is named as
-/// found; launch no other, since the system's own search would look past the
-/// child's `PATH`, as Windows does through Spark's, or in the work area for an
-/// empty entry.
+/// `bindings`, applied in that order.
 fn harness_command(
     harness: &AcpHarness,
     inheritance: EnvironmentInheritancePolicy,
@@ -816,9 +816,14 @@ fn harness_command(
         command
     };
     let named = command(harness.executable.as_ref());
-    // So setup and turns run the file their child finds, such as a project's
-    // npm `.cmd` shim, which a Windows launch of a bare name would not try.
-    match crate::local_environment::child_program(&named) {
+    // A Windows launch of a bare name tries only `.exe`, so there the launch
+    // names the file its child finds, such as a project's npm `.cmd` shim, and
+    // [`ensure_found`] stops any other. Elsewhere the system's own search
+    // runs, as from a shell.
+    match cfg!(windows)
+        .then(|| crate::local_environment::child_program(&named))
+        .flatten()
+    {
         Some(program) => command(program.as_os_str()),
         None => named,
     }
@@ -827,6 +832,15 @@ fn harness_command(
 /// Whether `command` from [`harness_command`] runs a program its child finds.
 fn found(command: &Command) -> bool {
     crate::local_environment::child_program(command).is_some()
+}
+
+/// Stops a Windows launch of a program its child does not find, which the
+/// system would look for past the child's `PATH`, such as on Spark's own.
+fn ensure_found(command: &Command) -> std::io::Result<()> {
+    if cfg!(windows) && !found(command) {
+        return Err(std::io::ErrorKind::NotFound.into());
+    }
+    Ok(())
 }
 
 /// The configuration generation a launch of `harness` records: its
@@ -1006,17 +1020,21 @@ fn probe(
         .collect();
     // Only a program its child cannot find is missing; one that exists but
     // cannot start, such as a script whose interpreter is gone, failed.
-    if !found(&command) {
-        return Err(ProbeFailure {
-            missing: true,
-            message: format!("executable not found: {}", harness.executable),
-            ..Default::default()
-        });
-    }
-    let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
-        probe_protocol(endpoints, cwd, program, method, done)
-    })
-    .map_err(|error| format!("launch failed: {error}"))?;
+    let missing = !found(&command);
+    let connection = ensure_found(&command)
+        .and_then(|()| {
+            stdio_transport::launch(command, LIMITS, move |endpoints| {
+                probe_protocol(endpoints, cwd, program, method, done)
+            })
+        })
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound if missing => ProbeFailure {
+                missing: true,
+                message: format!("executable not found: {}", harness.executable),
+                ..Default::default()
+            },
+            _ => format!("launch failed: {error}").into(),
+        })?;
     let (timeout, step) = match sign_in {
         Some(_) => (SIGN_IN_TIMEOUT, "signing in"),
         None => (PROBE_TIMEOUT, "setup"),
@@ -1650,12 +1668,13 @@ fn turn(
                 work.plan.instructions.as_deref(),
                 &request.metadata,
             )?;
-            if !found(&command) {
-                return Err(format!(
+            let missing = !found(&command);
+            ensure_found(&command).map_err(|_| {
+                format!(
                     "ACP harness {harness_id} executable not found: {}",
                     harness.executable
-                ));
-            }
+                )
+            })?;
             let (turns_tx, turns_rx) = tokio::sync::mpsc::unbounded_channel();
             let alive = Arc::new(AtomicBool::new(true));
             let parked = Arc::new(tokio::sync::Notify::new());
@@ -1676,7 +1695,13 @@ fn turn(
                     pending_worker,
                 )
             })
-            .map_err(|error| format!("ACP harness {harness_id} launch failed: {error}"))?;
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound if missing => format!(
+                    "ACP harness {harness_id} executable not found: {}",
+                    harness.executable
+                ),
+                _ => format!("ACP harness {harness_id} launch failed: {error}"),
+            })?;
             attach_stop(&live, &connection);
             let launched = LiveWorker {
                 connection,
@@ -3776,12 +3801,8 @@ pub fn read_antigravity_usage(
     inheritance: EnvironmentInheritancePolicy,
 ) -> Result<Vec<crate::UsageWindow>, String> {
     let mut command = harness_command(harness, inheritance, None, []);
-    if !found(&command) {
-        return Err(format!(
-            "Could not launch {}: not found",
-            harness.executable
-        ));
-    }
+    ensure_found(&command)
+        .map_err(|error| format!("Could not launch {}: {error}", harness.executable))?;
     crate::local_environment::configure_process_group(&mut command);
     command
         .args(["-p", "/usage", "--output-format", "json"])
@@ -3913,6 +3934,31 @@ fn parse_antigravity_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Settings offers a known harness only when a registration of it finds
+    /// its program under the configured inheritance, as setup and launches
+    /// do. An explicit path needs no PATH, and on Windows may omit `.exe`.
+    #[test]
+    fn program_found_follows_the_inheritance_policy() {
+        let shell = if cfg!(windows) { "cmd" } else { "sh" };
+        for (inheritance, found) in [
+            (EnvironmentInheritancePolicy::InheritAll, true),
+            (EnvironmentInheritancePolicy::InheritCoreOnly, true),
+            (EnvironmentInheritancePolicy::InheritNone, false),
+        ] {
+            assert_eq!(program_found(shell, inheritance), found, "{inheritance:?}");
+        }
+        let exe = std::env::current_exe().unwrap();
+        let explicit = if cfg!(windows) {
+            exe.with_extension("")
+        } else {
+            exe
+        };
+        assert!(program_found(
+            explicit.to_str().unwrap(),
+            EnvironmentInheritancePolicy::InheritNone
+        ));
+    }
 
     #[test]
     fn deferred_end_uses_in_progress_idle_until_an_assistant_message_is_open() {

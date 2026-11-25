@@ -3331,6 +3331,7 @@ fn find_codex_shim(path: Option<&OsStr>, pathext: &OsStr) -> Option<PathBuf> {
             .iter()
             .map(|shim| directory.join(shim))
             .find(|shim| shim.is_file())
+            .map(crate::local_environment::launched)
     })
 }
 
@@ -4183,17 +4184,24 @@ mod tests {
 
         let resolved = resolve_codex_executable(None, Some(&path), &[]);
 
-        assert_eq!(resolved, bin.join("codex.cmd"));
+        // A shim takes PATHEXT's case, which an NTFS lookup ignores.
+        let same = |found: &Path, expected: PathBuf| {
+            assert!(
+                found.as_os_str().eq_ignore_ascii_case(&expected),
+                "{found:?}"
+            );
+        };
+        same(&resolved, bin.join("codex.cmd"));
         // An earlier batch shim comes first, as a bare `codex` finds it.
         let earlier = temp.path().join("earlier");
         fs::create_dir_all(&earlier).expect("earlier dir");
         fs::write(earlier.join("codex.bat"), "").expect("batch shim");
         let path = env::join_paths([&earlier, &bin]).expect("PATH");
         let resolved = resolve_codex_executable(None, Some(&path), &[]);
-        assert_eq!(resolved, earlier.join("codex.bat"));
+        same(&resolved, earlier.join("codex.bat"));
         let bare = crate::local_environment::find_executable_on_path("codex", Some(&path))
             .expect("bare codex");
-        assert!(bare.as_os_str().eq_ignore_ascii_case(&resolved), "{bare:?}");
+        same(&bare, resolved);
         // A complete bundle still wins.
         let complete = create_codex(&temp.path().join("complete"), true);
         let path = env::join_paths([&bin, complete.parent().unwrap()]).expect("PATH");

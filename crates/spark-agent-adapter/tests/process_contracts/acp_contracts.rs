@@ -118,8 +118,8 @@ fn other(events: &[TurnStreamEvent], kind: &str) -> Vec<TurnStreamEvent> {
 
 /// Elsewhere than Windows a launch searches PATH as the system does: an entry
 /// relative to the work area, such as `node_modules/.bin`, finds the project's
-/// program, and a file it cannot run earlier on PATH is passed over. An empty
-/// entry adds no search of the work area. A program on no PATH entry is not
+/// program, an empty entry the work area itself, and a file it cannot run
+/// earlier on PATH is passed over. A program on no PATH entry is not
 /// installed; one found whose interpreter is missing failed to launch.
 #[cfg(unix)]
 #[test]
@@ -132,16 +132,17 @@ fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
         std::fs::create_dir_all(dir).unwrap();
     }
     std::os::unix::fs::symlink(FAKE, bin.join("agent")).unwrap();
-    std::os::unix::fs::symlink(FAKE, project.join("stray")).unwrap();
+    std::os::unix::fs::symlink(FAKE, project.join("local")).unwrap();
     std::fs::write(blocker.join("agent"), "not a program").unwrap();
     let broken = bin.join("broken");
     std::fs::write(&broken, "#!/missing/interpreter\n").unwrap();
     std::fs::set_permissions(&broken, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = format!("{}::node_modules/.bin", blocker.display());
     let discover = |executable: &str| {
         let harness = serde_json::from_value(json!({
             "name": "Project agent",
             "executable": executable,
-            "env": {"PATH": format!("{}::node_modules/.bin", blocker.display())},
+            "env": {"PATH": path},
         }))
         .unwrap();
         acp::discover(
@@ -152,16 +153,22 @@ fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
         )
     };
 
-    let found = discover("agent");
-    assert_eq!(found.setup_status, "ready", "{:?}", found.error);
-    for executable in ["missing-agent", "stray"] {
-        let missing = discover(executable);
+    for executable in ["agent", "local"] {
+        let found = discover(executable);
         assert_eq!(
-            missing.setup_status, "not_installed",
+            found.setup_status, "ready",
             "{executable}: {:?}",
-            missing.error
+            found.error
         );
     }
+    let local = request(
+        &project,
+        json!({}),
+        json!({"executable": "local", "env": {"PATH": path}}),
+    );
+    run(&local, |_| {}).0.expect("turn");
+    let missing = discover("missing-agent");
+    assert_eq!(missing.setup_status, "not_installed", "{:?}", missing.error);
     for executable in ["broken", broken.to_str().unwrap()] {
         let failed = discover(executable);
         assert_eq!(failed.setup_status, "unreachable", "{executable}");
@@ -242,22 +249,38 @@ fn setup(request: &AgentTurnRequest) -> acp::AcpDiscovery {
 }
 
 /// A Windows probe and turn run the program the harness's own child would:
-/// by the `PATHEXT` it registers, in any spelling, and an explicit relative
-/// path from the project.
+/// by the `PATHEXT` it registers, in any spelling, an explicit relative path
+/// from the project, and an explicit path without `.exe`. Where the launch
+/// would run an `agent.cmd.exe` beside the `agent.cmd` found, both name it, so
+/// multiline instructions reach it as an argument.
 #[cfg(windows)]
 #[test]
 fn acp_windows_launch_finds_the_program_by_the_harness_pathext_and_project() {
     let dir = tempfile::tempdir().unwrap();
-    let bin = dir.path().join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
+    let (bin, beside) = (dir.path().join("bin"), dir.path().join("beside"));
+    for directory in [&bin, &beside] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
     // Spark's own PATHEXT would pick the failing batch file.
     std::fs::write(bin.join("agent.bat"), "@exit /b 1\r\n").unwrap();
     std::fs::write(bin.join("agent.cmd"), format!("@\"{FAKE}\" %*\r\n")).unwrap();
+    std::fs::write(beside.join("agent.cmd"), "@exit /b 1\r\n").unwrap();
+    std::fs::copy(FAKE, beside.join("agent.cmd.exe")).unwrap();
     for registration in [
         json!({"executable": "agent", "env": {"PATH": bin, "Pathext": ".CMD;.BAT;.EXE"}}),
         json!({"executable": r"bin\agent.cmd"}),
+        json!({"executable": FAKE.strip_suffix(".exe").unwrap()}),
+        json!({
+            "executable": "agent",
+            "env": {"PATH": beside, "Pathext": ".CMD"},
+            "system_instructions": {"args": ["--system", "{{instructions}}"]},
+        }),
     ] {
-        let chat = request(dir.path(), json!({}), registration.clone());
+        let mut chat = request(dir.path(), json!({}), registration.clone());
+        chat.metadata.insert(
+            AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
+            json!("Be exact.\nSay so twice."),
+        );
         let found = setup(&chat);
         assert_eq!(
             found.setup_status, "ready",

@@ -683,7 +683,7 @@ fn shell_command(command: &str) -> Command {
 pub(crate) fn inherited_environment(
     policy: EnvironmentInheritancePolicy,
 ) -> BTreeMap<String, String> {
-    inherit(env::vars(), policy)
+    inherit(spark_common::paths::utf8_env_vars().into_iter(), policy)
 }
 
 /// The variables of `vars` a child inherits under `policy`.
@@ -1020,8 +1020,8 @@ pub(crate) fn own_pathext() -> std::ffi::OsString {
 /// `PATH` and `PATHEXT` `command` sets, whose whole environment its caller
 /// sets after `env_clear`: an explicit path from the child's directory, else
 /// the first match on `PATH`, whose relative entries resolve from that
-/// directory too. Nothing the child does not receive, such as Spark's own
-/// `PATH`, and no empty `PATH` entry makes a directory a search location.
+/// directory too, as does an empty one elsewhere than Windows. Nothing the
+/// child does not receive, such as Spark's own `PATH`, is searched.
 pub(crate) fn child_program(command: &Command) -> Option<PathBuf> {
     let child_var = |name: &str| {
         command
@@ -1031,7 +1031,7 @@ pub(crate) fn child_program(command: &Command) -> Option<PathBuf> {
             .and_then(|(_, value)| value)
             .map(std::ffi::OsStr::to_os_string)
     };
-    let path = child_var("PATH").unwrap_or_default();
+    let path = child_var("PATH");
     let pathext =
         cfg!(windows).then(|| child_var("PATHEXT").unwrap_or_else(|| DEFAULT_PATHEXT.into()));
     let directory = command.get_current_dir().unwrap_or(Path::new(""));
@@ -1043,8 +1043,9 @@ pub(crate) fn child_program(command: &Command) -> Option<PathBuf> {
     };
     find_executable_in(
         program.to_str()?,
-        env::split_paths(&path)
-            .filter(|entry| !entry.as_os_str().is_empty())
+        path.iter()
+            .flat_map(env::split_paths)
+            .filter(|entry| !(cfg!(windows) && entry.as_os_str().is_empty()))
             .map(|entry| directory.join(entry)),
         pathext.as_deref(),
     )
@@ -1077,7 +1078,8 @@ fn find_executable_in(
 ) -> Option<PathBuf> {
     let candidate = Path::new(name);
     if candidate.is_absolute() || candidate.components().count() > 1 {
-        return is_executable(candidate).then(|| candidate.to_path_buf());
+        let launched = launched(candidate.to_path_buf());
+        return is_executable(&launched).then_some(launched);
     }
     let pathext = pathext
         .map(std::ffi::OsStr::to_string_lossy)
@@ -1095,16 +1097,38 @@ fn find_executable_in(
         .map(|extension| format!("{name}{extension}"))
         .chain([name.to_string()])
         .collect::<Vec<_>>();
-    // An empty entry would search the launch's own directory.
+    // Windows searches no empty entry; elsewhere one names the launch's own
+    // directory.
     directories
         .into_iter()
-        .filter(|directory| !directory.as_os_str().is_empty())
+        .filter(|directory| !(cfg!(windows) && directory.as_os_str().is_empty()))
         .find_map(|directory| {
             names
                 .iter()
                 .map(|name| directory.join(name))
                 .find(|candidate| is_executable(candidate))
+                .map(launched)
         })
+}
+
+/// The file a launch of the path `program` runs. For any path not ending in
+/// `.exe`, Rust's Windows launcher runs `program` with `.exe` appended when
+/// that exists, and there is no way to launch `program` past it: so
+/// `C:\tools\agent` runs `agent.exe`, and an `agent.cmd` beside an
+/// `agent.cmd.exe` runs the latter. Elsewhere `program` itself.
+pub(crate) fn launched(program: PathBuf) -> PathBuf {
+    if cfg!(windows)
+        && !program
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    {
+        let mut exe = program.clone().into_os_string();
+        exe.push(".exe");
+        if Path::new(&exe).is_file() {
+            return exe.into();
+        }
+    }
+    program
 }
 
 /// Whether `path` is a file a launch can run: elsewhere than Windows, one
@@ -1312,8 +1336,9 @@ mod tests {
             first.join("rg"),
             first.join("rg.ps1"),
             first.join("rg.cmd"),
-            first.join("rg.cmd.exe"),
             second.join("rg.exe"),
+            second.join("tool.cmd"),
+            second.join("tool.cmd.exe"),
         ] {
             executable(&file);
         }
@@ -1327,15 +1352,27 @@ mod tests {
         // shim a launch cannot start; elsewhere the script runs.
         assert_eq!(find("rg", windows), Some(first.join("rg.cmd")));
         assert_eq!(find("rg", None), Some(first.join("rg")));
-        // A name with an extension is taken as written, whatever PATHEXT holds.
+        // A name with an extension is taken as written, whatever PATHEXT
+        // holds, and found as Windows launches it: past a path not ending in
+        // `.exe`, the file with `.exe` appended when it exists.
         assert_eq!(find("rg.exe", windows), Some(second.join("rg.exe")));
-        assert_eq!(find("rg.cmd", pathext(".exe")), Some(first.join("rg.cmd")));
-        // Explicit paths resolve as given, never through PATH, and elsewhere
-        // than Windows only to a file with an execute bit.
+        let tool = if cfg!(windows) {
+            "tool.cmd.exe"
+        } else {
+            "tool.cmd"
+        };
+        assert_eq!(find("tool.cmd", pathext(".exe")), Some(second.join(tool)));
+        // Explicit paths resolve as given, never through PATH, on Windows with
+        // `.exe` appended as its launch does, and elsewhere only to a file
+        // with an execute bit.
         let explicit = second.join("rg.exe");
         assert_eq!(
             find(explicit.to_str().unwrap(), windows),
             Some(explicit.clone())
+        );
+        assert_eq!(
+            find(second.join("rg").to_str().unwrap(), windows),
+            cfg!(windows).then_some(explicit)
         );
         assert_eq!(find("first/rg", windows), None);
         assert_eq!(find("src/lib.rs", None).is_some(), cfg!(windows));
@@ -1343,7 +1380,7 @@ mod tests {
 
     /// A child's program is found by only the `PATH` and `PATHEXT` it
     /// receives, in any spelling on Windows, and an explicit relative path
-    /// from its directory, which no empty entry adds to the search.
+    /// from its directory, which an empty entry names elsewhere than Windows.
     #[test]
     fn child_program_follows_the_child_environment_and_directory() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1367,8 +1404,12 @@ mod tests {
             .env_clear()
             .env("PATH", env::join_paths(["", "bin"]).unwrap())
             .env("Pathext", ".cmd;.bat");
-        let found = if cfg!(windows) { "agent.cmd" } else { "agent" };
-        assert_eq!(child_program(&bare), Some(bin.join(found)));
+        let found = if cfg!(windows) {
+            bin.join("agent.cmd")
+        } else {
+            temp.path().join("agent")
+        };
+        assert_eq!(child_program(&bare), Some(found));
 
         // Without a PATH of its own the child finds nothing, not the work
         // area's program nor one on Spark's own PATH.
