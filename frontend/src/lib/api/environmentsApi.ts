@@ -1,7 +1,6 @@
 import { fetchWorkspaceJsonValidated } from './apiClient'
 import {
     activeApiPrefix,
-    environmentProxyPrefix,
     parseEnvironmentDescriptor,
     parseEnvironmentLink,
     parseEnvironmentLinks,
@@ -9,6 +8,7 @@ import {
     type EnvironmentLink,
 } from '../activeEnvironment'
 import {
+    ApiSchemaError,
     asOptionalNullableString,
     asOptionalString,
     asUnknownRecord,
@@ -17,7 +17,7 @@ import {
     fetchJsonWithValidation,
 } from './shared'
 
-export { environmentProxyPrefix, type EnvironmentDescriptor, type EnvironmentLink }
+export { type EnvironmentDescriptor, type EnvironmentLink }
 
 export type PairingCodeReceipt = {
     environment_id: string
@@ -30,6 +30,8 @@ export type PeerToken = {
     label: string
     created_at: string
     revoked_at: string | null
+    /** The token authenticating the request that listed it. */
+    is_current: boolean
 }
 
 export type DelegationQuestionOption = {
@@ -102,17 +104,17 @@ function parsePeerTokens(payload: unknown, endpoint: string): PeerToken[] {
             label: asOptionalString(row.label) ?? '',
             created_at: asOptionalString(row.created_at) ?? '',
             revoked_at: asOptionalNullableString(row.revoked_at) ?? null,
+            is_current: row.is_current === true,
         }
     })
 }
 
+/** A peer relays its `GET /workspace/api/projects`: an array of project records. */
 function parseLinkProjects(payload: unknown, endpoint: string): string[] {
-    const record = expectObjectRecord(payload, endpoint)
-    const items = Array.isArray(record.projects) ? record.projects : []
-    return items
-        .map((item) => asUnknownRecord(item))
-        .map((row) => asOptionalString(row?.project_path))
-        .filter((path): path is string => Boolean(path))
+    if (!Array.isArray(payload)) {
+        throw new ApiSchemaError(endpoint, 'Expected an array of projects.')
+    }
+    return payload.map((item) => expectString(expectObjectRecord(item, endpoint).project_path, endpoint, 'project_path'))
 }
 
 function parseOptions(value: unknown): DelegationQuestionOption[] | undefined {
@@ -195,8 +197,8 @@ function parseDelegations(payload: unknown, endpoint: string): DelegationOut[] {
     return items.map((item) => parseDelegation(item, endpoint))
 }
 
-export function fetchEnvironmentDescriptor(environmentId?: string | null): Promise<EnvironmentDescriptor> {
-    const prefix = environmentId === undefined ? activeApiPrefix() : environmentProxyPrefix(environmentId)
+export function fetchEnvironmentDescriptor(): Promise<EnvironmentDescriptor> {
+    const prefix = activeApiPrefix()
     return fetchJsonWithValidation(`${prefix}/environment`, undefined, `GET ${prefix}/environment`, parseEnvironmentDescriptor)
 }
 
@@ -266,11 +268,10 @@ export function fetchLinkProjects(environmentId: string): Promise<string[]> {
     )
 }
 
-export function fetchDelegations(filter?: { open?: boolean; paused?: boolean; environment_id?: string }): Promise<DelegationOut[]> {
+export function fetchDelegations(filter?: { open?: boolean; paused?: boolean }): Promise<DelegationOut[]> {
     const params = new URLSearchParams()
     if (filter?.open) params.set('open', 'true')
     if (filter?.paused) params.set('paused', 'true')
-    if (filter?.environment_id) params.set('environment_id', filter.environment_id)
     const suffix = params.toString() ? `?${params.toString()}` : ''
     return fetchWorkspaceJsonValidated(`/delegations${suffix}`, undefined, 'GET /workspace/api/delegations', parseDelegations)
 }

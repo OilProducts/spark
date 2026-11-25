@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -349,6 +350,178 @@ async fn paired_token_is_accepted_until_revoked() {
     )
     .await;
     assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn bearer_peer_sees_its_current_token_and_cannot_revoke_it() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app = crate::store_app_default(settings(temp.path()));
+    let (self_id, self_secret) = pair_token(&app, "laptop").await;
+    let (other_id, other_secret) = pair_token(&app, "ci").await;
+    let bearer = format!("Bearer {self_secret}");
+    let auth = [("authorization", bearer.as_str())];
+    let tokens_uri = "/workspace/api/environment/tokens";
+    let self_revoke = format!("/workspace/api/environment/tokens/{self_id}/revoke");
+    let loopback = "127.0.0.1:40000";
+    // Token ID to the listed field, whatever order tokens come in.
+    let field = |listed: &Value, name: &str| {
+        listed["tokens"]
+            .as_array()
+            .expect("tokens")
+            .iter()
+            .map(|token| (token["token_id"].to_string(), token[name].clone()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let ids = [json!(self_id).to_string(), json!(other_id).to_string()];
+
+    // A peer paired over loopback or the bound host arrives from a local
+    // address, still presenting its token.
+    for peer in [REMOTE, loopback] {
+        let listed = send(&app, "GET", tokens_uri, Some(peer), &auth, None).await;
+        assert_eq!(listed.status(), StatusCode::OK, "{peer}");
+        let listed = text(listed).await;
+        assert!(!listed.contains(&self_secret) && !listed.contains(&other_secret));
+        assert_eq!(
+            field(&serde_json::from_str(&listed).expect("json"), "is_current"),
+            BTreeMap::from([
+                (ids[0].clone(), json!(true)),
+                (ids[1].clone(), json!(false))
+            ]),
+            "{peer}"
+        );
+
+        let refused = send(&app, "POST", &self_revoke, Some(peer), &auth, None).await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT, "{peer}");
+        assert_eq!(
+            json(refused).await,
+            json!({"detail": "Cannot revoke the peer token authenticating this connection."})
+        );
+        let still = send(&app, "GET", tokens_uri, Some(peer), &auth, None).await;
+        assert_eq!(still.status(), StatusCode::OK, "{peer}");
+        assert_eq!(
+            field(&json(still).await, "revoked_at")[&ids[0]],
+            Value::Null,
+            "{peer}"
+        );
+    }
+
+    // The owner's own requests use no token, so the owner may revoke it.
+    let local = json(send(&app, "GET", tokens_uri, Some(loopback), &[], None).await).await;
+    assert_eq!(
+        field(&local, "is_current"),
+        BTreeMap::from([
+            (ids[0].clone(), json!(false)),
+            (ids[1].clone(), json!(false))
+        ])
+    );
+    let revoked = send(&app, "POST", &self_revoke, Some(loopback), &[], None).await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_bearer_peer_revokes_other_tokens_and_the_owner_revokes_its_token() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app = crate::store_app_default(settings(temp.path()));
+    let (self_id, self_secret) = pair_token(&app, "laptop").await;
+    let (other_id, other_secret) = pair_token(&app, "ci").await;
+    let bearer = format!("Bearer {self_secret}");
+    let other_bearer = format!("Bearer {other_secret}");
+    let tokens_uri = "/workspace/api/environment/tokens";
+
+    let other_revoke = format!("/workspace/api/environment/tokens/{other_id}/revoke");
+    let revoked = send(
+        &app,
+        "POST",
+        &other_revoke,
+        Some(REMOTE),
+        &[("authorization", bearer.as_str())],
+        None,
+    )
+    .await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+    assert_eq!(
+        json(revoked).await,
+        json!({"token_id": other_id, "revoked": true})
+    );
+    let refused = send(
+        &app,
+        "GET",
+        tokens_uri,
+        Some(REMOTE),
+        &[("authorization", other_bearer.as_str())],
+        None,
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+
+    let self_revoke = format!("/workspace/api/environment/tokens/{self_id}/revoke");
+    let revoked = send(&app, "POST", &self_revoke, None, &[], None).await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+    let refused = send(
+        &app,
+        "GET",
+        tokens_uri,
+        Some(REMOTE),
+        &[("authorization", bearer.as_str())],
+        None,
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_token_lookup_failure_is_an_error_not_local_owner_trust() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let app = crate::store_app_default(settings.clone());
+    let (_, secret) = pair_token(&app, "laptop").await;
+    let bearer = format!("Bearer {secret}");
+    // The token lookup now fails. Dropped over SQL, not by deleting the file,
+    // which Windows refuses while the live store holds it open.
+    rusqlite::Connection::open(settings.data_dir.join("state.sqlite3"))
+        .and_then(|connection| connection.execute_batch("DROP TABLE peer_tokens"))
+        .expect("drop peer tokens");
+
+    let response = send(
+        &app,
+        "GET",
+        "/attractor/status",
+        Some("127.0.0.1:40000"),
+        &[("authorization", bearer.as_str())],
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+/// Pairs a token labelled `label` and returns its ID and secret.
+async fn pair_token(app: &Router, label: &str) -> (String, String) {
+    let code = send(
+        app,
+        "POST",
+        "/workspace/api/environment/pairing-codes",
+        None,
+        &[],
+        Some(&json!({"label": label}).to_string()),
+    )
+    .await;
+    let code = json(code).await["code"].as_str().expect("code").to_string();
+    // A peer address no other test pairs from, under the per-peer limit.
+    let paired = send(
+        app,
+        "POST",
+        "/environment/pair",
+        Some("10.0.0.50:40000"),
+        &[],
+        Some(&json!({"code": code}).to_string()),
+    )
+    .await;
+    assert_eq!(paired.status(), StatusCode::OK);
+    let paired = json(paired).await;
+    (
+        paired["token_id"].as_str().expect("token id").to_string(),
+        paired["token"].as_str().expect("token").to_string(),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
