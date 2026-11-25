@@ -16,7 +16,7 @@ import {
     type DelegationOut,
     type DelegationQuestion,
 } from '@/lib/api/environmentsApi'
-import { getActiveEnvironmentId, useActiveEnvironment } from '@/lib/activeEnvironment'
+import { ENVIRONMENT_LINKS_CHANGED_EVENT, getActiveEnvironmentId, useActiveEnvironment } from '@/lib/activeEnvironment'
 
 type Filter = 'all' | 'open' | 'paused'
 
@@ -30,11 +30,18 @@ type Failure = { requestKey: string; message: string }
 
 /**
  * An environment's drafts, the questions answered there, and its refused replies, each by question,
+ * its failed cancels by delegation, each shown on its row until a refresh shows it canceling or sealed,
  * and a reload after a change that failed while no card showed the environment, for the next one to show.
  */
-type Answers = { drafts: Record<string, AnswerDraft>; acknowledged: ReadonlySet<string>; failures: Record<string, Failure>; missedReload?: string }
+type Answers = {
+    drafts: Record<string, AnswerDraft>
+    acknowledged: ReadonlySet<string>
+    failures: Record<string, Failure>
+    cancelErrors: Record<string, string>
+    missedReload?: string
+}
 
-const NO_ANSWERS: Answers = { drafts: {}, acknowledged: new Set(), failures: {} }
+const NO_ANSWERS: Answers = { drafts: {}, acknowledged: new Set(), failures: {}, cancelErrors: {} }
 
 // Answers outlive the card, so leaving Settings and coming back keeps unsent drafts, a reply still
 // in flight and its failure, and which questions were answered (hidden until a snapshot drops them).
@@ -270,8 +277,9 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const requestSeqRef = useRef(0)
     // The last rows loaded and the filter they answer: another filter's rows are never shown.
     const [loaded, setLoaded] = useState<{ filter: Filter; records: DelegationOut[] } | null>(null)
-    const env = useActiveEnvironment().activeEnvironmentId ?? ''
-    const { drafts, acknowledged, failures } = useDelegationAnswers((all) => all[env] ?? NO_ANSWERS)
+    const { activeEnvironmentId, links, linksLoaded } = useActiveEnvironment()
+    const env = activeEnvironmentId ?? ''
+    const { drafts, acknowledged, failures, cancelErrors } = useDelegationAnswers((all) => all[env] ?? NO_ANSWERS)
     // Every delegation's latest record: live refresh falls back on it while a filter hasn't loaded, and
     // the ref lets a cancel confirmation act on what is true when it closes.
     const [seen, setSeen] = useState<Record<string, DelegationOut>>({})
@@ -285,8 +293,6 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const [loading, setLoading] = useState(false)
     const [busy, setBusy] = useState(false)
     const [loadError, setLoadError] = useState<string | null>(null)
-    // A failed cancel's error, by delegation, shown on its row until a refresh shows it canceling or sealed.
-    const [cancelErrors, setCancelErrors] = useState<Record<string, string>>({})
     // The last change's outcome; a failed reload after it stays until the next one.
     const [status, setStatus] = useState<{ text: string; failed?: boolean } | null>(null)
 
@@ -315,10 +321,12 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             seenRef.current = { ...kept, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }
             setSeen(seenRef.current)
             setLoadError(null)
-            setCancelErrors((errors) => Object.fromEntries(Object.entries(errors).filter(([id]) => {
-                const record = records.find((row) => row.delegation_id === id)
-                return !record || (!record.cancel_requested_at && record.phase !== 'sealed')
-            })))
+            updateAnswers(env, ({ cancelErrors }) => ({
+                cancelErrors: Object.fromEntries(Object.entries(cancelErrors).filter(([id]) => {
+                    const record = records.find((row) => row.delegation_id === id)
+                    return !record || (!record.cancel_requested_at && record.phase !== 'sealed')
+                })),
+            }))
             forgetUnasked(env, records, coversOpen)
         } catch (err) {
             if (current() || afterChange) throw err
@@ -346,16 +354,22 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     useEffect(() => {
         const report: ShownCard['report'] = async (done, updated) => {
             // The row shows the server's answer now, whether or not the reload below succeeds, unless the
-            // card already shows a newer record: one sealed is final.
-            // ponytail: updated_at has whole seconds, so a change in the answer's second loses to it until the next refresh.
+            // card already shows a newer record: one sealed is final. A pause shown from the answer's second
+            // stays over an unpaused answer, which may be the older, until a list drops it; a seal, which
+            // clears pauses, still ends it.
+            // ponytail: updated_at has whole seconds, so another change in the answer's second loses to it until the next refresh.
             const shown = updated && seenRef.current[updated.delegation_id]
             if (updated && !(shown && (shown.phase === 'sealed' || Date.parse(shown.updated_at) > Date.parse(updated.updated_at)))) {
-                seenRef.current = { ...seenRef.current, [updated.delegation_id]: updated }
+                const next = shown && shown.paused && !updated.paused && updated.phase !== 'sealed'
+                    && Date.parse(shown.updated_at) >= Date.parse(updated.updated_at)
+                    ? { ...updated, paused: shown.paused }
+                    : updated
+                seenRef.current = { ...seenRef.current, [next.delegation_id]: next }
                 setSeen(seenRef.current)
                 setLoaded((current) => current && {
                     ...current,
                     records: current.records.flatMap((row) => (
-                        row.delegation_id !== updated.delegation_id ? [row] : inFilter(updated, current.filter) ? [updated] : []
+                        row.delegation_id !== next.delegation_id ? [row] : inFilter(next, current.filter) ? [next] : []
                     )),
                 })
             }
@@ -377,6 +391,14 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     useEffect(() => {
         if (active) void refresh()
     }, [active, filter, refresh])
+
+    // Adding or removing one of this machine's links pauses or resumes the delegations through it.
+    useEffect(() => {
+        if (!active || activeEnvironmentId !== null) return
+        const onLinksChanged = () => void refresh()
+        window.addEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, onLinksChanged)
+        return () => window.removeEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, onLinksChanged)
+    }, [active, activeEnvironmentId, refresh])
 
     const rows = loaded?.filter === filter ? loaded.records : null
     const questionsOf = (record: DelegationOut) => (record.phase === 'accepted'
@@ -428,13 +450,15 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             if (!confirmed) return
         }
         setBusy(true)
-        setCancelErrors(({ [record.delegation_id]: _retried, ...errors }) => errors)
         const env = activeEnv()
+        updateAnswers(env, ({ cancelErrors: { [record.delegation_id]: _retried, ...cancelErrors } }) => ({ cancelErrors }))
         let updated: DelegationOut
         try {
             updated = await cancelDelegation(record.delegation_id)
         } catch (err) {
-            setCancelErrors((errors) => ({ ...errors, [record.delegation_id]: errorText(err, 'Could not cancel delegation.') }))
+            // Kept by environment, so a card reopened meanwhile shows it on the row.
+            const message = errorText(err, 'Could not cancel delegation.')
+            updateAnswers(env, ({ cancelErrors }) => ({ cancelErrors: { ...cancelErrors, [record.delegation_id]: message } }))
             setStatus(null)
             setBusy(false)
             return
@@ -509,7 +533,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                     Tasks handed off from this environment to linked Spark machines. Paused delegations can be canceled locally or resumed by re-linking.
                 </p>
                 {rows === null ? (
-                    loadError ? null : <p role="status" className="text-muted-foreground">Loading delegations…</p>
+                    // Only a request still out shows Loading: with none, a failed load or reload says why, and Refresh retries.
+                    loading && !loadError ? <p role="status" className="text-muted-foreground">Loading delegations…</p> : null
                 ) : rows.length === 0 ? (
                     <p className="text-xs text-muted-foreground">No matching delegations.</p>
                 ) : (
@@ -520,7 +545,10 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                             const questions = questionsOf(record)
                             // Answers go through the link to the other environment, which a paused
                             // delegation has lost, and a delegation being canceled no longer waits on them.
-                            const answerable = !record.paused && !record.cancel_requested_at
+                            // This machine's links show one removed before the delegation's record does.
+                            const unlinked = activeEnvironmentId === null && linksLoaded
+                                && !links.some((link) => link.environment_id === record.environment_id)
+                            const answerable = !record.paused && !record.cancel_requested_at && !unlinked
                             return (
                                 <li key={record.delegation_id}>
                                     <Well role="group" aria-label={`Delegation ${record.request_key} (${where})`} className="space-y-2 px-3 py-2">
@@ -570,7 +598,9 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                             <p className="text-xs text-muted-foreground">
                                                 {record.cancel_requested_at
                                                     ? 'Answering is unavailable while cancellation is pending.'
-                                                    : 'Answering is unavailable while this delegation is paused or its link is missing.'}
+                                                    : unlinked
+                                                        ? `Answering is unavailable: the link to ${record.environment_id} is missing.`
+                                                        : 'Answering is unavailable while this delegation is paused or its link is missing.'}
                                             </p>
                                         ) : null}
                                         {questions.map((question) => {

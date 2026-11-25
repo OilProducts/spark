@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
-import { resetActiveEnvironmentForTests, selectEnvironment } from '@/lib/activeEnvironment'
+import { notifyEnvironmentLinksChanged, refreshLocalEnvironments, resetActiveEnvironmentForTests, selectEnvironment } from '@/lib/activeEnvironment'
 import { DelegationsCard, useDelegationAnswers } from '../DelegationsCard'
 
 // Requests go through the real environmentsApi client and parser to a stubbed fetch.
@@ -420,6 +420,30 @@ it('shows a reload that fails after Settings was reopened on the reopened card, 
     expect(localAnswers().drafts).toEqual({})
     expect(localAnswers().acknowledged).toEqual(new Set(['del-f:form-done']))
     expect(sent(answerRoute('del-f', 'form-done'))).toHaveLength(1)
+})
+
+it('shows a failed reload after an answer that supersedes a reopened card\'s first load in place of "Loading", and recovers on Refresh', async () => {
+    const answer = later()
+    const first = later()
+    serve({
+        [LIST]: [ok(list(nightly)), first.reply, fail(500, 'database is locked'), ok(list(nightly))],
+        [answerRoute('del-1', 'q-approve')]: [answer.reply],
+    })
+    const view = renderCard()
+    await view.user.click(within(await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' }))
+    view.unmount()
+
+    const { user } = renderCard()
+    expect(await screen.findByText('Loading delegations…')).toBeInTheDocument()
+    await answer.resolve({})
+    expect(await screen.findByText('Sent answer for nightly-checks. Could not refresh delegations: Database is locked')).toBeInTheDocument()
+    await first.resolve(list(nightly))
+    expect(screen.queryByText('Loading delegations…')).not.toBeInTheDocument()
+    expect(screen.queryByText('nightly-checks')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    expect(await screen.findByText('nightly-checks')).toBeInTheDocument()
+    expect(sent(LIST)).toHaveLength(4)
 })
 
 it('keeps a Local reload that fails after the user opened a linked environment\'s Settings off that card', async () => {
@@ -954,6 +978,35 @@ it('disables answering on a delegation whose link is missing', async () => {
     expect(within(screen.getByRole('group', { name: asked('paused-task', 'Why?', 'del-2') })).getByRole('textbox', { name: 'Free-text answer' })).toBeDisabled()
 })
 
+it('disables answering as soon as this machine\'s link to the delegation\'s environment is removed, though the refresh it starts fails', async () => {
+    const link = { environment_id: 'env-b', origin: 'http://env-b.test', label: 'B', created_at: '2026-11-23T00:00:00Z' }
+    const reload = later()
+    serve({
+        ...ENVIRONMENTS,
+        'GET /workspace/api/environments/links': [ok({ links: [link] }), ok({ links: [] })],
+        [LIST]: [ok(list(nightly)), reload.reply],
+    })
+    await act(async () => { await refreshLocalEnvironments() })
+    renderCard()
+    const approve = within(await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' })
+    expect(approve).toBeEnabled()
+    await settled()
+
+    // EnvironmentLinksCard removed the link and announced it; EnvironmentBootstrap reloads this machine's links on that.
+    await act(async () => {
+        notifyEnvironmentLinksChanged()
+        await refreshLocalEnvironments()
+    })
+    expect(sent(LIST)).toHaveLength(2)
+    expect(approve).toBeDisabled()
+    expect(screen.getByText('Answering is unavailable: the link to env-b is missing.')).toBeInTheDocument()
+
+    await reload.resolve({ detail: 'database is locked' }, 500)
+    expect(await screen.findByText('Database is locked')).toBeInTheDocument()
+    expect(approve).toBeDisabled()
+    expect(screen.getByText('Answering is unavailable: the link to env-b is missing.')).toBeInTheDocument()
+})
+
 it('shows a pending cancellation over stale questions and a pause, and disables a duplicate Cancel', async () => {
     serve({ [LIST]: [ok(list(delegation('del-1', 'nightly-checks', [approveGate()], requested), { ...pausedTask, ...requested }))] })
     renderCard()
@@ -1125,6 +1178,31 @@ it('shows a failed cancel on its row, only where the row is listed, until a refr
     expect(screen.queryByText('Delegation is busy')).not.toBeInTheDocument()
 })
 
+it('shows a cancel that fails after Settings was left and reopened on the reopened row, and again on the next reopen', async () => {
+    const cancel = later()
+    serve({
+        [LIST]: [ok(list(nightly))],
+        [cancelRoute('del-1')]: [cancel.reply],
+    })
+    const first = renderCard()
+    await confirmCancel(first.user, 'nightly-checks')
+    await waitFor(() => expect(sent(cancelRoute('del-1'))).toHaveLength(1))
+    first.unmount()
+
+    const second = renderCard()
+    const row = () => screen.findByRole('group', { name: /^Delegation nightly-checks/ })
+    await settled()
+    await cancel.resolve({ detail: 'linked environment is unreachable' }, 503)
+    expect(await within(await row()).findByText('Linked environment is unreachable')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancel delegation nightly-checks' })).toBeEnabled()
+    second.unmount()
+
+    renderCard()
+    expect(await within(await row()).findByText('Linked environment is unreachable')).toBeInTheDocument()
+    await settled()
+    expect(screen.getByText('Linked environment is unreachable')).toBeInTheDocument()
+})
+
 it('refreshes a cancel started under All with the filter selected when it completes', async () => {
     const cancel = later()
     serve({
@@ -1191,9 +1269,12 @@ it('keeps a row the reopened list shows sealed when an older cancel response arr
     expect(sent(LIST)).toHaveLength(3)
 })
 
-it('keeps a newer paused row and its local seal on a reopened card when an older cancel response arrives and the reload after it fails', async () => {
+it.each([
+    ['a later second', '2026-11-23T00:02:00Z'],
+    ['the same second', '2026-11-23T00:01:00Z'],
+])('keeps a paused row from %s and its local seal on a reopened card when an unpaused cancel response arrives and the reload after it fails', async (_when, pausedAt) => {
     const cancel = later()
-    const unlinked = { ...nightly, ...requested, paused: 'No link to this environment; link it again to resume.', updated_at: '2026-11-23T00:02:00Z' }
+    const unlinked = { ...nightly, ...requested, paused: 'No link to this environment; link it again to resume.', updated_at: pausedAt }
     serve({
         [LIST]: [ok(list(nightly)), ok(list(unlinked)), fail(500, 'database is locked')],
         [cancelRoute('del-1')]: [cancel.reply],
@@ -1342,7 +1423,8 @@ it('releases unsent drafts, secrets included, once a delegation seals, keeping t
     serve({
         // The sealed delegation's last snapshot still lists its request.
         [LIST]: [ok(list(first, second)), ok(list({ ...first, phase: 'sealed', result: { status: 'completed' } }, unlinked)), fail(500, 'database is locked')],
-        [cancelRoute('del-2')]: [ok({ ...unlinked, phase: 'sealed', result: { status: 'canceled' } })],
+        // Sealing clears the pause, in the same second the list showed it paused.
+        [cancelRoute('del-2')]: [ok({ ...unlinked, paused: null, phase: 'sealed', result: { status: 'canceled' } })],
     })
     const { user } = renderCard()
     const token = async (requestKey: string, id: string) => within(await screen.findByRole('group', { name: asked(requestKey, 'Deploy token?', id) })).getByLabelText('Deploy token?')
@@ -1359,6 +1441,8 @@ it('releases unsent drafts, secrets included, once a delegation seals, keeping t
     // Sealing it locally releases its draft even though the reload after it fails.
     await confirmCancel(user, 'paused-task')
     expect(await screen.findByText('Canceled delegation paused-task. Could not refresh delegations: Database is locked')).toBeInTheDocument()
+    expect(screen.getByText('conversation · canceled')).toBeInTheDocument()
+    expect(screen.queryByText('No link to this environment; link it again to resume.')).not.toBeInTheDocument()
     expect(localAnswers().drafts).toEqual({})
 })
 
