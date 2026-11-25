@@ -3,8 +3,8 @@ use std::path::Path;
 
 use spark_common::project::sha256_hex;
 use spark_storage::environment::{
-    ensure_environment_id, DelegationOut, EnvironmentLink, EnvironmentRepository,
-    ENVIRONMENT_ID_FILE_NAME, PAIRING_CODE_TTL,
+    ensure_environment_id, DelegationListFilter, DelegationOut, EnvironmentLink,
+    EnvironmentRepository, ENVIRONMENT_ID_FILE_NAME, PAIRING_CODE_TTL,
 };
 use spark_storage::ConversationStore;
 
@@ -177,10 +177,18 @@ fn revoked_token_no_longer_authenticates() {
 }
 
 fn created_out(repository: &EnvironmentRepository, request_key: &str) -> String {
+    created_out_on(repository, "environment-b", request_key)
+}
+
+fn created_out_on(
+    repository: &EnvironmentRepository,
+    environment_id: &str,
+    request_key: &str,
+) -> String {
     repository
         .create_out(&DelegationOut {
             delegation_id: uuid::Uuid::new_v4().to_string(),
-            environment_id: "environment-b".into(),
+            environment_id: environment_id.into(),
             project_path: "/b/project".into(),
             kind: "flow".into(),
             request: serde_json::json!({}),
@@ -263,6 +271,194 @@ fn a_paused_delegation_seals_locally_only_if_never_submitted_when_it_seals() {
     assert!(!repository
         .seal_out(&sent, &canceled, false)
         .expect("seal again"));
+}
+
+#[test]
+fn delegation_lists_filter_in_sql_newest_first() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("spark-home");
+    let _store = ConversationStore::open(&home).expect("store");
+    let repository = EnvironmentRepository::new(&home);
+    // Oldest first; each row is named by its request key, and each filter
+    // keeps a different set of them.
+    //   b-created   environment-b  created
+    //   b-accepted  environment-b  accepted  paused
+    //   b-sealed    environment-b  sealed
+    //   c-created   environment-c  created   paused
+    //   c-accepted  environment-c  accepted
+    //   c-sealed    environment-c  sealed
+    let mut ids = Vec::new();
+    for (second, (environment, phase)) in ["b", "c"]
+        .into_iter()
+        .flat_map(|env| ["created", "accepted", "sealed"].map(|phase| (env, phase)))
+        .enumerate()
+    {
+        let id = created_out_on(
+            &repository,
+            &format!("environment-{environment}"),
+            &format!("{environment}-{phase}"),
+        );
+        if phase != "created" {
+            assert!(repository.accept_out(&id, "target").expect("accept"));
+        }
+        if phase == "sealed" {
+            let completed = serde_json::json!({"status": "completed"});
+            assert!(repository.seal_out(&id, &completed, false).expect("seal"));
+        }
+        state_database(&home)
+            .execute(
+                "UPDATE delegations_out SET created_at = ?2 WHERE delegation_id = ?1",
+                [&id, &format!("2026-01-01T00:00:0{second}Z")],
+            )
+            .expect("created at");
+        ids.push(id);
+    }
+    for paused in [&ids[1], &ids[3]] {
+        assert!(repository.pause_out(paused, "Paused").expect("pause"));
+    }
+    let filter =
+        |environment: Option<&str>, phase: Option<&str>, open, paused| DelegationListFilter {
+            environment_id: environment.map(|env| format!("environment-{env}")),
+            phase: phase.map(str::to_string),
+            open,
+            paused,
+        };
+    let list = |filter: DelegationListFilter| -> Vec<String> {
+        repository
+            .list_out(&filter)
+            .expect("list")
+            .into_iter()
+            .map(|record| record.request_key)
+            .collect()
+    };
+
+    let all = filter(None, None, false, false);
+    assert_eq!(
+        list(all.clone()),
+        [
+            "c-sealed",
+            "c-accepted",
+            "c-created",
+            "b-sealed",
+            "b-accepted",
+            "b-created"
+        ]
+    );
+    for (filter, expected) in [
+        (
+            filter(Some("b"), None, false, false),
+            &["b-sealed", "b-accepted", "b-created"][..],
+        ),
+        (
+            filter(Some("c"), None, false, false),
+            &["c-sealed", "c-accepted", "c-created"],
+        ),
+        (
+            filter(None, Some("created"), false, false),
+            &["c-created", "b-created"],
+        ),
+        (
+            filter(None, Some("accepted"), false, false),
+            &["c-accepted", "b-accepted"],
+        ),
+        (
+            filter(None, Some("sealed"), false, false),
+            &["c-sealed", "b-sealed"],
+        ),
+        (
+            filter(None, None, true, false),
+            &["c-accepted", "c-created", "b-accepted", "b-created"],
+        ),
+        (
+            filter(None, None, false, true),
+            &["c-created", "b-accepted"],
+        ),
+        (
+            filter(Some("b"), None, true, false),
+            &["b-accepted", "b-created"],
+        ),
+        (filter(Some("c"), None, false, true), &["c-created"]),
+        (filter(None, Some("accepted"), false, true), &["b-accepted"]),
+        (
+            filter(Some("c"), Some("sealed"), false, false),
+            &["c-sealed"],
+        ),
+        (filter(Some("b"), Some("created"), true, true), &[]),
+        (filter(Some("b"), Some("sealed"), true, false), &[]),
+        (filter(Some("missing"), None, false, false), &[]),
+    ] {
+        assert_eq!(list(filter.clone()), expected, "{filter:?}");
+    }
+
+    // A pause, a relink that resumes the environment's paused records, and a
+    // seal each move a record between lists.
+    assert!(repository.pause_out(&ids[4], "Paused").expect("pause"));
+    let paused = filter(None, None, false, true);
+    assert_eq!(
+        list(paused.clone()),
+        ["c-accepted", "c-created", "b-accepted"]
+    );
+    let link = EnvironmentLink {
+        environment_id: "environment-c".into(),
+        origin: "https://c.example".into(),
+        label: "C".into(),
+        created_at: String::new(),
+    };
+    repository.save_link(&link, "token").expect("relink");
+    assert_eq!(list(paused.clone()), ["b-accepted"]);
+    let completed = serde_json::json!({"status": "completed"});
+    assert!(repository
+        .seal_out(&ids[1], &completed, false)
+        .expect("seal"));
+    assert!(list(paused).is_empty());
+    assert_eq!(
+        list(filter(None, None, true, false)),
+        ["c-accepted", "c-created", "b-created"]
+    );
+    assert_eq!(
+        list(filter(None, Some("sealed"), false, false)),
+        ["c-sealed", "b-sealed", "b-accepted"]
+    );
+
+    // Records created in the same second list by ID, highest first.
+    state_database(&home)
+        .execute(
+            "UPDATE delegations_out SET created_at = '2026-01-01T00:00:00Z'",
+            [],
+        )
+        .expect("same second");
+    let mut by_id = ids.clone();
+    by_id.sort_unstable_by(|a, b| b.cmp(a));
+    let listed: Vec<_> = repository
+        .list_out(&all)
+        .expect("list")
+        .into_iter()
+        .map(|record| record.delegation_id)
+        .collect();
+    assert_eq!(listed, by_id);
+
+    // The filter runs before any payload is read: a row whose request no
+    // read can decode fails only the lists that include it.
+    let database = state_database(&home);
+    database
+        .execute_batch("PRAGMA ignore_check_constraints = ON")
+        .expect("pragma");
+    database
+        .execute(
+            "UPDATE delegations_out SET request = X'00' WHERE delegation_id = ?1",
+            [&ids[5]],
+        )
+        .expect("undecodable request");
+    assert!(repository.list_out(&all).is_err());
+    assert!(repository
+        .list_out(&filter(None, Some("sealed"), false, false))
+        .is_err());
+    assert_eq!(list(filter(Some("b"), None, false, false)).len(), 3);
+    assert_eq!(list(filter(None, None, true, false)).len(), 3);
+    assert_eq!(
+        list(filter(Some("c"), Some("created"), false, false)),
+        ["c-created"]
+    );
 }
 
 #[test]

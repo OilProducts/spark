@@ -598,30 +598,174 @@ fn desktop_server_runs_before_build_hook_with_its_agent_api_under_the_home_lock(
     let bootstrap =
         bootstrap_desktop_runtime(&DesktopServerSettings::default(), &spark_home(&paths)).unwrap();
     let data_dir = bootstrap.settings.data_dir.clone();
+    // Startup launches it, and its unknown flow seals it at once.
+    let admitted = admit(
+        &data_dir,
+        "flow",
+        serde_json::json!({"flow_name": "missing/flow", "summary": "Run it."}),
+        "/b/project",
+    );
+    let phase = {
+        let data_dir = data_dir.clone();
+        let admitted = admitted.clone();
+        move || {
+            spark_storage::environment::EnvironmentRepository::new(&data_dir)
+                .in_(&admitted)
+                .unwrap()
+                .unwrap()
+                .phase
+        }
+    };
     let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
     let record = seen.clone();
+    let in_hook = phase.clone();
     let mut server = spark_desktop::desktop_core::start_desktop_server_with_before_build(
         bootstrap.settings,
         LOCAL_BIND_HOST,
         move |api| {
-            // The server holds the home lock, and has not yet run startup
-            // recovery or admitted delegations that could spawn agents.
+            // The server holds the home lock, and has not yet launched the
+            // admitted delegation, or anything else that could spawn agents.
             let locked = matches!(
                 spark_storage::ConversationStore::open(&data_dir),
                 Err(spark_storage::StorageError::HomeLocked { .. })
             );
-            *record.lock().unwrap() = Some((api, locked));
+            *record.lock().unwrap() = Some((api, locked, in_hook()));
             Ok(())
         },
     )
     .unwrap();
-    let (api, locked) = seen.lock().unwrap().take().expect("hook ran");
+    let (api, locked, phase_in_hook) = seen.lock().unwrap().take().expect("hook ran");
     assert!(locked);
+    assert_eq!(phase_in_hook, "accepted");
+    assert_eq!(phase(), "sealed", "startup launched it after the hook");
     assert_eq!(format!("{}/", api.base_url), server.url());
     // A loopback listener trusts its own agents without a token.
     assert_eq!((api.token, api.loopback_url), (None, None));
     server.shutdown();
+}
 
-    let source = include_str!("../src/lib.rs");
-    assert!(source.contains("start_desktop_server_with_before_build"));
+#[test]
+fn the_app_server_gives_an_agent_launched_at_startup_its_home_and_url() {
+    const CHILD: &str = "SPARK_DESKTOP_STARTUP_AGENT_ROOT";
+    const NAME: &str = "the_app_server_gives_an_agent_launched_at_startup_its_home_and_url";
+    // The agent API is set once per process, so the app's start runs alone.
+    let Ok(root) = std::env::var(CHILD) else {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture"])
+            .env(CHILD, &root)
+            .env("SPARK_CODEX_APP_SERVER_BIN", env_dumping_agent(&root))
+            .env("ATTRACTOR_CODEX_RUNTIME_ROOT", root.join("codex-runtime"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let paths = DesktopPaths::new(root.join("data"), root.join("config"));
+    let bootstrap =
+        bootstrap_desktop_runtime(&DesktopServerSettings::default(), &spark_home(&paths)).unwrap();
+    let data_dir = bootstrap.settings.data_dir.clone();
+    let project = root.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let project = project.to_string_lossy().into_owned();
+    spark_storage::ProjectRegistry::new(&data_dir)
+        .ensure_project_paths(&project)
+        .unwrap();
+    // A chat delegated while no server ran: its turn is startup's first agent.
+    admit(
+        &data_dir,
+        "conversation",
+        serde_json::json!({"message": "Report your environment."}),
+        &project,
+    );
+
+    let mut server =
+        spark_desktop::desktop_core::start_app_server(bootstrap.settings, LOCAL_BIND_HOST).unwrap();
+    let dump = root.join("agent.env");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !dump.exists() {
+        assert!(Instant::now() < deadline, "no agent was launched");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let env = fs::read_to_string(&dump).unwrap();
+    let has = |line: String| env.lines().any(|candidate| candidate == line);
+    assert!(
+        has(format!(
+            "SPARK_API_BASE_URL={}",
+            server.url().trim_end_matches('/')
+        )),
+        "{env}"
+    );
+    assert!(has(format!("SPARK_HOME={}", data_dir.display())), "{env}");
+    server.shutdown();
+}
+
+/// Records `delegation_id` as admitted from another environment and not yet
+/// launched, as a server that stopped before launching it leaves it.
+fn admit(
+    data_dir: &std::path::Path,
+    kind: &str,
+    request: serde_json::Value,
+    project_path: &str,
+) -> String {
+    let delegation_id = "00000000-0000-4000-8000-000000000001".to_string();
+    spark_storage::environment::EnvironmentRepository::new(data_dir)
+        .admit_in(&spark_storage::environment::DelegationIn {
+            delegation_id: delegation_id.clone(),
+            origin_environment_id: "environment-a".into(),
+            project_path: project_path.into(),
+            kind: kind.into(),
+            request,
+            request_sha256: "sha".into(),
+            target_kind: if kind == "flow" {
+                "run"
+            } else {
+                "conversation"
+            }
+            .into(),
+            target_id: "00000000-0000-4000-8000-000000000002".into(),
+            phase: "accepted".into(),
+            result: None,
+            created_at: spark_storage::environment::now(),
+            sealed_at: None,
+            canceled_at: None,
+        })
+        .unwrap();
+    delegation_id
+}
+
+/// An agent that writes the environment it was launched with to
+/// `agent.env` in `dir`, whole, and exits.
+fn env_dumping_agent(dir: &std::path::Path) -> std::path::PathBuf {
+    let dump = dir.join("agent.env");
+    #[cfg(windows)]
+    let (agent, script) = (
+        dir.join("agent.cmd"),
+        format!(
+            "@set \"PART={0}.%RANDOM%\"\r\n@set > \"%PART%\"\r\n@move /y \"%PART%\" \"{0}\" > nul\r\n",
+            dump.display()
+        ),
+    );
+    #[cfg(not(windows))]
+    let (agent, script) = (
+        dir.join("agent"),
+        format!(
+            "#!/bin/sh\nenv > '{0}.'$$ && mv '{0}.'$$ '{0}'\n",
+            dump.display()
+        ),
+    );
+    fs::write(&agent, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    agent
 }

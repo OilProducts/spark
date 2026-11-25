@@ -928,6 +928,62 @@ fn process_environment_show_discovery_and_delegation_list_hit_expected_routes() 
     }
 }
 
+#[test]
+fn process_discovery_views_exit_nonzero_on_a_success_they_cannot_read() {
+    let plain = || HttpResponse {
+        status: 200,
+        content_type: "text/plain",
+        body: "all good".into(),
+    };
+    let cases: &[(&[&str], HttpResponse, &str)] = &[
+        (
+            &["flow", "list", "--text"],
+            plain(),
+            "body that is not JSON",
+        ),
+        (
+            &["flow", "list", "--text"],
+            HttpResponse::json(200, "null"),
+            "JSON this command cannot read: null",
+        ),
+        (
+            &["flow", "list", "--environment", "env-b", "--text"],
+            HttpResponse::json(200, r#"{"flows":[]}"#),
+            "JSON this command cannot read",
+        ),
+        (
+            &[
+                "flow",
+                "get",
+                "ops/run",
+                "--environment",
+                "env-b",
+                "--inputs",
+            ],
+            plain(),
+            "body that is not JSON",
+        ),
+        (
+            &["flow", "get", "ops/run", "--text"],
+            HttpResponse::json(200, "null"),
+            "JSON this command cannot read",
+        ),
+    ];
+    for (args, response, says) in cases {
+        let (base_url, _requests) = serve_once(response.clone());
+        let output = Command::new(spark_bin())
+            .args(*args)
+            .args(["--base-url", base_url.as_str()])
+            .env_clear()
+            .output()
+            .expect("run spark");
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+        let error = stderr_error(&output);
+        assert!(error.contains(says), "{args:?}: {error}");
+    }
+}
+
 #[derive(Debug, Clone)]
 struct HttpResponse {
     status: u16,

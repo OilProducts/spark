@@ -354,6 +354,165 @@ async fn flow_validate_through_the_api_reports_an_invalid_project_copy_without_b
     assert!(text.contains("convert this flow's routes"), "{text}");
 }
 
+/// How `env-b` answers discovery: only for `/b/repo`, and by flow name.
+async fn discovery_peer(uri: axum::http::Uri) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    let flow_md = "---\ntype: Flow\nid: implement-change\ntitle: Implement Change\nschema_version: '2'\ninputs:\n- key: context.request.change\n  label: Change\n  description: What to change.\n  required: true\n---\n";
+    let detail = |status: StatusCode, detail: &str| {
+        (status, axum::Json(json!({"detail": detail}))).into_response()
+    };
+    let target = uri.to_string();
+    if target == "/workspace/api/flows?project_path=%2Fb%2Frepo" {
+        return axum::Json(json!([
+            {"name": "software-development/implement-change", "title": "Implement Change",
+             "description": "Builds one change."},
+            {"name": "ops/run", "title": "ops/run", "description": ""},
+        ]))
+        .into_response();
+    }
+    let flow = target
+        .strip_prefix("/workspace/api/flows/")
+        .and_then(|rest| rest.strip_suffix("/files?project_path=%2Fb%2Frepo"));
+    match flow {
+        Some("software-development%2Fimplement-change") => axum::Json(json!({
+            "name": "software-development/implement-change",
+            "files": [{"name": "flow.md", "content": flow_md}],
+        }))
+        .into_response(),
+        Some("missing") => detail(StatusCode::NOT_FOUND, "Unknown flow: missing"),
+        Some("revoked") => detail(StatusCode::FORBIDDEN, "Revoked token."),
+        Some("starting") => detail(StatusCode::SERVICE_UNAVAILABLE, "Peer is starting."),
+        Some("plain") => "all good".into_response(),
+        _ => detail(StatusCode::IM_A_TEAPOT, &target),
+    }
+}
+
+fn link(settings: &SparkSettings, environment_id: &str, origin: &str) {
+    spark_storage::environment::EnvironmentRepository::new(&settings.data_dir)
+        .save_link(
+            &spark_storage::environment::EnvironmentLink {
+                environment_id: environment_id.into(),
+                origin: origin.into(),
+                label: environment_id.into(),
+                created_at: spark_storage::environment::now(),
+            },
+            "peer-token",
+        )
+        .expect("save link");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn linked_flow_discovery_prints_the_peers_flows_and_exits_nonzero_on_its_failures() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let peer = serve(axum::Router::new().fallback(discovery_peer)).await;
+    link(&settings, "env-b", &peer.base_url);
+    let server = spawn_server(settings.clone()).await;
+    let on_b = |args: &[&'static str]| {
+        let mut args = args.to_vec();
+        args.extend(["--environment", "env-b", "--project", "/b/repo"]);
+        args.extend(["--base-url", server.base_url.as_str()]);
+        run_spark(temp.path(), args)
+    };
+
+    let listed = on_b(&["flow", "list", "--text"]);
+    assert_eq!(listed.status.code(), Some(0), "{}", stderr(&listed));
+    assert_eq!(
+        stdout(&listed),
+        "software-development/implement-change: Implement Change\n  Builds one change.\nops/run\n"
+    );
+    let inputs = on_b(&[
+        "flow",
+        "get",
+        "software-development/implement-change",
+        "--inputs",
+    ]);
+    assert_eq!(inputs.status.code(), Some(0), "{}", stderr(&inputs));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&inputs.stdout).expect("inputs json"),
+        json!([{
+            "key": "context.request.change",
+            "label": "Change",
+            "type": "string",
+            "description": "What to change.",
+            "required": true,
+        }])
+    );
+
+    for (flow, exit, status, says) in [
+        ("missing", 3, 404, "Unknown flow: missing"),
+        ("revoked", 1, 403, "link it again"),
+        ("starting", 1, 503, "Peer is starting."),
+        ("plain", 1, 503, "answered 200 with a body that is not JSON"),
+    ] {
+        let failed = on_b(&["flow", "get", flow, "--inputs"]);
+        assert_eq!(
+            failed.status.code(),
+            Some(exit),
+            "{flow}: {}",
+            stderr(&failed)
+        );
+        assert!(failed.stdout.is_empty(), "{flow}: {}", stdout(&failed));
+        let error: Value = serde_json::from_slice(&failed.stderr).expect("stderr json");
+        assert_eq!(error["status_code"], status, "{flow}: {error}");
+        assert!(
+            error["error"].as_str().expect("error").contains(says),
+            "{flow}: {error}"
+        );
+    }
+}
+
+/// The CLI gives up on a request after 30 s; a server gives a linked
+/// environment 20 s, so a stalled peer is reported, by name, first.
+// ponytail: waits out the real 20 s peer limit; add a timeout seam if this
+// test's run time starts to matter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stalled_linked_environment_is_reported_before_the_cli_gives_up() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    // Accepts connections, through its backlog, and never answers them.
+    let stalled = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let origin = format!("http://{}", stalled.local_addr().expect("address"));
+    link(&settings, "env-b", &origin);
+    let server = spawn_server(settings.clone()).await;
+
+    let started = std::time::Instant::now();
+    let base_url = server.base_url.clone();
+    let home = temp.path().to_path_buf();
+    let listed = tokio::task::spawn_blocking(move || {
+        run_spark(
+            &home,
+            [
+                "flow",
+                "list",
+                "--environment",
+                "env-b",
+                "--text",
+                "--base-url",
+                &base_url,
+            ],
+        )
+    })
+    .await
+    .expect("spark");
+    let elapsed = started.elapsed();
+
+    assert_eq!(listed.status.code(), Some(1), "{}", stderr(&listed));
+    assert!(listed.stdout.is_empty(), "{}", stdout(&listed));
+    let error: Value = serde_json::from_slice(&listed.stderr).expect("stderr json");
+    assert_eq!(error["status_code"], 503, "{error}");
+    let message = error["error"].as_str().expect("error");
+    assert!(message.starts_with(&origin), "{message}");
+    assert!(message.contains("did not answer within 20s"), "{message}");
+    assert!(
+        elapsed >= std::time::Duration::from_secs(20)
+            && elapsed < std::time::Duration::from_secs(30),
+        "{elapsed:?}"
+    );
+    drop(stalled);
+}
+
 struct TestServer {
     base_url: String,
     handle: JoinHandle<()>,

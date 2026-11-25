@@ -33,7 +33,8 @@ pub const EXIT_NOT_FOUND: i32 = 3;
 pub const DEFAULT_API_BASE_URL: &str = spark_common::source_checkout::DEFAULT_API_BASE_URL;
 
 /// The client's limit on one request, and so on a `run events` stream
-/// without `--until-done`.
+/// without `--until-done`. Longer than the 20 s a server gives a linked
+/// environment, so a stalled one's error reaches the CLI first.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1639,6 +1640,22 @@ fn execute(plan: &ApiRequestPlan, env: &impl Environment, out: &mut dyn Write) -
         Ok(payload) => payload,
         Err(error) => return failure_output(plan, error, token),
     };
+    let shaped = match plan.view {
+        View::FlowListText => payload.is_array(),
+        View::FlowFilesText | View::FlowInputs => payload["files"].is_array(),
+        _ => true,
+    };
+    if !shaped {
+        return failure(
+            format!(
+                "The server answered with JSON this command cannot read: {}",
+                payload.to_string().chars().take(200).collect::<String>()
+            ),
+            EXIT_GENERAL_FAILURE,
+            None,
+            Some((&plan.base_url, plan.target_source)),
+        );
+    }
     match plan.view {
         View::FlowListText => CommandOutput::stdout(0, flow_list_text(&payload)),
         View::FlowFilesText => CommandOutput::stdout(0, flow_files_text(&payload)),
@@ -1724,9 +1741,17 @@ fn check_status(
     ))
 }
 
+/// The response's JSON; a success that is not JSON is an error, never an
+/// empty result.
 fn read_payload(response: reqwest::blocking::Response) -> Result<Value, Failure> {
+    let status = response.status();
     let text = check_status(response)?.text().map_err(transport)?;
-    Ok(serde_json::from_str(&text).unwrap_or_else(|_| json!({ "detail": text })))
+    serde_json::from_str(&text).map_err(|_| {
+        Failure::Transport(format!(
+            "The server answered {status} with a body that is not JSON: {:?}",
+            text.chars().take(200).collect::<String>()
+        ))
+    })
 }
 
 fn request_json(plan: &ApiRequestPlan, token: &Tokens) -> Result<Value, Failure> {
