@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { updateProjectStateValidated } from '@/lib/workspaceClient'
+import { homeSessionStart } from '@/state/homeSessionSlice'
 import { useStore } from '@/store'
 
 import { toHydratedProjectRecord } from '../model/projectsHomeState'
@@ -14,11 +15,15 @@ type PersistProjectStatePatch = {
   is_favorite?: boolean | null
 }
 
-/** Saves a project's state; its answer shows only while the environment it was saved in is shown. */
+/**
+ * Saves a project's state; its answer shows only while the environment it was saved in is shown, and not
+ * once a switch away and back has loaded its projects anew, so it can't move the chat opened since.
+ */
 async function sendProjectState(projectPath: string, patch: PersistProjectStatePatch, upsert: UpsertProjectRegistryEntry) {
   const environmentId = getActiveEnvironmentId()
+  const session = homeSessionStart()
   const project = await updateProjectStateValidated({ project_path: projectPath, ...patch })
-  if (getActiveEnvironmentId() === environmentId) upsert(toHydratedProjectRecord(project))
+  if (getActiveEnvironmentId() === environmentId && homeSessionStart() === session) upsert(toHydratedProjectRecord(project))
 }
 
 export function usePersistProjectState(upsertProjectRegistryEntry: UpsertProjectRegistryEntry) {

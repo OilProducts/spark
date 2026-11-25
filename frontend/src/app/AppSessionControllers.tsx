@@ -718,10 +718,15 @@ export function HistoryRoutingController() {
             projects = state.projectRegistry
             chatChosen = false
         }
-        const unsubscribe = useStore.subscribe((state, previous) => {
+        // The store as this last saw it. A change made inside another listener, such as the app opening a chat by
+        // itself, reaches later listeners again afterwards with the state before the change that started it as
+        // `previous`; against this, it counts once, as it was made.
+        let seen = useStore.getState()
+        const unsubscribe = useStore.subscribe((state) => {
             // A chat you choose opens alone; one the projects loading or a project's saved state answering
             // opens comes with the projects, and the app's own choice of a project's latest is no one's.
-            if (state.projectRegistry === previous.projectRegistry && openChat(state) !== openChat(previous) && !opensByItself()) chatChosen = true
+            if (state.projectRegistry === seen.projectRegistry && openChat(state) !== openChat(seen) && !opensByItself()) chatChosen = true
+            seen = state
             if (scheduled) return
             scheduled = true
             queueMicrotask(record)

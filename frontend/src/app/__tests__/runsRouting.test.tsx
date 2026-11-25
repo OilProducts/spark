@@ -1032,6 +1032,79 @@ describe('routing across environments', () => {
         await waitFor(() => expect(window.location.hash).toBe(remote))
     })
 
+    it('leaves Back and Forward as they are when clearing a draft lets a new chat\'s refused first send open it again by itself, once connecting to a remote environment failed and this machine\'s workspace shows again on its entry', async () => {
+        const turn = deferred<Response>()
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => (String(input).endsWith('/conversations/chat-new/turns')
+            ? turn.promise
+            : new Response('{}', { status: 404 }))))
+        const turns = () => vi.mocked(fetch).mock.calls.filter(([input]) => String(input).endsWith('/conversations/chat-new/turns'))
+        const loadProjects = () => act(() => useStore.getState().hydrateProjectRegistry([
+            toHydratedProjectRecord({ project_path: '/tmp/home', is_favorite: false, is_default: true }),
+            toHydratedProjectRecord({ project_path: '/tmp/project', is_favorite: false, active_conversation_id: 'chat-1', last_accessed_at: '2026-09-01T00:00:00Z' }),
+        ]))
+        const openChat = () => useStore.getState().projectSessionsByPath['/tmp/project']?.conversationId
+        const setDraft = (chatDraft: string) => act(() => useStore.getState().updateHomeProjectSession('/tmp/project', { chatDraft }))
+        const remote = `${buildRunsHash('remote-run')}?env=env-r`
+        // As the app gates it: the workspace unmounts while another environment connects, or fails to.
+        const Gated = () => {
+            const { activeEnvironmentId, selectedEnvironmentId, status } = useActiveEnvironment()
+            return selectedEnvironmentId === null || (status === 'ready' && activeEnvironmentId === selectedEnvironmentId)
+                ? <div data-testid="workspace"><Workspace /></div>
+                : null
+        }
+        render(<><EnvironmentBootstrap /><Gated /></>)
+        loadProjects()
+        // A new chat's first message, sent before a remote environment shows.
+        act(() => useStore.getState().updateProjectSessionState('/tmp/project', { conversationId: 'chat-new' }))
+        useConversationComposer({
+            activeProjectPath: '/tmp/project', chatDraft: 'Hello there', attachments: [], isUploadBlocking: false, isChatInputDisabled: false,
+            ensureConversationId: () => 'chat-new', getCurrentConversationId: openChat, getConversationRecord: () => undefined,
+            applyConversationBatch: vi.fn(), formatErrorMessage: (_error, fallback) => fallback, setChatDraft: vi.fn(),
+            setPanelError: vi.fn(), setPendingConversationTurn: vi.fn(),
+        }).onChatComposerSubmit()
+        await waitFor(() => expect(turns()).toHaveLength(1))
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        await showEnvironment(null)
+        loadProjects()
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        // Refused while you write in the chat its projects loaded on: the refused chat waits.
+        setDraft('Draft')
+        await act(async () => turn.resolve(new Response(JSON.stringify({ detail: 'unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json' } })))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(openChat()).toBe('chat-1')
+        const entries = window.history.length
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        await act(async () => { expect(await selectEnvironment('env-r')).toBe(false) })
+        expect(screen.queryByTestId('workspace')).toBeNull()
+        await act(() => selectEnvironment(null))
+        expect(screen.getByTestId('workspace')).toBeTruthy()
+
+        // The draft cleared, the app opens the refused chat by itself.
+        setDraft('')
+        expect(openChat()).toBe('chat-new')
+        expect(useStore.getState().homeProjectSessionsByPath['/tmp/project']?.chatDraft).toBe('Hello there')
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.history.length).toBe(entries)
+        expect(window.location.hash).toBe(remote)
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+
+        // A chat chosen here still adds an entry of this machine's own.
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        act(() => useStore.getState().updateProjectSessionState('/tmp/project', { conversationId: 'chat-1' }))
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+        expect(window.history.length).toBe(entries)
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+    })
+
     it('keeps a remote environment\'s entries for Back and Forward to reach once it shows again', async () => {
         render(<><EnvironmentBootstrap /><Workspace /></>)
         await showEnvironment('env-r')

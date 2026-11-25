@@ -707,6 +707,89 @@ it('opens a new chat\'s late-refused first send again once its project, with no 
     shown.unmount()
 })
 
+it('keeps a new chat\'s late-refused first send, opened again on a return, when the chat its project opened by itself before the switch saves after', async () => {
+    const project = (path: string, active: string | null) => ({ project_id: path, project_path: path, display_name: path, is_favorite: false, active_conversation_id: active })
+    let serverChat: string | null = null
+    const turn = deferred<unknown>()
+    const earlierSave = deferred<unknown>()
+    const saves = () => sent.filter((request) => request.startsWith('PATCH') && request.endsWith('/projects/state'))
+    answer = (url, method) => {
+        if (url.includes('/projects/chat-models')) return { providers: { codex: { status: 'available', error: null, label: 'Codex' } }, models: [
+            { provider: 'codex', id: 'gpt-5.4', display: 'GPT-5.4', is_default: true, supported_reasoning_efforts: ['medium'], default_reasoning_effort: 'medium' },
+        ] }
+        if (url.endsWith('/workspace/api/settings')) return { models: { scope: 'project', source: 'workspace', revision: '1', stored: null,
+            effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null } } }
+        if (method === 'GET' && url.endsWith('/workspace/api/projects')) return [project(PROJECT, serverChat), project('/tmp/other', null)]
+        if (method === 'GET' && url.includes('/workspace/api/projects/conversations')) return summarySnapshot([
+            { conversation_id: 'conversation-1', project_path: PROJECT, title: 'Thread', created_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z', revision: 3, turns: [], segments: [] },
+        ], { project_path: PROJECT })
+        if (method === 'GET' && url.includes('/workspace/api/conversations/')) return json({ detail: 'missing' }, 404)
+        if (method === 'PATCH' && url.endsWith('/projects/state')) {
+            // The first save, of the chat the project opened by itself, answers only when the test says.
+            if (saves().length === 1) return earlierSave.promise
+            // New chat saves as the project's chat; the chat its first message opens fails to.
+            const chosen = (bodies.at(-1) as { active_conversation_id?: string | null }).active_conversation_id ?? null
+            if (chosen !== null && chosen !== 'conversation-1') return json({ detail: 'unavailable' }, 503)
+            serverChat = chosen
+            return project(PROJECT, serverChat)
+        }
+        if (method === 'POST' && url.includes('/attachments')) return { id: 'attachment-1', filename: 'shot.png', media_type: 'image/png', size_bytes: 5 }
+        if (method === 'POST' && url.endsWith('/turns')) return turn.promise
+        return {}
+    }
+    const useWorkspace = () => {
+        const hydrateProjectRegistry = useStore((state) => state.hydrateProjectRegistry)
+        useProjectRegistryBootstrap({ hydrateProjectRegistry, enabled: useStore((state) => Object.keys(state.projectRegistry).length === 0) })
+        return useProjectsHomeController()
+    }
+    const wrapper = ({ children }: { children: ReactNode }) => <DialogProvider><HomeSessionController />{children}</DialogProvider>
+    const openChat = () => useStore.getState().projectSessionsByPath[PROJECT]?.conversationId
+    const show = async (environmentId: string | null) => {
+        await switchEnvironment(environmentId)
+        resetStoreForEnvironmentSwitch(environmentId === null)
+        useStore.setState({ activeProjectPath: PROJECT, viewMode: 'home' })
+    }
+    // With no chat saved, the project opens its latest by itself, saving it; that save is slow.
+    useStore.setState({ activeProjectPath: PROJECT, viewMode: 'home' })
+    const left = renderHook(useWorkspace, { wrapper })
+    await waitFor(() => expect(openChat()).toBe('conversation-1'))
+    await waitFor(() => expect(saves()).toHaveLength(1))
+    await waitFor(() => expect(left.result.current.surfaceProps.isChatSendDisabled).toBe(false))
+    act(() => left.result.current.sidebarProps.onCreateConversationThread(PROJECT))
+    await waitFor(() => expect(saves()).toHaveLength(2))
+    // Its first message, with a file.
+    act(() => left.result.current.surfaceProps.onChatDraftChange('Hello there'))
+    act(() => left.result.current.surfaceProps.onAddAttachments([new File(['image'], 'shot.png', { type: 'image/png' })]))
+    await waitFor(() => expect(left.result.current.surfaceProps.attachments).toMatchObject([{ status: 'uploaded' }]))
+    const created = openChat()!
+    act(() => left.result.current.surfaceProps.onChatComposerSubmit())
+    await waitFor(() => expect(sent).toContain(`POST /workspace/api/conversations/${created}/turns`))
+    await show('env-r')
+    left.unmount()
+
+    // Back, the project opens its latest by itself again, saved at once; then the send is refused.
+    await show(null)
+    const shown = renderHook(useWorkspace, { wrapper })
+    await waitFor(() => expect(openChat()).toBe('conversation-1'))
+    await waitFor(() => expect(serverChat).toBe('conversation-1'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    turn.resolve(json({ detail: 'unavailable' }, 503))
+    await waitFor(() => expect(openChat()).toBe(created))
+    const recovered = async () => {
+        await waitFor(() => expect(shown.result.current.surfaceProps.attachments).toMatchObject([{ status: 'uploaded', attachment: { id: 'attachment-1' } }]))
+        expect(openChat()).toBe(created)
+        expect(shown.result.current.surfaceProps.chatDraft).toBe('Hello there')
+        expect(shown.result.current.surfaceProps.panelError).toBe('unavailable')
+    }
+    await recovered()
+
+    // The save from before the switch answers now: it moves nothing shown since.
+    await act(async () => earlierSave.resolve(project(PROJECT, 'conversation-1')))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await recovered()
+    shown.unmount()
+})
+
 it.each([[0, 4, 5], [1, 5, 4], [0, 5, 6]])('keeps a restored chat open and sending, its newer send pending, until both its sends a live update let overlap settle, send %i answering first at revision %i, when an unlisted chat\'s send is refused late', async (first, early, late) => {
     const project = (path: string, active: string | null) => ({ project_id: path, project_path: path, display_name: path, is_favorite: false, active_conversation_id: active })
     const thread = (revision: number) => ({
