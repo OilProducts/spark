@@ -1202,6 +1202,42 @@ it('keeps answering off when the card\'s reread of this machine\'s links, sent b
     expect(screen.getByText('Answering is unavailable: the link to env-b is missing.')).toBeInTheDocument()
 })
 
+it('keeps answering off when the card\'s reread of this machine\'s links answers with a link after a newer read of the app\'s shows it removed', async () => {
+    const link = { environment_id: 'env-b', origin: 'http://env-b.test', label: 'B', created_at: '2026-11-23T00:00:00Z' }
+    const links = 'GET /workspace/api/environments/links'
+    const older = later()
+    serve({
+        ...ENVIRONMENTS,
+        [links]: [ok({ links: [] }), fail(500, 'database is locked'), older.reply, ok({ links: [] })],
+        [LIST]: [ok(list({ ...nightly, paused: 'The link to this environment was removed.' })), ok(list(nightly)), fail(500, 'database is locked')],
+    })
+    await act(async () => { await refreshLocalEnvironments() })
+    renderCard()
+    const approve = within(await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' })
+    await settled()
+
+    // Linking it again resumes the delegation, but the app's reread of this machine's links fails, so the
+    // card rereads them, slowly.
+    await act(async () => {
+        notifyEnvironmentLinksChanged()
+        await refreshLocalEnvironments()
+    })
+    expect(await screen.findByText('flow · waiting on answer')).toBeInTheDocument()
+    await waitFor(() => expect(sent(links)).toHaveLength(3))
+    await settled()
+
+    // The link is removed from another window: the app's next read shows it gone, and the live refresh fails.
+    await act(async () => { await refreshLocalEnvironments() })
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(await screen.findByText('Database is locked')).toBeInTheDocument()
+    await settled()
+
+    // The card's reread, sent before the removal, then answers with the link.
+    await older.resolve({ links: [link] })
+    expect(approve).toBeDisabled()
+    expect(screen.getByText('Answering is unavailable: the link to env-b is missing.')).toBeInTheDocument()
+})
+
 it('shows a pending cancellation over stale questions and a pause, and disables a duplicate Cancel', async () => {
     serve({ [LIST]: [ok(list(delegation('del-1', 'nightly-checks', [approveGate()], requested), { ...pausedTask, ...requested }))] })
     renderCard()

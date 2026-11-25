@@ -77,9 +77,11 @@ const inFlightCounts: Record<string, number> = {}
 // updated row and reloads where it is seen, and a reload that fails after Settings was reopened shows there.
 type ShownCard = { report: (done: string, updated?: DelegationOut) => Promise<void>; fail: (message: string) => void }
 const shownCards = new Map<string, ShownCard>()
-// This machine's links as last read: the shared snapshot, or a card's own reread of them over that snapshot
-// until it changes. The shared snapshot keeps only its latest read's answer, so the card rereads them itself
-// rather than through it: a read that succeeds isn't lost to another that is slow or fails.
+// This machine's links as last read: the shared snapshot, or a card's own reread of them sent beside that
+// snapshot until it changes. The shared snapshot keeps only its latest read's answer, so the card rereads
+// them itself rather than through it: a read that succeeds isn't lost to another that is slow or fails. A
+// shared read that lands while the card's is out may have been sent later, so the shared one wins then.
+// ponytail: it may also have been sent earlier; the next list that still finds the link missing rereads.
 type LinksRead = { links: EnvironmentLink[]; over: EnvironmentLink[] }
 const knownLinks = (shared: EnvironmentLink[], read: LinksRead | null) => (read?.over === shared ? read.links : shared)
 // The last cancel sent for each delegation, by environment: a failure that a newer try overtook isn't reported.
@@ -372,7 +374,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                     if (rereadRef.current !== reread) return
                     rereadRef.current = null
                     if (!read) return
-                    linksReadRef.current = { links: read, over: getActiveEnvironmentState().links }
+                    linksReadRef.current = { links: read, over: local.links }
                     setLinksRead(linksReadRef.current)
                 }
                 fetchLocalEnvironmentLinks().then(done, () => done())
