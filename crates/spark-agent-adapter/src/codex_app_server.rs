@@ -3539,17 +3539,21 @@ pub fn spark_agent_environment(path: Option<&str>) -> Vec<(String, OsString)> {
             vars.push((key.to_string(), value.unwrap_or_default().into()));
         }
     }
-    let mut path_entries = first_party_tool_bin_dirs()
-        .into_iter()
-        .map(|dir| dir.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    if !path_entries.is_empty() {
-        path_entries.extend(path.and_then(non_empty).map(str::to_string));
-        vars.push((
-            "PATH".to_string(),
-            path_entries.join(path_separator()).into(),
-        ));
-    }
+    // Each tool directory is one entry, quoted on Windows when its name holds
+    // `;`, and is left off when no entry can name it. `path` follows as given,
+    // so an empty entry still names the launch's own directory on Unix.
+    let tools = env::join_paths(first_party_tool_bin_dirs())
+        .ok()
+        .filter(|tools| !tools.is_empty());
+    let path = match (tools, path) {
+        (Some(mut tools), Some(path)) => {
+            tools.push(path_separator());
+            tools.push(path);
+            Some(tools)
+        }
+        (tools, path) => tools.or_else(|| path.map(OsString::from)),
+    };
+    vars.extend(path.map(|path| ("PATH".to_string(), path)));
     vars
 }
 

@@ -168,6 +168,20 @@ fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
         json!({"executable": "local", "env": {"PATH": path}}),
     );
     run(&local, |_| {}).0.expect("turn");
+    // An explicit empty PATH names the work area alone, after Spark's tools.
+    let harness = serde_json::from_value(json!({
+        "name": "Project agent",
+        "executable": "local",
+        "env": {"PATH": ""},
+    }))
+    .unwrap();
+    let found = acp::discover(
+        "project",
+        &harness,
+        spark_agent_adapter::EnvironmentInheritancePolicy::InheritNone,
+        &project,
+    );
+    assert_eq!(found.setup_status, "ready", "{:?}", found.error);
     let missing = discover("missing-agent");
     assert_eq!(missing.setup_status, "not_installed", "{:?}", missing.error);
     for executable in ["broken", broken.to_str().unwrap()] {
@@ -777,6 +791,77 @@ fn acp_channel_path_follows_sparks_tool_directory() {
     assert_eq!(entries.len(), 2, "{path}");
     assert_eq!(entries[0], exe_dir.parent().unwrap(), "{path}");
     assert_eq!(entries[1], fake_dir, "{path}");
+}
+
+/// Spark's tool directory stays one PATH entry when its name holds `;`, the
+/// Windows separator, so agent shells and ACP lookup find the tools beside
+/// Spark: a harness installed there launches by bare name. Spark's directory
+/// is the running binary's, so a link to this binary runs in it as a child.
+#[test]
+fn acp_finds_a_harness_beside_spark_in_a_directory_named_with_a_semicolon() {
+    const CHILD: &str = "SPARK_SEMICOLON_INSTALL_CONTRACT";
+    let agent = format!("beside-spark-agent{}", std::env::consts::EXE_SUFFIX);
+    if std::env::var_os(CHILD).is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("Spark;beta");
+        std::fs::create_dir(&install).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let spark = install.join(exe.file_name().unwrap());
+        for (from, to) in [
+            (exe.as_path(), &spark),
+            (Path::new(FAKE), &install.join(&agent)),
+        ] {
+            std::fs::hard_link(from, to)
+                .or_else(|_| std::fs::copy(from, to).map(drop))
+                .unwrap();
+        }
+        let output = std::process::Command::new(&spark)
+            .args([
+                "--exact",
+                "acp_contracts::acp_finds_a_harness_beside_spark_in_a_directory_named_with_a_semicolon",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let install =
+        spark_common::paths::canonicalize_clean(std::env::current_exe().unwrap().parent().unwrap())
+            .unwrap();
+    let elsewhere = install.parent().unwrap().join("elsewhere");
+    let path = spark_agent_adapter::codex_app_server::spark_agent_environment(Some(
+        elsewhere.to_str().unwrap(),
+    ))
+    .into_iter()
+    .find(|(key, _)| key == "PATH")
+    .unwrap()
+    .1;
+    assert_eq!(
+        std::env::split_paths(&path).collect::<Vec<_>>(),
+        [install.clone(), elsewhere],
+        "{path:?}"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let beside = request(
+        dir.path(),
+        json!({"log_env": ["PATH"]}),
+        json!({"executable": agent}),
+    );
+    run(&beside, |_| {})
+        .0
+        .expect("the harness beside Spark launches");
+    let path = log(dir.path())[0]["env"]["PATH"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(std::env::split_paths(&path).next(), Some(install), "{path}");
 }
 
 #[test]
