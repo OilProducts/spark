@@ -568,11 +568,15 @@ impl EnvironmentRepository {
     }
 
     /// Unsealed records that are not paused, oldest first.
+    /// Outgoing delegations the follower should act on: every open unpaused
+    /// record, plus any paused never-submitted record whose cancellation is
+    /// waiting to seal locally.
     pub fn followed_out(&self) -> Result<Vec<DelegationOut>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(&format!(
             "SELECT {OUT_COLUMNS} FROM delegations_out WHERE phase != 'sealed' \
-             AND paused IS NULL ORDER BY created_at, delegation_id"
+             AND (paused IS NULL OR (cancel_requested_at IS NOT NULL AND submitted_at IS NULL)) \
+             ORDER BY created_at, delegation_id"
         ))?;
         let records = statement
             .query_map([], out_row)?

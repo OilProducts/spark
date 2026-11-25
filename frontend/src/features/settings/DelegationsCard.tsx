@@ -157,6 +157,7 @@ function QuestionResponder({
     where,
     question,
     disabled,
+    submitting,
     draft,
     error,
     onDraft,
@@ -167,6 +168,7 @@ function QuestionResponder({
     where: string
     question: DelegationQuestion
     disabled: boolean
+    submitting: boolean
     draft: AnswerDraft
     error: string | null
     onDraft: (patch: Partial<AnswerDraft>) => void
@@ -201,9 +203,10 @@ function QuestionResponder({
             {question.form ? (
                 <FormQuestionFields
                     actionError={error}
+                    disabled={disabled}
                     draftKey={`delegation:${draftKey}`}
                     form={question.form}
-                    isSubmitting={disabled}
+                    isSubmitting={submitting}
                     testId={`delegation-form-${question.question_id}`}
                     onReply={(reply) => onAnswer({ form: reply })}
                 />
@@ -720,6 +723,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                                     where={where}
                                                     question={question}
                                                     disabled={busy || draft.sending || !answerable}
+                                                    submitting={draft.sending}
                                                     draft={draft}
                                                     error={draft.error ?? failures[key]?.message ?? null}
                                                     onDraft={(patch) => editDraft(env, key, patch)}

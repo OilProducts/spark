@@ -688,22 +688,52 @@ pub fn cancel(
         return Ok(record);
     }
     if let Some(reason) = record.paused.as_deref() {
-        let target_kind = if record.kind == "flow" {
-            "run"
-        } else {
-            "conversation"
-        };
-        let state = json!({
-            "target_kind": target_kind,
-            "target_id": record.target_id,
-        });
-        let result = json!({
-            "status": "canceled",
-            "detail": format!("Canceled locally while paused: {reason}"),
-        });
-        seal_out_and_notify(settings, store, &record, &state, result, true)?;
+        seal_canceled_unsubmitted(settings, store, &record, reason)?;
     }
     get(settings, delegation_id)
+}
+
+fn seal_canceled_unsubmitted(
+    settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
+    record: &DelegationOut,
+    reason: &str,
+) -> WorkspaceResult<bool> {
+    let target_kind = if record.kind == "flow" {
+        "run"
+    } else {
+        "conversation"
+    };
+    let state = json!({
+        "target_kind": target_kind,
+        "target_id": record.target_id,
+    });
+    let result = json!({
+        "status": "canceled",
+        "detail": format!("Canceled locally while paused: {reason}"),
+    });
+    seal_out_and_notify(settings, store, record, &state, result, true)
+}
+
+fn pause_or_seal_canceled(
+    settings: &SparkSettings,
+    store: &Arc<ConversationStore>,
+    delegation_id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let repository = environments(settings);
+    let _ = repository.pause_out(delegation_id, reason);
+    let Ok(Some(current)) = repository.out(delegation_id) else {
+        return Ok(());
+    };
+    if current.phase != "sealed"
+        && current.paused.is_some()
+        && current.cancel_requested_at.is_some()
+        && current.submitted_at.is_none()
+    {
+        seal_canceled_unsubmitted(settings, store, &current, reason).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// A run question takes `selected_value`; a conversation request takes
@@ -946,14 +976,25 @@ fn follow(
     store: &Arc<ConversationStore>,
     record: &DelegationOut,
 ) -> Result<(), String> {
+    if let Some(reason) = record.paused.as_deref() {
+        if record.cancel_requested_at.is_some() && record.submitted_at.is_none() {
+            seal_canceled_unsubmitted(settings, store, record, reason)
+                .map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
     let repository = environments(settings);
     let id = &record.delegation_id;
     let Some((link, token)) = repository
         .link(&record.environment_id)
         .map_err(|e| e.to_string())?
     else {
-        let _ = repository.pause_out(id, "No link to this environment; link it again to resume.");
-        return Ok(());
+        return pause_or_seal_canceled(
+            settings,
+            store,
+            id,
+            "No link to this environment; link it again to resume.",
+        );
     };
     let path = format!("{INCOMING_PATH}/{id}");
     let peer = |method: Method, path: &str, body: Option<Value>| {
@@ -996,8 +1037,7 @@ fn follow(
                 404 => format!("The environment does not know this delegation ({detail})."),
                 _ => format!("The environment refused this delegation ({status}: {detail})."),
             };
-            let _ = repository.pause_out(id, &reason);
-            return Ok(());
+            return pause_or_seal_canceled(settings, store, id, &reason);
         }
     };
     apply(settings, store, record, &state).map_err(|error| error.to_string())?;
@@ -1025,11 +1065,13 @@ fn delegation_inbox_payload(record: &DelegationOut, state: &Value) -> Value {
 fn live_owner<'a>(
     conversations: &ConversationRepository,
     record: &'a DelegationOut,
-) -> Option<&'a str> {
-    record
-        .owner_conversation_id
-        .as_deref()
-        .filter(|owner| matches!(conversations.conversation_project_path(owner), Ok(Some(_))))
+) -> WorkspaceResult<Option<&'a str>> {
+    let Some(owner) = record.owner_conversation_id.as_deref() else {
+        return Ok(None);
+    };
+    Ok(conversations
+        .conversation_project_path(owner)?
+        .map(|_| owner))
 }
 
 /// Seals an outgoing record (see `seal_out_on` for `unsubmitted`) and
@@ -1048,7 +1090,7 @@ fn seal_out_and_notify(
 ) -> WorkspaceResult<bool> {
     let id = &record.delegation_id;
     let conversations = ConversationRepository::new(store.clone());
-    let Some(owner) = live_owner(&conversations, record) else {
+    let Some(owner) = live_owner(&conversations, record)? else {
         return Ok(environments(settings).seal_out(id, &result, unsubmitted)?);
     };
     let mut payload = delegation_inbox_payload(record, state);
@@ -1092,7 +1134,11 @@ fn apply(
     let id = &record.delegation_id;
     let sealed = state["phase"] == "sealed";
     let conversations = ConversationRepository::new(store.clone());
-    let owner = live_owner(&conversations, record).filter(|_| !sealed);
+    let owner = if sealed {
+        None
+    } else {
+        live_owner(&conversations, record)?
+    };
     let prefix = format!("delegation:{id}:question:");
     // B's open questions, each under its notification ID. Run questions carry
     // `run_id` so sibling child runs sharing a gate ID do not collide.

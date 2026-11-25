@@ -2403,3 +2403,39 @@ fn sibling_child_run_questions_sharing_a_gate_id_notify_and_answer_independently
         ])
     );
 }
+
+#[test]
+fn follower_seals_a_never_submitted_canceled_delegation_when_pausing() {
+    let home = Home::new();
+    home.seed_chat("chat-owner", "amber-owner", "chat", "complete", json!([]));
+    // Peer rejects with 401 before any submission occurs.
+    let b = Peer::serve(|_, _| (401, json!({"detail": "revoked"})));
+    home.link_to(LINKED, &b);
+
+    // Case 1: cancel requested, then follower hits 401 while pausing.
+    let refused_id = home.start_on(LINKED, "cancel-before-401", Some("amber-owner"));
+    home.environments().request_cancel_out(&refused_id).unwrap();
+    assert_eq!(
+        home.tick(&mut delegations::Follower::default()),
+        Vec::<String>::new()
+    );
+    let refused = home.out(&refused_id);
+    assert_eq!(refused.phase, "sealed");
+    assert_eq!(refused.result.as_ref().unwrap()["status"], "canceled");
+
+    // Case 2: cancel requested, then remove_link pauses the unsubmitted record.
+    let unlinked_id = home.start_on(LINKED, "cancel-before-unlink", Some("amber-owner"));
+    home.environments()
+        .request_cancel_out(&unlinked_id)
+        .unwrap();
+    home.environments().remove_link(LINKED).unwrap();
+    assert_eq!(
+        home.tick(&mut delegations::Follower::default()),
+        Vec::<String>::new()
+    );
+    let unlinked = home.out(&unlinked_id);
+    assert_eq!(unlinked.phase, "sealed");
+    assert_eq!(unlinked.result.as_ref().unwrap()["status"], "canceled");
+    assert_eq!(home.results("chat-owner", &refused_id).len(), 1);
+    assert_eq!(home.results("chat-owner", &unlinked_id).len(), 1);
+}

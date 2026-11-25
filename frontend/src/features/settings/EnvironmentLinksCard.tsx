@@ -54,11 +54,10 @@ type Mutation =
     | { unlinked: EnvironmentLink }
 
 // Leaving Settings unmounts the card and switching environments remounts it, so a request can settle after its card
-// is gone. It then reaches the cards mounted now: those for its environment show a mutation and refresh, and a failure
-// shows in the current card, or in the next one to mount.
+// is gone. It then reaches only the cards for its originating environment, or waits until that environment remounts.
 type LiveCard = { environmentId: string | null; settle: (mutation: Mutation) => void; showError: (message: string) => void }
 const liveCards = new Set<LiveCard>()
-let undeliveredError: string | null = null
+const undeliveredErrors = new Map<string | null, string>()
 // Link listings (a refresh's or a removal check's) and link adds take ascending tickets, shared by every card, as their
 // requests are sent, and a confirmed link change takes one as it shows. Start order stands in for read order only where
 // no listed row shows which listing read later.
@@ -254,8 +253,11 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         }
         liveCards.add(card)
         liveCardRef.current = card
-        if (undeliveredError) showError(undeliveredError)
-        undeliveredError = null
+        const pendingError = undeliveredErrors.get(activeEnvironmentId)
+        if (pendingError) {
+            undeliveredErrors.delete(activeEnvironmentId)
+            showError(pendingError)
+        }
         return () => {
             liveCards.delete(card)
             liveCardRef.current = null
@@ -299,13 +301,16 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     }
 
     // Shows an action's failure here, beside any error shown while it ran (each action clears earlier ones as it starts,
-    // so a refresh that finished meanwhile keeps its errors), or, once this card is gone, in the card showing now or the
-    // next one to mount.
-    const reportError = (message: string) => {
-        if (liveCardRef.current) return showError(message, true)
-        const shown = liveCards.values().next().value
+    // so a refresh that finished meanwhile keeps its errors), or, once this card is gone, only in a mounted card for the
+    // same environment, else queued for when that environment mounts again.
+    const reportError = (message: string, targetEnv: string | null = activeEnvironmentId) => {
+        if (liveCardRef.current && targetEnv === activeEnvironmentId) return showError(message, true)
+        const shown = Array.from(liveCards).find((card) => card.environmentId === targetEnv)
         if (shown) shown.showError(message)
-        else undeliveredError = [undeliveredError, message].filter(Boolean).join(' ')
+        else {
+            const existing = undeliveredErrors.get(targetEnv)
+            undeliveredErrors.set(targetEnv, [existing, message].filter(Boolean).join(' '))
+        }
     }
 
     // Confirms, then runs an action with the card busy. The shared dialog has no trigger of its own to refocus, so focus
@@ -424,9 +429,14 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             const linksTicket = ++lastTicket
             const latest = await fetchEnvironmentLinks()
             // Requests go to whichever environment is active when sent, and the user can switch while the check runs.
-            if (getActiveEnvironmentId() !== activeEnvironmentId) {
+            const nowActive = getActiveEnvironmentId()
+            if (nowActive !== activeEnvironmentId) {
                 const from = descriptor?.display_name || 'the previous environment'
-                throw new Error(`You switched environments before the link to ${name} on ${from} was removed, so nothing was removed.`)
+                reportError(
+                    `You switched environments before the link to ${name} on ${from} was removed, so nothing was removed.`,
+                    nowActive,
+                )
+                return
             }
             const current = latest.find((row) => row.environment_id === link.environment_id)
             if (!current || !sameLink(current, link)) {

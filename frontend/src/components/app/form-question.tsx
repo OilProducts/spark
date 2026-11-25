@@ -26,6 +26,7 @@ const INPUT_TYPES: Record<string, string> = { email: 'email', uri: 'url', date: 
 
 interface FormQuestionFieldsProps {
     actionError: string | null
+    disabled?: boolean
     draftKey: string
     form: FormQuestion
     isSubmitting: boolean
@@ -35,7 +36,8 @@ interface FormQuestionFieldsProps {
 }
 
 /** A harness's form for the person to fill in, review, and then submit, decline or cancel. */
-export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, onReply, testId }: FormQuestionFieldsProps) {
+export function FormQuestionFields({ actionError, disabled, draftKey, form, isSubmitting, onReply, testId }: FormQuestionFieldsProps) {
+    const controlsDisabled = isSubmitting || Boolean(disabled)
     const idPrefix = useId()
     const fields = useMemo(() => formFields(form.schema), [form.schema])
     const [draft, setDraftState] = useState<FormDraft>(() => draftsByKey.get(draftKey) ?? initialDraft(fields))
@@ -75,7 +77,7 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
             'aria-describedby': describedBy,
             'aria-invalid': invalid?.field === field.name || undefined,
             'aria-required': field.required || undefined,
-            disabled: isSubmitting,
+            disabled: controlsDisabled,
         }
         if (field.kind === 'multi') {
             const picks = (value ?? []) as string[]
@@ -89,7 +91,7 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
                                     id={choiceId}
                                     data-form-field={index === 0 ? field.name : undefined}
                                     checked={picks.includes(choice.value)}
-                                    disabled={isSubmitting}
+                                    disabled={controlsDisabled}
                                     onCheckedChange={(checked) => setDraft(
                                         field.name,
                                         field.choices
@@ -181,7 +183,7 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
                                 <Checkbox
                                     id={leaveUnsetId}
                                     checked={(draft[field.name] ?? null) === null}
-                                    disabled={isSubmitting}
+                                    disabled={controlsDisabled}
                                     onCheckedChange={(checked) => setDraft(field.name, checked === true ? null : field.kind === 'multi' ? [] : '')}
                                 />
                                 <Label htmlFor={leaveUnsetId} className="text-xs font-normal text-muted-foreground">Leave {field.label} unset</Label>
@@ -221,13 +223,13 @@ export function FormQuestionFields({ actionError, draftKey, form, isSubmitting, 
                 )
             })}
             <div className="flex flex-wrap justify-end gap-2">
-                <Button type="button" variant="ghost" size="xs" className="h-7" disabled={isSubmitting} onClick={() => reply({ action: 'cancel' })}>
+                <Button type="button" variant="ghost" size="xs" className="h-7" disabled={controlsDisabled} onClick={() => reply({ action: 'cancel' })}>
                     Cancel
                 </Button>
-                <Button type="button" variant="outline" size="xs" className="h-7" disabled={isSubmitting} onClick={() => reply({ action: 'decline' })}>
+                <Button type="button" variant="outline" size="xs" className="h-7" disabled={controlsDisabled} onClick={() => reply({ action: 'decline' })}>
                     Decline
                 </Button>
-                <Button type="submit" variant="outline" size="xs" className="h-7" disabled={isSubmitting} data-testid={`${testId}-submit`}>
+                <Button type="submit" variant="outline" size="xs" className="h-7" disabled={controlsDisabled} data-testid={`${testId}-submit`}>
                     {isSubmitting ? 'Submitting...' : 'Submit'}
                 </Button>
             </div>
