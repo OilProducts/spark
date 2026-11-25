@@ -1,6 +1,7 @@
 import {
   type ComponentProps,
   createContext,
+  type KeyboardEvent,
   useContext,
   useLayoutEffect,
   useMemo,
@@ -161,6 +162,9 @@ export function DialogProvider({ children }: PropsWithChildren) {
     }
   }, [blocked])
   const shown = blockedAfter === null ? dialogs : dialogs.filter((dialog) => dialog.id <= blockedAfter || leaving(dialog))
+  // Keys pressed in one, such as a switch's confirmation over the gate, stay in it, as in the gate: the hidden
+  // workspace's shortcuts, such as the flow editor's undo, listen on the document.
+  const ownKeys = blockedAfter === null ? undefined : (event: KeyboardEvent) => event.stopPropagation()
   // A switch to another environment closes, unanswered, the dialogs asked in the one before, such as a deletion's
   // confirmation, before they show over the workspace they would now act in.
   useLayoutEffect(() => {
@@ -255,6 +259,7 @@ export function DialogProvider({ children }: PropsWithChildren) {
             >
               <AlertDialogContent
                 data-testid="shared-dialog"
+                onKeyDown={ownKeys}
                 className="sm:max-w-md"
               >
                 <AlertDialogHeader>
@@ -304,6 +309,7 @@ export function DialogProvider({ children }: PropsWithChildren) {
           >
             <DialogContent
               data-testid="shared-dialog"
+              onKeyDown={ownKeys}
               className="sm:max-w-md"
             >
               <DialogHeader>

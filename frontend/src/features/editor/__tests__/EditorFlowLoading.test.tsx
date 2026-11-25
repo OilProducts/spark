@@ -14,6 +14,7 @@ import { HistoryRoutingController, RefusedFlowSaveNotices } from '@/app/AppSessi
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
 import { ApiHttpError } from '@/lib/attractorClient'
 import { switchEnvironment } from '@/test/environments'
+import { getActiveEnvironmentId, resetActiveEnvironmentForTests, subscribeActiveEnvironment } from '@/lib/activeEnvironment'
 import {
   loadEditorFlowFiles,
   loadEditorFlowPayload,
@@ -1231,6 +1232,44 @@ describe('Editor file view', () => {
     expect(screen.getByTestId('flow-file-editor')).toHaveAccessibleName('review.md')
     await user.click(screen.getByRole('button', { name: /^flow\.md/ }))
     expect(screen.getByTestId('flow-file-editor')).toHaveValue(edited)
+  })
+
+  it('asks about the flow file and Settings drafts a switch would drop, keeping both if either is kept and switching once when both are discarded', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 })))
+    const dropSettings = vi.fn()
+    const SettingsDraft = () => { useSettingsNavigationProtection(true, false, 'settings', dropSettings); return null }
+    render(<DialogProvider><ReactFlowProvider><Editor /></ReactFlowProvider><SettingsDraft /></DialogProvider>)
+    const edited = '---\nid: demo\n---\nThe edited flow.\n'
+    fireEvent.change(await screen.findByTestId('flow-file-editor'), { target: { value: edited } })
+    const commits: Array<string | null> = []
+    const stop = subscribeActiveEnvironment(() => { if (getActiveEnvironmentId() !== (commits.at(-1) ?? null)) commits.push(getActiveEnvironmentId()) })
+    const answer = async (title: string, button: 'Discard and leave' | 'Keep editing') => {
+      await user.click(within(await screen.findByRole('alertdialog', { name: title })).getByRole('button', { name: button }))
+    }
+    // The switch is held for the editors' answers, so its call reports nothing committed yet.
+    const requestSwitch = () => switchEnvironment('env-r', undefined, true).catch(() => {})
+    try {
+      // Discarding the settings still asks about the flow file; keeping it keeps both.
+      await requestSwitch()
+      await answer('Discard unsaved settings?', 'Discard and leave')
+      await answer('Discard unsaved flow edits?', 'Keep editing')
+      expect(getActiveEnvironmentId()).toBeNull()
+      expect(commits).toEqual([])
+      expect(dropSettings).not.toHaveBeenCalled()
+      expect(screen.getByTestId('flow-file-editor')).toHaveValue(edited)
+
+      await requestSwitch()
+      await answer('Discard unsaved settings?', 'Discard and leave')
+      await answer('Discard unsaved flow edits?', 'Discard and leave')
+      expect(getActiveEnvironmentId()).toBe('env-r')
+      expect(commits).toEqual(['env-r'])
+      expect(dropSettings).toHaveBeenCalledTimes(1)
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    } finally {
+      stop()
+      resetActiveEnvironmentForTests()
+    }
   })
 
   it('links a refused save’s problems to their files, and clears them once the edit is put back', async () => {
