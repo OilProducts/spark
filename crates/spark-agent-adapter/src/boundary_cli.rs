@@ -181,7 +181,7 @@ fn client_for_payload(payload: &Value) -> Result<Client, AdapterError> {
                 "Invalid captured profiles.",
             )
         })?;
-        let env = std::env::vars().collect();
+        let env = spark_common::paths::utf8_env_vars();
         return Client::from_env_map(&configuration.providers.execution_environment(&env), None)
             .and_then(|client| client.with_profile_definitions(profiles, &env))
             .and_then(|client| client.with_default_provider(None));

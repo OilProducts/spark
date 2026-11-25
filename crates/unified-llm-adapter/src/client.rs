@@ -103,8 +103,7 @@ impl Client {
     }
 
     pub fn from_env_with_default(default_provider: Option<&str>) -> Result<Self, AdapterError> {
-        let env = std::env::vars().collect::<BTreeMap<_, _>>();
-        Self::from_env_map(&env, default_provider)
+        Self::from_env_map(&crate::env::utf8_process_env(), default_provider)
     }
 
     pub fn from_env_map(
@@ -130,8 +129,11 @@ impl Client {
         config_dir: impl AsRef<Path>,
         default_provider: Option<&str>,
     ) -> Result<Self, AdapterError> {
-        let env = std::env::vars().collect::<BTreeMap<_, _>>();
-        Self::from_env_map_and_profiles(&env, config_dir, default_provider)
+        Self::from_env_map_and_profiles(
+            &crate::env::utf8_process_env(),
+            config_dir,
+            default_provider,
+        )
     }
 
     pub fn from_env_map_and_profiles(

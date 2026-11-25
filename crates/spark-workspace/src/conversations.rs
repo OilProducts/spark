@@ -539,7 +539,8 @@ impl AgentTurnBackend for EnvironmentAgentTurnBackend {
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, AgentError> {
-        let client = self.client_for_execution(&request.metadata, &std::env::vars().collect())?;
+        let client =
+            self.client_for_execution(&request.metadata, &spark_common::paths::utf8_env_vars())?;
         RustLlmAgentTurnBackend::new(client).run_turn_with_event_sink(request, event_sink)
     }
 
@@ -547,7 +548,8 @@ impl AgentTurnBackend for EnvironmentAgentTurnBackend {
         &self,
         request: AgentRequestUserInputAnswerRequest,
     ) -> Result<AgentTurnOutput, AgentError> {
-        let client = self.client_for_execution(&request.metadata, &std::env::vars().collect())?;
+        let client =
+            self.client_for_execution(&request.metadata, &spark_common::paths::utf8_env_vars())?;
         RustLlmAgentTurnBackend::new(client).answer_request_user_input(request)
     }
 }

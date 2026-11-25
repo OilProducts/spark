@@ -1125,7 +1125,7 @@ impl RuntimeHandlerRunner {
                         (Some((broker, base_client)), Some(value)) => {
                             let profiles = serde_json::from_value(value.clone())
                                 .map_err(|_| RuntimeNodeError::runtime("Invalid captured LLM profiles."))?;
-                            let env = std::env::vars().collect::<BTreeMap<_, _>>();
+                            let env = spark_common::paths::utf8_env_vars();
                             let client = if let Some(value) = runtime.context.get("internal.execution_configuration_snapshot") {
                                 let configuration: spark_storage::settings::ExecutionConfiguration = serde_json::from_value(value.clone()).map_err(|_| RuntimeNodeError::runtime("Invalid captured execution configuration."))?;
                                 base_client.clone().with_execution_environment(&configuration.providers.execution_environment(&env)).map_err(|_| RuntimeNodeError::runtime("Unable to initialize captured provider connections."))?

@@ -26,7 +26,7 @@ pub fn utility_complete(
     let (execution_settings, profile) = capture_execution_settings(settings, &group)?;
     let metadata = BTreeMap::from([("spark.execution.settings".to_string(), execution_settings)]);
     let client = EnvironmentAgentTurnBackend::new(settings.config_dir.clone())
-        .client_for_execution(&metadata, &std::env::vars().collect())
+        .client_for_execution(&metadata, &spark_common::paths::utf8_env_vars())
         .map_err(|error| WorkspaceError::ServiceUnavailable(error.message))?;
     let call = spark_agent_adapter::UtilityCall {
         provider: group
