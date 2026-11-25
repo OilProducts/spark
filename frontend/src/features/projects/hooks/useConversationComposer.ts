@@ -32,6 +32,8 @@ import { clearSentAttachments, keptAttachments, refusedAttachmentsFit, restoreRe
 // is one in its environment's chats as shown: the same conversation ID elsewhere, or once a switch away
 // and back starts them anew, is another chat.
 const awaitingSettingsTurn = new Set<string>()
+// Each chat's newest turn still in flight: an earlier turn's answer never ends its pending and sending state.
+const newestTurn = new Map<string, object>()
 
 // Each project's chat as its environment's projects loaded, or the latest the app opened by itself in its
 // place, until you open another there: none you chose yet. A switch away and back starts them anew.
@@ -487,9 +489,12 @@ export function useConversationComposer({
         }
         const afterRevision = getConversationRecord(conversationId)?.latestRevision ?? '0'
         setPendingConversationTurn({ conversationId, afterRevision })
-        // The project's pending turn is its open chat's: once another chat opens, it is that chat's send.
+        const turn = {}
+        newestTurn.set(conversationId, turn)
+        const newest = () => newestTurn.get(conversationId) === turn
+        // The project's pending turn is its open chat's newest: once another chat opens, it is that chat's send.
         const endPending = () => {
-            if (getCurrentConversationId(activeProjectPath) === conversationId) setPendingConversationTurn(null)
+            if (newest() && getCurrentConversationId(activeProjectPath) === conversationId) setPendingConversationTurn(null)
         }
         // The activity bar follows the turn even after the chat is left.
         const { setSendingChat } = useStore.getState()
@@ -509,9 +514,13 @@ export function useConversationComposer({
         } catch (error) {
             return refusal(error)
         } finally {
-            if (live()) {
-                endPending()
-                setSendingChat(conversationId, false)
+            // A newer turn of this chat, still in flight, keeps its pending and sending state.
+            if (newest()) {
+                if (live()) {
+                    endPending()
+                    setSendingChat(conversationId, false)
+                }
+                newestTurn.delete(conversationId)
             }
         }
     }
