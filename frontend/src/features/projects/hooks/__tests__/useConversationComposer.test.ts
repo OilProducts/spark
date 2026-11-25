@@ -447,6 +447,9 @@ describe('onChatComposerSubmit', () => {
         })
 
         const fileOf = (id: string): ComposerAttachment => ({ ...entry, localId: `local-${id}`, attachment: { ...entry.attachment!, id: `attachment-${id}` } })
+        // The panel error as the workspace keeps it, in the store.
+        const panelError = () => useStore.getState().homeProjectSessionsByPath[projectPath]?.panelError
+        const setStoredPanelError = (message: string | null) => useStore.getState().updateHomeProjectSession(projectPath, { panelError: message })
 
         it('leaves a file removed while Send waits on its settings out of the send, and out of the draft once that is refused', async () => {
             loadProjects('conversation-1')
@@ -479,8 +482,7 @@ describe('onChatComposerSubmit', () => {
             useStore.getState().updateHomeConversationSession('conversation-1', { attachments: refused })
             const sent = deferred<ConversationAcceptance>()
             vi.mocked(sendConversationTurnValidated).mockReturnValue(sent.promise)
-            const setPanelError = vi.fn()
-            composer({ attachments: refused, setPanelError }).onChatComposerSubmit()
+            composer({ attachments: refused, setPanelError: setStoredPanelError }).onChatComposerSubmit()
             await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalled())
 
             // Away and back, the chat opens again and a newer message is written with files of its own; then the send is refused.
@@ -493,14 +495,49 @@ describe('onChatComposerSubmit', () => {
             await new Promise((resolve) => setTimeout(resolve, 0))
             expect(draft()).toBe('Newer')
             expect(attachmentsOf('conversation-1')).toEqual(newer)
-            expect(setPanelError).toHaveBeenLastCalledWith('Unable to send the project chat turn. It comes back once its files fit this chat\'s draft.')
+            expect(panelError()).toBe('Unable to send the project chat turn. It comes back once its files fit this chat\'s draft.')
 
             // The newer message goes, as an accepted send leaves the draft; the refused one comes back.
             useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: '' })
             useStore.getState().updateHomeConversationSession('conversation-1', { attachments: [] })
             expect(draft()).toBe('Hello there')
             expect(attachmentsOf('conversation-1')).toEqual(refused)
-            expect(setPanelError).toHaveBeenLastCalledWith('Unable to send the project chat turn.')
+            expect(panelError()).toBe('Unable to send the project chat turn.')
+        })
+
+        it('puts back one of two six-file sends refused for a chat while hidden on a return, keeping the other\'s text and files until both fit one message', async () => {
+            const first = ['a', 'b', 'c', 'd', 'e', 'f'].map(fileOf)
+            const second = ['g', 'h', 'i', 'j', 'k', 'l'].map(fileOf)
+            const sends = [deferred<ConversationAcceptance>(), deferred<ConversationAcceptance>()]
+            vi.mocked(sendConversationTurnValidated).mockReturnValueOnce(sends[0].promise).mockReturnValueOnce(sends[1].promise)
+            // Each goes from the chat with six files; a switch away and back between them starts its draft anew.
+            const send = async (text: string, files: ComposerAttachment[], call: number) => {
+                await show('env-r')
+                loadProjects('conversation-1')
+                useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: text })
+                useStore.getState().updateHomeConversationSession('conversation-1', { attachments: files })
+                composer({ chatDraft: text, attachments: files, setPanelError: setStoredPanelError }).onChatComposerSubmit()
+                await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalledTimes(call))
+                await show(null)
+            }
+            await send('First', first, 1)
+            await send('Second', second, 2)
+            sends[0].reject(new Error('offline'))
+            sends[1].reject(new Error('offline'))
+            await new Promise((resolve) => setTimeout(resolve, 0))
+
+            await show('env-r')
+            loadProjects('conversation-1')
+            expect(attachmentsOf('conversation-1')).toEqual(first)
+            expect(draft()).toBe('First')
+            expect(panelError()).toBe('Unable to send the project chat turn.')
+
+            // Once the first goes, as an accepted send leaves the draft, the second comes back.
+            useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: '' })
+            useStore.getState().updateHomeConversationSession('conversation-1', { attachments: [] })
+            expect(attachmentsOf('conversation-1')).toEqual(second)
+            expect(draft()).toBe('Second')
+            expect(panelError()).toBe('Unable to send the project chat turn.')
         })
 
         it('keeps two new chats\' refused first sends apart, opening one with its own text, file and error as its environment shows its chats again and the other at the next showing', async () => {

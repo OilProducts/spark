@@ -1,5 +1,7 @@
 import { render, renderHook, screen, waitFor, act } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { DialogProvider } from '@/components/app/dialog-controller'
+import { HomeSessionController } from '@/app/AppSessionControllers'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ClientPreferencesController } from '@/features/settings/ClientPreferencesController'
 import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
@@ -636,6 +638,72 @@ it('keeps a refused send\'s text, files and error for the chat it was sent in, t
     expect(shown.result.current.surfaceProps.panelError).toBe('unavailable')
     expect(uploads()).toHaveLength(1)
     expect(uploads()[0]).toContain('/workspace/api/conversations/conversation-1/attachments?')
+    shown.unmount()
+})
+
+it('opens a new chat\'s late-refused first send again once its project, with no chat saved, opens its latest by itself on a return', async () => {
+    const project = (path: string, active: string | null) => ({ project_id: path, project_path: path, display_name: path, is_favorite: false, active_conversation_id: active })
+    let serverChat: string | null = 'conversation-1'
+    const turn = deferred<unknown>()
+    answer = (url, method) => {
+        if (url.includes('/projects/chat-models')) return { providers: { codex: { status: 'available', error: null, label: 'Codex' } }, models: [
+            { provider: 'codex', id: 'gpt-5.4', display: 'GPT-5.4', is_default: true, supported_reasoning_efforts: ['medium'], default_reasoning_effort: 'medium' },
+        ] }
+        if (url.endsWith('/workspace/api/settings')) return { models: { scope: 'project', source: 'workspace', revision: '1', stored: null,
+            effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null } } }
+        if (method === 'GET' && url.endsWith('/workspace/api/projects')) return [project(PROJECT, serverChat), project('/tmp/other', null)]
+        if (method === 'GET' && url.includes('/workspace/api/projects/conversations')) return summarySnapshot([
+            { conversation_id: 'conversation-1', project_path: PROJECT, title: 'Thread', created_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z', revision: 3, turns: [], segments: [] },
+        ], { project_path: PROJECT })
+        if (method === 'GET' && url.includes('/workspace/api/conversations/')) return json({ detail: 'missing' }, 404)
+        if (method === 'PATCH' && url.endsWith('/projects/state')) {
+            // New chat saves as the project's chat; the chat its first message opens fails to.
+            const chosen = (bodies.at(-1) as { active_conversation_id?: string | null }).active_conversation_id ?? null
+            if (chosen !== null && chosen !== 'conversation-1') return json({ detail: 'unavailable' }, 503)
+            serverChat = chosen
+            return project(PROJECT, serverChat)
+        }
+        if (method === 'POST' && url.includes('/attachments')) return { id: 'attachment-1', filename: 'shot.png', media_type: 'image/png', size_bytes: 5 }
+        if (method === 'POST' && url.endsWith('/turns')) return turn.promise
+        return {}
+    }
+    // The Chats view's workspace, with the chat lists that open a project's latest chat when it has none saved.
+    const useWorkspace = () => {
+        const hydrateProjectRegistry = useStore((state) => state.hydrateProjectRegistry)
+        useProjectRegistryBootstrap({ hydrateProjectRegistry, enabled: useStore((state) => Object.keys(state.projectRegistry).length === 0) })
+        return useProjectsHomeController()
+    }
+    const wrapper = ({ children }: { children: ReactNode }) => <DialogProvider><HomeSessionController />{children}</DialogProvider>
+    const openChat = () => useStore.getState().projectSessionsByPath[PROJECT]?.conversationId
+    const show = async (environmentId: string | null) => {
+        await switchEnvironment(environmentId)
+        resetStoreForEnvironmentSwitch(environmentId === null)
+        useStore.setState({ activeProjectPath: PROJECT, viewMode: 'home' })
+    }
+    useStore.setState({ activeProjectPath: PROJECT, viewMode: 'home' })
+    const left = renderHook(useWorkspace, { wrapper })
+    await waitFor(() => expect(openChat()).toBe('conversation-1'))
+    await waitFor(() => expect(left.result.current.surfaceProps.isChatSendDisabled).toBe(false))
+    act(() => left.result.current.sidebarProps.onCreateConversationThread(PROJECT))
+    await waitFor(() => expect(serverChat).toBeNull())
+    // Its first message, a file alone.
+    act(() => left.result.current.surfaceProps.onAddAttachments([new File(['image'], 'shot.png', { type: 'image/png' })]))
+    await waitFor(() => expect(left.result.current.surfaceProps.attachments).toMatchObject([{ status: 'uploaded' }]))
+    const created = openChat()!
+    act(() => left.result.current.surfaceProps.onChatComposerSubmit())
+    await waitFor(() => expect(sent).toContain(`POST /workspace/api/conversations/${created}/turns`))
+    await show('env-r')
+    left.unmount()
+
+    // Back: with no chat saved, the project opens its latest once its list loads; then the send is refused.
+    await show(null)
+    const shown = renderHook(useWorkspace, { wrapper })
+    await waitFor(() => expect(openChat()).toBe('conversation-1'))
+    turn.resolve(json({ detail: 'unavailable' }, 503))
+    await waitFor(() => expect(openChat()).toBe(created))
+    await waitFor(() => expect(shown.result.current.surfaceProps.attachments).toMatchObject([{ status: 'uploaded', attachment: { id: 'attachment-1' } }]))
+    expect(shown.result.current.surfaceProps.chatDraft).toBe('')
+    expect(shown.result.current.surfaceProps.panelError).toBe('unavailable')
     shown.unmount()
 })
 

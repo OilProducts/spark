@@ -25,6 +25,7 @@ import { buildWorkspaceLiveEventsUrl, dispatchConversationLiveEnvelope } from '@
 import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import type { AppState } from '@/state/store-types'
+import { openByItself, opensByItself } from '@/state/homeSessionSlice'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { reportRunsTransportLost, requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
@@ -104,7 +105,7 @@ function HomeThreadSummariesController({
             }
             const latestConversation = summaries[0] ?? null
             if (latestConversation) {
-                activateConversationThread(projectPath, latestConversation.conversation_id)
+                openByItself(() => activateConversationThread(projectPath, latestConversation.conversation_id))
             }
         }
 
@@ -719,8 +720,8 @@ export function HistoryRoutingController() {
         }
         const unsubscribe = useStore.subscribe((state, previous) => {
             // A chat you choose opens alone; one the projects loading or a project's saved state answering
-            // opens comes with the projects.
-            if (state.projectRegistry === previous.projectRegistry && openChat(state) !== openChat(previous)) chatChosen = true
+            // opens comes with the projects, and the app's own choice of a project's latest is no one's.
+            if (state.projectRegistry === previous.projectRegistry && openChat(state) !== openChat(previous) && !opensByItself()) chatChosen = true
             if (scheduled) return
             scheduled = true
             queueMicrotask(record)

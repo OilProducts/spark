@@ -2,7 +2,7 @@ import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { HistoryRoutingController } from '@/app/AppSessionControllers'
+import { HistoryRoutingController, HomeSessionController } from '@/app/AppSessionControllers'
 import { EnvironmentBootstrap } from '@/app/EnvironmentSwitcher'
 import { selectEnvironment, useActiveEnvironment } from '@/lib/activeEnvironment'
 import { addsEntry, buildRunsHash, missionKey, parsePlaceHash, placeHash, roleKey, type Place } from '@/app/runsRouting'
@@ -14,6 +14,7 @@ import { markProjectUsed, usePersistProjectState } from '@/features/projects/hoo
 import { ROUTE_STATE_STORAGE_KEY, VIEW_MODE_SESSION_KEY } from '@/state/store-helpers'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { deferred, switchEnvironment } from '@/test/environments'
+import { summarySnapshot } from '@/test/conversationWire'
 
 // A fresh entry, so no Forward entries are left from an earlier test.
 const resetHash = () => {
@@ -898,6 +899,52 @@ describe('routing across environments', () => {
         act(() => window.history.forward())
         await waitFor(() => expect(window.location.hash).toBe('#/chats'))
         expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+    })
+
+    it('leaves Back and Forward as they are when a project with no chat saved opens its latest once its list loads while a remote environment\'s entry shows', async () => {
+        const listed = deferred<void>()
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            if (!String(input).includes('/workspace/api/projects/conversations?project_path=%2Ftmp%2Fproject')) return new Response('{}', { status: 404 })
+            await listed.promise
+            return new Response(JSON.stringify(summarySnapshot([
+                { conversation_id: 'chat-1', project_path: '/tmp/project', title: 'Thread', created_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z', revision: 1, turns: [], segments: [] },
+            ], { project_path: '/tmp/project' })), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }))
+        const Chats = () => <HomeSessionController key={useActiveEnvironment().activeEnvironmentId ?? 'local'} />
+        render(<><EnvironmentBootstrap /><Workspace /><Chats /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        const entries = window.history.length
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        // The projects load, opening the last used one, with no chat saved; its list answers later, opening its latest.
+        act(() => useStore.getState().hydrateProjectRegistry([
+            toHydratedProjectRecord({ project_path: '/tmp/home', is_favorite: false, is_default: true }),
+            toHydratedProjectRecord({ project_path: '/tmp/project', is_favorite: false, last_accessed_at: '2026-09-01T00:00:00Z' }),
+        ]))
+        expect(useStore.getState().activeProjectPath).toBe('/tmp/project')
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        listed.resolve()
+        await waitFor(() => expect(useStore.getState().projectSessionsByPath['/tmp/project']?.conversationId).toBe('chat-1'))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.history.length).toBe(entries)
+        expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`)
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+
+        // A chat chosen here still adds an entry of this machine's own.
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        act(() => useStore.getState().updateProjectSessionState('/tmp/project', { conversationId: 'chat-2' }))
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
     })
 
     it('keeps a remote environment\'s entries for Back and Forward to reach once it shows again', async () => {

@@ -50,6 +50,20 @@ let homeSessionStarts = 0
 /** The chats' current fresh start. */
 export const homeSessionStart = () => homeSessionStarts
 
+// Set while the app opens a project's chat by itself, as its latest once its list loads: no one chose it.
+let openingByItself = false
+/** Whether the chat opening now is one the app opens by itself. */
+export const opensByItself = () => openingByItself
+/** Opens a chat through `open` as the app's own choice, not yours. */
+export function openByItself(open: () => void) {
+    openingByItself = true
+    try {
+        open()
+    } finally {
+        openingByItself = false
+    }
+}
+
 /** The chats' state in a fresh environment: all of it belongs to one environment. */
 export const initialHomeSessionState = () => {
     homeSessionStarts += 1

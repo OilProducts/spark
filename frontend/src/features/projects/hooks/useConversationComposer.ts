@@ -20,7 +20,7 @@ import {
     updateConversationSettingsValidated,
 } from '@/lib/workspaceClient'
 import { randomHexId } from '@/lib/utils'
-import { homeSessionStart } from '@/state/homeSessionSlice'
+import { homeSessionStart, opensByItself } from '@/state/homeSessionSlice'
 import { useStore, whenEnvironmentShown } from '@/store'
 import type { AppState } from '@/state/store-types'
 import type { PendingConversationTurnState, PendingUserMessage } from '../model/conversationState'
@@ -33,8 +33,8 @@ import { clearSentAttachments, keptAttachments, refusedAttachmentsFit, restoreRe
 // and back starts them anew, is another chat.
 const awaitingSettingsTurn = new Set<string>()
 
-// Each project's chat as its environment's projects loaded, until another opens there: none you chose yet.
-// A switch away and back starts them anew.
+// Each project's chat as its environment's projects loaded, or the latest the app opened by itself in its
+// place, until you open another there: none you chose yet. A switch away and back starts them anew.
 const openedByLoad = new Map<string, string | null>()
 let loadedSession = homeSessionStart()
 const openChatOf = (state: AppState, projectPath: string) => state.projectSessionsByPath[projectPath]?.conversationId ?? null
@@ -45,8 +45,11 @@ useStore.subscribe((state, previous) => {
     }
     if (state.projectRegistry === previous.projectRegistry && state.projectSessionsByPath === previous.projectSessionsByPath) return
     for (const projectPath of Object.keys(state.projectRegistry)) {
-        if (!previous.projectRegistry[projectPath]) openedByLoad.set(projectPath, openChatOf(state, projectPath))
-        else if (openedByLoad.get(projectPath) !== openChatOf(state, projectPath)) openedByLoad.delete(projectPath)
+        const chat = openChatOf(state, projectPath)
+        if (!previous.projectRegistry[projectPath]) openedByLoad.set(projectPath, chat)
+        else if (openedByLoad.get(projectPath) === chat) continue
+        else if (openedByLoad.has(projectPath) && opensByItself()) openedByLoad.set(projectPath, chat)
+        else openedByLoad.delete(projectPath)
     }
 })
 
@@ -354,13 +357,20 @@ export function useConversationComposer({
             whenShownAndReady(environmentId, () => {
                 if (!projectShown() || (openChat() !== conversationId && (listed || !unchosen()))) return false
                 if (refusedAttachmentsFit(conversationId, sending)) return true
-                if (!held) setPanelError(`${error} It comes back once its files fit this chat's draft.`)
-                held = true
+                // Told once: telling updates the store, which asks again.
+                if (!held) {
+                    held = true
+                    setPanelError(`${error} It comes back once its files fit this chat's draft.`)
+                }
                 return false
             }, () => {
+                // Each step below asks the others again. The project's open chat holds this send from now, so no
+                // other chat no list names takes its place; its files go first, so another send refused for this
+                // chat finds them there and waits for room.
+                openedByLoad.delete(activeProjectPath)
+                if (sending.length > 0) restoreRefusedAttachments(conversationId, sending)
                 if (openChat() !== conversationId) useStore.getState().updateProjectSessionState(activeProjectPath, { conversationId })
                 setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n'))
-                if (sending.length > 0) restoreRefusedAttachments(conversationId, sending)
                 setPanelError(error)
             })
         }
