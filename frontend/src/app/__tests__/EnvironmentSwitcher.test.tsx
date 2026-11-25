@@ -539,8 +539,9 @@ describe('Same-window multi-environment switching', () => {
     it.each([
         ['answers 503', () => json({ detail: 'connection refused' }, 503)],
         ['gives no answer', () => Promise.reject(new TypeError('Failed to fetch'))],
-    ])('shows this Spark upgraded under the page, with reload guidance, and stops reconnecting, though the mounted remote %s', async (_peer, answer: Route) => {
-        const routes: Record<string, Route> = {}
+    ])('shows this Spark upgraded under the page, with reload guidance, and stops reconnecting, though the mounted remote %s, and keeps them once another tab links it anew', async (_peer, answer: Route) => {
+        let links = [WIN_LINK]
+        const routes: Record<string, Route> = { [LINKS]: () => json({ links }) }
         const { remoteShell, checks } = await mountWindows(routes)
         const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
         routes['/environment'] = upgradedLocal
@@ -559,6 +560,17 @@ describe('Same-window multi-environment switching', () => {
         expect(connects()).toBe(tried)
         expect(winLive()).toBeUndefined()
         expect(checks()).toBe(checked)
+
+        // Another tab pairs it again while this page is stale: only a reload helps still.
+        links = [WIN_RELINKED]
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        await waitFor(() => expect(getActiveEnvironmentState().links).toEqual([WIN_RELINKED]))
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 600)))
+        expect(gate).toHaveTextContent('Reload the page')
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'incompatible', activeCheck: { status: 'incompatible' } })
+        expect(remoteShell).not.toBeVisible()
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
     })
 
     it('says runs may be out of date once reconnected live connections keep failing their check with no answer, though none errors again', async () => {
@@ -662,6 +674,48 @@ describe('Same-window multi-environment switching', () => {
         delete routes[WIN_AUTH]
         act(() => { window.dispatchEvent(new Event('focus')) })
         await waitFor(() => expect(getActiveEnvironmentState().links).toEqual([WIN_LINK]))
+        await user.click(within(gate).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(remoteShell).toBeVisible())
+        await waitFor(() => expect(winLive()).toBeDefined())
+    })
+
+    it('keeps a remote behind the unlinked gate, its live connection closed, once a reconnect\'s check finds both its descriptors gone, though a Retry sent before answers late, until Retry passes after linking it again', async () => {
+        const routes: Record<string, Route> = {}
+        const { user, remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        Object.assign(routes, gatewayDown)
+        act(() => winLive()!.onerror?.(new Event('error')))
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(gate).toHaveTextContent('Couldn’t connect to Windows Workstation')
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+
+        // Retry during the outage: its check, sent while the link still exists, answers only later.
+        const late = deferred<void>()
+        routes[WIN_AUTH] = () => late.promise.then(() => json(WIN_ENV))
+        const before = checks()
+        await user.click(within(gate).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+
+        // Another tab removes the link, which this tab's listing doesn't show yet; the next failed connection's check
+        // finds both descriptors missing at this Spark's proxy.
+        const noLink = () => json({ detail: 'No link to environment "env-win".' }, 404)
+        routes[WIN_AUTH] = noLink
+        routes[WIN_PUBLIC] = noLink
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(gate).toHaveTextContent('This Spark no longer links'))
+
+        await act(async () => late.resolve())
+        const tried = connects()
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'refused', activeCheck: { status: 'refused' } })
+        expect(gate).toHaveTextContent('This Spark no longer links')
+        expect(remoteShell).not.toBeVisible()
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+
+        // Linked again: a new Retry passes.
+        delete routes[WIN_AUTH]
+        delete routes[WIN_PUBLIC]
         await user.click(within(gate).getByRole('button', { name: 'Retry' }))
         await waitFor(() => expect(remoteShell).toBeVisible())
         await waitFor(() => expect(winLive()).toBeDefined())

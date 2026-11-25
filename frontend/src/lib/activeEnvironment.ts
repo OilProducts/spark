@@ -29,7 +29,7 @@ export type EnvironmentLink = {
 }
 
 // `refused`: the link no longer reaches the Spark it paired with, which revoked this Spark's credential or was replaced
-// by another environment, or this Spark no longer links it, until it is paired again; or, linked anew while it failed,
+// by another environment, or this Spark no longer links it, until it is paired again; or, linked anew while unreachable,
 // until Retry checks the new link.
 type RemoteEnvironmentStatus = 'ready' | 'checking' | 'incompatible' | 'unreachable' | 'refused'
 
@@ -196,7 +196,7 @@ export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]
  * A destination removed or linked anew, here or in another tab, while it is checked or its switch awaits approval is no
  * longer one to switch to, whatever its check or the open editors answer: the workspace mounted stays, with its edits.
  * A mounted environment no longer linked fails for good, its live connection closed, until Retry passes or you leave it;
- * one linked anew while it failed, until Retry checks the new link.
+ * one linked anew while unreachable, until Retry checks the new link. A final failure stays, as this Spark's own mismatch.
  */
 function dropRemovedDestination(previous: EnvironmentLink[]) {
     const linked = (environmentId: string, links = state.links) => links.find((link) => link.environment_id === environmentId)
@@ -211,7 +211,7 @@ function dropRemovedDestination(previous: EnvironmentLink[]) {
         outdated = reverifySequence
         if (state.selectedEnvironmentId === active) switchSequence += 1
         if (gone && !isFinalCheck(state.activeCheck)) applyActiveCheck(unlinked(active))
-        if (replaced && state.activeCheck.status !== 'ready') applyActiveCheck(relinked(now.label || now.environment_id))
+        if (replaced && state.activeCheck.status === 'unreachable') applyActiveCheck(relinked(now.label || now.environment_id))
     }
     const pending = state.selectedEnvironmentId
     if (pending === null || pending === active) return
@@ -407,8 +407,11 @@ export async function selectEnvironment(
 
     // Retrying the mounted environment keeps it hidden behind its error until the check passes.
     if (environmentId !== active) updateState({ selectedEnvironmentId: environmentId, status: 'checking', error: null })
+    const since = reverifySequence
     const check = await checkRemoteEnvironment(environmentId).catch((error: unknown) => unreachable(errorText(error)))
     if (seq !== switchSequence) return false
+    // An automatic check sent after this Retry that concluded first, such as one finding the link gone, decides.
+    if (environmentId === active && outdated > since) return false
     if (environmentId === active && check.status !== 'unreachable') {
         // A Retry's conclusive check outdates the mounted environment's automatic ones still running, as one sent with
         // a credential pairing again since replaced. One with no conclusive answer leaves theirs to land, such as a
