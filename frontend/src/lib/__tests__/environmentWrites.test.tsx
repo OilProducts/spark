@@ -707,11 +707,12 @@ it('opens a new chat\'s late-refused first send again once its project, with no 
     shown.unmount()
 })
 
-it('keeps a new chat\'s late-refused first send, opened again on a return, when the chat its project opened by itself before the switch saves after', async () => {
+it('keeps a new chat\'s late-refused first send, opened again on a return, when the chat its project opened by itself, before the switch and on the return, saves after', async () => {
     const project = (path: string, active: string | null) => ({ project_id: path, project_path: path, display_name: path, is_favorite: false, active_conversation_id: active })
     let serverChat: string | null = null
     const turn = deferred<unknown>()
-    const earlierSave = deferred<unknown>()
+    // Each save of the project's latest, opened by itself, answers only when the test says.
+    const latestSaves: ReturnType<typeof deferred<unknown>>[] = []
     const saves = () => sent.filter((request) => request.startsWith('PATCH') && request.endsWith('/projects/state'))
     answer = (url, method) => {
         if (url.includes('/projects/chat-models')) return { providers: { codex: { status: 'available', error: null, label: 'Codex' } }, models: [
@@ -725,11 +726,13 @@ it('keeps a new chat\'s late-refused first send, opened again on a return, when 
         ], { project_path: PROJECT })
         if (method === 'GET' && url.includes('/workspace/api/conversations/')) return json({ detail: 'missing' }, 404)
         if (method === 'PATCH' && url.endsWith('/projects/state')) {
-            // The first save, of the chat the project opened by itself, answers only when the test says.
-            if (saves().length === 1) return earlierSave.promise
-            // New chat saves as the project's chat; the chat its first message opens fails to.
             const chosen = (bodies.at(-1) as { active_conversation_id?: string | null }).active_conversation_id ?? null
-            if (chosen !== null && chosen !== 'conversation-1') return json({ detail: 'unavailable' }, 503)
+            if (chosen === 'conversation-1') {
+                latestSaves.push(deferred<unknown>())
+                return latestSaves.at(-1)!.promise
+            }
+            // New chat saves as the project's chat; the chat its first message opens fails to.
+            if (chosen !== null) return json({ detail: 'unavailable' }, 503)
             serverChat = chosen
             return project(PROJECT, serverChat)
         }
@@ -767,12 +770,11 @@ it('keeps a new chat\'s late-refused first send, opened again on a return, when 
     await show('env-r')
     left.unmount()
 
-    // Back, the project opens its latest by itself again, saved at once; then the send is refused.
+    // Back, the project, still with no chat saved, opens its latest by itself again, saving it; then the send is refused.
     await show(null)
     const shown = renderHook(useWorkspace, { wrapper })
     await waitFor(() => expect(openChat()).toBe('conversation-1'))
-    await waitFor(() => expect(serverChat).toBe('conversation-1'))
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await waitFor(() => expect(latestSaves).toHaveLength(2))
     turn.resolve(json({ detail: 'unavailable' }, 503))
     await waitFor(() => expect(openChat()).toBe(created))
     const recovered = async () => {
@@ -783,10 +785,12 @@ it('keeps a new chat\'s late-refused first send, opened again on a return, when 
     }
     await recovered()
 
-    // The save from before the switch answers now: it moves nothing shown since.
-    await act(async () => earlierSave.resolve(project(PROJECT, 'conversation-1')))
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    await recovered()
+    // The saves answer now, the return's first: neither moves the chat opened since.
+    for (const save of [latestSaves[1], latestSaves[0]]) {
+        await act(async () => save.resolve(project(PROJECT, 'conversation-1')))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        await recovered()
+    }
     shown.unmount()
 })
 

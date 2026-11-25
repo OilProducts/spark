@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { updateProjectStateValidated } from '@/lib/workspaceClient'
-import { homeSessionStart } from '@/state/homeSessionSlice'
+import { homeSessionStart, opensByItself } from '@/state/homeSessionSlice'
 import { useStore } from '@/store'
 
 import { toHydratedProjectRecord } from '../model/projectsHomeState'
@@ -17,13 +17,17 @@ type PersistProjectStatePatch = {
 
 /**
  * Saves a project's state; its answer shows only while the environment it was saved in is shown, and not
- * once a switch away and back has loaded its projects anew, so it can't move the chat opened since.
+ * once a switch away and back has loaded its projects anew, so it can't move the chat opened since. The
+ * answer to the app's own choice of a chat, such as a project's latest once its list loads, leaves whichever
+ * chat is open by then, such as a refused chat opened again in its place.
  */
 async function sendProjectState(projectPath: string, patch: PersistProjectStatePatch, upsert: UpsertProjectRegistryEntry) {
   const environmentId = getActiveEnvironmentId()
   const session = homeSessionStart()
+  const byItself = opensByItself()
   const project = await updateProjectStateValidated({ project_path: projectPath, ...patch })
-  if (getActiveEnvironmentId() === environmentId && homeSessionStart() === session) upsert(toHydratedProjectRecord(project))
+  if (getActiveEnvironmentId() !== environmentId || homeSessionStart() !== session) return
+  upsert({ ...toHydratedProjectRecord(project), ...(byItself ? { activeConversationId: null } : {}) })
 }
 
 export function usePersistProjectState(upsertProjectRegistryEntry: UpsertProjectRegistryEntry) {
