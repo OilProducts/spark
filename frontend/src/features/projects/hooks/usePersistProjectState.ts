@@ -40,7 +40,7 @@ function whenProjectsListed(apply: () => void) {
  * that lands once a switch away and back has started loading the projects anew, or that answers the app's own
  * choice of a chat, such as a project's latest once its list loads, waits for that list, then updates only a
  * project it lists, leaving whichever chat is open by then, such as a refused chat opened again in its place,
- * and any newer use or pin.
+ * and any newer use, pin or execution profile.
  */
 async function sendProjectState(projectPath: string, patch: PersistProjectStatePatch, upsert: UpsertProjectRegistryEntry) {
   const environmentId = getActiveEnvironmentId()
@@ -57,6 +57,8 @@ async function sendProjectState(projectPath: string, patch: PersistProjectStateP
       activeConversationId: null,
       lastAccessedAt: usedAt(stored.lastAccessedAt) > usedAt(project.lastAccessedAt) ? stored.lastAccessedAt ?? null : project.lastAccessedAt,
       isFavorite: patch.is_favorite === undefined ? stored.isFavorite : project.isFavorite,
+      // This write never sets the execution profile; one changed since, such as to native, stays the launch default.
+      executionProfileId: stored.executionProfileId,
     })
   })
 }
