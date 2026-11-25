@@ -6,7 +6,6 @@ import {
     uploadConversationAttachmentValidated,
 } from '@/lib/workspaceClient'
 import { randomHexId } from '@/lib/utils'
-import { homeSessionStart } from '@/state/homeSessionSlice'
 import { useStore } from '@/store'
 import { extractApiErrorMessage } from '../model/projectsHomeState'
 import type { ComposerAttachment } from '../model/types'
@@ -153,31 +152,9 @@ export function useComposerAttachments({
     }
 }
 
-/**
- * Puts a refused send's entries back, ahead of any added since, once its project's chats are known: in the
- * chat they were sent in when it, or a new chat, is open, or else in the chat chosen since, never displaced,
- * uploaded again there, as an upload belongs to its chat. A switch away first drops them, as it drops drafts.
- */
-export function restoreRefusedAttachments(projectPath: string, conversationId: string, entries: ComposerAttachment[]) {
-    const session = homeSessionStart()
-    const restore = () => {
-        const state = useStore.getState()
-        // ponytail: waits on the projects loading, until a switch away if none ever do.
-        if (homeSessionStart() === session && Object.keys(state.projectRegistry).length === 0) return
-        stop()
-        if (homeSessionStart() !== session || !state.projectRegistry[projectPath]) return
-        const open = state.projectSessionsByPath[projectPath]?.conversationId ?? null
-        if (open === null) state.updateProjectSessionState(projectPath, { conversationId })
-        if (open === null || open === conversationId) {
-            updateDraft(conversationId, (draft) => [...entries.filter((entry) => !draft.some((item) => item.localId === entry.localId)), ...draft])
-            return
-        }
-        const again = entries.map((entry) => ({ ...entry, localId: randomHexId(), status: 'uploading' as const, attachment: null, error: null }))
-        updateDraft(open, (draft) => [...again, ...draft])
-        again.forEach((entry) => void upload(open, entry))
-    }
-    const stop = useStore.subscribe(restore)
-    restore()
+/** Puts a refused send's entries back in the chat they were sent in, ahead of any added since. */
+export function restoreRefusedAttachments(conversationId: string, entries: ComposerAttachment[]) {
+    updateDraft(conversationId, (draft) => [...entries.filter((entry) => !draft.some((item) => item.localId === entry.localId)), ...draft])
 }
 
 /** Drops sent entries from a chat's draft; their uploads now belong to the turn. */

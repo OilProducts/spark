@@ -32,6 +32,25 @@ import { clearSentAttachments, restoreRefusedAttachments } from './useComposerAt
 // and back starts them anew, is another chat.
 const awaitingSettingsTurn = new Set<string>()
 
+/**
+ * Applies what a refused turn puts back once its environment is shown and `ready`, such as with its project's
+ * chats loaded. A switch away first holds it again for that environment's next showing, which starts its chats anew.
+ */
+function whenShownAndReady(environmentId: string | null, ready: () => boolean, apply: () => void) {
+    whenEnvironmentShown(environmentId, () => {
+        const session = homeSessionStart()
+        const attempt = () => {
+            const restarted = homeSessionStart() !== session
+            if (!restarted && !ready()) return
+            stop()
+            if (restarted) whenShownAndReady(environmentId, ready, apply)
+            else apply()
+        }
+        const stop = useStore.subscribe(attempt)
+        attempt()
+    })
+}
+
 export type ConversationComposerCommand =
     | {
         kind: 'switch_mode'
@@ -174,6 +193,8 @@ export function useConversationComposer({
         const session = homeSessionStart()
         return () => isShown(environmentId) && homeSessionStart() === session
     }
+    // The project's chats show once the projects have loaded with it.
+    const projectShown = () => Boolean(activeProjectPath && useStore.getState().projectRegistry[activeProjectPath])
 
     // The `/plan` and `/chat` commands and the header's mode control take the same path.
     const switchChatMode = async (conversationId: string, chatMode: ConversationChatMode) => {
@@ -353,9 +374,14 @@ export function useConversationComposer({
         })
         if (!accepted) {
             updatePendingMessages((messages) => messages.filter((message) => message.id !== clientTurnId))
-            whenEnvironmentShown(environmentId, () => {
+            // The text and files go back to the chat they were sent in once it, or no chat, is open in its
+            // project, which then opens it; another chat opened meanwhile keeps its own draft.
+            // ponytail: held for the page's life if that chat never opens again, as when it is deleted.
+            const openChat = () => useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId ?? null
+            whenShownAndReady(environmentId, () => projectShown() && [null, conversationId].includes(openChat()), () => {
+                if (openChat() === null) useStore.getState().updateProjectSessionState(activeProjectPath, { conversationId })
                 setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n'))
-                if (sending.length > 0) restoreRefusedAttachments(activeProjectPath, conversationId, sending)
+                if (sending.length > 0) restoreRefusedAttachments(conversationId, sending)
             })
         }
     }
@@ -387,10 +413,10 @@ export function useConversationComposer({
         if (!activeProjectPath) {
             return false
         }
-        // A refused turn's error shows in its environment, now or once it is shown again.
+        // A refused turn's error shows in its environment's chats, now or once they show again.
         const report = (error: unknown) => {
             const message = formatErrorMessage(error, failure)
-            whenEnvironmentShown(environmentId, () => setPanelError(message))
+            whenShownAndReady(environmentId, projectShown, () => setPanelError(message))
             return false
         }
         // Nothing here shows a turn from chats left since it began, even ones of this environment shown

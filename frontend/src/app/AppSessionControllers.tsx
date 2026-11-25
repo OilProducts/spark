@@ -23,7 +23,7 @@ import { useRunsList } from '@/features/runs/hooks/useRunsList'
 import { useTriggersList } from '@/features/triggers/hooks/useTriggersList'
 import { buildWorkspaceLiveEventsUrl, dispatchConversationLiveEnvelope } from '@/features/workspace/services/liveEvents'
 import type { ConversationBatch } from '@/lib/workspaceClient'
-import { selectRouteState, useStore } from '@/store'
+import { useStore } from '@/store'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { reportRunsTransportLost, requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
@@ -586,11 +586,11 @@ function projectInView() {
  */
 const isForeignPlace = (place: Place) => (place.envId ?? null) !== getActiveEnvironmentId()
 
-/** Where you are here: the place, with what no link names, such as the chat open in Chats or the settings category. */
-function openHere() {
+/** What you choose here that no place names: the project and chat open in Chats, the settings category, a project's Settings. */
+function chosenHere() {
     const state = useStore.getState()
     const chat = state.activeProjectPath ? state.projectSessionsByPath[state.activeProjectPath]?.conversationId ?? null : null
-    return JSON.stringify([placeOf(state), selectRouteState(state), chat])
+    return [state.activeProjectPath, chat, state.settingsCategory, state.projectPageSettingsRequest]
 }
 
 /** Moves the app to a place from a history entry or a link; returns whether it got there now. */
@@ -651,7 +651,7 @@ export function HistoryRoutingController() {
         const foreign = linked !== null && isForeignPlace(linked)
         if (linked && !foreign) applyPlace(linked)
         let current = placeOf(useStore.getState())
-        let here = openHere()
+        let chosen = chosenHere()
         let projects = useStore.getState().projectRegistry
         // Switched here from another environment's entry: it stays for Back and Forward to reach.
         const entry = window.history.state?.sparkPlace as Place | undefined
@@ -672,23 +672,28 @@ export function HistoryRoutingController() {
         const record = () => {
             scheduled = false
             if (retired()) return
-            const next = placeOf(useStore.getState())
+            const state = useStore.getState()
+            const next = placeOf(state)
             const entry = window.history.state?.sparkPlace as Place | undefined
             const shown = parsePlaceHash(window.location.hash)
             if ((entry && isForeignPlace(entry)) || (shown && isForeignPlace(shown))) {
-                // Back or Forward left another environment's entry showing: any move here follows it, never
-                // rewrites it. The projects loading, which can open a project and its chat, is no move.
-                if (openHere() !== here && useStore.getState().projectRegistry === projects) {
-                    window.history.pushState({ sparkPlace: next }, '', placeHash(next))
-                }
-            } else if (addsEntry(useStore.getState(), current, next)) {
+                // Back or Forward left another environment's entry showing: a move here follows it, never
+                // rewriting it. What moves by itself leaves history as it is: the projects loading, which
+                // can open a project and its chat, and what `addsEntry` finds opened by itself, such as a run.
+                const loading = Object.keys(projects).length === 0 && state.projectRegistry !== projects
+                const moved = addsEntry(state, current, next)
+                    // Only you choose a node of the open run, and what no place names.
+                    || (next.runId === current.runId && next.nodeId !== current.nodeId)
+                    || chosenHere().some((value, index) => value !== chosen[index])
+                if (moved && !loading) window.history.pushState({ sparkPlace: next }, '', placeHash(next))
+            } else if (addsEntry(state, current, next)) {
                 window.history.pushState({ sparkPlace: next }, '', placeHash(next))
             } else if (placeHash(next) !== window.location.hash) {
                 window.history.replaceState({ sparkPlace: next }, '', placeHash(next))
             }
             current = next
-            here = openHere()
-            projects = useStore.getState().projectRegistry
+            chosen = chosenHere()
+            projects = state.projectRegistry
         }
         const unsubscribe = useStore.subscribe(() => {
             if (scheduled) return

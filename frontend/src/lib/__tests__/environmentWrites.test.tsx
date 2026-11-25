@@ -395,9 +395,10 @@ it('sends a message and a mode switch delayed by a settings save to the environm
     expect(state.homeConversationSessionsById).toEqual({})
     expect(state.sendingChats).toEqual({})
 
-    // Back in the remote environment, the refused message is its draft again, with the error.
+    // Back in the remote environment, once its project shows, the refused message is its draft again, with the error.
     await switchEnvironment('env-r')
     resetStoreForEnvironmentSwitch(false)
+    useStore.getState().registerProject(PROJECT)
     expect(useStore.getState().homeProjectSessionsByPath[PROJECT]?.chatDraft).toBe('Hello there')
     expect(setPanelError).toHaveBeenCalledExactlyOnceWith('Unable to send the project chat turn.')
     await switchEnvironment(null)
@@ -547,18 +548,20 @@ it('leaves a newer send in the same chat pending and sending when a retired work
     shown.unmount()
 })
 
-it('puts a refused first attachment-only send back in the chat chosen since, with every project loaded again on return', async () => {
+it('keeps a refused send\'s text, files and error for the chat it was sent in, through a return and leave before the projects load', async () => {
     const project = (path: string, active: string | null) => ({ project_id: path, project_path: path, display_name: path, is_favorite: false, active_conversation_id: active })
     let serverChat = 'conversation-1'
+    let projectsHeld: ReturnType<typeof deferred<unknown>> | null = null
     const turn = deferred<unknown>()
     const uploads = () => sent.filter((request) => request.startsWith('POST') && request.includes('/attachments'))
+    const projectLoads = () => sent.filter((request) => request === 'GET /workspace/api/projects')
     answer = (url, method) => {
         if (url.includes('/projects/chat-models')) return { providers: { codex: { status: 'available', error: null, label: 'Codex' } }, models: [
             { provider: 'codex', id: 'gpt-5.4', display: 'GPT-5.4', is_default: true, supported_reasoning_efforts: ['medium'], default_reasoning_effort: 'medium' },
         ] }
         if (url.endsWith('/workspace/api/settings')) return { models: { scope: 'project', source: 'workspace', revision: '1', stored: null,
             effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null } } }
-        if (method === 'GET' && url.endsWith('/workspace/api/projects')) return [project(PROJECT, serverChat), project('/tmp/other', null)]
+        if (method === 'GET' && url.endsWith('/workspace/api/projects')) return projectsHeld?.promise ?? [project(PROJECT, serverChat), project('/tmp/other', null)]
         if (method === 'PATCH' && url.endsWith('/projects/state')) {
             serverChat = (bodies.at(-1) as { active_conversation_id?: string }).active_conversation_id ?? serverChat
             return project(PROJECT, serverChat)
@@ -577,9 +580,14 @@ it('puts a refused first attachment-only send back in the chat chosen since, wit
         expect(Object.keys(useStore.getState().projectRegistry)).toEqual([PROJECT, '/tmp/other'])
         expect(workspace.result.current.surfaceProps.isChatSendDisabled).toBe(false)
     })
+    const show = async (environmentId: string | null) => {
+        await switchEnvironment(environmentId)
+        resetStoreForEnvironmentSwitch(environmentId === null)
+    }
     useStore.setState({ activeProjectPath: PROJECT })
     const left = renderHook(useWorkspace, { wrapper: DialogProvider })
     await loaded(left)
+    act(() => left.result.current.surfaceProps.onChatDraftChange('Hello there'))
     act(() => left.result.current.surfaceProps.onAddAttachments([new File(['image'], 'shot.png', { type: 'image/png' })]))
     await waitFor(() => expect(left.result.current.surfaceProps.attachments).toMatchObject([{ status: 'uploaded' }]))
     act(() => left.result.current.surfaceProps.onChatComposerSubmit())
@@ -587,22 +595,38 @@ it('puts a refused first attachment-only send back in the chat chosen since, wit
     // Another chat opens, then another environment shows; the send is refused meanwhile.
     act(() => left.result.current.sidebarProps.onSelectConversationThread(PROJECT, 'conversation-2'))
     await waitFor(() => expect(serverChat).toBe('conversation-2'))
-    await switchEnvironment('env-r')
-    resetStoreForEnvironmentSwitch(false)
+    await show('env-r')
     left.unmount()
     turn.resolve(json({ detail: 'unavailable' }, 503))
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    await switchEnvironment(null)
-    resetStoreForEnvironmentSwitch(true)
+    // Back briefly while this machine's projects are still loading, then away again before they answer.
+    projectsHeld = deferred<unknown>()
+    await show(null)
+    const brief = renderHook(useWorkspace, { wrapper: DialogProvider })
+    await waitFor(() => expect(projectLoads()).toHaveLength(2))
+    expect(useStore.getState().homeProjectSessionsByPath).toEqual({})
+    await show('env-r')
+    brief.unmount()
+    projectsHeld.resolve([project(PROJECT, serverChat), project('/tmp/other', null)])
+    projectsHeld = null
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // Back again with the projects loaded: the chat opened since stays open, its draft its own; the error shows.
+    await show(null)
     const shown = renderHook(useWorkspace, { wrapper: DialogProvider })
     await loaded(shown)
     expect(useStore.getState().projectSessionsByPath[PROJECT]?.conversationId).toBe('conversation-2')
-    await waitFor(() => expect(shown.result.current.surfaceProps.attachments).toMatchObject([{ status: 'uploaded', attachment: { id: 'attachment-2' } }]))
-    expect(uploads().at(-1)).toContain('/workspace/api/conversations/conversation-2/attachments')
-    expect(shown.result.current.surfaceProps.panelError).toBe('unavailable')
-    expect(sent.filter((request) => request.startsWith('PATCH'))).toHaveLength(1)
-    expect(serverChat).toBe('conversation-2')
+    await waitFor(() => expect(shown.result.current.surfaceProps.panelError).toBe('unavailable'))
+    expect(shown.result.current.surfaceProps.chatDraft).toBe('')
+    expect(shown.result.current.surfaceProps.attachments).toEqual([])
+
+    // The chat it was sent in, opened again, has its text and files back, uploaded once.
+    act(() => shown.result.current.sidebarProps.onSelectConversationThread(PROJECT, 'conversation-1'))
+    await waitFor(() => expect(shown.result.current.surfaceProps.attachments).toMatchObject([{ status: 'uploaded', attachment: { id: 'attachment-1' } }]))
+    expect(shown.result.current.surfaceProps.chatDraft).toBe('Hello there')
+    expect(uploads()).toHaveLength(1)
+    expect(uploads()[0]).toContain('/workspace/api/conversations/conversation-1/attachments?')
     shown.unmount()
 })
 
