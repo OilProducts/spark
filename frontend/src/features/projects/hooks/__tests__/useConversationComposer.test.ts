@@ -365,6 +365,32 @@ describe('onChatComposerSubmit', () => {
             expect(attachmentsOf('conversation-1')).toBeUndefined()
         })
 
+        it('opens a new chat\'s refused first send again, here and now, when refused after a return whose projects loaded on another chat you have not changed', async () => {
+            await show('env-r')
+            loadProjects('conversation-1')
+            listChats('conversation-1')
+            // New chat's first message, files only, in the chat sending opens; saving it as the project's chat fails.
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId: 'conversation-new' })
+            useStore.getState().updateHomeConversationSession('conversation-new', { attachments: [entry] })
+            const sent = deferred<ConversationAcceptance>()
+            vi.mocked(sendConversationTurnValidated).mockReturnValue(sent.promise)
+            const setPanelError = vi.fn()
+            composer({ chatDraft: '', attachments: [entry], setPanelError, ensureConversationId: () => 'conversation-new', getCurrentConversationId: openChat }).onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalled())
+
+            // Away and back: the projects and Chats load on the chat the server still has open; then the send is refused.
+            await show(null)
+            await show('env-r')
+            loadProjects('conversation-1')
+            listChats('conversation-1')
+            sent.reject(new Error('offline'))
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(openChat(projectPath)).toBe('conversation-new')
+            expect(draft()).toBe('')
+            expect(attachmentsOf('conversation-new')).toEqual([entry])
+            expect(setPanelError.mock.calls).toEqual([[null], ['Unable to send the project chat turn.']])
+        })
+
         it('leaves a chat started after a return as it is when an unlisted chat\'s send is refused late, opening that chat with all of it at the next return', async () => {
             await show('env-r')
             loadProjects(null)

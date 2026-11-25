@@ -33,21 +33,33 @@ import { clearSentAttachments, keptAttachments, refusedAttachmentsFit, restoreRe
 // and back starts them anew, is another chat.
 const awaitingSettingsTurn = new Set<string>()
 
-// The projects' loads each project's refused sends went back in. One goes back per load, so a chat no list
-// names, opened again for its send, never takes the place of another's.
-const putBackIn = new WeakMap<AppState['projectRegistry'], Set<string>>()
+// Each project's chat as its environment's projects loaded, until another opens there: none you chose yet.
+// A switch away and back starts them anew.
+const openedByLoad = new Map<string, string | null>()
+let loadedSession = homeSessionStart()
+const openChatOf = (state: AppState, projectPath: string) => state.projectSessionsByPath[projectPath]?.conversationId ?? null
+useStore.subscribe((state, previous) => {
+    if (homeSessionStart() !== loadedSession) {
+        openedByLoad.clear()
+        loadedSession = homeSessionStart()
+    }
+    if (state.projectRegistry === previous.projectRegistry && state.projectSessionsByPath === previous.projectSessionsByPath) return
+    for (const projectPath of Object.keys(state.projectRegistry)) {
+        if (!previous.projectRegistry[projectPath]) openedByLoad.set(projectPath, openChatOf(state, projectPath))
+        else if (openedByLoad.get(projectPath) !== openChatOf(state, projectPath)) openedByLoad.delete(projectPath)
+    }
+})
 
 /**
  * Applies what a refused turn puts back once its environment is shown and `ready`, such as with its project's
- * chats loaded; `ready` sees each update's state and the one before it. A switch away first holds it again for
- * that environment's next showing, which starts its chats anew.
+ * chats loaded. A switch away first holds it again for that environment's next showing, which starts its chats anew.
  */
-function whenShownAndReady(environmentId: string | null, ready: (state: AppState, previous?: AppState) => boolean, apply: () => void) {
+function whenShownAndReady(environmentId: string | null, ready: () => boolean, apply: () => void) {
     whenEnvironmentShown(environmentId, () => {
         const session = homeSessionStart()
-        const attempt = (state = useStore.getState(), previous?: AppState) => {
+        const attempt = () => {
             const restarted = homeSessionStart() !== session
-            if (!restarted && !ready(state, previous)) return
+            if (!restarted && !ready()) return
             stop()
             if (restarted) whenShownAndReady(environmentId, ready, apply)
             else apply()
@@ -200,7 +212,7 @@ export function useConversationComposer({
         return () => isShown(environmentId) && homeSessionStart() === session
     }
     // The project's chats show once the projects have loaded with it.
-    const projectShown = (state = useStore.getState()) => Boolean(activeProjectPath && state.projectRegistry[activeProjectPath])
+    const projectShown = () => Boolean(activeProjectPath && useStore.getState().projectRegistry[activeProjectPath])
 
     // The `/plan` and `/chat` commands and the header's mode control take the same path.
     const switchChatMode = async (conversationId: string, chatMode: ConversationChatMode) => {
@@ -328,23 +340,24 @@ export function useConversationComposer({
         // A send that doesn't go puts its text, files and `error` back in the chat it was sent in while that is
         // open, now or once it opens again, ahead of anything added since, once its files fit there with those
         // added since; another chat, or a new one, opened meanwhile keeps its own draft. A chat no list names, as
-        // before its first send, opens again for them as its environment's projects load, where no chat is yet
-        // one you chose, unless another refused send of the project went back in that load.
+        // before its first send, opens again for them in place of the chat its environment's projects loaded on
+        // while you have neither chosen another nor written anything there.
         // ponytail: held for the page's life if a listed chat never opens again, as when it is deleted.
         const putBack = (error: string) => {
-            const openChat = () => useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId
-            const reopens = (state: AppState, previous?: AppState) => !listed && previous !== undefined
-                && !projectShown(previous) && !putBackIn.get(state.projectRegistry)?.has(activeProjectPath)
+            const openChat = () => useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId ?? null
+            const unchosen = () => {
+                const open = openChat()
+                return openedByLoad.has(activeProjectPath) && !currentDraft()
+                    && !(open && useStore.getState().homeConversationSessionsById[open]?.attachments.length)
+            }
             let held = false
-            whenShownAndReady(environmentId, (state, previous) => {
-                if (!projectShown(state) || (openChat() !== conversationId && !reopens(state, previous))) return false
+            whenShownAndReady(environmentId, () => {
+                if (!projectShown() || (openChat() !== conversationId && (listed || !unchosen()))) return false
                 if (refusedAttachmentsFit(conversationId, sending)) return true
                 if (!held) setPanelError(`${error} It comes back once its files fit this chat's draft.`)
                 held = true
                 return false
             }, () => {
-                const { projectRegistry } = useStore.getState()
-                putBackIn.set(projectRegistry, (putBackIn.get(projectRegistry) ?? new Set()).add(activeProjectPath))
                 if (openChat() !== conversationId) useStore.getState().updateProjectSessionState(activeProjectPath, { conversationId })
                 setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n'))
                 if (sending.length > 0) restoreRefusedAttachments(conversationId, sending)

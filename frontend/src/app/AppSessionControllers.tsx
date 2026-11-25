@@ -640,6 +640,10 @@ function applyPlace(place: Place): boolean {
         .every((field) => place[field] === undefined || reached[field] === place[field])
 }
 
+// The environment routing last ran in. The workspace unmounts while another environment connects; shown
+// again in the same one, as after that connection fails, it keeps the entry shown and those after it.
+let routedEnvironment: string | null | undefined
+
 /**
  * Keeps the browser's Back and Forward in step with the app: opening a view, a run, a project
  * page, a flow, a trigger, a mission or a role adds a history entry, and the URL hash names it so a link reopens it.
@@ -661,7 +665,10 @@ export function HistoryRoutingController() {
         let chosen = chosenHere()
         let projects = useStore.getState().projectRegistry
         // Switched here from another environment's entry: it stays for Back and Forward to reach.
-        window.history[entry && foreign ? 'pushState' : 'replaceState']({ sparkPlace: current }, '', placeHash(current))
+        const switched = routedEnvironment !== environmentId
+        routedEnvironment = environmentId
+        if (!entry || !foreign) window.history.replaceState({ sparkPlace: current }, '', placeHash(current))
+        else if (switched) window.history.pushState({ sparkPlace: current }, '', placeHash(current))
         // A trigger, mission or role link without a project names its item in one once the projects load,
         // unless you have moved on by then.
         const opened = placeHash(current)

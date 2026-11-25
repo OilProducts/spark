@@ -1,10 +1,10 @@
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
-import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
+import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { HistoryRoutingController } from '@/app/AppSessionControllers'
 import { EnvironmentBootstrap } from '@/app/EnvironmentSwitcher'
-import { useActiveEnvironment } from '@/lib/activeEnvironment'
+import { selectEnvironment, useActiveEnvironment } from '@/lib/activeEnvironment'
 import { addsEntry, buildRunsHash, missionKey, parsePlaceHash, placeHash, roleKey, type Place } from '@/app/runsRouting'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- triggerKey names a trigger; it calls no API
 import { triggerKey, type TriggerResponse } from '@/lib/workspaceClient'
@@ -765,6 +765,46 @@ describe('routing across environments', () => {
         act(() => window.history.forward())
         await waitFor(() => expect(window.location.hash).toBe('#/chats'))
         expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+    })
+
+    it('leaves a remote environment\'s entry shown, and Forward, when connecting to it fails and this machine\'s workspace shows again', async () => {
+        // As the app gates it: the workspace unmounts while another environment connects, or fails to.
+        const Gated = () => {
+            const { activeEnvironmentId, selectedEnvironmentId, status } = useActiveEnvironment()
+            return selectedEnvironmentId === null || (status === 'ready' && activeEnvironmentId === selectedEnvironmentId)
+                ? <div data-testid="workspace"><Workspace /></div>
+                : null
+        }
+        render(<><EnvironmentBootstrap /><Gated /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        const remote = `${buildRunsHash('remote-run')}?env=env-r`
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        await showEnvironment(null)
+        const local = window.location.hash
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        const entries = window.history.length
+
+        let connected: boolean | undefined
+        await act(async () => { connected = await selectEnvironment('env-r') })
+        expect(connected).toBe(false)
+        expect(screen.queryByTestId('workspace')).toBeNull()
+        await act(() => selectEnvironment(null))
+        expect(screen.getByTestId('workspace')).toBeTruthy()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.history.length).toBe(entries)
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe(local))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null })
+
+        // A move here from the remote entry still adds this machine's own.
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        act(() => useStore.getState().openProjectPage('/tmp/project'))
+        await waitFor(() => expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, projectPagePath: '/tmp/project' }))
+        expect(window.history.length).toBe(entries)
     })
 
     it('keeps a remote environment\'s project page when Back reaches its entry and that environment shows again', async () => {
