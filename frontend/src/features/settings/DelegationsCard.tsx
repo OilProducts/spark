@@ -37,7 +37,8 @@ type Failure = { requestKey: string; message: string }
 
 /**
  * An environment's drafts, the questions answered there, and its refused replies, each by question,
- * its failed cancels by delegation, each shown on its row until a refresh shows it sealed, or canceling with no seal to retry,
+ * its failed cancels by delegation, each shown on its row until a refresh shows the row, as the card last showed it,
+ * changed to sealed, or to canceling with no seal to retry,
  * and a reload after a change that failed while no card showed the environment, for the next one to show.
  */
 type Answers = {
@@ -333,6 +334,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             setLoaded({ filter: requested, records: fetched === requested ? records : records.filter((row) => inFilter(row, requested)) })
             // A list of every open delegation (All, Open) shows that one seen open but left out has sealed since.
             const coversOpen = fetched !== 'paused'
+            const shown = seenRef.current
             const kept = coversOpen
                 ? Object.fromEntries(Object.entries(seenRef.current).filter(([, row]) => row.phase === 'sealed'))
                 : seenRef.current
@@ -340,10 +342,12 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             setSeen(seenRef.current)
             setLinkChange((change) => (change && change.seq >= seq ? change : null))
             setLoadError(null)
+            // A failure the card hasn't shown yet, as when it arrived before a reopened card's first list, stays.
             updateAnswers(env, ({ cancelErrors }) => ({
                 cancelErrors: Object.fromEntries(Object.entries(cancelErrors).filter(([id]) => {
                     const record = records.find((row) => row.delegation_id === id)
-                    return !record || cancelable(record)
+                    const before = shown[id]
+                    return !record || cancelable(record) || !before || (before.phase === record.phase && !cancelable(before))
                 })),
             }))
             // A delegation listed as resumed through a link this machine's links lack shows them stale, as

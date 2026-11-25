@@ -1387,6 +1387,48 @@ it('shows a local seal that fails after Settings was reopened on the row the reo
     expect(within(row).queryByRole('button', { name: /Cancel delegation|Seal delegation/ })).not.toBeInTheDocument()
 })
 
+// The reopened card's first list, held until the cancel sent before Settings was left has failed.
+const cancelFailsBeforeFirstList = async (listed: unknown, ...polls: unknown[]) => {
+    const cancel = later()
+    const reopened = later()
+    serve({
+        [LIST]: [ok(list(nightly)), reopened.reply, ...polls.map((row) => ok(list(row)))],
+        [cancelRoute('del-1')]: [cancel.reply],
+    })
+    const first = renderCard()
+    await confirmCancel(first.user, 'nightly-checks')
+    await waitFor(() => expect(sent(cancelRoute('del-1'))).toHaveLength(1))
+    first.unmount()
+
+    renderCard()
+    await cancel.resolve({ detail: 'linked environment is unreachable' }, 503)
+    await reopened.resolve(list(listed))
+    return screen.findByRole('group', { name: /^Delegation nightly-checks/ })
+}
+const canceledSeal = { ...nightly, ...requested, phase: 'sealed', result: { status: 'canceled' }, updated_at: '2026-11-23T00:03:00Z' }
+
+it('shows a cancel that fails after Settings was reopened on the row its first list shows canceling, until a refresh shows it sealed', async () => {
+    const canceling = { ...nightly, ...requested }
+    const row = await cancelFailsBeforeFirstList(canceling, canceling, canceledSeal)
+    expect(within(row).getByText('flow · canceling')).toBeInTheDocument()
+    expect(within(row).getByText('Linked environment is unreachable')).toBeInTheDocument()
+
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    await waitFor(() => expect(sent(LIST)).toHaveLength(3))
+    await settled()
+    expect(within(row).getByText('Linked environment is unreachable')).toBeInTheDocument()
+
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    expect(await screen.findByText('flow · canceled')).toBeInTheDocument()
+    expect(screen.queryByText('Linked environment is unreachable')).not.toBeInTheDocument()
+})
+
+it('shows a cancel that fails after Settings was reopened on the row its first list shows sealed', async () => {
+    const row = await cancelFailsBeforeFirstList(canceledSeal)
+    expect(within(row).getByText('flow · canceled')).toBeInTheDocument()
+    expect(within(row).getByText('Linked environment is unreachable')).toBeInTheDocument()
+})
+
 it('leaves a row sealed by a retry after Settings was reopened clear of an earlier try\'s failure that arrives later', async () => {
     const unlinked = { ...nightly, ...requested, paused: 'No link to this environment; link it again to resume.' }
     const sealed = { ...unlinked, paused: null, phase: 'sealed', result: { status: 'canceled' }, updated_at: '2026-11-23T00:03:00Z' }
