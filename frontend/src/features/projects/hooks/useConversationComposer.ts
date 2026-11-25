@@ -271,6 +271,9 @@ export function useConversationComposer({
         if (!trimmed && sending.length === 0) {
             return
         }
+        // What you submit is written in the project's chats, even once it clears the draft: a refused chat no
+        // list names waits for their next load.
+        openedByLoad.delete(activeProjectPath)
         const parsedCommand = parseConversationComposerCommand(trimmed)
         if (
             parsedCommand?.kind === 'open_model_picker'
@@ -480,7 +483,7 @@ export function useConversationComposer({
         if (!live()) {
             return start().then(() => null, refusal)
         }
-        // A turn you start writes in the project's chats: a refused chat no list names waits for their next load.
+        // A retried turn, like a submit, is written in the project's chats: a refused chat no list names waits.
         openedByLoad.delete(activeProjectPath)
         const afterRevision = getConversationRecord(conversationId)?.latestRevision ?? '0'
         setPendingConversationTurn({ conversationId, afterRevision })
