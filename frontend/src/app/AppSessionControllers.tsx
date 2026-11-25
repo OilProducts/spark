@@ -6,7 +6,7 @@ import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { AppNotice } from '@/components/app/app-notice'
 import { Button } from '@/components/ui/button'
-import { dismissRefusedFlowSave, refusedFlowSaves, refusedFlowSaveStatus, retryRefusedFlowSave, subscribeRefusedFlowSaves } from '@/lib/flowPersistence'
+import { dismissRefusedFlowSave, openRefusedFlowSave, refusedFlowSaves, refusedFlowSaveStatus, subscribeRefusedFlowSaves } from '@/lib/flowPersistence'
 
 import { usePersistProjectState } from '@/features/projects/hooks/usePersistProjectState'
 import { useConversationStream } from '@/features/projects/hooks/useConversationStream'
@@ -708,10 +708,10 @@ export function HistoryRoutingController() {
 }
 
 /**
- * Flow saves this environment refused out of sight, until dismissed or recovered. Behind another view of
- * the editor that still has the edits, the notice reports them; the editor shows them itself. Once the flow
- * is open again unchanged since, Retry sends the edits, or Edit opens edits refused as invalid to correct;
- * a flow changed since keeps its newer version. Edits the canvas can't show are shown here to copy.
+ * Flow saves this environment refused out of sight, by flow and project, until dismissed or recovered.
+ * Behind another view of the editor that still has the edits, the notice reports them; the editor shows
+ * them itself. Otherwise it shows them to copy, and once the flow is open again unchanged since, Edit opens
+ * them in the editor, unsaved; a flow changed since keeps its newer version.
  */
 export function RefusedFlowSaveNotices() {
     const [environmentId] = useState(getActiveEnvironmentId)
@@ -720,26 +720,32 @@ export function RefusedFlowSaveNotices() {
     return refused.filter((save) => save.environmentId === environmentId).flatMap((save) => {
         const status = refusedFlowSaveStatus(save)
         if (status === 'open' && editorShown) return []
-        const action = save.retryable ? 'Retry save' : 'files' in save.content ? 'Edit files' : 'Edit flow'
-        const unshowable = save.unshowable && 'flow' in save.content ? save.content.flow : null
+        const { content } = save
+        const action = 'files' in content ? 'Edit files' : 'Edit flow'
+        const edits = 'flow' in content ? JSON.stringify(content.flow, null, 2)
+            : [...content.files.map((file) => `${file.name}:\n${file.content}`), ...(content.deleted_files ?? []).map((file) => `${file}: deleted`)].join('\n')
         const next = status === 'open' ? 'Its edits are still in the editor.'
-            : unshowable ? 'The canvas can’t show these edits, so the flow opened as saved; copy them from here.'
-            : status === 'changed' ? 'It may have changed since, so these edits weren’t saved over it.'
-                : status === 'unchanged' ? `It is unchanged since: ${save.retryable ? 'Retry saves these edits.' : `${action} opens these edits to correct them.`}`
-                    // Edits with no known files to compare, such as a refused creation's, can't be recovered.
-                    : save.baseFiles !== null ? 'Open the flow to try again.' : ''
+            : save.unshowable ? 'The canvas can’t show these edits, so the flow opened as saved; copy them from here.'
+            : status === 'changed' ? 'It may have changed since, so these edits weren’t saved over it. Copy them from here.'
+                : status === 'unchanged' ? `${action} opens these edits in the editor, unsaved.`
+                    // Edits with nothing known to compare, such as a refused creation's, can't be recovered.
+                    : save.baseFiles !== null || save.baseline !== null ? 'Open the flow to recover these edits.' : ''
         return [
             <AppNotice
                 key={`${save.projectPath}\n${save.name}`}
                 data-testid="refused-flow-save"
-                title={`Couldn’t save ${save.name}`}
+                // The same flow name in another project is another flow, with its own edits.
+                title={`Couldn’t save ${save.name}${save.projectPath ? ` in ${save.projectPath}` : ''}`}
                 onDismiss={() => dismissRefusedFlowSave(save)}
-                actions={unshowable ? (
-                    <details className="w-full">
-                        <summary>These edits</summary>
-                        <pre data-testid="refused-flow-save-edits" className="max-h-48 overflow-auto whitespace-pre-wrap">{JSON.stringify(unshowable, null, 2)}</pre>
-                    </details>
-                ) : status === 'unchanged' ? <Button type="button" variant="outline" size="xs" onClick={() => void retryRefusedFlowSave(save)}>{action}</Button> : undefined}
+                actions={status === 'open' ? undefined : (
+                    <>
+                        {status === 'unchanged' && !save.unshowable ? <Button type="button" variant="outline" size="xs" onClick={() => void openRefusedFlowSave(save)}>{action}</Button> : null}
+                        <details className="w-full">
+                            <summary>These edits</summary>
+                            <pre data-testid="refused-flow-save-edits" className="max-h-48 overflow-auto whitespace-pre-wrap">{edits}</pre>
+                        </details>
+                    </>
+                )}
             >
                 {`${save.message} ${next}`.trim()}
             </AppNotice>,

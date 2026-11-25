@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { EditorPreviewResponse } from '@/features/editor/services/editorPreview'
-import { refusedFlowSaves, resetFlowSaveBaselines, retryLastSaveContent, retryRefusedFlowSave, saveFlowContent } from '@/lib/flowPersistence'
+import { closeFlowOpening, openRefusedFlowSave, primeFlowSaveBaseline, refusedFlowSaves, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent } from '@/lib/flowPersistence'
 import { RefusedFlowSaveNotices } from '@/app/AppSessionControllers'
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
 import { ApiHttpError } from '@/lib/attractorClient'
@@ -468,11 +468,10 @@ describe('Editor structured metadata', () => {
 
   // A fake server for the flow. Its file holds the title and `server.note`, text the flow doesn't parse,
   // as a files edit can leave it; saves land in `server.flow` once `server.held`, if set, answers them,
-  // loads wait for `server.loading`, save previews (which answer the flow sent) for `server.previewing`,
-  // and reads of the flow for `server.reading`. While `server.broken` holds the file's text, the flow
-  // doesn't load, but its files read; a files save repairs it.
+  // and loads wait for `server.loading`; save previews answer the flow sent. While `server.broken` holds
+  // the file's text, the flow doesn't load, but its files read; a files save repairs it.
   const serveFlow = () => {
-    const server: { flow: typeof flow; note: string; broken: string | null; held: Deferred<Response> | null; loading: Promise<void> | null; previewing: Promise<void> | null; reading: Promise<void> | null } = { flow, note: '', broken: null, held: null, loading: null, previewing: null, reading: null }
+    const server: { flow: typeof flow; note: string; broken: string | null; held: Deferred<Response> | null; loading: Promise<void> | null } = { flow, note: '', broken: null, held: null, loading: null }
     const payload = (name: string) => ({
       name, layer: 'bundled' as const, flow: server.flow,
       files: [{ name: 'flow.md', content: server.broken ?? `---\nid: ${name}\ntitle: ${server.flow.title}\n---\n${server.note}` }],
@@ -484,16 +483,8 @@ describe('Editor structured metadata', () => {
     })
     vi.mocked(loadEditorFlowFiles).mockImplementation(async (name: string) => payload(name).files)
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (init?.method !== 'POST') {
-        await server.reading
-        // Only the workspace reads the files of a flow they don't make.
-        if (server.broken !== null && !String(url).includes('/workspace/api/flows/')) return new Response(JSON.stringify({ detail: { status: 'validation_error', error: 'Steps must be a list.' } }), { status: 422 })
-        return new Response(JSON.stringify(payload('bundled-flow')), { status: 200 })
-      }
-      if (String(url).endsWith('/preview')) {
-        await server.previewing
-        return new Response(JSON.stringify({ status: 'ok', flow: JSON.parse(String(init.body)).flow }), { status: 200 })
-      }
+      if (init?.method !== 'POST') return new Response(JSON.stringify(payload('bundled-flow')), { status: 200 })
+      if (String(url).endsWith('/preview')) return new Response(JSON.stringify({ status: 'ok', flow: JSON.parse(String(init.body)).flow }), { status: 200 })
       const response = server.held ? await server.held.promise : new Response(JSON.stringify({ status: 'saved', name: 'bundled-flow' }), { status: 200 })
       const saved = JSON.parse(String(init.body))
       if (response.ok && saved.flow) server.flow = saved.flow
@@ -504,6 +495,8 @@ describe('Editor structured metadata', () => {
     return { server, fetchMock }
   }
   const unavailable = () => new Response(JSON.stringify({ detail: 'unavailable' }), { status: 503 })
+  // An autosave of the flow settings, as the editor builds it.
+  const autosaved = (title: string) => ({ flow: { ...flow, title, defaults: {} } })
   const CHANGED = 'It may have changed since, so these edits weren’t saved over it.'
 
   // Opens the remote flow, makes `edit` and leaves for the other view, which saves it; the save is held
@@ -564,8 +557,8 @@ describe('Editor structured metadata', () => {
     expect(flowSaveRequests(fetchMock)).toHaveLength(1)
     const notice = screen.getByTestId('refused-flow-save')
     expect(notice).toHaveTextContent('Couldn’t save bundled-flow')
-    expect(notice).toHaveTextContent('unavailable Open the flow to try again.')
-    expect(within(notice).queryByRole('button', { name: 'Retry save' })).not.toBeInTheDocument()
+    expect(notice).toHaveTextContent('unavailable Open the flow to recover these edits.')
+    expect(within(notice).queryByRole('button', { name: 'Edit flow' })).not.toBeInTheDocument()
   })
 
   it('reports a save refused while its flow opens again through the flow’s notice, never the reopened editor’s Retry', async () => {
@@ -589,10 +582,10 @@ describe('Editor structured metadata', () => {
     expect(screen.queryByTestId('editor-save-retry')).not.toBeInTheDocument()
     await act(async () => { await retryLastSaveContent() })
     expect(flowSaveRequests(fetchMock)).toHaveLength(1)
-    expect(screen.getByTestId('refused-flow-save')).toHaveTextContent('unavailable It is unchanged since: Retry saves these edits.')
+    expect(screen.getByTestId('refused-flow-save')).toHaveTextContent('unavailable Edit flow opens these edits in the editor, unsaved.')
   })
 
-  it('reports a save refused after a switch away on return, and retries it once the flow opens unchanged', async () => {
+  it('reports a save refused after a switch away on return, and opens it, unsaved, once the flow opens unchanged', async () => {
     const user = userEvent.setup()
     const { server, fetchMock } = serveFlow()
     const held = await sendRemoteEditThenSwitchAway(user, server, 'Unsaved title')
@@ -604,30 +597,28 @@ describe('Editor structured metadata', () => {
 
     await returnToRemote(null)
     render(<RefusedFlowSaveNotices />)
-    expect(screen.getByTestId('refused-flow-save')).toHaveTextContent('unavailable Open the flow to try again.')
+    expect(screen.getByTestId('refused-flow-save')).toHaveTextContent('unavailable Open the flow to recover these edits.')
 
-    // Opened as the edits found it, Retry saves them, and the flow shows them saved.
+    // Opened as the edits found it, Edit flow opens them on the canvas, unsaved, with why: nothing is sent
+    // until the editor's own Retry.
     act(() => useStore.setState({ viewMode: 'editor', activeFlow: 'bundled-flow' }))
     renderEditor()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
     expect(useStore.getState().flowMetadata.title).toBe('Bundled flow')
     const notice = screen.getByTestId('refused-flow-save')
-    expect(notice).toHaveTextContent('It is unchanged since: Retry saves these edits.')
-    // Retry opens the edits on the canvas and saves them from there: refused again, the editor holds them,
-    // with its own save state and Retry.
-    server.held = createDeferred<Response>()
-    server.held.resolve(new Response(JSON.stringify({ detail: 'still unavailable' }), { status: 503 }))
-    await user.click(within(notice).getByRole('button', { name: 'Retry save' }))
-    await waitFor(() => expect(useStore.getState()).toMatchObject({ saveState: 'error', saveErrorMessage: 'still unavailable', flowMetadata: { title: 'Unsaved title' } }))
+    expect(notice).toHaveTextContent('Edit flow opens these edits in the editor, unsaved.')
+    await user.click(within(notice).getByRole('button', { name: 'Edit flow' }))
+    await waitFor(() => expect(useStore.getState()).toMatchObject({ saveState: 'error', saveErrorMessage: 'unavailable', flowMetadata: { title: 'Unsaved title' } }))
     expect(screen.queryByTestId('refused-flow-save')).not.toBeInTheDocument()
-    server.held = null
+    expect(flowSaveRequests(fetchMock)).toHaveLength(1)
+    expect(server.flow.title).toBe('Bundled flow')
     await user.click(screen.getByTestId('editor-save-retry'))
     await waitFor(() => expect(server.flow.title).toBe('Unsaved title'))
-    expect(flowSaveRequests(fetchMock)).toHaveLength(3)
+    expect(flowSaveRequests(fetchMock)).toHaveLength(2)
     expect(useStore.getState()).toMatchObject({ saveState: 'saved', flowMetadata: { title: 'Unsaved title' } })
   })
 
-  it('reports a save refused after a switch away on return, and never retries it over a version saved since', async () => {
+  it('reports a save refused after a switch away on return, and never offers it over a version saved since, showing it to copy', async () => {
     const user = userEvent.setup()
     const { server, fetchMock } = serveFlow()
     const held = await sendRemoteEditThenSwitchAway(user, server, 'Unsaved title')
@@ -640,7 +631,8 @@ describe('Editor structured metadata', () => {
     expect(vi.mocked(loadEditorPreview).mock.calls.map(([previewFlow]) => previewFlow?.title)).not.toContain('Unsaved title')
     const notice = screen.getByTestId('refused-flow-save')
     expect(notice).toHaveTextContent(CHANGED)
-    expect(within(notice).queryByRole('button', { name: 'Retry save' })).not.toBeInTheDocument()
+    expect(within(notice).queryByRole('button', { name: 'Edit flow' })).not.toBeInTheDocument()
+    expect(JSON.parse(within(notice).getByTestId('refused-flow-save-edits').textContent ?? '')).toMatchObject({ title: 'Unsaved title' })
     expect(screen.queryByTestId('editor-save-retry')).not.toBeInTheDocument()
     await act(async () => { await retryLastSaveContent() })
 
@@ -650,7 +642,7 @@ describe('Editor structured metadata', () => {
     expect(server.flow.title).toBe('Newer title')
   })
 
-  it('never retries a refused save over a files edit that left the flow’s structure as it was', async () => {
+  it('never offers a refused save over a files edit that left the flow’s structure as it was', async () => {
     const user = userEvent.setup()
     const { server, fetchMock } = serveFlow()
     const held = await sendRemoteEditThenSwitchAway(user, server, 'Unsaved title')
@@ -662,25 +654,25 @@ describe('Editor structured metadata', () => {
     expect(useStore.getState().flowMetadata.title).toBe('Bundled flow')
     const notice = screen.getByTestId('refused-flow-save')
     expect(notice).toHaveTextContent(CHANGED)
-    expect(within(notice).queryByRole('button', { name: 'Retry save' })).not.toBeInTheDocument()
-    await act(async () => { await retryRefusedFlowSave(refusedFlowSaves()[0]) })
+    expect(within(notice).queryByRole('button', { name: 'Edit flow' })).not.toBeInTheDocument()
+    await act(async () => { await openRefusedFlowSave(refusedFlowSaves()[0]) })
     expect(flowSaveRequests(fetchMock)).toHaveLength(1)
     await user.click(within(notice).getByRole('button', { name: 'Dismiss' }))
     expect(screen.queryByTestId('refused-flow-save')).not.toBeInTheDocument()
     expect(server.note).toBe('A note in the flow file.\n')
   })
 
-  it('never retries a refused save over a newer save in flight from the editor the flow opened in', async () => {
+  it('never opens a refused save over a newer save in flight from the editor the flow opened in', async () => {
     const user = userEvent.setup()
     const { server, fetchMock } = serveFlow()
     const held = await sendRemoteEditThenSwitchAway(user, server, 'Unsaved title')
     await act(async () => held.resolve(unavailable()))
     await reopenRemote()
     const notice = screen.getByTestId('refused-flow-save')
-    expect(within(notice).getByRole('button', { name: 'Retry save' })).toBeInTheDocument()
+    expect(within(notice).getByRole('button', { name: 'Edit flow' })).toBeInTheDocument()
     const [refused] = refusedFlowSaves()
 
-    // A newer edit's save is in flight when the refused one is retried.
+    // A newer edit's save is in flight when the refused one is opened.
     await user.click(screen.getByRole('button', { name: 'Structured' }))
     await waitFor(() => expect(useStore.getState().editorMode).toBe('structured'))
     act(() => useStore.getState().updateFlowMetadata('title', 'Newer title'))
@@ -689,11 +681,11 @@ describe('Editor structured metadata', () => {
     await user.click(screen.getByRole('button', { name: 'Files' }))
     await waitFor(() => expect(flowSaveRequests(fetchMock)).toHaveLength(2))
     server.held = null
-    expect(within(notice).queryByRole('button', { name: 'Retry save' })).not.toBeInTheDocument()
-    const retried = retryRefusedFlowSave(refused)
+    expect(within(notice).queryByRole('button', { name: 'Edit flow' })).not.toBeInTheDocument()
+    const opened = openRefusedFlowSave(refused)
     await act(async () => newer.resolve(new Response(JSON.stringify({ status: 'saved', name: 'bundled-flow' }), { status: 200 })))
 
-    await expect(retried).resolves.toBe(false)
+    await expect(opened).resolves.toBe(false)
     expect(flowSaveRequests(fetchMock)).toHaveLength(2)
     expect(server.flow.title).toBe('Newer title')
     expect(notice).toHaveTextContent(CHANGED)
@@ -701,21 +693,22 @@ describe('Editor structured metadata', () => {
     expect(screen.queryByTestId('refused-flow-save')).not.toBeInTheDocument()
   })
 
-  it('never retries a refused save over one another editor made after the flow opened', async () => {
+  it('never opens a refused save over one another editor made after the flow opened', async () => {
     const user = userEvent.setup()
     const { server, fetchMock } = serveFlow()
     const held = await sendRemoteEditThenSwitchAway(user, server, 'Unsaved title')
     await act(async () => held.resolve(unavailable()))
     await reopenRemote()
     const notice = screen.getByTestId('refused-flow-save')
-    expect(notice).toHaveTextContent('It is unchanged since: Retry saves these edits.')
+    expect(notice).toHaveTextContent('Edit flow opens these edits in the editor, unsaved.')
 
-    // Another editor saves the flow, then Retry is clicked here.
+    // Another editor saves the flow, then Edit flow is clicked here: the editor opens that version instead.
     server.flow = { ...flow, title: 'Saved elsewhere' }
-    await user.click(within(notice).getByRole('button', { name: 'Retry save' }))
+    await user.click(within(notice).getByRole('button', { name: 'Edit flow' }))
 
     await waitFor(() => expect(notice).toHaveTextContent(CHANGED))
-    expect(within(notice).queryByRole('button', { name: 'Retry save' })).not.toBeInTheDocument()
+    expect(useStore.getState()).toMatchObject({ saveState: 'idle', flowMetadata: { title: 'Saved elsewhere' } })
+    expect(within(notice).queryByRole('button', { name: 'Edit flow' })).not.toBeInTheDocument()
     expect(flowSaveRequests(fetchMock)).toHaveLength(1)
     expect(server.flow.title).toBe('Saved elsewhere')
     await user.click(within(notice).getByRole('button', { name: 'Dismiss' }))
@@ -733,8 +726,7 @@ describe('Editor structured metadata', () => {
 
     await reopenRemote()
     const notice = screen.getByTestId('refused-flow-save')
-    expect(notice).toHaveTextContent('Steps must be a list. It is unchanged since: Edit files opens these edits to correct them.')
-    expect(within(notice).queryByRole('button', { name: 'Retry save' })).not.toBeInTheDocument()
+    expect(notice).toHaveTextContent('Steps must be a list. Edit files opens these edits in the editor, unsaved.')
     await user.click(within(notice).getByRole('button', { name: 'Edit files' }))
 
     await waitFor(() => expect(useStore.getState().editorMode).toBe('files'))
@@ -743,41 +735,31 @@ describe('Editor structured metadata', () => {
     expect(screen.getByTestId('flow-files-save')).toBeEnabled()
     expect(screen.queryByTestId('refused-flow-save')).not.toBeInTheDocument()
     expect(flowSaveRequests(fetchMock)).toHaveLength(1)
-
-    // Corrected after another client saved the flow, they don't save over its version.
-    server.note = 'Saved elsewhere.\n'
-    fireEvent.change(screen.getByTestId('flow-file-editor'), { target: { value: '---\nid: bundled-flow\ntitle: Corrected\n---\n' } })
-    await user.click(screen.getByTestId('flow-files-save'))
-    await waitFor(() => expect(screen.getByTestId('flow-files-error')).toHaveTextContent('The flow was saved elsewhere since these edits were made'))
-    expect(flowSaveRequests(fetchMock)).toHaveLength(1)
-    expect(server.note).toBe('Saved elsewhere.\n')
+    expect(server.flow.title).toBe('Bundled flow')
   })
 
-  it('never retries a refused save over one another editor saved while its preview was answering', async () => {
+  it('opens recovered edits without sending them, so a version another editor saves after the flow’s last read stays as saved', async () => {
     const user = userEvent.setup()
     const { server, fetchMock } = serveFlow()
     const held = await sendRemoteEditThenSwitchAway(user, server, 'Unsaved title')
     await act(async () => held.resolve(unavailable()))
     await reopenRemote()
     const notice = screen.getByTestId('refused-flow-save')
-    const previews = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/preview')).length
-    const before = previews()
 
-    // Retry's preview is still answering when another editor saves the flow.
-    const previewing = createDeferred<void>()
-    server.previewing = previewing.promise
-    await user.click(within(notice).getByRole('button', { name: 'Retry save' }))
-    await waitFor(() => expect(previews()).toBe(before + 1))
+    // Edit flow reads the flow a last time; another editor saves it just after.
+    const loading = createDeferred<void>()
+    server.loading = loading.promise
+    const loads = vi.mocked(loadEditorFlowPayload).mock.calls.length
+    await user.click(within(notice).getByRole('button', { name: 'Edit flow' }))
+    await waitFor(() => expect(loadEditorFlowPayload).toHaveBeenCalledTimes(loads + 1))
+    server.loading = null
+    await act(async () => loading.resolve())
     server.flow = { ...flow, title: 'Saved elsewhere' }
-    await act(async () => previewing.resolve())
 
-    // The edits stay on the canvas, unsaved, and nothing from there saves over the newer version.
-    await waitFor(() => expect(useStore.getState()).toMatchObject({ saveState: 'conflict', flowMetadata: { title: 'Unsaved title' } }))
-    expect(useStore.getState().saveErrorMessage).toBe('The flow was saved elsewhere since these edits were made, so they weren’t saved over it.')
-    act(() => useStore.getState().updateFlowMetadata('description', 'More edits'))
-    await user.click(screen.getByRole('button', { name: 'Files' }))
+    // The edits are on the canvas, unsaved with why; nothing sent them over the newer version.
+    await waitFor(() => expect(useStore.getState()).toMatchObject({ saveState: 'error', saveErrorMessage: 'unavailable', flowMetadata: { title: 'Unsaved title' } }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
-    expect(useStore.getState()).toMatchObject({ saveState: 'conflict', editorMode: 'structured' })
+    expect(screen.getByTestId('editor-save-retry')).toBeInTheDocument()
     expect(flowSaveRequests(fetchMock)).toHaveLength(1)
     expect(server.flow.title).toBe('Saved elsewhere')
   })
@@ -800,13 +782,13 @@ describe('Editor structured metadata', () => {
     fireEvent.change(await screen.findByTestId('flow-file-editor'), { target: { value: newer } })
     await waitFor(() => expect(notice).toHaveTextContent(CHANGED))
     expect(within(notice).queryByRole('button', { name: 'Edit files' })).not.toBeInTheDocument()
-    await act(async () => { await expect(retryRefusedFlowSave(refused)).resolves.toBe(false) })
+    await act(async () => { await expect(openRefusedFlowSave(refused)).resolves.toBe(false) })
     expect(screen.getByTestId('flow-file-editor')).toHaveValue(newer)
     expect(screen.getByTestId('refused-flow-save')).toBe(notice)
     expect(flowSaveRequests(fetchMock)).toHaveLength(1)
   })
 
-  it('recovers edits refused after a switch away over the files an earlier autosave in the same opening left', async () => {
+  it('recovers edits refused after a switch away over the content an earlier autosave in the same opening persisted', async () => {
     const user = userEvent.setup()
     const { server, fetchMock } = serveFlow()
     await switchEnvironment('env-r')
@@ -818,7 +800,7 @@ describe('Editor structured metadata', () => {
     await waitFor(() => expect(useStore.getState().editorMode).toBe('structured'))
     // An autosave lands, as the flow settings send one; then a later edit's save is still answering
     // when the user switches away.
-    await act(async () => { await expect(saveFlowContent('bundled-flow', { flow: { ...flow, title: 'Saved title' } })).resolves.toBe(true) })
+    await act(async () => { await expect(saveFlowContent('bundled-flow', autosaved('Saved title'))).resolves.toBe(true) })
     expect(server.flow.title).toBe('Saved title')
     server.held = createDeferred<Response>()
     const held = server.held
@@ -834,10 +816,11 @@ describe('Editor structured metadata', () => {
     await reopenRemote()
     expect(useStore.getState().flowMetadata.title).toBe('Saved title')
     const notice = screen.getByTestId('refused-flow-save')
-    expect(notice).toHaveTextContent('unavailable It is unchanged since: Retry saves these edits.')
-    await user.click(within(notice).getByRole('button', { name: 'Retry save' }))
-    await waitFor(() => expect(useStore.getState().flowMetadata.title).toBe('Unsaved title'))
-    expect(server.flow.title).toBe('Unsaved title')
+    expect(notice).toHaveTextContent('unavailable Edit flow opens these edits in the editor, unsaved.')
+    await user.click(within(notice).getByRole('button', { name: 'Edit flow' }))
+    await waitFor(() => expect(useStore.getState()).toMatchObject({ saveState: 'error', flowMetadata: { title: 'Unsaved title' } }))
+    expect(flowSaveRequests(fetchMock)).toHaveLength(2)
+    expect(server.flow.title).toBe('Saved title')
     expect(screen.queryByTestId('refused-flow-save')).not.toBeInTheDocument()
   })
 
@@ -850,7 +833,7 @@ describe('Editor structured metadata', () => {
     await reopenRemote()
     expect(useStore.getState().flowMetadata.title).toBe('Bundled flow')
     const notice = screen.getByTestId('refused-flow-save')
-    expect(notice).toHaveTextContent('Titles are short. It is unchanged since: Edit flow opens these edits to correct them.')
+    expect(notice).toHaveTextContent('Titles are short. Edit flow opens these edits in the editor, unsaved.')
     await user.click(within(notice).getByRole('button', { name: 'Edit flow' }))
 
     await waitFor(() => expect(useStore.getState().flowMetadata.title).toBe('Unsaved title'))
@@ -901,7 +884,30 @@ describe('Editor structured metadata', () => {
     expect(screen.queryByTestId('refused-flow-save')).not.toBeInTheDocument()
   })
 
-  it('never retries edits refused after an autosave over a version saved elsewhere before the autosave’s files were read back', async () => {
+  it('names each refused save’s project, so the same flow’s notices in two projects each dismiss their own edits', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (String(url).endsWith('/preview')
+      ? new Response(JSON.stringify({ status: 'ok' }), { status: 200 })
+      : unavailable())))
+    useStore.setState({ viewMode: 'home', activeFlow: null })
+    render(<RefusedFlowSaveNotices />)
+    // The flow was open in each project in turn; each one's save is refused once the editor left it.
+    for (const [project, title] of [['/tmp/one/app', 'First edit'], ['/tmp/two/app', 'Second edit']]) {
+      primeFlowSaveBaseline('bundled-flow', { flow }, null, project, null)
+      closeFlowOpening('bundled-flow', project, null)
+      await act(async () => { await saveFlowContent('bundled-flow', { flow: { ...flow, title } }, project, null) })
+    }
+
+    const notices = screen.getAllByTestId('refused-flow-save')
+    expect(notices).toHaveLength(2)
+    expect(notices[0]).toHaveTextContent('Couldn’t save bundled-flow in /tmp/one/appunavailable')
+    expect(notices[1]).toHaveTextContent('Couldn’t save bundled-flow in /tmp/two/appunavailable')
+    await user.click(within(notices[1]).getByRole('button', { name: 'Dismiss' }))
+    expect(refusedFlowSaves()).toMatchObject([{ projectPath: '/tmp/one/app', content: { flow: { title: 'First edit' } } }])
+    expect(screen.getByTestId('refused-flow-save')).toHaveTextContent('Couldn’t save bundled-flow in /tmp/one/app')
+  })
+
+  it('opens edits refused after an autosave without sending them over a files edit made elsewhere since that left the structure as it was', async () => {
     const user = userEvent.setup()
     const { server, fetchMock } = serveFlow()
     await switchEnvironment('env-r')
@@ -911,16 +917,9 @@ describe('Editor structured metadata', () => {
     await user.click(filesButton)
     await user.click(await screen.findByRole('button', { name: 'Structured' }))
     await waitFor(() => expect(useStore.getState().editorMode).toBe('structured'))
-    // An autosave lands; another client saves before its files are read back.
-    const reads = () => fetchMock.mock.calls.filter(([, init]) => init?.method !== 'POST').length
-    const before = reads()
-    const reading = createDeferred<void>()
-    server.reading = reading.promise
-    const autosave = saveFlowContent('bundled-flow', { flow: { ...flow, title: 'Saved title' } })
-    await waitFor(() => expect(reads()).toBe(before + 1))
-    server.flow = { ...flow, title: 'Saved elsewhere' }
-    server.reading = null
-    await act(async () => { reading.resolve(); await expect(autosave).resolves.toBe(true) })
+    // An autosave lands; another client then changes only text the flow doesn't parse, in its files.
+    await act(async () => { await expect(saveFlowContent('bundled-flow', autosaved('Saved title'))).resolves.toBe(true) })
+    server.note = 'Formatted elsewhere.\n'
     // A later edit's save is still answering when the user switches away, and is refused.
     server.held = createDeferred<Response>()
     const held = server.held
@@ -933,16 +932,14 @@ describe('Editor structured metadata', () => {
     server.held = null
     await act(async () => held.resolve(unavailable()))
 
+    // Its structure is still what the edits were made over, so they open, unsaved; the files stay as saved.
     await reopenRemote()
-    expect(useStore.getState().flowMetadata.title).toBe('Saved elsewhere')
+    expect(useStore.getState().flowMetadata.title).toBe('Saved title')
     const notice = screen.getByTestId('refused-flow-save')
-    expect(notice).toHaveTextContent(`unavailable ${CHANGED}`)
-    expect(within(notice).queryByRole('button', { name: 'Retry save' })).not.toBeInTheDocument()
-    await act(async () => { await expect(retryRefusedFlowSave(refusedFlowSaves()[0])).resolves.toBe(false) })
+    await user.click(within(notice).getByRole('button', { name: 'Edit flow' }))
+    await waitFor(() => expect(useStore.getState()).toMatchObject({ saveState: 'error', flowMetadata: { title: 'Unsaved title' } }))
     expect(flowSaveRequests(fetchMock)).toHaveLength(2)
-    expect(server.flow.title).toBe('Saved elsewhere')
-    await user.click(within(notice).getByRole('button', { name: 'Dismiss' }))
-    expect(screen.queryByTestId('refused-flow-save')).not.toBeInTheDocument()
+    expect(server).toMatchObject({ note: 'Formatted elsewhere.\n', flow: { title: 'Saved title' } })
   })
 
   it('opens a version saved while Edit flow opens refused edits, keeping them for their notice', async () => {
@@ -1004,29 +1001,28 @@ describe('Editor structured metadata', () => {
     expect(screen.queryByTestId('refused-flow-save')).not.toBeInTheDocument()
   })
 
-  it('saves both the edits Retry recovers and ones made while it saves them', async () => {
+  it('saves the edits Edit flow recovers with ones made after them, as edits made there', async () => {
     const user = userEvent.setup()
     const { server, fetchMock } = serveFlow()
     const held = await sendRemoteEditThenSwitchAway(user, server, 'Unsaved title')
     await act(async () => held.resolve(unavailable()))
     await reopenRemote()
-    const notice = screen.getByTestId('refused-flow-save')
+    const previews = vi.mocked(loadEditorPreview).mock.calls.length
+    await user.click(within(screen.getByTestId('refused-flow-save')).getByRole('button', { name: 'Edit flow' }))
+    await waitFor(() => expect(useStore.getState().flowMetadata.title).toBe('Unsaved title'))
+    // The canvas settles once the preview of what it shows, after it opens, answers.
+    await waitFor(() => expect(loadEditorPreview).toHaveBeenCalledTimes(previews + 2))
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(flowSaveRequests(fetchMock)).toHaveLength(1)
 
-    // Retry's save is still answering when the description is edited and the editor leaves for the files.
-    server.held = createDeferred<Response>()
-    const retried = server.held
-    await user.click(within(notice).getByRole('button', { name: 'Retry save' }))
-    await waitFor(() => expect(flowSaveRequests(fetchMock)).toHaveLength(2))
-    server.held = null
-    expect(useStore.getState().flowMetadata.title).toBe('Unsaved title')
-    act(() => useStore.getState().updateFlowMetadata('description', 'Edited meanwhile'))
+    // The description is edited, and the editor leaves for the files: one save sends both.
+    act(() => useStore.getState().updateFlowMetadata('description', 'Edited after'))
     await user.click(screen.getByRole('button', { name: 'Files' }))
-    await act(async () => retried.resolve(new Response(JSON.stringify({ status: 'saved', name: 'bundled-flow' }), { status: 200 })))
 
     await screen.findByTestId('flow-file-editor')
-    expect(flowSaveRequests(fetchMock)).toHaveLength(3)
-    expect(server.flow).toMatchObject({ title: 'Unsaved title', description: 'Edited meanwhile' })
-    expect(useStore.getState().flowMetadata).toMatchObject({ title: 'Unsaved title', description: 'Edited meanwhile' })
+    expect(flowSaveRequests(fetchMock)).toHaveLength(2)
+    expect(server.flow).toMatchObject({ title: 'Unsaved title', description: 'Edited after' })
+    expect(useStore.getState().flowMetadata).toMatchObject({ title: 'Unsaved title', description: 'Edited after' })
     expect(screen.queryByTestId('refused-flow-save')).not.toBeInTheDocument()
   })
 
@@ -1076,26 +1072,32 @@ describe('Editor structured metadata', () => {
       return screen.getByTestId('refused-flow-save')
     }
 
-    it('saves it with Retry once the flow opens with the same files', async () => {
+    it('opens it in the files, unsaved, once the flow opens with the same files, and saves it from there', async () => {
       const user = userEvent.setup()
       const { server, fetchMock } = serveFlow()
       const notice = await refuseRepair(user, server, unavailable())
-      await waitFor(() => expect(notice).toHaveTextContent('unavailable It is unchanged since: Retry saves these edits.'))
-      await user.click(within(notice).getByRole('button', { name: 'Retry save' }))
+      await waitFor(() => expect(notice).toHaveTextContent('unavailable Edit files opens these edits in the editor, unsaved.'))
+      await user.click(within(notice).getByRole('button', { name: 'Edit files' }))
+
+      expect(await screen.findByTestId('flow-file-editor')).toHaveValue(REPAIR)
+      expect(screen.getByTestId('flow-files-error')).toHaveTextContent('unavailable')
+      expect(screen.queryByTestId('refused-flow-save')).not.toBeInTheDocument()
+      expect(flowSaveRequests(fetchMock)).toHaveLength(1)
+      expect(server.broken).toBe(BROKEN)
+      await user.click(screen.getByTestId('flow-files-save'))
 
       await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
       expect(flowSaveRequests(fetchMock)).toHaveLength(2)
       expect(JSON.parse(String(flowSaveRequests(fetchMock)[1][1]?.body))).toMatchObject({ files: [{ name: 'flow.md', content: REPAIR }] })
       expect(server.broken).toBeNull()
       expect(screen.queryByTestId('editor-flow-load-failed')).not.toBeInTheDocument()
-      expect(screen.queryByTestId('refused-flow-save')).not.toBeInTheDocument()
     })
 
     it('opens it to correct when refused as invalid, once the flow opens with the same files', async () => {
       const user = userEvent.setup()
       const { server, fetchMock } = serveFlow()
       const notice = await refuseRepair(user, server, new Response(JSON.stringify({ detail: { status: 'validation_error', error: 'Titles are short.' } }), { status: 422 }))
-      await waitFor(() => expect(notice).toHaveTextContent('Titles are short. It is unchanged since: Edit files opens these edits to correct them.'))
+      await waitFor(() => expect(notice).toHaveTextContent('Titles are short. Edit files opens these edits in the editor, unsaved.'))
       await user.click(within(notice).getByRole('button', { name: 'Edit files' }))
 
       expect(await screen.findByTestId('flow-file-editor')).toHaveValue(REPAIR)
@@ -1113,8 +1115,8 @@ describe('Editor structured metadata', () => {
       await act(async () => { server.broken = `${BROKEN}changed\n`; useStore.setState({ activeFlow: null }) })
       act(() => useStore.setState({ activeFlow: 'bundled-flow' }))
       await waitFor(() => expect(notice).toHaveTextContent(`unavailable ${CHANGED}`))
-      expect(within(notice).queryByRole('button', { name: 'Retry save' })).not.toBeInTheDocument()
-      await act(async () => { await expect(retryRefusedFlowSave(refusedFlowSaves()[0])).resolves.toBe(false) })
+      expect(within(notice).queryByRole('button', { name: 'Edit files' })).not.toBeInTheDocument()
+      await act(async () => { await expect(openRefusedFlowSave(refusedFlowSaves()[0])).resolves.toBe(false) })
       expect(flowSaveRequests(fetchMock)).toHaveLength(1)
       expect(server.broken).toBe(`${BROKEN}changed\n`)
     })

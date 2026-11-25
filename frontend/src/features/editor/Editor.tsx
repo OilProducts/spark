@@ -30,13 +30,12 @@ import type { FlowFile } from '@/lib/attractorClient';
 import { recordFlowLoadDebug, summarizeDiagnosticsForFlowLoadDebug } from '@/lib/flowLoadDebug';
 import {
     closeFlowOpening,
-    dismissRefusedFlowSave,
     FLOW_SAVE_RESTORED_EVENT,
     markFlowOpeningEdited,
-    markFlowOpeningRestored,
     markRefusedFlowSaveUnshowable,
     primeFlowSaveBaseline,
     type RefusedFlowSave,
+    restoreRefusedFlowSave,
     saveFlowContent,
     sendPendingFlowSaves,
     waitForFlowSaves,
@@ -413,8 +412,9 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
     // Bumped to reload the active flow, e.g. after the file view saves.
     const [flowReloadToken, setFlowReloadToken] = useState(0);
     const reloadRequestedRef = useRef(false);
-    // Flow edits a save refused out of sight, which the next reload opens in place of the flow as saved.
-    const restoredFlowRef = useRef<RefusedFlowSave | null>(null);
+    // Flow edits a save refused out of sight, which the next reload opens in place of the flow as saved
+    // while it still has the files it showed when they were opened.
+    const restoredFlowRef = useRef<{ refused: RefusedFlowSave; files: string } | null>(null);
     const [runProjectPath, setRunProjectPath] = useState<string | null>(null);
     const isRunPanelOpen = runProjectPath !== null;
     const [isHydrated, setIsHydrated] = useState(false);
@@ -1019,10 +1019,10 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                         expandChildren: expandChildFlowsRef.current,
                     },
                 );
-                // Refused edits open only over the files they were made on: a version saved since opens
-                // instead, and keeps them for their notice.
-                let restoring = restored && 'flow' in restored.content && JSON.stringify(data.files) === restored.baseFiles
-                    ? restored : null;
+                // Refused edits open only over the files the flow showed as they were opened: a version saved
+                // since opens instead, and keeps them for their notice.
+                let restoring = restored && 'flow' in restored.refused.content && JSON.stringify(data.files) === restored.files
+                    ? restored.refused : null;
                 let { preview, elapsedMs } = await previewFlow(restoring && 'flow' in restoring.content ? restoring.content.flow : data.flow);
                 if (!isCurrentLoad()) {
                     return;
@@ -1075,14 +1075,11 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 primeFlowSaveBaseline(flowName, {
                     flow: restoring ? data.flow : buildAuthoredFlow(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow),
                 }, data.files);
-                // Restored edits stay on the canvas, whatever mode is preferred, as edits made here: saved now,
-                // or, refused as invalid, unsaved with why until corrected. Their notice goes.
+                // Restored edits stay on the canvas, whatever mode is preferred, as edits made here and not
+                // saved: they save as any edit here does. Their notice goes.
                 if (restoring) {
                     initialModeFlowRef.current = flowName;
-                    markFlowOpeningRestored(flowName, activeProjectPath, environmentId);
-                    dismissRefusedFlowSave(restoring);
-                    if (restoring.retryable) void saveFlowContent(flowName, restoring.content, activeProjectPath, environmentId);
-                    else useStore.getState().markSaveFailure(restoring.message, 'validation_error', restoring.problems);
+                    restoreRefusedFlowSave(restoring);
                 }
                 hydratedRef.current = true;
                 setIsHydrated(true);
@@ -1579,27 +1576,15 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         reloadRequestedRef.current = true;
         setFlowReloadToken((token) => token + 1);
     }, []);
-    /** Saves files edits, then reloads the flow so the canvas shows them; refused, the files keep their problems. */
-    const saveFiles = useCallback(async (name: string, content: { files: FlowFile[]; deleted_files?: string[] }) => {
-        const saved = await saveFlowContent(name, content);
-        const { saveErrorMessage, saveErrorProblems } = useStore.getState();
-        setFileSaveError(saved ? null : {
-            files: [...content.files.map((file) => file.name), ...(content.deleted_files ?? [])],
-            problems: saveErrorProblems
-                ?? flowProblems(saveErrorMessage || 'The files were not saved.').map((message) => ({ message, file: null })),
-        });
-        if (saved) reloadFlow();
-        return saved;
-    }, [reloadFlow]);
     // Edits refused out of sight come back as edits made here, file edits as drafts and flow edits on the
-    // canvas, so edits made from then on are over them: saved at once or, refused as invalid, unsent with why.
+    // canvas, unsaved with why, so edits made from then on are over them; nothing sends them but a save here.
     useEffect(() => {
         const restoreRefused = (event: Event) => {
             const refused = (event as CustomEvent<RefusedFlowSave>).detail;
             const { name, projectPath, environmentId: refusedIn, content, message, problems } = refused;
             if (name !== flowName || projectPath !== activeProjectPath || refusedIn !== environmentId) return;
             if (!('files' in content)) {
-                restoredFlowRef.current = refused;
+                restoredFlowRef.current = { refused, files: JSON.stringify(flowFiles) };
                 setEditorMode('structured');
                 reloadFlow();
                 return;
@@ -1607,12 +1592,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             const deleted = content.deleted_files ?? [];
             setFileDrafts(Object.fromEntries([...content.files.map((file) => [file.name, file.content]), ...deleted.map((file) => [file, null])]));
             setEditorMode('files');
-            markFlowOpeningRestored(name, projectPath, refusedIn);
-            dismissRefusedFlowSave(refused);
-            if (refused.retryable) {
-                void saveFiles(name, content);
-                return;
-            }
+            restoreRefusedFlowSave(refused);
             setFileSaveError({
                 files: [...content.files.map((file) => file.name), ...deleted],
                 problems: problems ?? flowProblems(message).map((problem) => ({ message: problem, file: null })),
@@ -1620,7 +1600,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         };
         window.addEventListener(FLOW_SAVE_RESTORED_EVENT, restoreRefused);
         return () => window.removeEventListener(FLOW_SAVE_RESTORED_EVENT, restoreRefused);
-    }, [activeProjectPath, environmentId, flowName, reloadFlow, saveFiles, setEditorMode]);
+    }, [activeProjectPath, environmentId, flowFiles, flowName, reloadFlow, setEditorMode]);
 
     // After a save conflict, the way out: drop the unsaved edits and load the flow as saved.
     const reloadSavedFlow = useCallback(async () => {
@@ -1640,11 +1620,19 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         if (!flowName) return false;
         const changes = flowFileChanges(flowFiles, fileDrafts);
         if (!hasFlowFileChanges(changes)) return true;
-        return saveFiles(flowName, {
+        const saved = await saveFlowContent(flowName, {
             files: changes.files,
             ...(changes.deleted.length > 0 ? { deleted_files: changes.deleted } : {}),
         });
-    }, [fileDrafts, flowFiles, flowName, saveFiles]);
+        const { saveErrorMessage, saveErrorProblems } = useStore.getState();
+        setFileSaveError(saved ? null : {
+            files: [...changes.files.map((file) => file.name), ...changes.deleted],
+            problems: saveErrorProblems
+                ?? flowProblems(saveErrorMessage || 'The files were not saved.').map((message) => ({ message, file: null })),
+        });
+        if (saved) reloadFlow();
+        return saved;
+    }, [fileDrafts, flowFiles, flowName, reloadFlow]);
 
     const selectEditorMode = useCallback(async (mode: EditorMode, fromPreference = false) => {
         // Before hydration the canvas is empty; saving it would overwrite the flow.

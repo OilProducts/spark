@@ -19,7 +19,7 @@ export function AppNotice({ title, actions, onDismiss, className, children, ...p
             <TriangleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-destructive" />
             <div className="flex min-w-0 flex-1 flex-col gap-2">
                 <div className="flex flex-col gap-0.5">
-                    {title ? <p className="font-medium text-foreground">{title}</p> : null}
+                    {title ? <p className="break-words font-medium text-foreground">{title}</p> : null}
                     <p className="break-words text-muted-foreground">{children}</p>
                 </div>
                 {actions ? <div className="flex flex-wrap gap-2">{actions}</div> : null}
