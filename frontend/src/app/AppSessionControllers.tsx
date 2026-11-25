@@ -708,32 +708,35 @@ export function HistoryRoutingController() {
 }
 
 /**
- * Flow saves this environment refused while their flow wasn't shown, until dismissed or recovered. Once
- * the flow is open again unchanged since, Retry sends the edits, or Edit files opens file edits refused as
- * invalid to correct; a flow saved since keeps its newer version.
+ * Flow saves this environment refused out of sight, until dismissed or recovered. Behind another view of
+ * the editor that still has the edits, the notice reports them; the editor shows them itself. Once the flow
+ * is open again unchanged since, Retry sends the edits, or Edit opens edits refused as invalid to correct;
+ * a flow changed since keeps its newer version.
  */
 export function RefusedFlowSaveNotices() {
     const [environmentId] = useState(getActiveEnvironmentId)
     const refused = useSyncExternalStore(subscribeRefusedFlowSaves, refusedFlowSaves)
-    return refused.filter((save) => save.environmentId === environmentId).map((save) => {
+    const editorShown = useStore((state) => state.viewMode === 'editor')
+    return refused.filter((save) => save.environmentId === environmentId).flatMap((save) => {
         const status = refusedFlowSaveStatus(save)
-        const draft = !save.retryable && 'files' in save.content
-        const recover = (save.retryable || draft) && status === 'unchanged'
-        const next = status === 'changed' ? 'It may have been saved since, so these edits weren’t saved over it.'
-            : recover ? (draft ? 'It is unchanged since: Edit files opens these edits to correct them.' : 'It is unchanged since: Retry saves these edits.')
-                // Edits with no known files to compare, such as a refused creation's, can't be recovered.
-                : status === 'hidden' && (save.retryable || draft) && save.baseFiles !== null ? 'Open the flow to try again.' : ''
-        return (
+        if (status === 'open' && editorShown) return []
+        const action = save.retryable ? 'Retry save' : 'files' in save.content ? 'Edit files' : 'Edit flow'
+        const next = status === 'open' ? 'Its edits are still in the editor.'
+            : status === 'changed' ? 'It may have changed since, so these edits weren’t saved over it.'
+                : status === 'unchanged' ? `It is unchanged since: ${save.retryable ? 'Retry saves these edits.' : `${action} opens these edits to correct them.`}`
+                    // Edits with no known files to compare, such as a refused creation's, can't be recovered.
+                    : save.baseFiles !== null ? 'Open the flow to try again.' : ''
+        return [
             <AppNotice
                 key={`${save.projectPath}\n${save.name}`}
                 data-testid="refused-flow-save"
                 title={`Couldn’t save ${save.name}`}
                 onDismiss={() => dismissRefusedFlowSave(save)}
-                actions={recover ? <Button type="button" variant="outline" size="xs" onClick={() => void retryRefusedFlowSave(save)}>{draft ? 'Edit files' : 'Retry save'}</Button> : undefined}
+                actions={status === 'unchanged' ? <Button type="button" variant="outline" size="xs" onClick={() => void retryRefusedFlowSave(save)}>{action}</Button> : undefined}
             >
                 {`${save.message} ${next}`.trim()}
-            </AppNotice>
-        )
+            </AppNotice>,
+        ]
     })
 }
 

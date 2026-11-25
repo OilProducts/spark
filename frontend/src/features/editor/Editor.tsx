@@ -32,6 +32,7 @@ import {
     closeFlowOpening,
     FLOW_SAVE_RECOVERED_EVENT,
     FLOW_SAVE_RESTORED_EVENT,
+    markFlowOpeningEdited,
     primeFlowSaveBaseline,
     type RefusedFlowSave,
     saveFlowContent,
@@ -410,6 +411,8 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
     // Bumped to reload the active flow, e.g. after the file view saves.
     const [flowReloadToken, setFlowReloadToken] = useState(0);
     const reloadRequestedRef = useRef(false);
+    // Flow edits a save refused out of sight, which the next reload opens in place of the flow as saved.
+    const restoredFlowRef = useRef<RefusedFlowSave | null>(null);
     const [runProjectPath, setRunProjectPath] = useState<string | null>(null);
     const isRunPanelOpen = runProjectPath !== null;
     const [isHydrated, setIsHydrated] = useState(false);
@@ -487,6 +490,10 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                     : undefined;
 
     const fileChangesPending = hasFlowFileChanges(flowFileChanges(flowFiles, fileDrafts));
+    // Drafts are edits too: a save refused before them is never recovered over them.
+    useEffect(() => {
+        if (fileChangesPending && flowName) markFlowOpeningEdited(flowName, activeProjectPath, environmentId);
+    }, [activeProjectPath, environmentId, fileChangesPending, flowName]);
     // Edits that would be lost on opening another flow: file drafts, and canvas edits a save refused.
     const hasUnsavedEdits = fileChangesPending || saveState === 'error' || saveState === 'conflict';
     // File edits a save refused, since put back or discarded, leave nothing unsaved and no error.
@@ -941,6 +948,8 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             && hydratedFlowNameRef.current === flowName
             && hydratedProjectPathRef.current === activeProjectPath;
         reloadRequestedRef.current = false;
+        const restored = isReload ? restoredFlowRef.current : null;
+        restoredFlowRef.current = null;
         hydratedRef.current = false;
         setIsHydrated(false);
 
@@ -998,7 +1007,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 });
 
                 const { preview, elapsedMs } = await requestPreview(
-                    data.flow,
+                    restored && 'flow' in restored.content ? restored.content.flow : data.flow,
                     {
                         loadId,
                         source: 'flow-load',
@@ -1047,8 +1056,13 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                     persistLayoutState(hydrated.layout, false);
                 }
                 primeFlowSaveBaseline(flowName, {
-                    flow: buildAuthoredFlow(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow),
+                    flow: restored ? data.flow : buildAuthoredFlow(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow),
                 }, data.files);
+                // Restored edits are unsaved, with why they were refused, until corrected.
+                if (restored) {
+                    markFlowOpeningEdited(flowName, activeProjectPath, environmentId);
+                    useStore.getState().markSaveFailure(restored.message, 'validation_error', restored.problems);
+                }
                 hydratedRef.current = true;
                 setIsHydrated(true);
                 useStore.getState().setFlowLoadFailure(null);
@@ -1548,11 +1562,19 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         window.addEventListener(FLOW_SAVE_RECOVERED_EVENT, reloadRecovered);
         return () => window.removeEventListener(FLOW_SAVE_RECOVERED_EVENT, reloadRecovered);
     }, [activeProjectPath, environmentId, flowName, reloadFlow]);
-    // File edits refused as invalid out of sight come back as drafts to correct, with why, unsent.
+    // Edits refused as invalid out of sight come back to correct, with why, unsent: file edits as drafts,
+    // flow edits on the canvas.
     useEffect(() => {
         const restoreRefused = (event: Event) => {
-            const { name, projectPath, environmentId: refusedIn, content, message, problems } = (event as CustomEvent<RefusedFlowSave>).detail;
-            if (name !== flowName || projectPath !== activeProjectPath || refusedIn !== environmentId || !('files' in content)) return;
+            const refused = (event as CustomEvent<RefusedFlowSave>).detail;
+            const { name, projectPath, environmentId: refusedIn, content, message, problems } = refused;
+            if (name !== flowName || projectPath !== activeProjectPath || refusedIn !== environmentId) return;
+            if (!('files' in content)) {
+                restoredFlowRef.current = refused;
+                setEditorMode('structured');
+                reloadFlow();
+                return;
+            }
             const deleted = content.deleted_files ?? [];
             setFileDrafts(Object.fromEntries([...content.files.map((file) => [file.name, file.content]), ...deleted.map((file) => [file, null])]));
             setFileSaveError({
@@ -1563,7 +1585,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         };
         window.addEventListener(FLOW_SAVE_RESTORED_EVENT, restoreRefused);
         return () => window.removeEventListener(FLOW_SAVE_RESTORED_EVENT, restoreRefused);
-    }, [activeProjectPath, environmentId, flowName, setEditorMode]);
+    }, [activeProjectPath, environmentId, flowName, reloadFlow, setEditorMode]);
 
     // After a save conflict, the way out: drop the unsaved edits and load the flow as saved.
     const reloadSavedFlow = useCallback(async () => {

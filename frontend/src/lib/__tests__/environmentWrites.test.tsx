@@ -105,9 +105,9 @@ describe('flow saves', () => {
         // The late remote ack left the local baseline as it was.
         await expect(saveFlowContent('demo', flow('Local'), PROJECT)).resolves.toBe(true)
         expect(sent).toEqual([])
-        // Local content matching what remote saved is still a change here.
+        // Local content matching what remote saved is still a change here; the files it left are read back.
         await expect(saveFlowContent('demo', flow('Remote'), PROJECT)).resolves.toBe(true)
-        expect(sent).toEqual(['POST /attractor/preview', 'POST /attractor/api/flows'])
+        expect(sent).toEqual(['POST /attractor/preview', 'POST /attractor/api/flows', 'GET /attractor/api/flows/demo?project_path=%2Ftmp%2Fproject'])
     })
 
     it('sends a remote edit queued behind an autosave, whatever input is invalid in the environment switched to', async () => {
@@ -165,6 +165,7 @@ describe('flow saves', () => {
         await waitFor(() => expect(sent).toContain(`POST ${REMOTE}/attractor/api/flows`))
         await switchEnvironment(null)
         resetStoreForEnvironmentSwitch(true)
+        closeFlowOpening('demo', PROJECT, 'env-r')
         useStore.setState({ activeFlow: 'demo', activeProjectPath: PROJECT })
         await expect(saveFlowContent('demo', flow('Local'), PROJECT)).resolves.toBe(true)
         const local = useStore.getState()
@@ -186,14 +187,15 @@ describe('flow saves', () => {
         await expect(retryRefusedFlowSave(refused)).resolves.toBe(false)
         await expect(retryLastSaveContent()).resolves.toBe(false)
         expect(sent).toEqual([])
-        // Opened still as the edits found it, Retry reads the files there again, then sends the edits.
+        // Opened still as the edits found it, Retry reads the files there again just before sending the edits.
         primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
         expect(refusedFlowSaveStatus(refused)).toBe('unchanged')
         await expect(retryRefusedFlowSave(refused)).resolves.toBe(true)
         expect(sent).toEqual([
-            `GET ${REMOTE}/attractor/api/flows/demo?project_path=%2Ftmp%2Fproject`,
             `POST ${REMOTE}/attractor/preview`,
+            `GET ${REMOTE}/attractor/api/flows/demo?project_path=%2Ftmp%2Fproject`,
             `POST ${REMOTE}/attractor/api/flows`,
+            `GET ${REMOTE}/attractor/api/flows/demo?project_path=%2Ftmp%2Fproject`,
         ])
         expect(bodies[2]).toMatchObject({ flow: { title: 'Remote' } })
         expect(refusedFlowSaves()).toEqual([])
@@ -253,7 +255,7 @@ describe('flow saves', () => {
         await expect(saveFlowContent('demo', flow('Refused'), PROJECT)).resolves.toBe(false)
         const [refused] = refusedFlowSaves()
         // The flow opens unchanged, and an edit there waits to save when Retry is clicked.
-        useStore.setState({ activeFlow: 'demo' })
+        useStore.setState({ activeFlow: 'demo', viewMode: 'editor' })
         primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
         expect(refusedFlowSaveStatus(refused)).toBe('unchanged')
         const { result, unmount } = renderHook(() => useFlowSaveScheduler({ flowName: 'demo', debounceMs: 60_000, buildContent: () => flow('Newer') }))
@@ -265,7 +267,7 @@ describe('flow saves', () => {
             answer = (url, method) => (method === 'GET' ? flowRead(savedTitle) : url.endsWith('/preview') ? { status: 'ok' } : newerAnswer)
             await expect(retryRefusedFlowSave(refused)).resolves.toBe(false)
             expect(sent.filter((request) => request.endsWith('/api/flows'))).toEqual(['POST /attractor/api/flows'])
-            expect(bodies.at(-1)).toMatchObject({ flow: { title: 'Newer' } })
+            expect(bodies[sent.indexOf('POST /attractor/api/flows')]).toMatchObject({ flow: { title: 'Newer' } })
             expect(refusedFlowSaveStatus(refusedFlowSaves()[0])).toBe('changed')
         } finally { unmount() }
     })
