@@ -105,9 +105,9 @@ describe('flow saves', () => {
         // The late remote ack left the local baseline as it was.
         await expect(saveFlowContent('demo', flow('Local'), PROJECT)).resolves.toBe(true)
         expect(sent).toEqual([])
-        // Local content matching what remote saved is still a change here; the files it left are read back.
+        // Local content matching what remote saved is still a change here.
         await expect(saveFlowContent('demo', flow('Remote'), PROJECT)).resolves.toBe(true)
-        expect(sent).toEqual(['POST /attractor/preview', 'POST /attractor/api/flows', 'GET /attractor/api/flows/demo?project_path=%2Ftmp%2Fproject'])
+        expect(sent).toEqual(['POST /attractor/preview', 'POST /attractor/api/flows'])
     })
 
     it('sends a remote edit queued behind an autosave, whatever input is invalid in the environment switched to', async () => {
@@ -195,7 +195,6 @@ describe('flow saves', () => {
             `POST ${REMOTE}/attractor/preview`,
             `GET ${REMOTE}/attractor/api/flows/demo?project_path=%2Ftmp%2Fproject`,
             `POST ${REMOTE}/attractor/api/flows`,
-            `GET ${REMOTE}/attractor/api/flows/demo?project_path=%2Ftmp%2Fproject`,
         ])
         expect(bodies[2]).toMatchObject({ flow: { title: 'Remote' } })
         expect(refusedFlowSaves()).toEqual([])

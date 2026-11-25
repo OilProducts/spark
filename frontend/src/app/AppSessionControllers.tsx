@@ -711,7 +711,7 @@ export function HistoryRoutingController() {
  * Flow saves this environment refused out of sight, until dismissed or recovered. Behind another view of
  * the editor that still has the edits, the notice reports them; the editor shows them itself. Once the flow
  * is open again unchanged since, Retry sends the edits, or Edit opens edits refused as invalid to correct;
- * a flow changed since keeps its newer version.
+ * a flow changed since keeps its newer version. Edits the canvas can't show are shown here to copy.
  */
 export function RefusedFlowSaveNotices() {
     const [environmentId] = useState(getActiveEnvironmentId)
@@ -721,7 +721,9 @@ export function RefusedFlowSaveNotices() {
         const status = refusedFlowSaveStatus(save)
         if (status === 'open' && editorShown) return []
         const action = save.retryable ? 'Retry save' : 'files' in save.content ? 'Edit files' : 'Edit flow'
+        const unshowable = save.unshowable && 'flow' in save.content ? save.content.flow : null
         const next = status === 'open' ? 'Its edits are still in the editor.'
+            : unshowable ? 'The canvas can’t show these edits, so the flow opened as saved; copy them from here.'
             : status === 'changed' ? 'It may have changed since, so these edits weren’t saved over it.'
                 : status === 'unchanged' ? `It is unchanged since: ${save.retryable ? 'Retry saves these edits.' : `${action} opens these edits to correct them.`}`
                     // Edits with no known files to compare, such as a refused creation's, can't be recovered.
@@ -732,7 +734,12 @@ export function RefusedFlowSaveNotices() {
                 data-testid="refused-flow-save"
                 title={`Couldn’t save ${save.name}`}
                 onDismiss={() => dismissRefusedFlowSave(save)}
-                actions={status === 'unchanged' ? <Button type="button" variant="outline" size="xs" onClick={() => void retryRefusedFlowSave(save)}>{action}</Button> : undefined}
+                actions={unshowable ? (
+                    <details className="w-full">
+                        <summary>These edits</summary>
+                        <pre data-testid="refused-flow-save-edits" className="max-h-48 overflow-auto whitespace-pre-wrap">{JSON.stringify(unshowable, null, 2)}</pre>
+                    </details>
+                ) : status === 'unchanged' ? <Button type="button" variant="outline" size="xs" onClick={() => void retryRefusedFlowSave(save)}>{action}</Button> : undefined}
             >
                 {`${save.message} ${next}`.trim()}
             </AppNotice>,

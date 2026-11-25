@@ -30,9 +30,11 @@ import type { FlowFile } from '@/lib/attractorClient';
 import { recordFlowLoadDebug, summarizeDiagnosticsForFlowLoadDebug } from '@/lib/flowLoadDebug';
 import {
     closeFlowOpening,
+    dismissRefusedFlowSave,
     FLOW_SAVE_RECOVERED_EVENT,
     FLOW_SAVE_RESTORED_EVENT,
     markFlowOpeningEdited,
+    markRefusedFlowSaveUnshowable,
     primeFlowSaveBaseline,
     type RefusedFlowSave,
     saveFlowContent,
@@ -1006,8 +1008,8 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                     fileCount: data.files.length,
                 });
 
-                const { preview, elapsedMs } = await requestPreview(
-                    restored && 'flow' in restored.content ? restored.content.flow : data.flow,
+                const previewFlow = (flow: typeof data.flow) => requestPreview(
+                    flow,
                     {
                         loadId,
                         source: 'flow-load',
@@ -1017,8 +1019,23 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                         expandChildren: expandChildFlowsRef.current,
                     },
                 );
+                // Refused edits open only over the files they were made on: a version saved since opens
+                // instead, and keeps them for their notice.
+                let restoring = restored && 'flow' in restored.content && JSON.stringify(data.files) === restored.baseFiles
+                    ? restored : null;
+                let { preview, elapsedMs } = await previewFlow(restoring && 'flow' in restoring.content ? restoring.content.flow : data.flow);
                 if (!isCurrentLoad()) {
                     return;
+                }
+                // Ones the canvas can't show, with no graph to show them by, leave the flow open as saved;
+                // their notice shows them to copy.
+                if (restoring && !preview.graph) {
+                    markRefusedFlowSaveUnshowable(restoring);
+                    restoring = null;
+                    ({ preview, elapsedMs } = await previewFlow(data.flow));
+                    if (!isCurrentLoad()) {
+                        return;
+                    }
                 }
 
                 setLastPreviewMs(elapsedMs);
@@ -1056,12 +1073,13 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                     persistLayoutState(hydrated.layout, false);
                 }
                 primeFlowSaveBaseline(flowName, {
-                    flow: restored ? data.flow : buildAuthoredFlow(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow),
+                    flow: restoring ? data.flow : buildAuthoredFlow(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow),
                 }, data.files);
-                // Restored edits are unsaved, with why they were refused, until corrected.
-                if (restored) {
+                // Restored edits are unsaved, with why they were refused, until corrected; their notice goes.
+                if (restoring) {
                     markFlowOpeningEdited(flowName, activeProjectPath, environmentId);
-                    useStore.getState().markSaveFailure(restored.message, 'validation_error', restored.problems);
+                    useStore.getState().markSaveFailure(restoring.message, 'validation_error', restoring.problems);
+                    dismissRefusedFlowSave(restoring);
                 }
                 hydratedRef.current = true;
                 setIsHydrated(true);
@@ -1582,6 +1600,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 problems: problems ?? flowProblems(message).map((problem) => ({ message: problem, file: null })),
             });
             setEditorMode('files');
+            dismissRefusedFlowSave(refused);
         };
         window.addEventListener(FLOW_SAVE_RESTORED_EVENT, restoreRefused);
         return () => window.removeEventListener(FLOW_SAVE_RESTORED_EVENT, restoreRefused);

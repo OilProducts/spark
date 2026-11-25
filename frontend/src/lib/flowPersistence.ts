@@ -16,8 +16,8 @@ let lastSaveRequest: { name: string; content: FlowSaveContent; projectPath: stri
 const persistedBaselineByScope = new Map<string, string>()
 // One opening of a flow in the editor, from its load until the editor leaves it or loads it anew. A save
 // belongs to the opening it was made in: only that one shows its state, and a later one never gets it.
-// `files` are the flow's files as it loaded or a save from it left them, null when unknown; `edited` once
-// edits are made in it.
+// `files` are the flow's files as it loaded or a save from it verifiably left them, null when unknown;
+// `edited` once edits are made in it.
 type FlowOpening = { files: string | null; closed: boolean; edited: boolean }
 const openedByScope = new Map<string, FlowOpening>()
 
@@ -110,8 +110,8 @@ export function resetFlowSaveBaselines(): void {
 // or recovered: once the flow has opened with those files and no edits since, its edits may be sent
 // again, or, refused as invalid, opened in the editor to correct; a flow saved since keeps its newer version.
 // ponytail: kept for this page's life. Saves carry no revision, so a save elsewhere between recovery's last
-// read of the files and its save, or between a save and the read of the files it left, still goes unseen;
-// a revision checked by the server would close that.
+// read of the files and its save still goes unseen, as does one between a save and the read of the files it
+// left that changes only text the flow doesn't parse; a revision checked by the server would close both.
 export type RefusedFlowSave = {
     name: string
     projectPath: string | null
@@ -122,6 +122,8 @@ export type RefusedFlowSave = {
     retryable: boolean
     baseFiles: string | null
     opened: FlowOpening | undefined
+    // Refused as invalid, the canvas couldn't show them: the notice shows them to copy instead.
+    unshowable?: boolean
 }
 const refusedSaves = new Map<string, RefusedFlowSave>()
 const refusedSaveListeners = new Set<() => void>()
@@ -133,7 +135,10 @@ function refusedSavesChanged() {
 
 /** Dispatched once a refused save's edits are saved, so an editor showing the flow as it was reloads it. */
 export const FLOW_SAVE_RECOVERED_EVENT = 'spark:flow-save-recovered'
-/** Dispatched with a refused save whose files' edits the editor showing its flow opens to correct. */
+/**
+ * Dispatched with a refused save whose edits the editor showing its flow opens to correct; the editor
+ * dismisses it once they are open.
+ */
 export const FLOW_SAVE_RESTORED_EVENT = 'spark:flow-save-restored'
 
 export function subscribeRefusedFlowSaves(listener: () => void): () => void {
@@ -196,7 +201,6 @@ export function retryRefusedFlowSave(refused: RefusedFlowSave): Promise<boolean>
         if (!recoverable(refused)) return false
         if (!refused.retryable) {
             if (!(await unchangedSince(refused))) return false
-            dismissRefusedFlowSave(refused)
             window.dispatchEvent(new CustomEvent(FLOW_SAVE_RESTORED_EVENT, { detail: refused }))
             return true
         }
@@ -205,6 +209,11 @@ export function retryRefusedFlowSave(refused: RefusedFlowSave): Promise<boolean>
         window.dispatchEvent(new CustomEvent(FLOW_SAVE_RECOVERED_EVENT, { detail: { name, projectPath, environmentId } }))
         return true
     })
+}
+
+/** Keeps refused flow edits the canvas couldn't show for their notice, which shows them to copy instead. */
+export function markRefusedFlowSaveUnshowable(refused: RefusedFlowSave): void {
+    updateRefusedSave(refused, { unshowable: true })
 }
 
 export function dismissRefusedFlowSave(refused: RefusedFlowSave): void {
@@ -276,6 +285,19 @@ function queueSave(scopeKey: string, environmentId: string | null, run: () => Pr
         if (lastSaveByScope.get(scopeKey) === save) lastSaveByScope.delete(scopeKey)
     })
     return save
+}
+
+// The files a structured save left, read back. They count only if their flow previews as the one the save
+// sent: a save made elsewhere meanwhile is never taken for this one's, and leaves them unknown.
+// ponytail: two reads per structured save; a revision answered by the save would replace them.
+async function filesLeftBy(sent: Record<string, unknown>, name: string, projectPath: string | null, environmentId: string | null): Promise<string | null> {
+    try {
+        const { files, flow } = await fetchFlowPayloadValidated(name, projectPath, undefined, environmentId)
+        const read = await fetchPreviewValidated(flow, undefined, { flowName: name, projectPath, environmentId })
+        return JSON.stringify(read.flow) === JSON.stringify(sent) ? JSON.stringify(files) : null
+    } catch {
+        return null
+    }
 }
 
 async function persistFlowContent(
@@ -405,13 +427,9 @@ async function persistFlowContent(
         })
         persistedBaselineByScope.set(scopeKey, serialized)
         shown()?.markSaveSuccess()
-        // Edits made from here on are over the files this save left: read them before a later save lands.
-        // A files save is read by the editor's reload after it, which opens the flow anew.
-        if (opened) {
-            opened.files = 'flow' in content
-                ? await fetchFlowPayloadValidated(name, projectPath, undefined, environmentId).then(({ files }) => JSON.stringify(files), () => null)
-                : null
-        }
+        // Edits made from here on are over the files this save left, read back before a later save lands. A
+        // files save is read by the editor's reload after it, which opens the flow anew.
+        if (opened) opened.files = 'flow' in content && preview?.flow ? await filesLeftBy(preview.flow, name, projectPath, environmentId) : null
         return true
     } catch (error) {
         const message = error instanceof Error ? error.message : 'network error while saving flow'
