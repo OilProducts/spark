@@ -419,6 +419,51 @@ async fn raw_json_routes_need_one_json_media_type() {
     }
 }
 
+/// Routes with a typed JSON body answer 415 without a JSON media type and
+/// keep 400 for a malformed body sent as JSON.
+#[tokio::test]
+async fn typed_json_routes_need_a_json_media_type() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app = crate::store_app_default(settings(temp.path()));
+    for (method, uri) in [
+        ("POST", "/workspace/api/projects/register"),
+        ("PATCH", "/workspace/api/settings"),
+        ("POST", "/workspace/api/settings/validate"),
+        ("PATCH", "/attractor/api/llm-profiles"),
+    ] {
+        for content_type in [None, Some("text/plain")] {
+            let mut builder = Request::builder().method(method).uri(uri);
+            if let Some(content_type) = content_type {
+                builder = builder.header("content-type", content_type);
+            }
+            let request = builder.body(Body::from("{}")).expect("request");
+            let response = app
+                .clone()
+                .oneshot(crate::local(request))
+                .await
+                .expect("response");
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            assert_eq!(
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&bytes).expect("json")
+                ),
+                (
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    json!({"detail": "Expected Content-Type: application/json."})
+                ),
+                "{method} {uri} {content_type:?}"
+            );
+        }
+        let malformed = request_raw(app.clone(), method, uri, "{").await;
+        assert_eq!(malformed.0, StatusCode::BAD_REQUEST, "{method} {uri}");
+        assert!(malformed.1["detail"].is_string(), "{method} {uri}");
+    }
+}
+
 async fn request_json(
     app: axum::Router,
     method: &str,

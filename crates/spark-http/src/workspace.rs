@@ -1670,23 +1670,7 @@ async fn patch_settings(
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     payload: Result<Json<spark_workspace::settings::WorkspaceSettingsUpdate>, JsonRejection>,
 ) -> ApiResult<Value> {
-    let request = payload
-        .map_err(|error| {
-            let detail = error.body_text();
-            let field = [
-                "thinking_budget_tokens",
-                "thinking",
-                "reasoning_mode",
-                "reasoning_summary",
-            ]
-            .into_iter()
-            .find(|field| detail.contains(field));
-            WorkspaceError::Validation(match field {
-                Some(field) => format!("Invalid {field}; check its value and type."),
-                None => "Invalid settings update; check section, revision, and field types.".into(),
-            })
-        })?
-        .0;
+    let request = json_body(payload, settings_update_detail)?;
     let (scope, section, project_path) = match &request.section {
         spark_workspace::settings::WorkspaceSettingsSection::Providers(_) => {
             ("workspace", "providers", None)
@@ -1747,23 +1731,7 @@ async fn validate_settings_update(
     State(settings): State<Arc<SparkSettings>>,
     payload: Result<Json<spark_workspace::settings::WorkspaceSettingsUpdate>, JsonRejection>,
 ) -> ApiResult<Value> {
-    let request = payload
-        .map_err(|error| {
-            let detail = error.body_text();
-            let field = [
-                "thinking_budget_tokens",
-                "thinking",
-                "reasoning_mode",
-                "reasoning_summary",
-            ]
-            .into_iter()
-            .find(|field| detail.contains(field));
-            WorkspaceError::Validation(match field {
-                Some(field) => format!("Invalid {field}; check its value and type."),
-                None => "Invalid settings update; check section, revision, and field types.".into(),
-            })
-        })?
-        .0;
+    let request = json_body(payload, settings_update_detail)?;
     spark_workspace::settings::validate_workspace_settings_update(&settings, &request)?;
     Ok(Json(json!({"valid": true})))
 }
@@ -1790,9 +1758,40 @@ impl From<DeletedProjectRecord> for DeletedProjectRecordWithStatus {
 pub(crate) fn json_payload<T>(
     payload: Result<Json<T>, JsonRejection>,
 ) -> Result<T, WorkspaceApiError> {
-    payload
-        .map(|Json(value)| value)
-        .map_err(|rejection| WorkspaceError::Validation(rejection.to_string()).into())
+    json_body(payload, JsonRejection::to_string)
+}
+
+/// A JSON body, or 415 when it was sent without a JSON media type and 400
+/// with `detail` for any other rejection.
+fn json_body<T>(
+    payload: Result<Json<T>, JsonRejection>,
+    detail: impl FnOnce(&JsonRejection) -> String,
+) -> Result<T, WorkspaceApiError> {
+    payload.map(|Json(value)| value).map_err(|rejection| {
+        match rejection {
+            JsonRejection::MissingJsonContentType(_) => WorkspaceError::UnsupportedMediaType(
+                "Expected Content-Type: application/json.".into(),
+            ),
+            rejection => WorkspaceError::Validation(detail(&rejection)),
+        }
+        .into()
+    })
+}
+
+fn settings_update_detail(rejection: &JsonRejection) -> String {
+    let detail = rejection.body_text();
+    let field = [
+        "thinking_budget_tokens",
+        "thinking",
+        "reasoning_mode",
+        "reasoning_summary",
+    ]
+    .into_iter()
+    .find(|field| detail.contains(field));
+    match field {
+        Some(field) => format!("Invalid {field}; check its value and type."),
+        None => "Invalid settings update; check section, revision, and field types.".into(),
+    }
 }
 
 fn run_launch_payload(headers: &HeaderMap, body: Bytes) -> Result<RunLaunchRequest, Response> {
@@ -2280,13 +2279,9 @@ async fn patch_profile_resource(
     payload: Result<Json<ProfileResourceUpdate>, JsonRejection>,
     section: &str,
 ) -> ApiResult<Value> {
-    let payload = payload
-        .map_err(|_| {
-            WorkspaceError::Validation(
-                "Invalid profile update; supply expected_revision and a typed value.".into(),
-            )
-        })?
-        .0;
+    let payload = json_body(payload, |_| {
+        "Invalid profile update; supply expected_revision and a typed value.".into()
+    })?;
     let request = serde_json::from_value(json!({"expected_revision": payload.expected_revision, "section": section, "value": payload.value}))
         .map_err(|_| WorkspaceError::Validation("Invalid profile fields.".into()))?;
     patch_settings(settings, live_hub, Ok(Json(request))).await
