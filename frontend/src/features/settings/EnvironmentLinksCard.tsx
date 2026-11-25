@@ -44,8 +44,14 @@ const sameLink = (a: EnvironmentLink, b: EnvironmentLink) =>
 
 const firstEnabledIn = (scope: Element | null) => scope?.querySelector<HTMLElement>('button:enabled, input:enabled') ?? null
 
-/** A mutation the server confirmed: a revoked token, a created link, or the removed link as the user confirmed it. */
-type Mutation = { revoked: PeerToken } | { linked: EnvironmentLink } | { unlinked: EnvironmentLink }
+/**
+ * A mutation the server confirmed: a revoked token, a created link, or the removed link as the user confirmed it. A created
+ * link carries the ticket taken as its add was sent, and whether the sending card listed that version before then.
+ */
+type Mutation =
+    | { revoked: PeerToken }
+    | { linked: EnvironmentLink; sent: number; earlier: boolean }
+    | { unlinked: EnvironmentLink }
 
 // Leaving Settings unmounts the card and switching environments remounts it, so a request can settle after its card
 // is gone. It then reaches the cards mounted now: those for its environment show a mutation and refresh, and a failure
@@ -53,9 +59,9 @@ type Mutation = { revoked: PeerToken } | { linked: EnvironmentLink } | { unlinke
 type LiveCard = { environmentId: string | null; settle: (mutation: Mutation) => void; showError: (message: string) => void }
 const liveCards = new Set<LiveCard>()
 let undeliveredError: string | null = null
-// Link listings (a refresh's or a removal check's) take ascending tickets, shared by every card, as their requests are
-// sent, and a confirmed link change takes one as it shows. Start order stands in for read order only where no listed row
-// shows which listing read later.
+// Link listings (a refresh's or a removal check's) and link adds take ascending tickets, shared by every card, as their
+// requests are sent, and a confirmed link change takes one as it shows. Start order stands in for read order only where
+// no listed row shows which listing read later.
 let lastTicket = 0
 
 const msLeft = (receipt: PairingCodeReceipt) => Date.parse(receipt.expires_at) - Date.now()
@@ -86,10 +92,11 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     // The ticket of the links shown. Links show only from a ticket above it, so a listing that started earlier and lands
     // later drops only its links result, while a newer listing that fails leaves the shown links in place.
     const linksShownRef = useRef(0)
-    // Every link version this card has listed: one listed before an add's response arrives shows the add came first.
-    // ponytail: grows with the distinct link versions listed while the card is mounted, a handful in practice. As with
-    // sameLink, a link removed and added again with the same origin and label within one second counts as listed.
-    const listedLinksRef = useRef<EnvironmentLink[]>([])
+    // Every link version this card has listed, with the last ticket taken when it first did. Only a listing that lands
+    // after an add was sent can have its link, so one that has it then shows the add came first; but the same version
+    // listed before the add was sent was an earlier pairing with the same public fields, as a relink within its second has.
+    // ponytail: grows with the distinct link versions listed while the card is mounted, a handful in practice.
+    const listedLinksRef = useRef<{ link: EnvironmentLink; first: number }[]>([])
     // Link versions a removal check found replaced or gone, with the last ticket taken when it did: a listing sent by then
     // that still has one read before that check, whenever it started. ponytail: grows by one per removal that finds its
     // link changed.
@@ -136,7 +143,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         linksShownRef.current = ticket
         setLinksError((prev) => (prev && prev.ticket < ticket ? null : prev))
         for (const row of listed) {
-            if (!listedLinksRef.current.some((seen) => sameLink(seen, row))) listedLinksRef.current.push(row)
+            if (!listedLinksRef.current.some((seen) => sameLink(seen.link, row))) listedLinksRef.current.push({ link: row, first: lastTicket })
         }
         for (const [environmentId, lookup] of lookupsRef.current) {
             if (!listed.some((row) => sameLink(row, lookup))) forgetProjects(environmentId)
@@ -194,18 +201,22 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                 : [...prev, { ...mutation.revoked, revoked: true }])
             return
         }
-        // What a card shows after listing the created link is newer: the add came before that listing. Otherwise the add
-        // replaces whatever row the card shows for that ID. Links carry no write order (created_at is wall-clock time),
-        // so the add confirmed last counts as saved last, whichever was sent first.
-        // ponytail: two adds of one ID whose responses arrive in the opposite order to their saves show the earlier save
-        // until a listing succeeds; telling them apart needs a write order from the server.
-        if ('linked' in mutation && listedLinksRef.current.some((seen) => sameLink(seen, mutation.linked))) return
-        linksShownRef.current = ++lastTicket
         if ('linked' in mutation) {
-            const created = mutation.linked
+            // A new pairing replaces the credential, so no Projects result for that environment holds.
+            const { linked: created, sent, earlier } = mutation
             forgetProjects(created.environment_id)
+            // What a card shows after listing the created link, first listed only once the add was sent, is newer: the add
+            // came before that listing. Otherwise the add replaces whatever row the card shows for that ID. Links carry no
+            // write order (created_at is wall-clock time), so the add confirmed last counts as saved last, whichever was sent
+            // first.
+            // ponytail: two adds of one ID whose responses arrive in the opposite order to their saves show the earlier save
+            // until a listing succeeds, and a card that first lists an earlier pairing with the same public fields while the
+            // add is pending takes it for the add's own; telling them apart needs a write order from the server.
+            if (!earlier && listedLinksRef.current.some((seen) => seen.first >= sent && sameLink(seen.link, created))) return
+            linksShownRef.current = ++lastTicket
             showLinks([...linksRef.current.filter((row) => row.environment_id !== created.environment_id), created])
         } else {
+            linksShownRef.current = ++lastTicket
             replaceLink(mutation.unlinked)
             // Only a listing can say no links remain.
             setLinksLoaded(false)
@@ -370,10 +381,12 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         setError(null)
         setLinksError(null)
         try {
+            const sent = ++lastTicket
             const created = await addEnvironmentLink({ origin, expected_id, code, label })
+            const earlier = listedLinksRef.current.some((seen) => seen.first < sent && sameLink(seen.link, created))
             form.reset()
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
-            await settleMutation(`Linked ${created.label || created.environment_id}.`, { linked: created })
+            await settleMutation(`Linked ${created.label || created.environment_id}.`, { linked: created, sent, earlier })
         } catch (err) {
             reportError(errorText(err, 'Could not add environment link.'))
         } finally {

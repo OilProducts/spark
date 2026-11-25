@@ -386,6 +386,58 @@ it.each([
     expect(screen.queryByRole('button', { name: `Remove link ${replaced}` })).not.toBeInTheDocument()
 })
 
+it.each([
+    ['here', true],
+    ['in another tab', false],
+])('shows a pending relink confirmed in a reopened card after an earlier pairing with the same public fields is removed %s, beside a failed follow-up listing', async (_where, removeHere) => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-gpu', 'GPU')] })
+    const settings = render(card())
+    await screen.findByRole('button', { name: 'Remove link GPU' })
+    // The user pairs env-gpu again with a new code at the same origin and label; the server saves it within the same
+    // second as the earlier pairing, so both have the same public fields. The add is held.
+    const finishAdd = await addGpuHeld(user, backend)
+
+    // The reopened card lists the earlier pairing, which is then removed: here, or from another tab and seen on Refresh.
+    settings.unmount()
+    render(card())
+    await screen.findByRole('button', { name: 'Remove link GPU' })
+    if (removeHere) {
+        await user.click(screen.getByRole('button', { name: 'Remove link GPU' }))
+        await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    } else {
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+        backend.links = []
+        await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    }
+    expect(await screen.findByText('No linked environments configured.')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+
+    backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
+    await act(async () => finishAdd())
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
+    expect(screen.getByRole('button', { name: 'Remove link GPU' })).toBeInTheDocument()
+    expect(backend.links).toEqual([link('env-gpu', 'GPU')])
+    expect(backend.mutations).toEqual(removeHere ? [`POST ${LINKS}`, `DELETE ${LINKS}/env-gpu`] : [`POST ${LINKS}`])
+})
+
+it('drops a Projects result from the previous pairing once a relink with the same public fields is confirmed', async () => {
+    const user = userEvent.setup()
+    const backend = stubBackend({ links: [link('env-gpu', 'GPU')] })
+    backend.replies[`${LINKS}/env-gpu/projects`] = () => json({ detail: 'peer rejected token' }, 502)
+    render(card())
+    await user.click(await screen.findByRole('button', { name: 'Projects on GPU' }))
+    expect(await screen.findByText(/Peer rejected token/)).toBeInTheDocument()
+
+    // The user pairs env-gpu again with a new code; the server saves it within the same second as the earlier pairing.
+    await addGpu(user, 'GPU', 'code-b')
+    await waitFor(() => expect(statusText()).toBe('Linked GPU.'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    expect(backend.links).toEqual([link('env-gpu', 'GPU')])
+    expect(screen.getByRole('button', { name: 'Remove link GPU' })).toBeInTheDocument()
+    expect(screen.queryByText(/Peer rejected token/)).not.toBeInTheDocument()
+})
+
 it.each(['add', 'removal'] as const)('keeps a pending %s confirmed in a reopened card when its removal check started earlier finds another link replaced, beside a failed follow-up listing', async (change) => {
     const user = userEvent.setup()
     const backend = stubBackend({ links: [link('env-build', 'Build box'), ...(change === 'removal' ? [link('env-gpu', 'GPU')] : [])] })
