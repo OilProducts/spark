@@ -29,8 +29,8 @@ export type EnvironmentLink = {
 }
 
 // `refused`: the link no longer reaches the Spark it paired with, which revoked this Spark's credential or was replaced
-// by another environment, or this Spark no longer links it, until it is paired again; or, linked anew while unreachable,
-// until Retry checks the new link.
+// by another environment, or this Spark no longer links it, until it is paired again; or, linked anew since a check
+// failed, until Retry checks the new link.
 type RemoteEnvironmentStatus = 'ready' | 'checking' | 'incompatible' | 'unreachable' | 'refused'
 
 type ActiveEnvironmentState = {
@@ -196,7 +196,7 @@ export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]
  * A destination removed or linked anew, here or in another tab, while it is checked or its switch awaits approval is no
  * longer one to switch to, whatever its check or the open editors answer: the workspace mounted stays, with its edits.
  * A mounted environment no longer linked fails for good, its live connection closed, until Retry passes or you leave it;
- * one linked anew while unreachable, until Retry checks the new link. A final failure stays, as this Spark's own mismatch.
+ * one linked anew since a check failed, until Retry checks the new link. This Spark's own mismatch wins over both.
  */
 function dropRemovedDestination(previous: EnvironmentLink[]) {
     const linked = (environmentId: string, links = state.links) => links.find((link) => link.environment_id === environmentId)
@@ -210,8 +210,12 @@ function dropRemovedDestination(previous: EnvironmentLink[]) {
         // runs only while it is the one chosen. A switch elsewhere awaiting approval carries on.
         outdated = reverifySequence
         if (state.selectedEnvironmentId === active) switchSequence += 1
-        if (gone && !isFinalCheck(state.activeCheck)) applyActiveCheck(unlinked(active))
-        if (replaced && state.activeCheck.status === 'unreachable') applyActiveCheck(relinked(now.label || now.environment_id))
+        // Those checks would have found this Spark's own mismatch, which this listing's refresh confirms afresh; failures
+        // they found for the old link no longer apply.
+        const local = state.localDescriptor
+        if (local && !speaksThisBundle(local)) applyActiveCheck(stalePage(local))
+        else if (gone) applyActiveCheck(unlinked(active))
+        else if (now && state.activeCheck.status !== 'ready') applyActiveCheck(relinked(now.label || now.environment_id))
     }
     const pending = state.selectedEnvironmentId
     if (pending === null || pending === active) return
@@ -254,6 +258,8 @@ function describeCompatibilityMismatch(name: string, local: EnvironmentDescripto
 }
 
 const unreachable = (error: string): Check => ({ status: 'unreachable', error, remoteDescriptor: null })
+const stalePage = (local: EnvironmentDescriptor, remote: EnvironmentDescriptor | null = null): Check =>
+    ({ status: 'incompatible', error: describeStalePage(local), remoteDescriptor: remote })
 const unlinked = (name: string): Check => ({ status: 'refused', remoteDescriptor: null, error: `This Spark no longer links ${name}. Link it again in Settings with a new pairing code from ${name}, then Retry.` })
 const relinked = (name: string): Check => ({ status: 'refused', remoteDescriptor: null, error: `${name} was linked anew since it was last checked. Retry to check the current link.` })
 
@@ -307,7 +313,7 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     const [localResult] = await localAnswer
     const local = localResult.status === 'fulfilled' ? localResult.value : null
     if (local) updateState({ localDescriptor: local })
-    if (local && !speaksThisBundle(local)) return { status: 'incompatible', error: describeStalePage(local), remoteDescriptor: remote }
+    if (local && !speaksThisBundle(local)) return stalePage(local, remote)
     if (localResult.status === 'rejected') {
         throw new Error(`Could not verify this Spark server’s version: ${errorText(localResult.reason)}`)
     }

@@ -573,6 +573,95 @@ describe('Same-window multi-environment switching', () => {
         expect(winLive()).toBeUndefined()
     })
 
+    it('shows this Spark upgraded under the page, with reload guidance and no Retry, when the listing links the mounted remote anew while a reconnected connection\'s check, which the remote answers 503, still runs', async () => {
+        let links = [WIN_LINK]
+        const routes: Record<string, Route> = { [LINKS]: () => json({ links }) }
+        const { remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+
+        // This Spark was upgraded under the page while Windows restarts: the reopened connection's check waits on its 503.
+        const peer = deferred<void>()
+        routes['/environment'] = upgradedLocal
+        routes[WIN_AUTH] = () => peer.promise.then(() => json({ detail: 'connection refused' }, 503))
+        const before = checks()
+        const reopened = winLive()!
+        act(() => reopened.onopen?.(new Event('open')))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+
+        // Another tab pairs Windows again; this tab's listing shows it while that check runs.
+        links = [WIN_RELINKED]
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(gate).toHaveTextContent('Reload the page')
+
+        await act(async () => peer.resolve())
+        const tried = connects()
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'incompatible', activeCheck: { status: 'incompatible' } })
+        expect(gate).toHaveTextContent('Version mismatch with Windows Workstation')
+        expect(gate).toHaveTextContent('this Spark now runs UI API v3')
+        expect(gate).toHaveTextContent('Reload the page')
+        expect(remoteShell).not.toBeVisible()
+        expect(reopened.closed).toBe(true)
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+    })
+
+    it.each([
+        ['a version mismatch only Windows has, then the unlink', 'peer-then-unlink', 'This Spark no longer links env-win', 'refused'],
+        ['the unlink, while a check that finds a version mismatch only Windows has still runs', 'unlink-during-peer-check', 'This Spark no longer links env-win', 'refused'],
+        ['this Spark\'s own version mismatch, then the unlink', 'local-then-unlink', 'Reload the page', 'incompatible'],
+        ['the unlink, then this Spark\'s own version mismatch', 'unlink-then-local', 'Reload the page', 'incompatible'],
+    ])('shows the guidance that still applies to a mounted remote after %s, its live connection closed', async (_order, order, message, status) => {
+        let links = [WIN_LINK]
+        const routes: Record<string, Route> = { [LINKS]: () => json({ links }) }
+        const { remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        const gate = () => screen.getByTestId('remote-environment-gate')
+        const peerMismatch = () => json(descriptor('env-win', { ui_api_version: 3 }))
+        const unlink = async () => {
+            links = []
+            act(() => { window.dispatchEvent(new Event('focus')) })
+            await waitFor(() => expect(getActiveEnvironmentState().links).toEqual([]))
+        }
+        if (order === 'peer-then-unlink') {
+            routes[WIN_AUTH] = peerMismatch
+            act(() => winLive()!.onerror?.(new Event('error')))
+            await waitFor(() => expect(gate()).toHaveTextContent('Update Spark so both environments match'))
+            await unlink()
+        } else if (order === 'unlink-during-peer-check') {
+            const late = deferred<void>()
+            routes[WIN_AUTH] = () => late.promise.then(peerMismatch)
+            const before = checks()
+            act(() => winLive()!.onerror?.(new Event('error')))
+            await waitFor(() => expect(checks()).toBe(before + 1))
+            await unlink()
+            await act(async () => late.resolve())
+        } else if (order === 'local-then-unlink') {
+            routes['/environment'] = upgradedLocal
+            routes[WIN_AUTH] = () => json({ detail: 'connection refused' }, 503)
+            act(() => winLive()!.onerror?.(new Event('error')))
+            await waitFor(() => expect(gate()).toHaveTextContent('Reload the page'))
+            await unlink()
+        } else {
+            await unlink()
+            await waitFor(() => expect(gate()).toHaveTextContent('This Spark no longer links'))
+            routes['/environment'] = upgradedLocal
+            act(() => { window.dispatchEvent(new Event('focus')) })
+        }
+        await waitFor(() => expect(gate()).toHaveTextContent(message))
+        const tried = connects()
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(gate()).toHaveTextContent(message)
+        expect(gate()).not.toHaveTextContent('Update Spark so both environments match')
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status, activeCheck: { status } })
+        expect(remoteShell).not.toBeVisible()
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+    })
+
     it('says runs may be out of date once reconnected live connections keep failing their check with no answer, though none errors again', async () => {
         const routes: Record<string, Route> = {}
         const { remoteShell } = await mountWindows(routes)
