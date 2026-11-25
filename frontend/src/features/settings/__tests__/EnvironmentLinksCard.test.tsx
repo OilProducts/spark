@@ -387,6 +387,53 @@ it.each([
 })
 
 it.each([
+    ['confirms', 'before', true, true],
+    ['confirms', 'after', true, false],
+    ['lists', 'before', false, true],
+    ['lists', 'after', false, false],
+])('in a reopened card that %s a relink of an environment, shows a late add response for it only if the add saved after the relink: saved %s it', async (_how, _order, relinkHere, addSavedFirst) => {
+    const user = userEvent.setup()
+    const backend = stubBackend()
+    // Saves happen apart from responses, and the server stamps each link as it saves it.
+    const gpu = { ...link('env-gpu', 'GPU'), created_at: addSavedFirst ? '2026-11-24T00:00:01Z' : '2026-11-24T00:00:02Z' }
+    const gpu2 = { ...link('env-gpu', 'GPU 2'), created_at: addSavedFirst ? '2026-11-24T00:00:02Z' : '2026-11-24T00:00:01Z' }
+    const save = (row: Link) => { backend.links = [...backend.links.filter((other) => other.environment_id !== row.environment_id), row] }
+    const settings = render(card())
+    await screen.findByText('No linked environments configured.')
+    const finishAdd = await addGpuHeld(user, backend)
+
+    // Another tab relinks env-gpu as GPU 2 and the reopened card lists it, or the reopened card relinks it itself with
+    // another pairing code. The first add is saved before or after that relink; link listings fail from then on.
+    settings.unmount()
+    if (!relinkHere) {
+        if (addSavedFirst) save(gpu)
+        save(gpu2)
+    }
+    render(card())
+    await (relinkHere ? screen.findByText('No linked environments configured.') : screen.findByRole('button', { name: 'Remove link GPU 2' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
+    if (relinkHere) {
+        if (addSavedFirst) save(gpu)
+        const finishRelink = holdAdd(backend)
+        await addGpu(user, 'GPU 2', 'code-b')
+        await waitFor(() => expect(backend.mutations).toEqual([`POST ${LINKS}`, `POST ${LINKS}`]))
+        save(gpu2)
+        await act(async () => finishRelink(json(gpu2)))
+        expect(await screen.findByRole('button', { name: 'Remove link GPU 2' })).toBeInTheDocument()
+    }
+    if (!addSavedFirst) save(gpu)
+    await act(async () => finishAdd(json(gpu)))
+
+    const [saved, replaced] = addSavedFirst ? ['GPU 2', 'GPU'] : ['GPU', 'GPU 2']
+    expect(backend.links).toEqual([addSavedFirst ? gpu2 : gpu])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
+    expect(screen.getByRole('button', { name: `Remove link ${saved}` })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: `Remove link ${replaced}` })).not.toBeInTheDocument()
+})
+
+it.each([
     ['here', true],
     ['in another tab', false],
 ])('shows a pending relink confirmed in a reopened card after an earlier pairing with the same public fields is removed %s, beside a failed follow-up listing', async (_where, removeHere) => {

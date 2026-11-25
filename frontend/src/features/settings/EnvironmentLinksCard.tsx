@@ -46,11 +46,11 @@ const firstEnabledIn = (scope: Element | null) => scope?.querySelector<HTMLEleme
 
 /**
  * A mutation the server confirmed: a revoked token, a created link, or the removed link as the user confirmed it. A created
- * link carries the ticket taken as its add was sent, and whether the sending card listed that version before then.
+ * link carries the ticket taken as its add was sent, and the link versions the sending card listed before then.
  */
 type Mutation =
     | { revoked: PeerToken }
-    | { linked: EnvironmentLink; sent: number; earlier: boolean }
+    | { linked: EnvironmentLink; sent: number; before: EnvironmentLink[] }
     | { unlinked: EnvironmentLink }
 
 // Leaving Settings unmounts the card and switching environments remounts it, so a request can settle after its card
@@ -93,8 +93,8 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
     // later drops only its links result, while a newer listing that fails leaves the shown links in place.
     const linksShownRef = useRef(0)
     // Every link version this card has listed, with the last ticket taken when it first did. Only a listing that lands
-    // after an add was sent can have its link, so one that has it then shows the add came first; but the same version
-    // listed before the add was sent was an earlier pairing with the same public fields, as a relink within its second has.
+    // after an add was sent can have its link, so one that has it then shows the add came first; a version listed before
+    // the add was sent is older than the add, even one with the same public fields, as a relink within its second has.
     // ponytail: grows with the distinct link versions listed while the card is mounted, a handful in practice.
     const listedLinksRef = useRef<{ link: EnvironmentLink; first: number }[]>([])
     // Link versions a removal check found replaced or gone, with the last ticket taken when it did: a listing sent by then
@@ -203,16 +203,22 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         }
         if ('linked' in mutation) {
             // A new pairing replaces the credential, so no Projects result for that environment holds.
-            const { linked: created, sent, earlier } = mutation
+            const { linked: created, sent, before } = mutation
             forgetProjects(created.environment_id)
-            // What a card shows after listing the created link, first listed only once the add was sent, is newer: the add
-            // came before that listing. Otherwise the add replaces whatever row the card shows for that ID. Links carry no
-            // write order (created_at is wall-clock time), so the add confirmed last counts as saved last, whichever was sent
-            // first.
-            // ponytail: two adds of one ID whose responses arrive in the opposite order to their saves show the earlier save
-            // until a listing succeeds, and a card that first lists an earlier pairing with the same public fields while the
-            // add is pending takes it for the add's own; telling them apart needs a write order from the server.
-            if (!earlier && listedLinksRef.current.some((seen) => seen.first >= sent && sameLink(seen.link, created))) return
+            // A version listed before the add was sent, here or by the card that sent it, is older than the add.
+            const older = (row: EnvironmentLink) => before.some((seen) => sameLink(seen, row))
+                || listedLinksRef.current.some((seen) => seen.first < sent && sameLink(seen.link, row))
+            // What a card shows after first listing the created link once the add was sent is newer: the add came before
+            // that listing. Where no listing shows which came first, the row the card shows for that ID is newer if the server
+            // stamped it later, since links carry no other save order (created_at is fixed-width UTC, so it compares as
+            // text). Otherwise the add replaces that row; within one second, the add confirmed last counts as saved last.
+            // ponytail: a server clock set back, or two saves of one ID in the same second whose responses arrive in the
+            // opposite order, shows the earlier save until a listing succeeds, as does a card that first lists an earlier
+            // pairing with the same public fields while the add is pending; telling them apart needs a write order from
+            // the server.
+            if (!older(created) && listedLinksRef.current.some((seen) => seen.first >= sent && sameLink(seen.link, created))) return
+            const shown = linksRef.current.find((row) => row.environment_id === created.environment_id)
+            if (shown && !older(shown) && shown.created_at > created.created_at) return
             linksShownRef.current = ++lastTicket
             showLinks([...linksRef.current.filter((row) => row.environment_id !== created.environment_id), created])
         } else {
@@ -383,10 +389,10 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
         try {
             const sent = ++lastTicket
             const created = await addEnvironmentLink({ origin, expected_id, code, label })
-            const earlier = listedLinksRef.current.some((seen) => seen.first < sent && sameLink(seen.link, created))
+            const before = listedLinksRef.current.filter((seen) => seen.first < sent).map((seen) => seen.link)
             form.reset()
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
-            await settleMutation(`Linked ${created.label || created.environment_id}.`, { linked: created, sent, earlier })
+            await settleMutation(`Linked ${created.label || created.environment_id}.`, { linked: created, sent, before })
         } catch (err) {
             reportError(errorText(err, 'Could not add environment link.'))
         } finally {
