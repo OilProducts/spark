@@ -651,7 +651,7 @@ fn the_app_server_gives_an_agent_launched_at_startup_its_home_and_url() {
     // The agent API is set once per process, so the app's start runs alone.
     let Ok(root) = std::env::var(CHILD) else {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
+        let root = spark_common::paths::canonicalize_clean(temp.path()).unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", NAME, "--nocapture"])
             .env(CHILD, &root)

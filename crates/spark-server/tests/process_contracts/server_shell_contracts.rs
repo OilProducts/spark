@@ -1095,7 +1095,7 @@ fn serve_on_all_interfaces_gives_agents_a_loopback_base_url() {
     }
 
     let temp = tempfile::tempdir().expect("tempdir");
-    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let root = spark_common::paths::canonicalize_clean(temp.path()).expect("canonical tempdir");
     let (ui_dir, home) = (root.join("ui"), root.join("home"));
     fs::create_dir_all(&ui_dir).expect("ui dir");
     fs::create_dir_all(&home).expect("home");
@@ -1201,7 +1201,11 @@ fn serve_on_all_interfaces_gives_agents_a_loopback_base_url() {
         "{}/workspace/api/projects",
         exported("SPARK_API_BASE_URL")
     ));
-    let token = exported("SPARK_AGENT_API_TOKEN");
+    // cmd's `set` omits empty variables: a missing line is no token.
+    let token = launched
+        .lines()
+        .find_map(|line| line.strip_prefix("SPARK_AGENT_API_TOKEN="))
+        .unwrap_or_default();
     if !token.is_empty() {
         request = request.bearer_auth(token);
     }
@@ -1269,15 +1273,17 @@ fn serve_on_ipv6_loopback_brackets_its_agent_and_listening_urls() {
             47
         };
         assert!(
-            error.kind() == std::io::ErrorKind::AddrNotAvailable
-                || error.raw_os_error() == Some(no_ipv6),
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
+            ) || error.raw_os_error() == Some(no_ipv6),
             "binding [::1] failed: {error}"
         );
         eprintln!("skipped: this host has no IPv6 loopback ({error})");
         return;
     }
     let temp = tempfile::tempdir().expect("tempdir");
-    let root = temp.path().canonicalize().expect("canonical");
+    let root = spark_common::paths::canonicalize_clean(temp.path()).expect("canonical");
     let ui_dir = root.join("ui");
     let home = root.join("home");
     fs::create_dir_all(&ui_dir).expect("ui");

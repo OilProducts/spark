@@ -312,7 +312,7 @@ impl Pair {
 #[test]
 fn every_delegation_seals_once_whatever_stops_on_the_way() {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
+    let root = spark_common::paths::canonicalize_clean(temp.path()).unwrap();
     let mut pair = Pair::new(&root);
 
     // B is down when A records two tasks and cancels one of them, and a third
@@ -506,7 +506,7 @@ fn every_delegation_seals_once_whatever_stops_on_the_way() {
 #[test]
 fn a_flow_tool_delegates_through_its_own_server() {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
+    let root = spark_common::paths::canonicalize_clean(temp.path()).unwrap();
     let pair = Pair::new(&root);
     let saved = root.join("a/.spark/config");
     fs::create_dir_all(&saved).unwrap();
