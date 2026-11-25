@@ -714,6 +714,17 @@ describe('summary snapshots', () => {
     expect(all.summariesByProjectPath['/a'][0]).toMatchObject({ revision: '3', title: 'a2' })
   })
 
+  it('files native-path summaries from the all-projects snapshot and live feed under the normalized registry key', () => {
+    let cache = applySummarySnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, snapshot([summary('w1', 'C:\\Users\\chris\\repo', 1)], null, '1'), 'http')
+    cache = applySummaryBatchToCache(cache, parseConversationBatchResponse(conversationBatch(
+      [conversationRow(summary('w2', 'C:\\Users\\chris\\repo', 2)), conversationRow(summary('u1', '\\\\fileserver\\share\\home', 3))],
+      { from_revision: '1', watermark: '3' },
+    )))
+    expect(ids(cache, 'C:/Users/chris/repo')).toEqual(['w2', 'w1'])
+    expect(ids(cache, '//fileserver/share/home')).toEqual(['u1'])
+    expect(Object.keys(cache.summariesByProjectPath).sort()).toEqual(['//fileserver/share/home', 'C:/Users/chris/repo'])
+  })
+
   it('a reset keeps the generation, so a new store\'s snapshot replaces reused ids, absent rows and tombstones', () => {
     let cache = applySummarySnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, snapshot([
       summary('a', '/a', 100, { title: 'OLD' }),

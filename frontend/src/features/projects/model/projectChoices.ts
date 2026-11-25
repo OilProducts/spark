@@ -1,8 +1,7 @@
 import type { RegisteredProject } from '@/state/store-types'
-import { normalizeProjectPath } from '@/lib/projectPaths'
+import { formatProjectPathLabel, normalizeProjectPath } from '@/lib/projectPaths'
 import { DEFAULT_WORKING_DIRECTORY } from '@/state/store-helpers'
 
-import { formatProjectListLabel } from './projectsHomeState'
 import { pinRank } from './conversationState'
 
 type Registry = Record<string, RegisteredProject>
@@ -10,7 +9,7 @@ type Registry = Record<string, RegisteredProject>
 /** A project's name: Home by its display name, others by their folder. */
 export function projectLabel(registry: Registry, projectPath: string | null | undefined): string {
     if (!projectPath) return 'No project'
-    return registry[projectPath]?.displayName ?? formatProjectListLabel(projectPath)
+    return registry[normalizeProjectPath(projectPath)]?.displayName ?? formatProjectPathLabel(projectPath)
 }
 
 const lastAccessed = (project: RegisteredProject) => project.lastAccessedAt ?? ''
@@ -40,7 +39,9 @@ export function recentProjectPath(registry: Registry, runs: { project_path?: str
     let latest: { projectPath: string; at: number } | null = null
     for (const run of runs) {
         const at = Date.parse(run.started_at ?? '') || 0
-        if (run.project_path && registry[run.project_path] && at > (latest?.at ?? 0)) latest = { projectPath: run.project_path, at }
+        // A run records the server's native path (C:\repo); the registry key is normalized (C:/repo).
+        const projectPath = normalizeProjectPath(run.project_path ?? '')
+        if (registry[projectPath] && at > (latest?.at ?? 0)) latest = { projectPath, at }
     }
     return latest && latest.at > usedAt ? latest.projectPath : used
 }

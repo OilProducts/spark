@@ -55,14 +55,16 @@ type ProjectScopeTransitionState = Pick<
     | 'homeProjectGitMetadataByPath'
 >>
 
-const pathBelongsToProject = (path: string | null | undefined, projectPath: string) => (
-    typeof path === 'string'
-    && (
-        path === projectPath
-        || path.startsWith(`${projectPath}/`)
-    )
-)
+// Server records carry native paths (C:\repo); registry keys are normalized (C:/repo).
+// A path belongs to the deepest registered project holding it, so removing /work keeps /work/child's runs.
+const pathBelongsToProject = (path: string | null | undefined, projectPath: string, registry: AppState['projectRegistry']) => {
+    const normalized = normalizeProjectPath(path ?? '')
+    const holds = (root: string) => normalized === root || normalized.startsWith(`${root}/`)
+    return holds(projectPath) && !Object.keys(registry).some((other) => other.length > projectPath.length && holds(other))
+}
 
+// A run's explicit project owns it, matched exactly: removing C:/work keeps a run started with --project C:\work\child.
+// Only a run recorded without a project goes by where it worked.
 const runBelongsToProject = (
     run:
         | {
@@ -72,27 +74,25 @@ const runBelongsToProject = (
         | null
         | undefined,
     projectPath: string,
-) => (
-    Boolean(run) && (
-        pathBelongsToProject(run?.project_path, projectPath)
-        || pathBelongsToProject(run?.working_directory, projectPath)
-    )
-)
+    registry: AppState['projectRegistry'],
+) => Boolean(run) && (run?.project_path
+    ? normalizeProjectPath(run.project_path) === projectPath
+    : pathBelongsToProject(run?.working_directory, projectPath, registry))
 
 const pruneRunsSessionsForProject = (
-    state: Pick<AppState, 'runsListSession' | 'runDetailSessionsByRunId'>,
+    state: Pick<AppState, 'runsListSession' | 'runDetailSessionsByRunId' | 'projectRegistry'>,
     projectPath: string,
 ) => {
     const removedRunIds = new Set<string>()
 
     state.runsListSession.runs.forEach((run) => {
-        if (runBelongsToProject(run, projectPath)) {
+        if (runBelongsToProject(run, projectPath, state.projectRegistry)) {
             removedRunIds.add(run.run_id)
         }
     })
 
     Object.entries(state.runDetailSessionsByRunId).forEach(([runId, session]) => {
-        if (runBelongsToProject(session.record, projectPath)) {
+        if (runBelongsToProject(session.record, projectPath, state.projectRegistry)) {
             removedRunIds.add(runId)
         }
     })
@@ -251,7 +251,7 @@ export const buildRemoveProjectTransition = (
 
     const nextHomeConversationsById = { ...state.homeConversationCache.conversationsById }
     Object.entries(state.homeConversationCache.conversationsById).forEach(([conversationId, conversation]) => {
-        if (conversation.project_path === normalizedPath) {
+        if (normalizeProjectPath(conversation.project_path) === normalizedPath) {
             removedConversationIds.add(conversationId)
             delete nextHomeConversationsById[conversationId]
         }
@@ -285,9 +285,9 @@ export const buildRemoveProjectTransition = (
         recentProjectPaths: state.recentProjectPaths.filter((path) => path !== normalizedPath),
         activeProjectPath: nextResolvedActiveProjectPath,
         projectPagePath: state.projectPagePath === normalizedPath ? null : state.projectPagePath,
-        selectedMission: state.selectedMission?.projectPath === normalizedPath ? null : state.selectedMission,
+        selectedMission: normalizeProjectPath(state.selectedMission?.projectPath ?? '') === normalizedPath ? null : state.selectedMission,
         selectedRole: state.selectedRole?.projectPath === normalizedPath ? null : state.selectedRole,
-        missionBoard: state.missionBoard.filter((mission) => mission.project_path !== normalizedPath),
+        missionBoard: state.missionBoard.filter((mission) => normalizeProjectPath(mission.project_path) !== normalizedPath),
         viewMode: nextViewMode,
         ...nextRunsSessions,
         workingDir: nextResolvedActiveProjectPath
