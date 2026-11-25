@@ -20,7 +20,7 @@ import {
     updateConversationSettingsValidated,
 } from '@/lib/workspaceClient'
 import { randomHexId } from '@/lib/utils'
-import { homeSessionStart, opensByItself } from '@/state/homeSessionSlice'
+import { homeSessionStart, openByItself, opensByItself } from '@/state/homeSessionSlice'
 import { useStore, whenEnvironmentShown } from '@/store'
 import type { AppState } from '@/state/store-types'
 import type { PendingConversationTurnState, PendingUserMessage } from '../model/conversationState'
@@ -366,10 +366,13 @@ export function useConversationComposer({
             }, () => {
                 // Each step below asks the others again. The project's open chat holds this send from now, so no
                 // other chat no list names takes its place; its files go first, so another send refused for this
-                // chat finds them there and waits for room.
+                // chat finds them there and waits for room. Opening it is the app's choice, not yours, so it
+                // adds no history entry.
                 openedByLoad.delete(activeProjectPath)
                 if (sending.length > 0) restoreRefusedAttachments(conversationId, sending)
-                if (openChat() !== conversationId) useStore.getState().updateProjectSessionState(activeProjectPath, { conversationId })
+                if (openChat() !== conversationId) {
+                    openByItself(() => useStore.getState().updateProjectSessionState(activeProjectPath, { conversationId }))
+                }
                 setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n'))
                 setPanelError(error)
             })
@@ -477,6 +480,8 @@ export function useConversationComposer({
         if (!live()) {
             return start().then(() => null, refusal)
         }
+        // A turn you start writes in the project's chats: a refused chat no list names waits for their next load.
+        openedByLoad.delete(activeProjectPath)
         const afterRevision = getConversationRecord(conversationId)?.latestRevision ?? '0'
         setPendingConversationTurn({ conversationId, afterRevision })
         // The project's pending turn is its open chat's: once another chat opens, it is that chat's send.
