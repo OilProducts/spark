@@ -128,9 +128,6 @@ let resetHandler: ((targetEnvironmentId: string | null) => void) | null = null
 // still current is `unconfirmed` while a change made in Settings leaves that unknown, until a listing tells.
 let destination: EnvironmentLink | undefined
 let unconfirmed = false
-// Listings shown so far. A check sent before one showed may have used a credential a relink since replaced, which the
-// link's fields, the same to the second, can't show.
-let listingsShown = 0
 // The latest re-check of the mounted environment, and whether one is running. Those numbered up to `outdated` find
 // nothing for it: a newer conclusive answer, a passing Retry or a switch came first.
 let reverifySequence = 0
@@ -186,6 +183,8 @@ export function isRemoteEnvironmentActive(): boolean {
 }
 
 /** Linking an environment again, even with the same origin and label, makes another row: no field changes in place. */
+// ponytail: a listing shows a link's fields, not its credential (spark-storage's EnvironmentLink), so a relink the same
+// to the second passes as unchanged; list a credential identity if that matters.
 const sameLink = (a: EnvironmentLink, b: EnvironmentLink) =>
     a.environment_id === b.environment_id && a.origin === b.origin && a.label === b.label && a.created_at === b.created_at
 
@@ -306,7 +305,11 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     // versions doesn't wait for it, which then explains a mismatch only if already in.
     const localRequest = fetchEnvironmentDescriptor(null)
     let localSoFar = null as EnvironmentDescriptor | null
-    localRequest.then((local) => { localSoFar = local }, () => {})
+    // Shown as it answers: a listing that finds the link gone before the peer answers tells this Spark's mismatch by it.
+    localRequest.then((local) => {
+        localSoFar = local
+        updateState({ localDescriptor: local })
+    }, () => {})
     const localAnswer = Promise.allSettled([localRequest])
     const [authenticated] = await Promise.allSettled([fetchEnvironmentDescriptor(environmentId, '/workspace/api/environment')])
     const error = authenticated.status === 'rejected' ? authenticated.reason : null
@@ -329,13 +332,9 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     const remote = found.status === 'fulfilled' ? found.value : null
     const incompatible = (peer: EnvironmentDescriptor, local: EnvironmentDescriptor | null): Check =>
         ({ status: 'incompatible', error: describeCompatibilityMismatch(name, local, peer), remoteDescriptor: peer })
-    if (remote && !speaksThisBundle(remote)) {
-        if (localSoFar) updateState({ localDescriptor: localSoFar })
-        return incompatible(remote, localSoFar)
-    }
+    if (remote && !speaksThisBundle(remote)) return incompatible(remote, localSoFar)
     const [localResult] = await localAnswer
     const local = localResult.status === 'fulfilled' ? localResult.value : null
-    if (local) updateState({ localDescriptor: local })
     if (local && !speaksThisBundle(local)) return stalePage(local, remote)
     // A mismatch this Spark reported before wins over the link found gone, as it does in the listing.
     const known = state.localDescriptor
@@ -372,7 +371,6 @@ export async function refreshLocalEnvironments(): Promise<void> {
         updateState(patch)
     }
     if (patch.links) {
-        listingsShown += 1
         dropRemovedDestination(previous)
     } else if (unknown) {
         switchSequence += 1
@@ -393,21 +391,6 @@ function listingSettles(seq: number) {
     })
 }
 
-/**
- * Checks `environmentId` for switch `seq` until no listing showed while its check ran, once no change made in Settings
- * leaves its row in doubt. Resolves that check and the listings shown before it was sent, or `null` once another switch
- * came first.
- */
-async function verifyDestination(seq: number, environmentId: string) {
-    for (;;) {
-        const shown = listingsShown
-        const check = await checkRemoteEnvironment(environmentId).catch((error: unknown) => unreachable(errorText(error)))
-        await listingSettles(seq)
-        if (seq !== switchSequence) return null
-        if (check.status !== 'ready' || shown === listingsShown) return { check, shown }
-    }
-}
-
 /** Shows the mounted environment again as its own last check left it, without remounting it. */
 function showActiveEnvironment() {
     updateState({ selectedEnvironmentId: state.activeEnvironmentId, ...state.activeCheck })
@@ -418,7 +401,7 @@ function showActiveEnvironment() {
  * switch came first. While they hold the switch the current workspace stays mounted, though no longer the one chosen,
  * so what waits to show in it waits on; approving later commits once, and cancelling shows it again.
  */
-function commitEnvironment(seq: number, environmentId: string | null, check: Check, shown: number, onActivated?: () => void): boolean {
+function commitEnvironment(seq: number, environmentId: string | null, check: Check, onActivated?: () => void): boolean {
     let committed: boolean | null = null
     const live = () => committed === null && seq === switchSequence
     const mount = () => {
@@ -439,15 +422,12 @@ function commitEnvironment(seq: number, environmentId: string | null, check: Che
     }
     requestNavigation(() => {
         if (committed !== null || seq !== switchSequence) return
-        if (environmentId === null || (!unconfirmed && shown === listingsShown)) return mount()
-        // Approved once a listing showed since its check was sent, or while a change made in Settings leaves the
-        // destination's row in doubt: it is checked again, then open editors asked again, as edits made since are theirs.
+        if (!unconfirmed) return mount()
+        // Approved while a change made in Settings leaves the destination's row in doubt: once a listing shows that row,
+        // open editors are asked again, as edits made meanwhile are theirs.
         committed = false
-        updateState({ status: 'checking', error: null })
-        void verifyDestination(seq, environmentId).then((verified) => {
-            if (!verified) return
-            if (verified.check.status !== 'ready') return updateState(verified.check)
-            commitEnvironment(seq, environmentId, verified.check, verified.shown, onActivated)
+        void listingSettles(seq).then(() => {
+            if (seq === switchSequence) commitEnvironment(seq, environmentId, check, onActivated)
         })
     }, () => {
         if (committed !== null || seq !== switchSequence) return
@@ -491,14 +471,14 @@ export async function selectEnvironment(
         if (state.status === 'ready') options?.onActivated?.()
         return state.status === 'ready'
     }
-    if (environmentId === null) return commitEnvironment(seq, null, READY_LOCAL, listingsShown, options?.onActivated)
+    if (environmentId === null) return commitEnvironment(seq, null, READY_LOCAL, options?.onActivated)
 
     // Retrying the mounted environment keeps it hidden behind its error until the check passes.
     if (environmentId !== active) updateState({ selectedEnvironmentId: environmentId, status: 'checking', error: null })
     const since = reverifySequence
-    const verified = await verifyDestination(seq, environmentId)
-    if (!verified) return false
-    const { check } = verified
+    const check = await checkRemoteEnvironment(environmentId).catch((error: unknown) => unreachable(errorText(error)))
+    await listingSettles(seq)
+    if (seq !== switchSequence) return false
     // An automatic check sent after this Retry that concluded first, such as one finding the link gone, decides.
     if (environmentId === active && outdated > since) return false
     if (environmentId === active && check.status !== 'unreachable') {
@@ -514,7 +494,7 @@ export async function selectEnvironment(
         if (check.status === 'ready') options?.onActivated?.()
         return check.status === 'ready'
     }
-    return commitEnvironment(seq, environmentId, check, verified.shown, options?.onActivated)
+    return commitEnvironment(seq, environmentId, check, options?.onActivated)
 }
 
 export function retrySelectedEnvironment(): Promise<boolean> {

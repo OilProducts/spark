@@ -878,6 +878,42 @@ describe('Same-window multi-environment switching', () => {
         expect(winLive()).toBeUndefined()
     })
 
+    it('shows this Spark upgraded under the page, with reload guidance and its live connection closed, when a listing that gets no answer from this Spark finds the remote unlinked while a reconnect\'s check, which got this Spark\'s upgraded descriptor, waits on the remote\'s 503', async () => {
+        let links = [WIN_LINK]
+        const routes: Record<string, Route> = { [LINKS]: () => json({ links }) }
+        const { backend, remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        const localAnswers = () => backend.requests.filter((request) => request.url === '/environment').length
+
+        // The failed connection's check gets this Spark's upgraded descriptor; Windows answers 503 only later.
+        const peer = deferred<void>()
+        routes['/environment'] = upgradedLocal
+        routes[WIN_AUTH] = () => peer.promise.then(() => json({ detail: 'connection refused' }, 503))
+        const before = checks()
+        const asked = localAnswers()
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+        await waitFor(() => expect(localAnswers()).toBe(asked + 1))
+        await act(() => new Promise((resolve) => setTimeout(resolve, 20)))
+
+        // Another tab removes the link: this tab's next listing shows it, though this Spark doesn't answer for its version.
+        routes['/environment'] = () => json({ detail: 'unavailable' }, 503)
+        links = []
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        const gate = await screen.findByTestId('remote-environment-gate')
+        await waitFor(() => expect(gate).toHaveTextContent('Reload the page'))
+
+        await act(async () => peer.resolve())
+        const tried = connects()
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'incompatible', activeCheck: { status: 'incompatible' } })
+        expect(gate).toHaveTextContent('this Spark now runs UI API v3')
+        expect(gate).not.toHaveTextContent('This Spark no longer links')
+        expect(remoteShell).not.toBeVisible()
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+    })
+
     it('keeps a remote behind its gate, its live connection closed, when the listing replaces its link while Retry checks the old one, until Retry passes for the current link', async () => {
         let links = [WIN_LINK]
         const routes: Record<string, Route> = { [LINKS]: () => json({ links }) }
@@ -1826,30 +1862,35 @@ describe('Same-window multi-environment switching', () => {
         expect(shell).toBeVisible()
     })
 
-    it('checks a destination again when a listing shows during its check, as one linked anew in the same second with the same fields may hold another credential, and mounts only once that check passes', async () => {
+    it('checks once, and asks once, for a switch whose destination listings show unchanged during its check and its confirmation', async () => {
         const user = userEvent.setup()
-        const first = deferred<void>()
-        let relinked = false
-        const backend = stubBackend({
-            [WIN_AUTH]: () => (relinked ? json({ detail: 'Unauthorized' }, 401) : first.promise.then(() => json(WIN_ENV))),
-        })
+        const check = deferred<void>()
+        const backend = stubBackend({ [WIN_AUTH]: () => check.promise.then(() => json(WIN_ENV)) })
+        const listings = () => backend.requests.filter((request) => request.url === LINKS).length
+        const listAgain = async () => {
+            const before = listings()
+            act(() => { window.dispatchEvent(new Event('focus')) })
+            await waitFor(() => expect(listings()).toBe(before + 1))
+            await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+        }
         render(<App />)
         await screen.findByTestId('environment-tab-env-win')
-        const shell = workspaceMounted()
+        await openSystemSettings()
+        await user.type(await screen.findByLabelText('Command-line server URL'), 'http://draft.example')
         await user.click(tab('env-win'))
         await screen.findByTestId('environment-checking')
 
-        // Paired again elsewhere within the same second, with the same origin and label: the listing looks the same, but
-        // the proxy now sends the new credential, which Windows refuses.
-        relinked = true
-        act(() => { window.dispatchEvent(new Event('focus')) })
-        await waitFor(() => expect(backend.requests.filter((request) => request.url === LINKS).length).toBeGreaterThan(1))
-        await act(async () => first.resolve())
-        const gate = await screen.findByTestId('remote-environment-gate')
-        expect(gate).toHaveTextContent('refused this Spark’s credential')
-        expect(backend.requests.filter((request) => request.url === WIN_AUTH)).toHaveLength(2)
-        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: 'env-win', status: 'refused' })
-        expect(workspaceMounted()).toBe(shell)
+        await listAgain()
+        await act(async () => check.resolve())
+        const dialog = await screen.findByRole('alertdialog', { name: 'Discard unsaved settings?' })
+        await listAgain()
+        expect(dialog).toBeInTheDocument()
+        expect(backend.requests.filter((request) => request.url === WIN_AUTH)).toHaveLength(1)
+
+        await user.click(within(dialog).getByRole('button', { name: 'Discard and leave' }))
+        await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-win'))
+        expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+        expect(backend.requests.filter((request) => request.url === WIN_AUTH)).toHaveLength(1)
     })
 
     it('keeps a link listed anew, and a switch to it, when Settings\' removal of the link it replaced answers late', async () => {
