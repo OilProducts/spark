@@ -123,8 +123,10 @@ const listeners = new Set<() => void>()
 let switchSequence = 0
 let refreshSequence = 0
 let resetHandler: ((targetEnvironmentId: string | null) => void) | null = null
-// The latest re-check of the mounted environment, and whether one is running.
+// The latest re-check of the mounted environment, and whether one is running. Those numbered up to `outdated` find
+// nothing for it: a newer conclusive answer, a passing Retry or a switch came first.
 let reverifySequence = 0
+let outdated = 0
 let reverifying = false
 
 function emit() {
@@ -316,7 +318,7 @@ function commitEnvironment(seq: number, environmentId: string | null, check: Che
         if (committed !== null || seq !== switchSequence) return
         committed = true
         // Checks of the environment mounted until now, even this same one, find nothing for this mount.
-        reverifySequence += 1
+        outdated = reverifySequence
         reverifying = false
         // Update activeEnvironmentId before wiping stores so any store subscription sees the new environment,
         // then notify React listeners once stores are clean so the remounted subtree starts fresh.
@@ -372,7 +374,7 @@ export async function selectEnvironment(
         // A Retry's conclusive check outdates the mounted environment's automatic ones still running, as one sent with
         // a credential pairing again since replaced. One with no conclusive answer leaves theirs to land, such as a
         // refused credential.
-        reverifySequence += 1
+        outdated = reverifySequence
         reverifying = false
     }
     if (environmentId === active || check.status !== 'ready') {
@@ -394,7 +396,7 @@ export function retrySelectedEnvironment(): Promise<boolean> {
  * gate at once. A switch elsewhere carries on: the gate shows its check, and a return from it shows this error. One
  * an outage's check found unreachable comes back once a later check passes.
  * Resolves whether the mounted environment passed, or `null` with no answer. A failing connection's checks run one at a
- * time; a `fresh` one, for a connection that opened again, starts anew and outdates any still running.
+ * time; a `fresh` one, for a connection that opened again, starts anew, and what it concludes outdates any still running.
  */
 export async function reverifyActiveEnvironment(fresh = false): Promise<boolean | null> {
     const environmentId = state.activeEnvironmentId
@@ -413,7 +415,10 @@ export async function reverifyActiveEnvironment(fresh = false): Promise<boolean 
     } finally {
         if (seq === reverifySequence) reverifying = false
     }
-    if (seq !== reverifySequence || state.activeEnvironmentId !== environmentId) return null
+    // A newer check decides, apart from a final failure found here, which stands unless it was outdated: a newer one
+    // that gets no conclusive answer leaves it to take effect.
+    if (seq <= outdated || state.activeEnvironmentId !== environmentId || (seq !== reverifySequence && !isFinalCheck(check))) return null
+    if (check.status !== 'unreachable') outdated = seq
     applyActiveCheck(check)
     return check.status === 'ready'
 }
@@ -432,7 +437,7 @@ export function useActiveEnvironment(): ActiveEnvironmentState {
 export function resetActiveEnvironmentForTests() {
     switchSequence += 1
     refreshSequence += 1
-    reverifySequence += 1
+    outdated = reverifySequence
     reverifying = false
     state = { ...INITIAL_STATE }
     emit()

@@ -635,6 +635,52 @@ describe('Same-window multi-environment switching', () => {
         expect(connects()).toBe(tried + 1)
     })
 
+    it('shows a refused credential that an earlier reconnect\'s check finds after a newer one\'s gets no answer, and stops reconnecting until Retry passes', async () => {
+        const routes: Record<string, Route> = {}
+        const { user, remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+
+        // A handshake accepted before the credential is revoked: the check it starts gets the refusal only later.
+        const accepted = winLive()!
+        const before = checks()
+        const refusal = deferred<void>()
+        routes[WIN_AUTH] = async () => {
+            await refusal.promise
+            return json({ detail: 'Unauthorized' }, 401)
+        }
+        act(() => accepted.onopen?.(new Event('open')))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+
+        // That connection drops and the next handshake is accepted; the newer check it starts gets a 503.
+        routes[WIN_AUTH] = () => json({ detail: 'connection refused' }, 503)
+        act(() => accepted.onerror?.(new Event('error')))
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+        const reopened = winLive()!
+        act(() => reopened.onopen?.(new Event('open')))
+        await waitFor(() => expect(reopened.closed).toBe(true))
+        expect(checks()).toBe(before + 2)
+
+        // The earlier check's refusal still takes effect: the credential gate shows, and nothing is tried or checked again.
+        await act(async () => refusal.resolve())
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(gate).toHaveTextContent('refused this Spark’s credential')
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'refused', activeCheck: { status: 'refused' } })
+        expect(remoteShell).not.toBeVisible()
+        const tried = connects()
+        const checked = checks()
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+        expect(checks()).toBe(checked)
+
+        delete routes[WIN_AUTH]
+        await user.click(within(gate).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(remoteShell).toBeVisible())
+        await waitFor(() => expect(winLive()).toBeDefined())
+    })
+
     it('shows a mounted remote\'s refused credential and stops reconnecting at once, while this machine\'s descriptor is still asked for, and keeps them when that answers 503', async () => {
         const routes: Record<string, Route> = {}
         const { user, remoteShell, checks } = await mountWindows(routes)
