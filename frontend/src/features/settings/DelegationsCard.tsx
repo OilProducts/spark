@@ -18,9 +18,9 @@ import {
 } from '@/lib/api/environmentsApi'
 import {
     ENVIRONMENT_LINKS_CHANGED_EVENT,
+    fetchLocalEnvironmentLinks,
     getActiveEnvironmentId,
     getActiveEnvironmentState,
-    refreshLocalEnvironments,
     useActiveEnvironment,
     type EnvironmentLink,
 } from '@/lib/activeEnvironment'
@@ -77,9 +77,11 @@ const inFlightCounts: Record<string, number> = {}
 // updated row and reloads where it is seen, and a reload that fails after Settings was reopened shows there.
 type ShownCard = { report: (done: string, updated?: DelegationOut) => Promise<void>; fail: (message: string) => void }
 const shownCards = new Map<string, ShownCard>()
-// A reread of this machine's links a card started, while out. One at a time, as with list requests:
-// refreshLocalEnvironments keeps only its latest call's answer, so a slow one stays for the next live refresh.
-let linksReread: Promise<void> | null = null
+// This machine's links as last read: the shared snapshot, or a card's own reread of them over that snapshot
+// until it changes. The shared snapshot keeps only its latest read's answer, so the card rereads them itself
+// rather than through it: a read that succeeds isn't lost to another that is slow or fails.
+type LinksRead = { links: EnvironmentLink[]; over: EnvironmentLink[] }
+const knownLinks = (shared: EnvironmentLink[], read: LinksRead | null) => (read?.over === shared ? read.links : shared)
 // The last cancel sent for each delegation, by environment: a failure that a newer try overtook isn't reported.
 const latestCancels = new Map<string, symbol>()
 const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
@@ -292,14 +294,14 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const requestSeqRef = useRef(0)
     // The last rows loaded and the filter they answer: another filter's rows are never shown.
     const [loaded, setLoaded] = useState<{ filter: Filter; records: DelegationOut[] } | null>(null)
-    const { activeEnvironmentId, links, linksLoaded } = useActiveEnvironment()
+    const { activeEnvironmentId, links: sharedLinks, linksLoaded } = useActiveEnvironment()
     const env = activeEnvironmentId ?? ''
     const { drafts, acknowledged, failures, cancelErrors } = useDelegationAnswers((all) => all[env] ?? NO_ANSWERS)
     // Every delegation's latest record: live refresh falls back on it while a filter hasn't loaded, and
     // the ref lets a cancel confirmation act on what is true when it closes.
     const [seen, setSeen] = useState<Record<string, DelegationOut>>({})
     const seenRef = useRef(seen)
-    // The rows this card shows a failed cancel on, as shown.
+    // The rows this card shows a failed cancel on while System is shown, as shown.
     const errorRowsRef = useRef<Record<string, DelegationOut>>({})
     // A card left behind when Settings closes neither shows nor prunes with what its requests return.
     const mountedRef = useRef(false)
@@ -316,6 +318,11 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     // list requested since loads. The change may concern any delegation, so none is answered until those
     // links reload or that list shows which ones the server paused (spark-storage remove_link).
     const [linkChange, setLinkChange] = useState<{ links: EnvironmentLink[]; seq: number } | null>(null)
+    // The card's last reread of this machine's links, and the one out, if any: one at a time, so slow ones
+    // don't pile up behind live refreshes, and one sent before the last link change is dropped.
+    const [linksRead, setLinksRead] = useState<LinksRead | null>(null)
+    const linksReadRef = useRef(linksRead)
+    const rereadRef = useRef<object | null>(null)
 
     // Loads the selected filter. A response to an older request, or for a filter no longer
     // selected, is dropped; a current failure, or any failure of a reload after a change, is thrown
@@ -356,9 +363,19 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             // A delegation listed as resumed through a link this machine's links lack shows them stale, as
             // when their reload failed after a link was added: each refresh rereads them until they show it.
             const local = getActiveEnvironmentState()
-            if (!linksReread && env === '' && local.linksLoaded && records.some((row) => row.phase !== 'sealed' && !row.paused
-                && !local.links.some((link) => link.environment_id === row.environment_id))) {
-                linksReread = refreshLocalEnvironments().finally(() => { linksReread = null })
+            if (!rereadRef.current && env === '' && local.linksLoaded && records.some((row) => row.phase !== 'sealed' && !row.paused
+                && !knownLinks(local.links, linksReadRef.current).some((link) => link.environment_id === row.environment_id))) {
+                const reread = {}
+                rereadRef.current = reread
+                // A failed reread leaves the link shown missing, and the next list that still lacks it rereads.
+                const done = (read?: EnvironmentLink[]) => {
+                    if (rereadRef.current !== reread) return
+                    rereadRef.current = null
+                    if (!read) return
+                    linksReadRef.current = { links: read, over: getActiveEnvironmentState().links }
+                    setLinksRead(linksReadRef.current)
+                }
+                fetchLocalEnvironmentLinks().then(done, () => done())
             }
             forgetUnasked(env, records, coversOpen)
         } catch (err) {
@@ -430,7 +447,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     useEffect(() => {
         if (activeEnvironmentId !== null) return
         const onLinksChanged = () => {
-            setLinkChange({ links: getActiveEnvironmentState().links, seq: requestSeqRef.current })
+            rereadRef.current = null
+            setLinkChange({ links: knownLinks(getActiveEnvironmentState().links, linksReadRef.current), seq: requestSeqRef.current })
             if (active) void refresh()
         }
         window.addEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, onLinksChanged)
@@ -438,9 +456,14 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     }, [active, activeEnvironmentId, refresh])
 
     const rows = loaded?.filter === filter ? loaded.records : null
+    // Only failures shown on System count. Declared after the effect that refreshes as System is shown, so
+    // that refresh, like a reopened card's first, retires only failures shown before it.
     useEffect(() => {
-        errorRowsRef.current = Object.fromEntries((rows ?? []).filter((row) => cancelErrors[row.delegation_id]).map((row) => [row.delegation_id, row]))
-    }, [rows, cancelErrors])
+        errorRowsRef.current = active
+            ? Object.fromEntries((rows ?? []).filter((row) => cancelErrors[row.delegation_id]).map((row) => [row.delegation_id, row]))
+            : {}
+    }, [active, rows, cancelErrors])
+    const links = knownLinks(sharedLinks, linksRead)
     const questionsOf = (record: DelegationOut) => (record.phase === 'accepted'
         ? (record.last_state?.questions ?? []).filter((question) => !acknowledged.has(ackKey(record.delegation_id, question.question_id)))
         : [])

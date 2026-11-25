@@ -120,9 +120,9 @@ const requested = { cancel_requested_at: '2026-11-23T00:01:00Z' }
 // A responder's group name: request key and prompt, then the row's location line.
 const asked = (requestKey: string, prompt: string, delegationId: string) => `${requestKey}: ${prompt} (/srv/repo · env env-b · target run-${delegationId})`
 
-function renderCard() {
+function renderCard(props: { active?: boolean } = {}) {
     const user = userEvent.setup()
-    const view = render(<DialogProvider><DelegationsCard /></DialogProvider>)
+    const view = render(<DialogProvider><DelegationsCard {...props} /></DialogProvider>)
     return { user, ...view }
 }
 const settled = () => waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
@@ -1139,6 +1139,69 @@ it('keeps answering off while this machine\'s links omit a resumed delegation\'s
     expect(sent(links)).toHaveLength(4)
 })
 
+it.each([
+    ['the app\'s read, while the card\'s own reread is out,', true],
+    ['the card\'s own reread, while a later read of the app\'s is out,', false],
+])('restores answering on a delegation resumed by adding its link again once %s succeeds, and keeps it when the other fails', async (_which, appFirst) => {
+    const link = { environment_id: 'env-b', origin: 'http://env-b.test', label: 'B', created_at: '2026-11-23T00:00:00Z' }
+    const links = 'GET /workspace/api/environments/links'
+    const succeeds = later()
+    const fails = later()
+    serve({
+        ...ENVIRONMENTS,
+        [links]: [ok({ links: [] }), succeeds.reply, fails.reply],
+        [LIST]: [ok(list({ ...nightly, paused: 'The link to this environment was removed.' })), ok(list(nightly))],
+    })
+    await act(async () => { await refreshLocalEnvironments() })
+    renderCard()
+    const approve = within(await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' })
+    await settled()
+    expect(approve).toBeDisabled()
+
+    // Adding the link resumes the delegation. The app rereads this machine's links on the change (or on
+    // focus, after the card's reread); the card rereads them on seeing the delegation resumed.
+    const appRead = () => act(() => { void refreshLocalEnvironments() })
+    act(() => notifyEnvironmentLinksChanged())
+    if (appFirst) await appRead()
+    expect(await screen.findByText('flow · waiting on answer')).toBeInTheDocument()
+    await waitFor(() => expect(sent(links)).toHaveLength(appFirst ? 3 : 2))
+    if (!appFirst) await appRead()
+    expect(sent(links)).toHaveLength(3)
+    expect(approve).toBeDisabled()
+
+    await succeeds.resolve({ links: [link] })
+    await waitFor(() => expect(approve).toBeEnabled())
+    await fails.resolve({ detail: 'database is locked' }, 500)
+    expect(approve).toBeEnabled()
+    expect(screen.queryByText(/^Answering is unavailable/)).not.toBeInTheDocument()
+})
+
+it('keeps answering off when the card\'s reread of this machine\'s links, sent before a link is removed, answers with it after', async () => {
+    const link = { environment_id: 'env-b', origin: 'http://env-b.test', label: 'B', created_at: '2026-11-23T00:00:00Z' }
+    const links = 'GET /workspace/api/environments/links'
+    const stale = later()
+    serve({
+        ...ENVIRONMENTS,
+        [links]: [ok({ links: [] }), stale.reply, later().reply],
+        [LIST]: [ok(list(nightly)), fail(500, 'database is locked')],
+    })
+    await act(async () => { await refreshLocalEnvironments() })
+    renderCard()
+    const approve = within(await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' })
+    await settled()
+    // Listed as resumed through a link this machine's links lack, so the card rereads them.
+    await waitFor(() => expect(sent(links)).toHaveLength(2))
+    expect(approve).toBeDisabled()
+
+    // The link is removed and the refresh fails; the reread from before then answers with the link.
+    act(() => notifyEnvironmentLinksChanged())
+    expect(await screen.findByText('Database is locked')).toBeInTheDocument()
+    await stale.resolve({ links: [link] })
+    await settled()
+    expect(approve).toBeDisabled()
+    expect(screen.getByText('Answering is unavailable: the link to env-b is missing.')).toBeInTheDocument()
+})
+
 it('shows a pending cancellation over stale questions and a pause, and disables a duplicate Cancel', async () => {
     serve({ [LIST]: [ok(list(delegation('del-1', 'nightly-checks', [approveGate()], requested), { ...pausedTask, ...requested }))] })
     renderCard()
@@ -1459,6 +1522,40 @@ it.each([
     await waitFor(() => expect(sent(LIST)).toHaveLength(reopen ? 4 : 3))
     await settled()
     expect(within(await row()).getByText('flow · canceled')).toBeInTheDocument()
+    expect(screen.queryByText('Database is locked')).not.toBeInTheDocument()
+})
+
+it.each([
+    ['after showing System', true],
+    ['on another tab', false],
+])('shows a cancel that fails while Settings, reopened %s, shows another tab on its row through the refresh on return to System, until a later one', async (_reopened, shownFirst) => {
+    const cancel = later()
+    serve({
+        [LIST]: [ok(list(nightly)), ...(shownFirst ? [ok(list(nightly))] : []), ok(list(canceledSeal))],
+        [cancelRoute('del-1')]: [cancel.reply],
+    })
+    const first = renderCard()
+    await confirmCancel(first.user, 'nightly-checks')
+    await waitFor(() => expect(sent(cancelRoute('del-1'))).toHaveLength(1))
+    first.unmount()
+
+    const { user, rerender } = renderCard({ active: shownFirst })
+    const row = () => screen.findByRole('group', { name: /^Delegation nightly-checks/ })
+    if (shownFirst) {
+        await settled()
+        rerender(<DialogProvider><DelegationsCard active={false} /></DialogProvider>)
+    }
+    // The cancel fails, its delegation seals, and the user returns to System.
+    await cancel.resolve({ detail: 'database is locked' }, 500)
+    rerender(<DialogProvider><DelegationsCard /></DialogProvider>)
+    await waitFor(() => expect(sent(LIST)).toHaveLength(shownFirst ? 3 : 2))
+    await settled()
+    expect(within(await row()).getByText('flow · canceled')).toBeInTheDocument()
+    expect(within(await row()).getByText('Database is locked')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(sent(LIST)).toHaveLength(shownFirst ? 4 : 3))
+    await settled()
     expect(screen.queryByText('Database is locked')).not.toBeInTheDocument()
 })
 
