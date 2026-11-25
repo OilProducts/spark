@@ -6,6 +6,7 @@ import { resetModelOptionsCache } from '@/components/model-chooser/useModelOptio
 import { useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useRunTranscriptStore } from '@/features/runs/state/runTranscriptStore'
 import {
+    describeEnvironmentVersion,
     ENVIRONMENT_LINKS_CHANGED_EVENT,
     refreshLocalEnvironments,
     registerEnvironmentResetHandler,
@@ -73,9 +74,8 @@ export function EnvironmentSwitcherBar() {
     const selectedMissingLink =
         selectedEnvironmentId !== null
         && !links.some((link) => link.environment_id === selectedEnvironmentId)
-    const activeLink = activeEnvironmentId
-        ? links.find((link) => link.environment_id === activeEnvironmentId) ?? null
-        : null
+    const activeLink = links.find((link) => link.environment_id === activeEnvironmentId)
+    const selectedLink = links.find((link) => link.environment_id === selectedEnvironmentId)
 
     return (
         <div
@@ -142,18 +142,20 @@ export function EnvironmentSwitcherBar() {
                     </button>
                 ) : null}
             </div>
-            {activeEnvironmentId !== null && status === 'ready' ? (
+            {status === 'checking' ? (
+                <div role="status" data-testid="environment-checking" className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+                    <span className="max-w-56 truncate">Connecting to {selectedLink?.label || selectedEnvironmentId}…</span>
+                </div>
+            ) : activeEnvironmentId !== null && status === 'ready' && remoteDescriptor ? (
                 <div
                     data-testid="remote-environment-indicator"
+                    title={`${remoteDescriptor.display_name} · ${describeEnvironmentVersion(remoteDescriptor)}`}
                     className="hidden shrink-0 items-center gap-2 text-xs text-muted-foreground sm:flex"
                 >
                     <span className="inline-block size-1.5 rounded-full bg-primary" aria-hidden="true" />
-                    <span className="max-w-56 truncate" title={activeLink?.origin ?? remoteDescriptor?.display_name}>
-                        Remote{activeLink?.origin ? ` · ${activeLink.origin}` : ''}
-                    </span>
-                    {remoteDescriptor && remoteDescriptor.ui_api_version > 0 ? (
-                        <span>· UI API v{remoteDescriptor.ui_api_version}</span>
-                    ) : null}
+                    <span className="max-w-56 truncate">Remote{activeLink ? ` · ${activeLink.origin}` : ''}</span>
+                    <span>· UI API v{remoteDescriptor.ui_api_version}</span>
                 </div>
             ) : null}
         </div>
@@ -161,86 +163,56 @@ export function EnvironmentSwitcherBar() {
 }
 
 /**
- * Shown in place of the workspace while checking a linked remote environment or when its
- * `ui_api_version` / `protocol_version` does not match this Spark instance.
+ * Shown, with the workspace hidden but still mounted, when a linked environment fails its check: unreachable, a
+ * rejected credential or another identity, or a `ui_api_version` / `protocol_version` this bundle does not speak.
  */
 export function RemoteEnvironmentGate() {
-    const { selectedEnvironmentId, status, error, links, localDescriptor, remoteDescriptor } = useActiveEnvironment()
-    const link = selectedEnvironmentId
-        ? links.find((entry) => entry.environment_id === selectedEnvironmentId) ?? null
-        : null
-    const name = link?.label || selectedEnvironmentId || 'Remote environment'
+    const { activeEnvironmentId, selectedEnvironmentId, status, error, links, localDescriptor, remoteDescriptor } = useActiveEnvironment()
+    const nameOf = (environmentId: string) => links.find((entry) => entry.environment_id === environmentId)?.label || environmentId
+    const name = selectedEnvironmentId ? nameOf(selectedEnvironmentId) : 'Remote environment'
+    // Back to the workspace still mounted, or to this machine when that is the one failing.
+    const returnTo = selectedEnvironmentId === activeEnvironmentId ? null : activeEnvironmentId
 
     return (
         <main
-            id="app-main"
-            tabIndex={-1}
             data-testid="remote-environment-gate"
             className="flex flex-1 min-h-0 flex-col items-center justify-center p-6 text-center outline-none"
         >
             <div className="w-full max-w-md space-y-4 rounded-xl border border-border bg-background p-6 shadow-sm">
-                {status === 'checking' ? (
-                    <>
-                        <div className="flex items-center justify-center gap-2 text-sm font-semibold text-foreground">
-                            <Loader2 aria-hidden="true" className="size-4 animate-spin text-muted-foreground" />
-                            <span>Connecting to {name}…</span>
+                <div className="flex items-center justify-center gap-2 text-sm font-semibold text-foreground">
+                    <AlertTriangle aria-hidden="true" className="size-4 text-warning" />
+                    <span>
+                        {status === 'incompatible'
+                            ? `Version mismatch with ${name}`
+                            : `Couldn’t connect to ${name}`}
+                    </span>
+                </div>
+                {error ? (
+                    <p role="alert" className="text-sm text-muted-foreground">
+                        {error}
+                    </p>
+                ) : null}
+                {status === 'incompatible' && localDescriptor && remoteDescriptor ? (
+                    <dl className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-ground p-3 text-left text-xs">
+                        <div>
+                            <dt className="font-medium text-foreground">This Spark</dt>
+                            <dd className="text-muted-foreground">{describeEnvironmentVersion(localDescriptor)}</dd>
                         </div>
-                        <p className="text-sm text-muted-foreground">
-                            Checking Spark UI compatibility before opening this environment.
-                        </p>
-                        <div className="flex justify-center gap-2">
-                            <Button type="button" size="sm" variant="outline" onClick={() => void selectEnvironment(null)}>
-                                Return to this machine
-                            </Button>
+                        <div>
+                            <dt className="font-medium text-foreground">{name}</dt>
+                            <dd className="text-muted-foreground">{describeEnvironmentVersion(remoteDescriptor)}</dd>
                         </div>
-                    </>
-                ) : (
-                    <>
-                        <div className="flex items-center justify-center gap-2 text-sm font-semibold text-foreground">
-                            <AlertTriangle aria-hidden="true" className="size-4 text-warning" />
-                            <span>
-                                {status === 'incompatible'
-                                    ? `Version mismatch with ${name}`
-                                    : `Couldn’t connect to ${name}`}
-                            </span>
-                        </div>
-                        {error ? (
-                            <p role="alert" className="text-sm text-muted-foreground">
-                                {error}
-                            </p>
-                        ) : null}
-                        {status === 'incompatible' && localDescriptor && remoteDescriptor ? (
-                            <dl className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-ground p-3 text-left text-xs">
-                                <div>
-                                    <dt className="font-medium text-foreground">This Spark</dt>
-                                    <dd className="text-muted-foreground">
-                                        UI API v{localDescriptor.ui_api_version} · protocol v{localDescriptor.protocol_version}
-                                        {localDescriptor.spark_version ? ` · ${localDescriptor.spark_version}` : ''}
-                                    </dd>
-                                </div>
-                                <div>
-                                    <dt className="font-medium text-foreground">{name}</dt>
-                                    <dd className="text-muted-foreground">
-                                        {remoteDescriptor.ui_api_version > 0
-                                            ? `UI API v${remoteDescriptor.ui_api_version}`
-                                            : 'Unversioned UI API'}
-                                        {' · '}protocol v{remoteDescriptor.protocol_version}
-                                        {remoteDescriptor.spark_version ? ` · ${remoteDescriptor.spark_version}` : ''}
-                                    </dd>
-                                </div>
-                            </dl>
-                        ) : null}
-                        <div className="flex flex-wrap justify-center gap-2">
-                            <Button type="button" size="sm" variant="outline" onClick={() => void retrySelectedEnvironment()}>
-                                <RefreshCw aria-hidden="true" className="size-3.5" />
-                                Retry
-                            </Button>
-                            <Button type="button" size="sm" onClick={() => void selectEnvironment(null)}>
-                                Return to this machine
-                            </Button>
-                        </div>
-                    </>
-                )}
+                    </dl>
+                ) : null}
+                <div className="flex flex-wrap justify-center gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={() => void retrySelectedEnvironment()}>
+                        <RefreshCw aria-hidden="true" className="size-3.5" />
+                        Retry
+                    </Button>
+                    <Button type="button" size="sm" onClick={() => void selectEnvironment(returnTo)}>
+                        Return to {returnTo === null ? 'this machine' : nameOf(returnTo)}
+                    </Button>
+                </div>
             </div>
         </main>
     )

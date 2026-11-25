@@ -27,7 +27,7 @@ function WorkspaceShell() {
   const isRunsMode = viewMode === 'runs'
   const isTriggersMode = viewMode === 'triggers'
   const isSettingsMode = viewMode === 'settings'
-  // What it started, such as a launch, no longer shows once it closes, even when it opens again on the same store.
+  // What it started, such as a launch, no longer shows once it closes for a switch to another environment.
   useEffect(() => closeWorkspace, [])
 
   return (
@@ -104,19 +104,19 @@ function WorkspaceShell() {
 }
 
 function App() {
-  const { activeEnvironmentId, selectedEnvironmentId, status } = useActiveEnvironment()
-  const workspaceReady = selectedEnvironmentId === null || (status === 'ready' && activeEnvironmentId === selectedEnvironmentId)
+  const { activeEnvironmentId, status } = useActiveEnvironment()
+  // A failed check hides the workspace without unmounting it, so its unsaved edits wait for Retry or Return.
+  const blocked = status === 'incompatible' || status === 'unreachable'
 
   return (
     <DialogProvider>
       <EnvironmentBootstrap />
       <div className="h-screen flex flex-col antialiased bg-ground text-foreground">
         <EnvironmentSwitcherBar />
-        {workspaceReady ? (
+        <div hidden={blocked} className="flex min-h-0 flex-1 flex-col">
           <WorkspaceShell key={activeEnvironmentId ?? 'local'} />
-        ) : (
-          <RemoteEnvironmentGate />
-        )}
+        </div>
+        {blocked ? <RemoteEnvironmentGate /> : null}
       </div>
     </DialogProvider>
   )

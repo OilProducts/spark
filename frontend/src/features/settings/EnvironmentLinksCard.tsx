@@ -399,7 +399,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             const created = await addEnvironmentLink({ origin, expected_id, code, label })
             const before = listedLinksRef.current.filter((seen) => seen.first < sent).map((seen) => seen.link)
             form.reset()
-            if (isLocalEnvironment) notifyEnvironmentLinksChanged()
+            if (isLocalEnvironment) notifyEnvironmentLinksChanged((links) => [...links.filter((row) => row.environment_id !== created.environment_id), created])
             await settleMutation(`Linked ${created.label || created.environment_id}.`, { linked: created, sent, before })
         } catch (err) {
             reportError(errorText(err, 'Could not add environment link.'))
@@ -440,7 +440,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             }
             await removeEnvironmentLink(link.environment_id)
             confirmedRemovals.push({ environmentId: activeEnvironmentId, link, at: lastTicket })
-            if (isLocalEnvironment) notifyEnvironmentLinksChanged()
+            if (isLocalEnvironment) notifyEnvironmentLinksChanged((links) => links.filter((row) => row.environment_id !== link.environment_id))
             await settleMutation(`Removed link to ${name}.`, { unlinked: link })
         })
     }

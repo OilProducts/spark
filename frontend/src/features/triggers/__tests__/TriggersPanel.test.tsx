@@ -1,7 +1,9 @@
 import { TriggersSessionController } from '@/app/AppSessionControllers'
 import { TriggersPanel } from '@/features/triggers/TriggersPanel'
 import { browserTimeZone, createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
+import { refreshLocalEnvironments } from '@/lib/activeEnvironment'
 import { triggerKey } from '@/lib/workspaceClient'
+import { switchEnvironment } from '@/test/environments'
 import { useStore } from '@/store'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -331,6 +333,39 @@ describe('TriggersPanel', () => {
     await waitFor(() => {
       expect(screen.getByText(/new-webhook-secret/)).toBeVisible()
     })
+  })
+
+  it.each([
+    ['this machine', null],
+    ['a linked environment', 'env-win'],
+  ])('names where a webhook on %s is called, never this Spark\'s proxy to a remote', async (_where, environmentId) => {
+    const proxy = '/workspace/api/environments/links/env-win/proxy'
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = resolveRequestUrl(input)
+      if (url === '/workspace/api/environments/links') {
+        return jsonResponse({ links: [{ environment_id: 'env-win', origin: 'https://win-box:8000', label: 'Windows Workstation', created_at: '' }] })
+      }
+      if (url.endsWith('/workspace/api/triggers')) {
+        return jsonResponse([makeTrigger({ id: 'trigger-webhook', name: 'Webhook trigger', source_type: 'webhook', source: { webhook_key: 'webhook-key-1' } })])
+      }
+      throw new Error(`Unhandled request: ${url}`)
+    })
+    await refreshLocalEnvironments()
+    if (environmentId) await switchEnvironment(environmentId)
+    const user = userEvent.setup()
+    renderTriggersPanel()
+
+    await user.click(await screen.findByTestId('trigger-row-trigger-webhook'))
+    const guidance = screen.getByText(/Send a POST request/i)
+    if (environmentId === null) {
+      expect(guidance).toHaveTextContent('Send a POST request with a JSON body to /workspace/api/webhooks and these headers:')
+      expect(screen.queryByTestId('trigger-webhook-remote')).not.toBeInTheDocument()
+    } else {
+      expect(guidance).toHaveTextContent('This trigger runs on Windows Workstation at https://win-box:8000.')
+      expect(guidance).toHaveTextContent('directly to https://win-box:8000/workspace/api/webhooks, not through this Spark')
+      expect(guidance).not.toHaveTextContent(proxy)
+      expect(guidance).not.toHaveTextContent(window.location.origin)
+    }
   })
 
   it('shows errors at the field in plain words, and saves an interval in a unit as seconds', async () => {

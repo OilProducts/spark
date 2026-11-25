@@ -1,8 +1,6 @@
 import { parseFormQuestion, type FormQuestion, type FormReply } from '@/lib/forms'
 import { fetchWorkspaceJsonValidated } from './apiClient'
 import {
-    activeApiPrefix,
-    parseEnvironmentDescriptor,
     parseEnvironmentLink,
     parseEnvironmentLinks,
     type EnvironmentDescriptor,
@@ -15,9 +13,9 @@ import {
     asUnknownRecord,
     expectObjectRecord,
     expectString,
-    fetchJsonWithValidation,
 } from './shared'
 
+export { fetchEnvironmentDescriptor } from '../activeEnvironment'
 export { type EnvironmentDescriptor, type EnvironmentLink }
 
 export type PairingCodeReceipt = {
@@ -216,11 +214,6 @@ function parseDelegations(payload: unknown, endpoint: string): DelegationOut[] {
     const record = expectObjectRecord(payload, endpoint)
     const items = Array.isArray(record.delegations) ? record.delegations : []
     return items.map((item) => parseDelegation(item, endpoint))
-}
-
-export function fetchEnvironmentDescriptor(): Promise<EnvironmentDescriptor> {
-    const prefix = activeApiPrefix()
-    return fetchJsonWithValidation(`${prefix}/environment`, undefined, `GET ${prefix}/environment`, parseEnvironmentDescriptor)
 }
 
 export function createPairingCode(label: string): Promise<PairingCodeReceipt> {

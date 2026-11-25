@@ -1,10 +1,15 @@
 import { useSyncExternalStore } from 'react'
 import {
+    ApiHttpError,
     asOptionalString,
     expectObjectRecord,
     expectString,
     fetchJsonWithValidation,
 } from './api/shared'
+
+/** The versions this browser bundle speaks: `PROTOCOL_VERSION` and `UI_API_VERSION` in crates/spark-storage/src/environment.rs. */
+export const EXPECTED_PROTOCOL_VERSION = 1
+export const EXPECTED_UI_API_VERSION = 2
 
 export type EnvironmentDescriptor = {
     environment_id: string
@@ -12,6 +17,8 @@ export type EnvironmentDescriptor = {
     protocol_version: number
     ui_api_version: number
     spark_version: string
+    /** Only the authenticated descriptor, `GET /workspace/api/environment`, carries it. */
+    build_id?: string
 }
 
 export type EnvironmentLink = {
@@ -51,6 +58,7 @@ export function parseEnvironmentDescriptor(payload: unknown, endpoint: string): 
         // Missing ui_api_version means an older Spark build that predates the lockstep check.
         ui_api_version: typeof record.ui_api_version === 'number' ? record.ui_api_version : 0,
         spark_version: asOptionalString(record.spark_version) ?? '',
+        build_id: asOptionalString(record.build_id),
     }
 }
 
@@ -70,13 +78,16 @@ export function parseEnvironmentLinks(payload: unknown, endpoint: string): Envir
     return items.map((item) => parseEnvironmentLink(item, endpoint))
 }
 
-export function fetchLocalEnvironmentDescriptor(): Promise<EnvironmentDescriptor> {
-    return fetchJsonWithValidation('/environment', undefined, 'GET /environment', parseEnvironmentDescriptor)
-}
-
-export function fetchRemoteEnvironmentDescriptor(environmentId: string): Promise<EnvironmentDescriptor> {
-    const prefix = environmentProxyPrefix(environmentId)
-    return fetchJsonWithValidation(`${prefix}/environment`, undefined, `GET ${prefix}/environment`, parseEnvironmentDescriptor)
+/**
+ * An environment's descriptor (`environmentId` `null`: this machine), by default the active one's: the public
+ * `/environment`, or the authenticated `/workspace/api/environment`, which also checks the link's credential.
+ */
+export function fetchEnvironmentDescriptor(
+    environmentId: string | null = state.activeEnvironmentId,
+    path: '/environment' | '/workspace/api/environment' = '/environment',
+): Promise<EnvironmentDescriptor> {
+    const url = `${environmentProxyPrefix(environmentId)}${path}`
+    return fetchJsonWithValidation(url, undefined, `GET ${url}`, parseEnvironmentDescriptor)
 }
 
 export function fetchLocalEnvironmentLinks(): Promise<EnvironmentLink[]> {
@@ -99,15 +110,24 @@ const INITIAL_STATE: ActiveEnvironmentState = {
     linksLoaded: false,
 }
 
+type Check = Pick<ActiveEnvironmentState, 'status' | 'error' | 'remoteDescriptor'>
+const READY_LOCAL: Check = { status: 'ready', error: null, remoteDescriptor: null }
+
 let state: ActiveEnvironmentState = { ...INITIAL_STATE }
 const listeners = new Set<() => void>()
 let switchSequence = 0
 let refreshSequence = 0
 let resetHandler: ((targetEnvironmentId: string | null) => void) | null = null
+// What the mounted environment's own last check found; a switch that does not go through shows it again.
+let activeCheck: Check = READY_LOCAL
+
+function emit() {
+    listeners.forEach((listener) => listener())
+}
 
 function updateState(patch: Partial<ActiveEnvironmentState>) {
     state = { ...state, ...patch }
-    listeners.forEach((listener) => listener())
+    emit()
 }
 
 export function registerEnvironmentResetHandler(handler: (targetEnvironmentId: string | null) => void) {
@@ -122,15 +142,27 @@ export function getActiveEnvironmentId(): string | null {
     return state.activeEnvironmentId
 }
 
+/**
+ * Runs proceed once open editors allow leaving; a cancelled or blocked leave never runs it, nor does
+ * one let through after a switch to another environment, which it would move instead.
+ */
+export const requestNavigation = (proceed: () => void) => {
+    const environmentId = getActiveEnvironmentId()
+    const go = () => { if (getActiveEnvironmentId() === environmentId) proceed() }
+    if (window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail: { proceed: go } }))) go()
+}
+
 export function isRemoteEnvironmentActive(): boolean {
     return state.activeEnvironmentId !== null
 }
 
-export function activeApiPrefix(): string {
-    return environmentProxyPrefix(state.activeEnvironmentId)
-}
-
-export function notifyEnvironmentLinksChanged() {
+/** Tells the switcher this machine's links changed; `update` shows the change in its tabs at once, before they reload. */
+export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]) => EnvironmentLink[]) {
+    if (update) {
+        // A listing already in flight may predate the change; the reload this event starts replaces it.
+        refreshSequence += 1
+        updateState({ links: update(state.links) })
+    }
     window.dispatchEvent(new Event(ENVIRONMENT_LINKS_CHANGED_EVENT))
 }
 
@@ -139,22 +171,74 @@ function linkLabelFor(environmentId: string): string {
     return link?.label || environmentId
 }
 
-function describeCompatibilityMismatch(
-    name: string,
-    local: EnvironmentDescriptor,
-    remote: EnvironmentDescriptor,
-): string {
-    const remoteSpark = remote.spark_version ? `, Spark ${remote.spark_version}` : ''
-    const localSpark = local.spark_version ? `, Spark ${local.spark_version}` : ''
-    const remoteUi = remote.ui_api_version > 0 ? `UI API v${remote.ui_api_version}` : 'an older UI API (unversioned)'
-    return `${name} runs ${remoteUi} (protocol v${remote.protocol_version}${remoteSpark}), while this Spark expects UI API v${local.ui_api_version} (protocol v${local.protocol_version}${localSpark}). Update Spark so both environments match.`
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+const speaksThisBundle = (descriptor: EnvironmentDescriptor) =>
+    descriptor.ui_api_version === EXPECTED_UI_API_VERSION && descriptor.protocol_version === EXPECTED_PROTOCOL_VERSION
+
+export function describeEnvironmentVersion(descriptor: EnvironmentDescriptor): string {
+    return [
+        descriptor.ui_api_version > 0 ? `UI API v${descriptor.ui_api_version}` : 'unversioned UI API',
+        descriptor.protocol_version > 0 ? `protocol v${descriptor.protocol_version}` : 'unversioned protocol',
+        descriptor.spark_version ? `Spark ${descriptor.spark_version}` : '',
+        descriptor.build_id ? `build ${descriptor.build_id}` : '',
+    ].filter(Boolean).join(' · ')
+}
+
+function describeCompatibilityMismatch(name: string, local: EnvironmentDescriptor, remote: EnvironmentDescriptor): string {
+    const expected = `UI API v${EXPECTED_UI_API_VERSION} · protocol v${EXPECTED_PROTOCOL_VERSION}`
+    if (!speaksThisBundle(local)) {
+        return `This page was loaded for ${expected}, but this Spark now runs ${describeEnvironmentVersion(local)}. Reload the page to load its current UI.`
+    }
+    return `${name} runs ${describeEnvironmentVersion(remote)}, while this Spark runs ${describeEnvironmentVersion(local)}. Update Spark so both environments match.`
+}
+
+/**
+ * Checks a linked environment before its workspace shows: its authenticated descriptor must name it, and it and this
+ * machine must both speak this bundle's versions. An older peer's public descriptor only explains a mismatch.
+ */
+async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
+    const name = linkLabelFor(environmentId)
+    const failed = (error: string): Check => ({ status: 'unreachable', error, remoteDescriptor: null })
+    let local = state.localDescriptor
+    if (!local) {
+        try {
+            local = await fetchEnvironmentDescriptor(null)
+            updateState({ localDescriptor: local })
+        } catch (error) {
+            return failed(`Could not verify this Spark server’s version: ${errorText(error)}`)
+        }
+    }
+    const mismatch = (remote: EnvironmentDescriptor): Check | null => speaksThisBundle(local) && speaksThisBundle(remote)
+        ? null
+        : { status: 'incompatible', error: describeCompatibilityMismatch(name, local, remote), remoteDescriptor: remote }
+    let remote: EnvironmentDescriptor
+    try {
+        remote = await fetchEnvironmentDescriptor(environmentId, '/workspace/api/environment')
+    } catch (error) {
+        const status = error instanceof ApiHttpError ? error.status : 0
+        if (status === 401) {
+            return failed(`${name} refused this Spark’s credential (HTTP 401): its peer token was revoked or is invalid. Remove the link in Settings and pair again with a new pairing code from ${name}.`)
+        }
+        // An older peer has no authenticated descriptor (404), or answers without its identity, which the proxy refuses (502).
+        if (status === 404 || status === 502) {
+            const older = await fetchEnvironmentDescriptor(environmentId).catch(() => null)
+            const explained = older?.environment_id === environmentId ? mismatch(older) : null
+            if (explained) return explained
+        }
+        return failed(errorText(error))
+    }
+    if (remote.environment_id !== environmentId) {
+        return failed(`${name} answered as environment ${remote.environment_id}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.`)
+    }
+    return mismatch(remote) ?? { status: 'ready', error: null, remoteDescriptor: remote }
 }
 
 /** Silently loads this machine's descriptor and linked environments for the top-level switcher. */
 export async function refreshLocalEnvironments(): Promise<void> {
     const seq = ++refreshSequence
     const [descriptorResult, linksResult] = await Promise.allSettled([
-        fetchLocalEnvironmentDescriptor(),
+        fetchEnvironmentDescriptor(null),
         fetchLocalEnvironmentLinks(),
     ])
     if (seq !== refreshSequence) return
@@ -171,113 +255,79 @@ export async function refreshLocalEnvironments(): Promise<void> {
     }
 }
 
+/** Shows the mounted environment again as its own last check left it, without remounting it. */
+function showActiveEnvironment() {
+    updateState({ selectedEnvironmentId: state.activeEnvironmentId, ...activeCheck })
+}
+
+/**
+ * Mounts `environmentId` in place of the current workspace once its open editors allow leaving, unless a newer
+ * switch came first. While they hold the switch the current workspace shows on; approving later commits once.
+ */
+function commitEnvironment(seq: number, environmentId: string | null, check: Check, onActivated?: () => void): boolean {
+    let committed = false
+    requestNavigation(() => {
+        if (committed || seq !== switchSequence) return
+        committed = true
+        activeCheck = check
+        // Update activeEnvironmentId before wiping stores so any store subscription sees the new environment,
+        // then notify React listeners once stores are clean so the remounted subtree starts fresh.
+        state = { ...state, activeEnvironmentId: environmentId, selectedEnvironmentId: environmentId, ...check }
+        resetHandler?.(environmentId)
+        emit()
+        onActivated?.()
+    })
+    if (!committed && seq === switchSequence) showActiveEnvironment()
+    return committed
+}
+
+/**
+ * Switches the workspace to `environmentId` (`null`: this machine). A linked environment is checked first while the
+ * current workspace stays mounted; a failed check hides it, keeping its edits, until the user retries or returns.
+ */
 export async function selectEnvironment(
     environmentId: string | null,
-    options?: { force?: boolean; onActivated?: () => void },
+    options?: { onActivated?: () => void },
 ): Promise<boolean> {
-    if (
-        !options?.force
-        && environmentId === state.selectedEnvironmentId
-        && environmentId === state.activeEnvironmentId
-        && state.status === 'ready'
-    ) {
-        options?.onActivated?.()
-        return true
-    }
-
     const seq = ++switchSequence
-
-    if (environmentId === null) {
-        const wasRemote = state.activeEnvironmentId !== null
-        state = {
-            ...state,
-            activeEnvironmentId: null,
-            selectedEnvironmentId: null,
-            status: 'ready',
-            remoteDescriptor: null,
-            error: null,
-        }
-        if (wasRemote) {
-            resetHandler?.(null)
-        }
-        listeners.forEach((listener) => listener())
-        options?.onActivated?.()
-        return true
+    const active = state.activeEnvironmentId
+    if (environmentId === active && (state.selectedEnvironmentId !== active || state.status === 'ready')) {
+        showActiveEnvironment()
+        if (activeCheck.status === 'ready') options?.onActivated?.()
+        return activeCheck.status === 'ready'
     }
+    if (environmentId === null) return commitEnvironment(seq, null, READY_LOCAL, options?.onActivated)
 
-    updateState({
-        selectedEnvironmentId: environmentId,
-        status: 'checking',
-        remoteDescriptor: null,
-        error: null,
-    })
-
-    let local = state.localDescriptor
-    if (!local) {
-        try {
-            local = await fetchLocalEnvironmentDescriptor()
-            if (seq !== switchSequence) return false
-            updateState({ localDescriptor: local })
-        } catch (error) {
-            if (seq !== switchSequence) return false
-            updateState({
-                status: 'unreachable',
-                error: error instanceof Error
-                    ? `Could not verify this Spark server’s version: ${error.message}`
-                    : 'Could not verify this Spark server’s version.',
-            })
-            return false
-        }
-    }
-
-    let remote: EnvironmentDescriptor
-    try {
-        remote = await fetchRemoteEnvironmentDescriptor(environmentId)
-    } catch (error) {
-        if (seq !== switchSequence) return false
-        updateState({
-            status: 'unreachable',
-            remoteDescriptor: null,
-            error: error instanceof Error ? error.message : `Could not reach ${linkLabelFor(environmentId)}.`,
-        })
-        return false
-    }
-
+    // Retrying the mounted environment keeps it hidden behind its error until the check passes.
+    if (environmentId !== active) updateState({ selectedEnvironmentId: environmentId, status: 'checking', error: null })
+    const check = await checkRemoteEnvironment(environmentId)
     if (seq !== switchSequence) return false
-
-    const compatible =
-        remote.ui_api_version > 0
-        && local.ui_api_version > 0
-        && remote.ui_api_version === local.ui_api_version
-        && remote.protocol_version === local.protocol_version
-
-    if (!compatible) {
-        updateState({
-            status: 'incompatible',
-            remoteDescriptor: remote,
-            error: describeCompatibilityMismatch(linkLabelFor(environmentId), local, remote),
-        })
-        return false
+    if (environmentId === active || check.status !== 'ready') {
+        if (environmentId === active) activeCheck = check
+        updateState(check)
+        if (check.status === 'ready') options?.onActivated?.()
+        return check.status === 'ready'
     }
-
-    // Update activeEnvironmentId before wiping stores so any store subscription sees remote mode,
-    // then notify React listeners once stores are clean so the remounted subtree starts fresh.
-    state = {
-        ...state,
-        activeEnvironmentId: environmentId,
-        selectedEnvironmentId: environmentId,
-        status: 'ready',
-        remoteDescriptor: remote,
-        error: null,
-    }
-    resetHandler?.(environmentId)
-    listeners.forEach((listener) => listener())
-    options?.onActivated?.()
-    return true
+    return commitEnvironment(seq, environmentId, check, options?.onActivated)
 }
 
 export function retrySelectedEnvironment(): Promise<boolean> {
-    return selectEnvironment(state.selectedEnvironmentId, { force: true })
+    return selectEnvironment(state.selectedEnvironmentId)
+}
+
+/**
+ * Checks the mounted linked environment again, as when its live connection comes back after an error: one that was
+ * upgraded, re-paired as another environment or revoked this Spark's credential shows the gate's error instead.
+ */
+export async function reverifyActiveEnvironment(): Promise<void> {
+    const environmentId = state.activeEnvironmentId
+    // A switch underway or an error already shown settles the selection itself.
+    if (environmentId === null || state.selectedEnvironmentId !== environmentId || state.status !== 'ready') return
+    const seq = ++switchSequence
+    const check = await checkRemoteEnvironment(environmentId)
+    if (seq !== switchSequence) return
+    activeCheck = check
+    updateState(check)
 }
 
 function subscribe(listener: () => void) {
@@ -294,6 +344,7 @@ export function useActiveEnvironment(): ActiveEnvironmentState {
 export function resetActiveEnvironmentForTests() {
     switchSequence += 1
     refreshSequence += 1
+    activeCheck = READY_LOCAL
     state = { ...INITIAL_STATE }
-    listeners.forEach((listener) => listener())
+    emit()
 }

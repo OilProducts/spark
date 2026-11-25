@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Field, FieldLabel } from '@/components/ui/field'
+import { useActiveEnvironment } from '@/lib/activeEnvironment'
 import { useConnectionSettingsEditor } from './hooks/useConnectionSettingsEditor'
 import { SaveStatus } from './SaveStatus'
 
@@ -10,6 +11,7 @@ const isShadowed = (source?: string) => !!source && !['stored', 'built-in defaul
 
 export function ConnectionSettingsEditor() {
     const editor = useConnectionSettingsEditor()
+    const { activeEnvironmentId } = useActiveEnvironment()
     const hostEffective = editor.saved?.effective?.server_host ?? '127.0.0.1'
     const portEffective = editor.saved?.effective?.server_port ?? 8000
     const targetEffective = editor.saved?.effective?.client_api_base_url ?? 'http://127.0.0.1:8000'
@@ -20,8 +22,8 @@ export function ConnectionSettingsEditor() {
         <CardHeader><h2 className="text-base font-semibold">Server and client connections</h2></CardHeader>
         <CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
-            {/* Only the desktop app manages its own server; in a browser this would describe another app. */}
-            {isTauri() ? <p className="text-sm text-muted-foreground">The desktop app uses its own remote-access control and an automatically assigned port; these settings apply to a server started from the command line.</p> : null}
+            {/* Only the desktop app manages its own server, and only on this machine; in a browser or on a linked environment this would describe another app. */}
+            {isTauri() && activeEnvironmentId === null ? <p className="text-sm text-muted-foreground">The desktop app uses its own remote-access control and an automatically assigned port; these settings apply to a server started from the command line.</p> : null}
             {editor.saved?.running_server && <p className="text-xs text-muted-foreground">Running server: {editor.saved.running_server.server_host}:{editor.saved.running_server.server_port}</p>}
             {editor.draft && editor.saved && <>
                 <Field><FieldLabel htmlFor="connection-host">Server host</FieldLabel>

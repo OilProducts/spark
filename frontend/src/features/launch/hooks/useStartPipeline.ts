@@ -29,8 +29,8 @@ export interface GitPolicyGateResult {
 // A run record's native path (C:\repo) finds the registry entry keyed by its normalized form (C:/repo).
 const isRegisteredProject = (projectPath: string) => Boolean(useStore.getState().projectRegistry[normalizeProjectPath(projectPath)])
 
-// The workspace a launch began in: its environment's, until it closes, as while another environment's connection
-// is checked, or a switch away and back starts that environment anew.
+// The workspace a launch began in: its environment's, until it closes for a switch, or a switch away and back
+// starts that environment anew.
 const shownWorkspace = () => {
     const environmentId = getActiveEnvironmentId()
     const session = homeSessionStart()

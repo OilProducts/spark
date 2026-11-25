@@ -1,4 +1,4 @@
-import { activeApiPrefix, environmentProxyPrefix, getActiveEnvironmentId } from '../activeEnvironment'
+import { environmentProxyPrefix, getActiveEnvironmentId } from '../activeEnvironment'
 import { fetchJsonWithValidation } from './shared'
 
 export const WORKSPACE_PREFIX = '/workspace'
@@ -11,7 +11,7 @@ export function workspaceUrl(path: string, environmentId: string | null = getAct
 
 export function workspaceLiveEventsUrl(params: URLSearchParams): string {
     const query = params.toString()
-    return `${activeApiPrefix()}${WORKSPACE_API_PREFIX}/live/events${query ? `?${query}` : ''}`
+    return workspaceUrl(`/live/events${query ? `?${query}` : ''}`)
 }
 
 /** A request that must reach the environment it started in passes that `environmentId`. */

@@ -139,8 +139,9 @@ async function failWhileAway(user: User, answer: ReturnType<typeof later>, detai
 }
 // env-x is a linked environment; its requests go through its proxy.
 const REMOTE = '/workspace/api/environments/links/env-x/proxy'
-const descriptor = (id: string) => ok({ environment_id: id, display_name: id, protocol_version: 1, ui_api_version: 1 })
-const ENVIRONMENTS = { 'GET /environment': [descriptor('env-local')], [`GET ${REMOTE}/environment`]: [descriptor('env-x')] }
+const descriptor = (id: string) => ok({ environment_id: id, display_name: id, protocol_version: 1, ui_api_version: 2 })
+// A switch checks the linked environment's authenticated descriptor.
+const ENVIRONMENTS = { 'GET /environment': [descriptor('env-local')], [`GET ${REMOTE}/workspace/api/environment`]: [descriptor('env-x')] }
 const switchTo = (environmentId: string | null) => act(async () => { await selectEnvironment(environmentId) })
 const confirmCancel = async (user: User, requestKey: string) => {
     await user.click(await screen.findByRole('button', { name: `Cancel delegation ${requestKey}` }))

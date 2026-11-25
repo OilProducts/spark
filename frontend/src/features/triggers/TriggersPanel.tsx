@@ -16,6 +16,7 @@ import { useTriggerEditor } from "./hooks/useTriggerEditor"
 import { useWebhookSecretRegeneration } from "./hooks/useWebhookSecretRegeneration"
 import { useStore } from "@/store"
 import { useNarrowViewport } from "@/lib/useNarrowViewport"
+import { useActiveEnvironment } from "@/lib/activeEnvironment"
 import { triggerKey } from "@/lib/workspaceClient"
 import { fetchTriggerIssuesValidated, type TriggerIssueResponse } from "@/lib/api/triggersApi"
 import { defaultProjectChoice, isUnregisteredTarget, recentProjectPath } from "@/features/projects/model/projectChoices"
@@ -62,6 +63,9 @@ function InputsLoading({ retry }: { retry?: () => void }) {
 }
 
 export function TriggersPanel() {
+  const { activeEnvironmentId, links } = useActiveEnvironment()
+  // Services call a linked environment's webhooks on that environment; this Spark's proxy to it serves only this machine.
+  const remoteLink = links.find((link) => link.environment_id === activeEnvironmentId)
   const projectRegistry = useStore((state) => state.projectRegistry)
   const runs = useStore((state) => state.runsListSession.runs)
   const runById = (runId?: string | null) => (runId ? runs.find((run) => run.run_id === runId) : undefined)
@@ -372,7 +376,14 @@ export function TriggersPanel() {
                 {selectedTrigger.source_type === 'webhook' ? (
                   <Well className="mt-6 space-y-2 text-sm">
                     <SectionHeading>Calling this webhook</SectionHeading>
-                    <div className="text-muted-foreground">Send a POST request with a JSON body to <code>{SHARED_WEBHOOK_ENDPOINT}</code> and these headers:</div>
+                    {activeEnvironmentId === null ? (
+                      <div className="text-muted-foreground">Send a POST request with a JSON body to <code>{SHARED_WEBHOOK_ENDPOINT}</code> and these headers:</div>
+                    ) : (
+                      <div data-testid="trigger-webhook-remote" className="text-muted-foreground">
+                        This trigger runs on {remoteLink?.label || activeEnvironmentId}{remoteLink ? <> at <code>{remoteLink.origin}</code></> : null}.
+                        Send a POST request with a JSON body directly to <code>{remoteLink ? `${remoteLink.origin}${SHARED_WEBHOOK_ENDPOINT}` : `${SHARED_WEBHOOK_ENDPOINT} on that environment`}</code>, not through this Spark, with these headers:
+                      </div>
+                    )}
                     <div className="font-mono text-xs text-foreground">Content-Type: application/json</div>
                     <div className="font-mono text-xs text-foreground">
                       X-Spark-Webhook-Key: {String(selectedTrigger.source.webhook_key ?? '')}

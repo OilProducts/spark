@@ -26,7 +26,7 @@ import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import type { AppState } from '@/state/store-types'
 import { openByItself, opensByItself } from '@/state/homeSessionSlice'
-import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
+import { getActiveEnvironmentId, reverifyActiveEnvironment } from '@/lib/activeEnvironment'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { reportRunsTransportLost, requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { addsEntry, closesTrigger, missionKey, parsePlaceHash, placeHash, placeOf, roleKey, type Place } from './runsRouting'
@@ -539,6 +539,9 @@ export function WorkspaceLiveEventsController() {
                 // This connection's first frames restore whatever is still thinking; the rest ended unseen.
                 useLiveThinkingStore.getState().clear()
                 window.dispatchEvent(new Event('spark:settings-live-event'))
+                // Back after an error: a linked environment may since have been upgraded, re-paired or revoked this
+                // Spark's credential, so check it again before going on.
+                if (failedConnects > 0) void reverifyActiveEnvironment()
                 // Back after an outage: reload what failed meanwhile, as Reconnect would.
                 if (failedConnects >= 2) {
                     refreshAttention()
