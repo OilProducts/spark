@@ -538,10 +538,30 @@ export function WorkspaceLiveEventsController() {
             }
         }
 
+        // A linked environment found incompatible, or refusing this link until it is paired again, stays so however
+        // often it is tried, even when its handshake never opens. One down meanwhile, or whose gateway answers for
+        // none, is tried again until a check passes.
+        const final = () => ['incompatible', 'refused'].includes(getActiveEnvironmentState().activeCheck.status)
+        // The connection stays closed, its workspace behind the gate, until a check passes, such as Retry's.
+        const waitForCheck = () => {
+            if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
+            eventSource?.close()
+            eventSource = null
+            stopWaiting()
+            stopWaiting = subscribeActiveEnvironment(() => {
+                const { activeEnvironmentId, selectedEnvironmentId, status } = getActiveEnvironmentState()
+                if (activeEnvironmentId !== environmentId) return stopWaiting()
+                if (selectedEnvironmentId !== activeEnvironmentId || status !== 'ready') return
+                stopWaiting()
+                open()
+            })
+        }
         const open = () => {
             if (closed) {
                 return
             }
+            // So does a connection this effect opens anew, as when a Run's journal loads and moves it.
+            if (final()) return waitForCheck()
             eventSource?.close()
             held = null
             const source = new EventSource(buildUrlWithCursors())
@@ -563,24 +583,6 @@ export function WorkspaceLiveEventsController() {
                 }
                 failedConnects = 0
                 unverified.current = false
-            }
-            // A linked environment found incompatible, or refusing this link until it is paired again, stays so however
-            // often it is tried, even when its handshake never opens. One down meanwhile, or whose gateway answers for
-            // none, is tried again until a check passes.
-            const final = () => ['incompatible', 'refused'].includes(getActiveEnvironmentState().activeCheck.status)
-            // The connection stays closed, its workspace behind the gate, until a check passes, such as Retry's.
-            const waitForCheck = () => {
-                if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
-                eventSource?.close()
-                eventSource = null
-                stopWaiting()
-                stopWaiting = subscribeActiveEnvironment(() => {
-                    const { activeEnvironmentId, selectedEnvironmentId, status } = getActiveEnvironmentState()
-                    if (activeEnvironmentId !== environmentId) return stopWaiting()
-                    if (selectedEnvironmentId !== activeEnvironmentId || status !== 'ready') return
-                    stopWaiting()
-                    open()
-                })
             }
             source.onopen = () => {
                 if (!isCurrent(source)) return

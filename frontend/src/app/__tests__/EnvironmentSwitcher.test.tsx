@@ -495,6 +495,53 @@ describe('Same-window multi-environment switching', () => {
         await waitFor(() => expect(winLive()).toBeDefined())
     })
 
+    it('keeps a remote\'s live connection closed after a final check while a Run\'s journal, answered late, moves it, until Retry passes', async () => {
+        const run = { run_id: 'win-run', flow_name: 'review.dot', status: 'running', outcome: null, working_directory: '/win/project', project_path: '/win/project', started_at: '2026-11-24T00:00:00Z', ended_at: null }
+        const routes: Record<string, Route> = {
+            [`${WIN}/attractor/runs`]: () => json({ runs: [run] }),
+            [`${WIN}/attractor/pipelines/win-run`]: () => json({ ...run, pipeline_id: 'win-run' }),
+        }
+        const { user, remoteShell } = await mountWindows(routes)
+        // The Run's journal answers only once its fetch is let go.
+        const journal = deferred<void>()
+        const journalUrl = `${WIN}/attractor/pipelines/win-run/journal`
+        let journalAsked = false
+        const backendFetch = globalThis.fetch
+        vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+            if (!resolveUrl(input).startsWith(journalUrl)) return backendFetch(input, init)
+            journalAsked = true
+            await journal.promise
+            return json({ pipeline_id: 'win-run', entries: [], oldest_sequence: null, newest_sequence: null, has_older: false })
+        })
+        act(() => {
+            useStore.getState().setViewMode('runs')
+            useStore.getState().setRunsSelectedRunId('win-run')
+        })
+        await waitFor(() => expect(journalAsked).toBe(true))
+        await waitFor(() => expect(winLive()).toBeDefined())
+        expect(winLive()!.url).not.toContain('run_id=win-run')
+
+        // Back upgraded past this bundle: the gate shows and the connection stays closed.
+        routes[WIN_AUTH] = () => json(descriptor('env-win', { ui_api_version: 3 }))
+        act(() => winLive()!.onerror?.(new Event('error')))
+        expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent('Version mismatch with Windows Workstation')
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        const tried = connects()
+
+        // The journal answers, which moves the connection to follow the Run: still nothing is tried.
+        await act(async () => journal.resolve())
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 600)))
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+
+        // Retry passes: one connection opens, following the Run.
+        delete routes[WIN_AUTH]
+        await user.click(screen.getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(remoteShell).toBeVisible())
+        await waitFor(() => expect(winLive()?.url).toContain('run_id=win-run'))
+        expect(connects()).toBe(tried + 1)
+    })
+
     it('opens no live connection to a remote whose reconnect found it incompatible as you return to this machine', async () => {
         const routes: Record<string, Route> = {}
         const { user } = await mountWindows(routes)
