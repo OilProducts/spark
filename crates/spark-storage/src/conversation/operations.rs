@@ -1765,14 +1765,18 @@ impl Op<'_> {
         Ok(true)
     }
 
+    /// The question segment `lookup_id` names: the segment itself by its ID,
+    /// which names one stored request, or else the first whose request or
+    /// one of its questions has that ID.
     fn find_question(&self, lookup_id: &str) -> Result<Option<Value>> {
         super::commit::payload(
             self.connection(),
             "SELECT payload FROM segments WHERE conversation_id = ?1 \
-             AND kind = 'request_user_input' AND deleted = 0 AND \
-             (json_extract(payload, '$.request_user_input.request_id') = ?2 OR EXISTS(\
+             AND kind = 'request_user_input' AND deleted = 0 AND (segment_id = ?2 OR \
+             json_extract(payload, '$.request_user_input.request_id') = ?2 OR EXISTS(\
              SELECT 1 FROM json_each(payload, '$.request_user_input.questions') \
-             WHERE json_extract(value, '$.id') = ?2)) ORDER BY sort_order LIMIT 1",
+             WHERE json_extract(value, '$.id') = ?2)) \
+             ORDER BY segment_id = ?2 DESC, sort_order LIMIT 1",
             params![self.conversation_id, lookup_id],
         )
     }
@@ -1825,10 +1829,18 @@ impl Op<'_> {
         let segment_id = text(&segment, "id").unwrap_or_default();
         let assistant_turn_id = text(&segment, "turn_id")
             .ok_or_else(|| invalid("Conversation input request is missing its assistant turn."))?;
+        // The ID the adapter routes the answer by: the request's own, else
+        // its first question's when found by its segment, else the lookup ID.
         let request_id = request
             .get("request_id")
             .and_then(Value::as_str)
             .and_then(non_empty_string)
+            .or_else(|| {
+                (lookup_id == segment_id)
+                    .then(|| request.get("questions")?.get(0)?.get("id")?.as_str())
+                    .flatten()
+                    .and_then(non_empty_string)
+            })
             .unwrap_or_else(|| lookup_id.to_string());
         let submitted_at = self.now.clone();
         request.insert(key.into(), normalized);
@@ -2305,19 +2317,22 @@ impl ConversationRepository {
         conversation_id: &str,
         event: NewInboxEvent,
     ) -> Result<Option<i64>> {
-        self.append_inbox_event_with(conversation_id, event, |_| Ok(()))
+        self.append_inbox_event_with(conversation_id, event, |_| Ok(true))
     }
 
     /// `append_inbox_event` in one transaction with `with`, which writes the
-    /// record the event reports on, so both commit or neither does.
+    /// record the event reports on, so both commit or neither does. The
+    /// event is appended only when `with` returns true.
     pub fn append_inbox_event_with(
         &self,
         conversation_id: &str,
         event: NewInboxEvent,
-        with: impl FnOnce(&Connection) -> Result<()>,
+        with: impl FnOnce(&Connection) -> Result<bool>,
     ) -> Result<Option<i64>> {
         self.write_inbox(conversation_id, |connection| {
-            with(connection)?;
+            if !with(connection)? {
+                return Ok(None);
+            }
             Ok(connection
                 .query_row(
                     "INSERT INTO inbox_events (conversation_id, seq, event_id, at, kind, source, \

@@ -23,7 +23,7 @@ use crate::error::{Result, StorageError};
 /// File name of the state database inside the Spark home.
 pub const STATE_DATABASE_FILE_NAME: &str = "state.sqlite3";
 /// Schema version written to `store_meta`; any other stored version fails open.
-pub const STATE_DATABASE_SCHEMA_VERSION: i64 = 6;
+pub const STATE_DATABASE_SCHEMA_VERSION: i64 = 7;
 /// Maximum rows returned by one catch-up before a resync is required.
 pub const CATCH_UP_MAX_ROWS: usize = 1000;
 /// Maximum payload bytes returned by one catch-up before a resync is required.
@@ -272,6 +272,8 @@ CREATE TABLE delegations_out (
     result TEXT CHECK (result IS NULL OR json_valid(result)),
     -- Why following stopped, until a link to the environment is saved again.
     paused TEXT,
+    -- Set before the follower first sends the record; NULL means B never saw it.
+    submitted_at TEXT,
     cancel_requested_at TEXT,
     cancel_acknowledged_at TEXT,
     created_at TEXT NOT NULL,
