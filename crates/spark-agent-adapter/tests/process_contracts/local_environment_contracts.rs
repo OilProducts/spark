@@ -598,10 +598,16 @@ fn an_aborted_command_is_killed_without_waiting_for_cleanup() {
         }
     });
 
+    // The same steps in each platform's shell: cmd.exe on Windows, bash elsewhere.
+    #[cfg(windows)]
+    let command = "type nul > started && ping -n 31 127.0.0.1 >nul";
+    #[cfg(not(windows))]
+    let command = "touch started && sleep 30";
+
     let started = Instant::now();
     let result = environment
         .exec_command(
-            "touch started && sleep 30",
+            command,
             CommandOptions {
                 timeout_ms: Some(60_000),
                 abort_signal: Some(abort),

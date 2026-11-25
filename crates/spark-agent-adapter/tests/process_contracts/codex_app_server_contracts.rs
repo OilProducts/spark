@@ -1811,6 +1811,41 @@ fn runtime_environment_prepends_first_party_tool_bin_to_path() {
     assert_eq!(entries.last(), Some(&PathBuf::from(original_path)));
 }
 
+/// Without a complete Codex bundle, the default launch runs the shim a bare
+/// `codex` finds first: an earlier `codex.bat` before a later npm `codex.cmd`.
+#[cfg(windows)]
+#[test]
+fn windows_default_codex_launch_runs_the_first_shim_on_path() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (earlier, npm) = (temp.path().join("earlier"), temp.path().join("npm"));
+    for dir in [&earlier, &npm] {
+        fs::create_dir_all(dir).expect("shim dir");
+    }
+    fs::write(
+        earlier.join("codex.bat"),
+        format!("@\"{}\" %*\r\n", fake_codex_app_server_bin()),
+    )
+    .expect("batch shim");
+    // The later shim fails any launch that reaches it.
+    fs::write(npm.join("codex.cmd"), "@exit /b 1\r\n").expect("npm shim");
+    let _bin_guard = EnvVarGuard::remove("SPARK_CODEX_APP_SERVER_BIN");
+    let _path_guard = EnvVarGuard::set(
+        "PATH",
+        std::env::join_paths([&earlier, &npm]).expect("PATH"),
+    );
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let _seed_guard =
+        EnvVarGuard::set("ATTRACTOR_CODEX_SEED_DIR", temp.path().join("missing-seed"));
+
+    CodexAppServerClient::connect(temp.path().to_path_buf()).expect("the earlier codex.bat");
+}
+
 /// Windows names variables in any case: Codex reads the redirected
 /// `USERPROFILE` even when Spark inherited it spelled `UserProfile`.
 #[test]

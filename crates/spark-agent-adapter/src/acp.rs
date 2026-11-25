@@ -1819,6 +1819,28 @@ fn launch_command(
             .map(|(key, value)| (key, OsString::from(value)))
             .chain(crate::agent::agent_turn_env(metadata)),
     );
+    // Windows runs a batch file through cmd.exe, which takes no line break in
+    // an argument, and Spark's instructions have several. Setup checks the
+    // declared channel, so it fails as every launch would.
+    let program = Path::new(command.get_program());
+    let batch = program.extension().is_some_and(|extension| {
+        ["bat", "cmd"]
+            .iter()
+            .any(|batch| extension.eq_ignore_ascii_case(batch))
+    });
+    let raw_argument = harness
+        .system_instructions
+        .iter()
+        .flat_map(|channel| &channel.args)
+        .any(|arg| arg.contains(spark_common::agent_settings::INSTRUCTIONS_PLACEHOLDER));
+    if cfg!(windows) && batch && raw_argument {
+        return Err(format!(
+            "ACP harness {harness_id} runs the batch file {}, to which Windows cannot pass \
+             multiline instructions as an argument. Pass them through \
+             {{{{instructions_file}}}} or an environment variable instead.",
+            program.display()
+        ));
+    }
     command.args(&harness.args).args(channel_args);
     Ok((command, instruction_file))
 }

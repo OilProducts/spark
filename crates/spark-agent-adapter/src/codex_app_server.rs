@@ -3304,13 +3304,21 @@ fn resolve_codex_executable(
         return codex;
     }
     // An npm install on Windows has only shims, which a launch of `codex.exe`
-    // never finds, and they beat an incomplete `codex.exe` earlier on PATH.
+    // never finds: the first a bare `codex` finds, in PATHEXT's default order,
+    // past an incomplete `codex.exe`.
     if cfg!(windows) {
-        if let Some(shim) = ["codex.cmd", "codex.bat"].into_iter().find_map(|shim| {
-            path.and_then(|path| {
-                crate::local_environment::find_executable_on_path(shim, Some(path))
+        if let Some(shim) = path
+            .into_iter()
+            .flat_map(env::split_paths)
+            .find_map(|directory| {
+                ["codex.bat", "codex.cmd"].into_iter().find_map(|shim| {
+                    crate::local_environment::find_executable_in_directories(
+                        shim,
+                        [directory.clone()],
+                    )
+                })
             })
-        }) {
+        {
             return shim;
         }
     }
@@ -4143,6 +4151,16 @@ mod tests {
         let resolved = resolve_codex_executable(None, Some(&path), &[]);
 
         assert_eq!(resolved, bin.join("codex.cmd"));
+        // An earlier batch shim comes first, as a bare `codex` finds it.
+        let earlier = temp.path().join("earlier");
+        fs::create_dir_all(&earlier).expect("earlier dir");
+        fs::write(earlier.join("codex.bat"), "").expect("batch shim");
+        let path = env::join_paths([&earlier, &bin]).expect("PATH");
+        let resolved = resolve_codex_executable(None, Some(&path), &[]);
+        assert_eq!(resolved, earlier.join("codex.bat"));
+        let bare = crate::local_environment::find_executable_on_path("codex", Some(&path))
+            .expect("bare codex");
+        assert!(bare.as_os_str().eq_ignore_ascii_case(&resolved), "{bare:?}");
         // A complete bundle still wins.
         let complete = create_codex(&temp.path().join("complete"), true);
         let path = env::join_paths([&bin, complete.parent().unwrap()]).expect("PATH");

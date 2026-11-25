@@ -169,6 +169,60 @@ fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
     }
 }
 
+/// Windows runs a batch shim through cmd.exe, which takes no line break in an
+/// argument: setup rejects a raw `{{instructions}}` argument as a chat's
+/// launch does, and instructions through a file reach the agent whole.
+#[cfg(windows)]
+#[test]
+fn acp_windows_batch_shim_takes_instructions_through_a_file_not_an_argument() {
+    let dir = tempfile::tempdir().unwrap();
+    let shim = dir.path().join("agent.cmd");
+    std::fs::write(&shim, format!("@\"{FAKE}\" %*\r\n")).unwrap();
+    let instructions = "Be exact.\nSay so twice.";
+    let chat = |args: Value| {
+        let mut chat = request(
+            dir.path(),
+            json!({}),
+            json!({"executable": shim, "system_instructions": {"args": args}}),
+        );
+        chat.metadata.insert(
+            AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
+            json!(instructions),
+        );
+        let harness = serde_json::from_value(
+            chat.metadata["spark.execution.settings"]["configuration"]["agents"]["acp_harnesses"]
+                ["fake"]
+                .clone(),
+        )
+        .unwrap();
+        let setup = acp::discover(
+            "fake",
+            &harness,
+            spark_agent_adapter::EnvironmentInheritancePolicy::InheritCoreOnly,
+            dir.path(),
+        );
+        (setup, run(&chat, |_| {}).0)
+    };
+
+    let (setup, turn) = chat(json!(["--system", "{{instructions}}"]));
+    assert_eq!(setup.setup_status, "unreachable");
+    for error in [setup.error.unwrap(), turn.err().unwrap()] {
+        assert!(error.contains("{{instructions_file}}"), "{error}");
+    }
+    assert_eq!(launches(dir.path()), 0);
+
+    let (setup, turn) = chat(json!(["{{instructions_file}}"]));
+    assert_eq!(setup.setup_status, "ready", "{:?}", setup.error);
+    turn.expect("turn");
+    let startup = log(dir.path())
+        .into_iter()
+        .rev()
+        .find(|entry| entry.get("argv").is_some())
+        .unwrap();
+    let file = startup["argv"][0].as_str().unwrap();
+    assert_eq!(startup["files"][file], instructions);
+}
+
 #[test]
 fn acp_turn_streams_updates_while_the_prompt_is_open_and_returns_them_once() {
     let dir = tempfile::tempdir().unwrap();
