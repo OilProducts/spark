@@ -736,6 +736,78 @@ describe('Editor structured metadata', () => {
     expect(server.flow.title).toBe('Bundled flow')
   })
 
+  // Holds save previews from now until the returned release.
+  const holdPreviews = (fetchMock: ReturnType<typeof vi.fn>) => {
+    const serve = fetchMock.getMockImplementation()!
+    const held = createDeferred<void>()
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/preview')) await held.promise
+      return serve(url, init)
+    })
+    const previews = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/preview')).length
+    return { previews, release: () => held.resolve() }
+  }
+
+  it('never sends an autosave whose preview answers once its reopened flow has loaded a newer version, before the canvas shows it', async () => {
+    const { server, fetchMock } = serveFlow()
+    renderEditor()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
+    const { previews, release } = holdPreviews(fetchMock)
+    const saving = saveFlowContent('bundled-flow', { flow: { ...flow, title: 'Old edit' } })
+    await waitFor(() => expect(previews()).toBe(1))
+
+    // The user leaves the flow, saved meanwhile with newer content, and opens it again.
+    act(() => useStore.setState({ activeFlow: 'other-flow' }))
+    await waitFor(() => expect(loadEditorFlowPayload).toHaveBeenLastCalledWith('other-flow', '/tmp/project', expect.anything()))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
+    server.flow = { ...flow, title: 'Newer title' }
+    const canvas = createDeferred<void>()
+    const showCanvas = vi.mocked(loadEditorPreview).getMockImplementation()!
+    vi.mocked(loadEditorPreview).mockImplementation(async (...args) => {
+      await canvas.promise
+      return showCanvas(...args)
+    })
+    act(() => useStore.setState({ activeFlow: 'bundled-flow' }))
+    await waitFor(() => expect(vi.mocked(loadEditorPreview).mock.lastCall?.[0]).toMatchObject({ title: 'Newer title' }))
+
+    // The old preview answers while the canvas still loads.
+    release()
+    await act(async () => { await expect(saving).resolves.toBe(false) })
+    expect(flowSaveRequests(fetchMock)).toEqual([])
+    await act(async () => canvas.resolve())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
+    expect(useStore.getState()).toMatchObject({ saveState: 'idle', flowMetadata: { title: 'Newer title' } })
+    expect(refusedFlowSaves()).toMatchObject([{ content: { flow: { title: 'Old edit' } }, message: 'These edits weren’t sent: the flow opened again first.' }])
+    expect(flowSaveRequests(fetchMock)).toEqual([])
+    expect(server.flow.title).toBe('Newer title')
+  })
+
+  it('never sends a Retry whose preview answers after a switch away closed its flow, keeping its edits for review', async () => {
+    const user = userEvent.setup()
+    const { server, fetchMock } = serveFlow()
+    const { unmount } = renderEditor()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Files' })).toBeEnabled())
+    server.held = createDeferred<Response>()
+    server.held.resolve(unavailable())
+    await act(async () => { await expect(saveFlowContent('bundled-flow', { flow: { ...flow, title: 'Refused title' } })).resolves.toBe(false) })
+    server.held = null
+    const { previews, release } = holdPreviews(fetchMock)
+    const before = previews()
+    await user.click(screen.getByTestId('editor-save-retry'))
+    await waitFor(() => expect(previews()).toBe(before + 1))
+
+    // Another environment shows, as the app switches, before the Retry's preview answers.
+    await switchEnvironment('env-r')
+    resetStoreForEnvironmentSwitch(false)
+    unmount()
+    await act(async () => release())
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    expect(flowSaveRequests(fetchMock)).toHaveLength(1)
+    expect(server.flow.title).toBe('Bundled flow')
+    expect(refusedFlowSaves()).toMatchObject([{ environmentId: null, content: { flow: { title: 'Refused title' } }, message: 'These edits weren’t sent: the flow closed first.' }])
+  })
+
   it('names each refused save’s project, so the same flow’s notices in two projects each dismiss their own edits', async () => {
     const user = userEvent.setup()
     vi.stubGlobal('fetch', vi.fn(async (url: string) => (String(url).endsWith('/preview')

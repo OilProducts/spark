@@ -10,6 +10,7 @@ import {
     parseConversationPageResponse,
     sendConversationTurnValidated,
     updateConversationSettingsValidated,
+    updateProjectStateValidated,
     type ConversationAcceptance,
     type ConversationBatch,
 } from '@/lib/workspaceClient'
@@ -21,6 +22,7 @@ vi.mock('@/lib/workspaceClient', async (original) => ({
     ...await original<object>(),
     sendConversationTurnValidated: vi.fn(),
     updateConversationSettingsValidated: vi.fn(),
+    updateProjectStateValidated: vi.fn(),
 }))
 
 const thread = (revision: number, overrides: Record<string, unknown> = {}) => ({
@@ -243,6 +245,39 @@ describe('onChatComposerSubmit', () => {
             expect(setPanelError).toHaveBeenLastCalledWith('Unable to send the project chat turn.')
         })
 
+        it('opens a refused first attachment-only send\'s chat again once its environment shows, with its attachments and error, after another chat opened', async () => {
+            const entry: ComposerAttachment = {
+                localId: 'local-1', projectPath, file: new File(['image'], 'shot.png', { type: 'image/png' }), previewUrl: null,
+                status: 'uploaded', error: null, attachment: { id: 'attachment-1', filename: 'shot.png', media_type: 'image/png', size_bytes: 5 },
+            }
+            const openChat = (path: string) => useStore.getState().projectSessionsByPath[path]?.conversationId ?? null
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId: 'conversation-1' })
+            useStore.getState().updateHomeConversationSession('conversation-1', { attachments: [entry] })
+            const sent = deferred<ConversationAcceptance>()
+            vi.mocked(sendConversationTurnValidated).mockReturnValue(sent.promise)
+            vi.mocked(updateProjectStateValidated).mockReset().mockResolvedValue({
+                project_path: projectPath, display_name: 'Project', is_favorite: false, active_conversation_id: 'conversation-1',
+            } as Awaited<ReturnType<typeof updateProjectStateValidated>>)
+            const setPanelError = vi.fn()
+            composer({ chatDraft: '', attachments: [entry], setPanelError, getCurrentConversationId: openChat }).onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalled())
+
+            // The chat, never saved, is in no list; another opens, then another environment shows.
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId: 'conversation-2' })
+            await show('env-r')
+            sent.reject(new Error('offline'))
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(updateProjectStateValidated).not.toHaveBeenCalled()
+
+            await show(null)
+            expect(openChat(projectPath)).toBe('conversation-1')
+            expect(updateProjectStateValidated).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ project_path: projectPath, active_conversation_id: 'conversation-1' }))
+            expect(useStore.getState().homeConversationSessionsById['conversation-1']?.attachments).toEqual([entry])
+            expect(setPanelError).toHaveBeenLastCalledWith('Unable to send the project chat turn.')
+            await vi.waitFor(() => expect(useStore.getState().projectRegistry[projectPath]).toBeDefined())
+            expect(openChat(projectPath)).toBe('conversation-1')
+        })
+
         it('leaves a newer send its pending and sending state when an older one\'s answer lands after a switch away and back', async () => {
             const first = deferred<ConversationAcceptance>()
             const second = deferred<ConversationAcceptance>()
@@ -260,6 +295,29 @@ describe('onChatComposerSubmit', () => {
             await new Promise((resolve) => setTimeout(resolve, 0))
             expect(pending).toMatchObject({ conversationId: 'conversation-1' })
             expect(useStore.getState().sendingChats).toEqual({ 'conversation-1': true })
+
+            second.resolve(accept(1))
+            await vi.waitFor(() => expect(useStore.getState().sendingChats).toEqual({}))
+            expect(pending).toBeNull()
+        })
+
+        it('leaves a newer send in another chat of the project its pending and sending state when an older one\'s answer lands after a switch away and back', async () => {
+            const first = deferred<ConversationAcceptance>()
+            const second = deferred<ConversationAcceptance>()
+            vi.mocked(sendConversationTurnValidated).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+            await show('env-r')
+            composer().onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalledTimes(1))
+            await show(null)
+            await show('env-r')
+
+            // The workspace mounted anew sends in another chat; the project's pending turn is that send's.
+            composer({ chatDraft: 'Second', ensureConversationId: () => 'conversation-2', getCurrentConversationId: () => 'conversation-2' }).onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalledTimes(2))
+            first.resolve(accept(0))
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(pending).toMatchObject({ conversationId: 'conversation-2' })
+            expect(useStore.getState().sendingChats).toEqual({ 'conversation-2': true })
 
             second.resolve(accept(1))
             await vi.waitFor(() => expect(useStore.getState().sendingChats).toEqual({}))

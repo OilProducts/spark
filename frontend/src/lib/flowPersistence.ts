@@ -69,10 +69,10 @@ export async function retryLastSaveContent(): Promise<boolean> {
     const request = lastSaveRequest
     // Only while the flow shows in the opening that made the save: never over another flow, nor this one opened anew.
     if (!request || !shownOpening(request.name, request.projectPath, request.environmentId, request.opened)) return false
-    return saveFlowContent(request.name, request.content, request.projectPath, request.environmentId)
+    return saveFlowContent(request.name, request.content, request.projectPath, request.environmentId, true)
 }
 
-/** Starts an opening of the flow, loaded as `content`; a flow its files don't make has no `content`. */
+/** Starts an opening of the flow, loaded as `content`: none while it loads, nor when its files don't make a flow. */
 export function primeFlowSaveBaseline(
     name: string,
     content: FlowSaveContent | null,
@@ -190,19 +190,23 @@ export function setInvalidDraft(id: string, message: string | null) {
 // flight together could land out of order and leave older content on disk.
 const lastSaveByScope = new Map<string, Promise<boolean>>()
 
-/** Saves to the environment the save started in, by default the active one, even after a switch. */
+/**
+ * Saves to the environment the save started in, by default the active one, even after a switch; a save
+ * `whileOpen`, as Retry's, goes only while the opening it was made in is open.
+ */
 export function saveFlowContent(
     name: string,
     content: FlowSaveContent,
     projectPath = activeProjectPath(),
     environmentId = getActiveEnvironmentId(),
+    whileOpen = false,
 ): Promise<boolean> {
     const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
     const opened = openedByScope.get(scopeKey)
     const previous = lastSaveByScope.get(scopeKey)
     const save = previous
-        ? previous.catch(() => false).then(() => persistFlowContent(name, content, projectPath, environmentId, opened))
-        : persistFlowContent(name, content, projectPath, environmentId, opened)
+        ? previous.catch(() => false).then(() => persistFlowContent(name, content, projectPath, environmentId, opened, whileOpen))
+        : persistFlowContent(name, content, projectPath, environmentId, opened, whileOpen)
     lastSaveByScope.set(scopeKey, save)
     inFlightSaves.set(save, environmentId)
     void save.finally(() => {
@@ -218,6 +222,7 @@ async function persistFlowContent(
     projectPath: string | null,
     environmentId: string | null,
     opened: FlowOpening | undefined,
+    whileOpen: boolean,
 ): Promise<boolean> {
     const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
     const serialized = JSON.stringify(content)
@@ -238,10 +243,16 @@ async function persistFlowContent(
         }
         return false
     }
-    // Made before the flow opened anew, these edits would replace what it shows unseen: its notice keeps them.
+    // Made before the flow opened anew, these edits would replace what it loads unseen; a save `whileOpen`
+    // waits on its opening. Either way its notice keeps them, unsent.
     const openedAnew = () => openedByScope.get(scopeKey) !== opened
-    const keepUnsent = () => fail('These edits weren’t sent: the flow opened again first.', 'unknown')
-    if (openedAnew()) return keepUnsent()
+    const heldBack = () => {
+        if (openedAnew()) fail('These edits weren’t sent: the flow opened again first.', 'unknown')
+        else if (whileOpen && opened?.closed) fail('These edits weren’t sent: the flow closed first.', 'unknown')
+        else return false
+        return true
+    }
+    if (heldBack()) return false
     // A later save made in the same opening carries the edits of one refused before it.
     const refused = refusedSaves.get(scopeKey)
     if (refused && refused.opened === opened) {
@@ -282,8 +293,8 @@ async function persistFlowContent(
             const problems = flowProblemsFromDetail(preview)
             return fail(buildErrorMessage('validation_error', problems?.map((problem) => problem.message).join(' ') ?? preview.error, 422), 'validation_error', problems)
         }
-        // The flow can open anew while the preview answers.
-        if (openedAnew()) return keepUnsent()
+        // The flow can open anew, or close, while the preview answers.
+        if (heldBack()) return false
         const response = await saveFlowValidated(name, content, projectPath, environmentId)
         if (!response.ok) {
             const detail = parseErrorDetail(response.payload)

@@ -7,7 +7,7 @@ import { useConversationComposer } from '@/features/projects/hooks/useConversati
 import { useProjectConversationCache } from '@/features/projects/hooks/useProjectConversationCache'
 import { useProjectsHomeController } from '@/features/projects/hooks/useProjectsHomeController'
 import { useProjectsHomeInteractionState } from '@/features/projects/hooks/useProjectsHomeInteractionState'
-import type { NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
+import { applyConversationPageToCache, type NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { cachedAppearance, applyTheme } from '@/lib/theme'
 import { requestNavigation } from '@/state/workspaceSlice'
@@ -16,7 +16,8 @@ import { reviewProposedPlanValidated } from '@/lib/api/conversationsApi'
 import { closeFlowOpening, primeFlowSaveBaseline, refusedFlowSaves, refusedFlowSaveStatus, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, waitForFlowSaves } from '@/lib/flowPersistence'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
-import { conversationMutationAck } from '@/test/conversationWire'
+import { parseConversationPageResponse } from '@/lib/workspaceClient'
+import { conversationAcceptance, conversationMutationAck, conversationPage } from '@/test/conversationWire'
 import { deferred, switchEnvironment } from '@/test/environments'
 
 // Every write started in a remote environment reaches it, through its proxy, after a switch to local.
@@ -486,6 +487,63 @@ it('switches a new chat\'s mode at the revision a model save before it acknowled
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(useStore.getState().projectRegistry).toEqual(local.projectRegistry)
     expect(useStore.getState().projectSessionsByPath).toEqual(local.projectSessionsByPath)
+})
+
+it('leaves a newer send in the same chat pending and sending when a retired workspace\'s acknowledgment lands', async () => {
+    const thread = (revision: number) => ({
+        conversation_id: 'conversation-1', project_path: PROJECT, title: 'Thread', created_at: '2026-09-01T00:00:00Z',
+        updated_at: '2026-09-01T00:00:00Z', revision, chat_mode: 'chat', turns: [], segments: [],
+    })
+    const turns = [deferred<unknown>(), deferred<unknown>()]
+    const posts = () => sent.filter((request) => request.startsWith('POST') && request.endsWith('/conversations/conversation-1/turns'))
+    answer = (url, method) => {
+        if (url.includes('/projects/chat-models')) return { providers: { codex: { status: 'available', error: null, label: 'Codex' } }, models: [
+            { provider: 'codex', id: 'gpt-5.4', display: 'GPT-5.4', is_default: true, supported_reasoning_efforts: ['medium'], default_reasoning_effort: 'medium' },
+        ] }
+        if (url.endsWith('/workspace/api/settings')) return { models: { scope: 'project', source: 'workspace', revision: '1', stored: null,
+            effective: { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null } } }
+        if (method === 'POST' && url.endsWith('/turns')) return turns[posts().length - 1].promise
+        return {}
+    }
+    // The chat at revision 3, open in a freshly mounted workspace, which sends `text` as the `nth` turn.
+    const send = async (text: string, nth: number) => {
+        act(() => {
+            useStore.getState().registerProject(PROJECT)
+            useStore.getState().setActiveProjectPath(PROJECT)
+            useStore.getState().updateProjectSessionState(PROJECT, { conversationId: 'conversation-1' })
+            useStore.getState().commitHomeConversationCache((cache) => applyConversationPageToCache(cache, parseConversationPageResponse(conversationPage(thread(3))), 'window'))
+        })
+        const workspace = renderHook(() => useProjectsHomeController())
+        await waitFor(() => expect(workspace.result.current.surfaceProps.isChatSendDisabled).toBe(false))
+        act(() => workspace.result.current.surfaceProps.onChatDraftChange(text))
+        act(() => workspace.result.current.surfaceProps.onChatComposerSubmit())
+        await waitFor(() => expect(posts()).toHaveLength(nth))
+        return workspace
+    }
+    const pendingTurn = () => useStore.getState().homeProjectSessionsByPath[PROJECT]?.pendingConversationTurn
+    const accept = (index: number) => conversationAcceptance(thread(4 + index), (bodies[sent.indexOf(posts()[index])] as { client_turn_id: string }).client_turn_id)
+
+    const retired = await send('First', 1)
+    await switchEnvironment('env-r')
+    resetStoreForEnvironmentSwitch(false)
+    retired.unmount()
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    const shown = await send('Second', 2)
+    expect(pendingTurn()).toMatchObject({ conversationId: 'conversation-1', afterRevision: '3' })
+
+    // The retired workspace's answer, at a later revision, neither merges nor ends the newer send.
+    turns[0].resolve(accept(0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useStore.getState().homeConversationCache.conversationsById['conversation-1']?.latestRevision).toBe('3')
+    expect(pendingTurn()).toMatchObject({ conversationId: 'conversation-1', afterRevision: '3' })
+    expect(useStore.getState().sendingChats).toEqual({ 'conversation-1': true })
+    expect(shown.result.current.surfaceProps.isChatSendDisabled).toBe(true)
+
+    turns[1].resolve(accept(1))
+    await waitFor(() => expect(useStore.getState().sendingChats).toEqual({}))
+    expect(pendingTurn()).toBeNull()
+    shown.unmount()
 })
 
 it('leaves this environment\'s chats and selection as they are when a chat delete\'s refresh finishes after a switch', async () => {

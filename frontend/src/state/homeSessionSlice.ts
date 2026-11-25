@@ -44,19 +44,28 @@ const resolveHomeConversationSession = (
     ...(sessionsById[conversationId] ?? {}),
 })
 
+// The chats' fresh starts. A switch away and back starts them anew in the same environment, so a
+// request begun before then is no longer the shown chats', though its environment is shown.
+let homeSessionStarts = 0
+/** The chats' current fresh start. */
+export const homeSessionStart = () => homeSessionStarts
+
 /** The chats' state in a fresh environment: all of it belongs to one environment. */
-export const initialHomeSessionState = () => ({
-    homeConversationCache: {
-        conversationsById: {},
-        summariesByProjectPath: {},
-    },
-    homeThreadSummariesStatusByProjectPath: {},
-    homeThreadSummariesErrorByProjectPath: {},
-    homeProjectSessionsByPath: {},
-    homeConversationSessionsById: {},
-    homeProjectGitMetadataByPath: {},
-    sendingChats: {},
-}) satisfies Partial<HomeSessionSlice>
+export const initialHomeSessionState = () => {
+    homeSessionStarts += 1
+    return {
+        homeConversationCache: {
+            conversationsById: {},
+            summariesByProjectPath: {},
+        },
+        homeThreadSummariesStatusByProjectPath: {},
+        homeThreadSummariesErrorByProjectPath: {},
+        homeProjectSessionsByPath: {},
+        homeConversationSessionsById: {},
+        homeProjectGitMetadataByPath: {},
+        sendingChats: {},
+    } satisfies Partial<HomeSessionSlice>
+}
 
 export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionSlice> = (set) => ({
     ...initialHomeSessionState(),

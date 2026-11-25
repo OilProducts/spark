@@ -960,6 +960,9 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             loadId,
             session: 'editor',
         });
+        // The flow opens anew as it starts loading: an earlier opening's save not sent yet never goes over
+        // the version this load reads.
+        primeFlowSaveBaseline(flowName, null);
         if (!isReload) {
             setNodes([]);
             setEdges([]);

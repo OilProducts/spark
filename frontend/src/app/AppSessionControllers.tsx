@@ -586,6 +586,12 @@ function projectInView() {
  */
 const isForeignPlace = (place: Place) => (place.envId ?? null) !== getActiveEnvironmentId()
 
+/** The chat open in Chats, which no place names; choosing one still moves off another environment's entry. */
+function openChat() {
+    const { activeProjectPath, projectSessionsByPath } = useStore.getState()
+    return `${activeProjectPath}\n${activeProjectPath ? projectSessionsByPath[activeProjectPath]?.conversationId : null}`
+}
+
 /** Moves the app to a place from a history entry or a link; returns whether it got there now. */
 function applyPlace(place: Place): boolean {
     const state = useStore.getState()
@@ -644,6 +650,7 @@ export function HistoryRoutingController() {
         const foreign = linked !== null && isForeignPlace(linked)
         if (linked && !foreign) applyPlace(linked)
         let current = placeOf(useStore.getState())
+        let chat = openChat()
         // Switched here from another environment's entry: it stays for Back and Forward to reach.
         const entry = window.history.state?.sparkPlace as Place | undefined
         window.history[entry && isForeignPlace(entry) ? 'pushState' : 'replaceState']({ sparkPlace: current }, '', placeHash(current))
@@ -668,13 +675,16 @@ export function HistoryRoutingController() {
             const shown = parsePlaceHash(window.location.hash)
             if ((entry && isForeignPlace(entry)) || (shown && isForeignPlace(shown))) {
                 // Back or Forward left another environment's entry showing: any move here follows it, never rewrites it.
-                if (JSON.stringify(next) !== JSON.stringify(current)) window.history.pushState({ sparkPlace: next }, '', placeHash(next))
+                if (JSON.stringify(next) !== JSON.stringify(current) || openChat() !== chat) {
+                    window.history.pushState({ sparkPlace: next }, '', placeHash(next))
+                }
             } else if (addsEntry(useStore.getState(), current, next)) {
                 window.history.pushState({ sparkPlace: next }, '', placeHash(next))
             } else if (placeHash(next) !== window.location.hash) {
                 window.history.replaceState({ sparkPlace: next }, '', placeHash(next))
             }
             current = next
+            chat = openChat()
         }
         const unsubscribe = useStore.subscribe(() => {
             if (scheduled) return

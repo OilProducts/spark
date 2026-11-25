@@ -534,6 +534,30 @@ describe('routing across environments', () => {
         expect(useStore.getState().projectPagePath).toBe('/tmp/project')
     })
 
+    it('adds an entry of this machine\'s own for another chat chosen here while a remote environment\'s entry shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        act(() => {
+            useStore.getState().updateProjectSessionState('/tmp/project', { conversationId: 'chat-1' })
+            useStore.setState({ activeProjectPath: '/tmp/project' })
+        })
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        // No link names the chat, yet choosing another still leaves the remote entry.
+        act(() => useStore.getState().updateProjectSessionState('/tmp/project', { conversationId: 'chat-2' }))
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        expect(useStore.getState().projectSessionsByPath['/tmp/project']?.conversationId).toBe('chat-2')
+    })
+
     it('keeps a remote environment\'s entries for Back and Forward to reach once it shows again', async () => {
         render(<><EnvironmentBootstrap /><Workspace /></>)
         await showEnvironment('env-r')
