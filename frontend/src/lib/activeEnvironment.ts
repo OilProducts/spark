@@ -198,10 +198,12 @@ export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]
 function dropRemovedDestination() {
     const linked = (environmentId: string) => state.links.find((link) => link.environment_id === environmentId)
     const active = state.activeEnvironmentId
-    if (active !== null && state.linksLoaded && !linked(active) && !isFinalCheck(state.activeCheck)) {
-        // Checks still running, sent before the link went, find nothing for it.
+    if (active !== null && state.linksLoaded && !linked(active)) {
+        // Checks still running, sent before the link went, find nothing for it: automatic ones, and a Retry's, which
+        // runs only while it is the one chosen. A switch elsewhere awaiting approval carries on.
         outdated = reverifySequence
-        applyActiveCheck(unlinked(active))
+        if (state.selectedEnvironmentId === active) switchSequence += 1
+        if (!isFinalCheck(state.activeCheck)) applyActiveCheck(unlinked(active))
     }
     const pending = state.selectedEnvironmentId
     if (pending === null || pending === active) return
