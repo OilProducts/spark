@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { EditorPreviewResponse } from '@/features/editor/services/editorPreview'
 import { closeFlowOpening, primeFlowSaveBaseline, refusedFlowSaves, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent } from '@/lib/flowPersistence'
-import { RefusedFlowSaveNotices } from '@/app/AppSessionControllers'
+import { HistoryRoutingController, RefusedFlowSaveNotices } from '@/app/AppSessionControllers'
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
 import { ApiHttpError } from '@/lib/attractorClient'
 import { switchEnvironment } from '@/test/environments'
@@ -466,6 +466,66 @@ describe('Editor structured metadata', () => {
       expect(useStore.getState()).toMatchObject({ editorMode: 'structured', preferredEditorMode: 'structured' })
       expect(completed).not.toHaveBeenCalled()
     } finally { window.removeEventListener('spark:preferences-completed', completed) }
+  })
+
+  it('leaves the workspace shown after a switch away and back to a launch whose flow save the switch held', async () => {
+    const user = userEvent.setup()
+    const save = createDeferred<Response>()
+    const started = createDeferred<Response>()
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const path = String(url)
+      if (path.endsWith('/api/flows') && init?.method === 'POST') return save.promise
+      if (path.endsWith('/attractor/pipelines') && init?.method === 'POST') return started.promise
+      if (path.endsWith('/attractor/preview')) return json({ status: 'ok', graph: { nodes: [{ id: 'start', label: 'Start', shape: 'Mdiamond' }], edges: [] }, diagnostics: [], errors: [] })
+      if (path.endsWith('/workspace/api/settings')) {
+        return json({ execution_placement: {
+          execution_modes: ['native'], default_execution_profile_id: null, validation_errors: [],
+          config: { filename: 'execution-profiles.toml', path: '/tmp/execution-profiles.toml', exists: false, loaded: true, synthesized_native_default: true },
+          profiles: [{ id: 'native', label: 'Native', mode: 'native', enabled: true, image: null, capabilities: {}, metadata: {} }],
+        } })
+      }
+      if (path.includes('/workspace/api/projects/metadata')) return json({ branch: 'main' })
+      return json({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const requested = (suffix: string) => fetchMock.mock.calls.some(([url, init]) => String(url).endsWith(suffix) && init?.method === 'POST')
+    await switchEnvironment(null)
+    act(() => useStore.getState().registerProject('/tmp/project'))
+    const local = renderEditor()
+    const runButton = screen.getByTestId('editor-run-button')
+    await waitFor(() => expect(runButton).toBeEnabled())
+    await user.click(runButton)
+    await user.click(await screen.findByTestId('project-picker-item'))
+    const start = await screen.findByTestId('launch-panel-start-button')
+    await waitFor(() => expect(start).toBeEnabled())
+
+    // Run saves the edit first; the switch away and back happens while that save is held.
+    act(() => useStore.getState().updateFlowMetadata('title', 'Edited title'))
+    await user.click(start)
+    await waitFor(() => expect(requested('/api/flows')).toBe(true))
+    await switchEnvironment('env-r')
+    resetStoreForEnvironmentSwitch(false)
+    local.unmount()
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    // Back on this machine, the same project is open and another run is chosen in Runs.
+    window.history.replaceState(null, '', window.location.pathname)
+    act(() => {
+      useStore.getState().registerProject('/tmp/project')
+      useStore.setState({ activeProjectPath: '/tmp/project', viewMode: 'runs' })
+      useStore.getState().setRunsSelectedRunId('newer')
+    })
+    render(<HistoryRoutingController />)
+    await waitFor(() => expect(window.location.hash).toBe('#/runs/newer'))
+
+    // The save lands, and the run it launched on this machine is acknowledged: nothing shown follows it.
+    await act(async () => save.resolve(json({ status: 'saved', name: 'bundled-flow' })))
+    await waitFor(() => expect(requested('/attractor/pipelines')).toBe(true))
+    await act(async () => started.resolve(json({ status: 'started', pipeline_id: 'old-ack' })))
+    expect(useStore.getState().viewMode).toBe('runs')
+    expect(useStore.getState().runsListSession.selectedRunId).toBe('newer')
+    expect(window.location.hash).toBe('#/runs/newer')
   })
 
   // A fake server for the flow. Its file holds the title and `server.note`, text the flow doesn't parse,

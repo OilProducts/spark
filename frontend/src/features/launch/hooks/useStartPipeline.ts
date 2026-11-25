@@ -98,14 +98,16 @@ export function useStartPipeline() {
         return { runId, queued }
     }
 
-    // Runs start from the installed flow on disk, by name, in the environment the launch began in.
+    // Runs start from the installed flow on disk, by name, in the environment the launch began in. `prepare`, such as
+    // the editor's save of that flow, runs first, bound to the same workspace.
     const startFlow = async (
         form: RunInitiationFormState,
-        options: { onGitPolicyWarning?: (warning: string | null) => void } = {},
+        options: { prepare?: () => Promise<void>; onGitPolicyWarning?: (warning: string | null) => void } = {},
     ): Promise<StartPipelineResult> => {
         const environmentId = getActiveEnvironmentId()
         const shown = shownWorkspace()
         const projectWasRegistered = isRegisteredProject(form.projectPath)
+        await options.prepare?.()
         const gate = await confirmGitPolicyGate(form.projectPath, shown)
         options.onGitPolicyWarning?.(gate.warning)
         if (!gate.allowed) {

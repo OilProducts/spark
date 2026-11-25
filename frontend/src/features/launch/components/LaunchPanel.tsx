@@ -190,7 +190,6 @@ export function LaunchPanel({
                 setRunStartError('This run has no installed flow to launch.')
                 return
             }
-            await target.prepareLaunch?.()
             const result = await startFlow(
                 {
                     projectPath,
@@ -204,7 +203,7 @@ export function LaunchPanel({
                     executionProfileId: placement.selectedProfileId || null,
                     title: runName,
                 },
-                { onGitPolicyWarning: setGitPolicyWarning },
+                { prepare: target.prepareLaunch, onGitPolicyWarning: setGitPolicyWarning },
             )
             if (result.status === 'cancelled') {
                 return
