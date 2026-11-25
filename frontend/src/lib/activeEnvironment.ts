@@ -146,6 +146,11 @@ export function getActiveEnvironmentId(): string | null {
     return state.activeEnvironmentId
 }
 
+/** A failed check, a destination's or the mounted environment's own, hides the workspace behind the error gate. */
+export const isWorkspaceBlocked = ({ status, activeCheck }: ActiveEnvironmentState) => (
+    status === 'incompatible' || status === 'unreachable' || activeCheck.status !== 'ready'
+)
+
 /**
  * Runs proceed once open editors allow leaving, or cancel when they keep you here; neither runs after a switch to
  * another environment, which the leave would move instead. An editor that holds a leave calls one of them later.

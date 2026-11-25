@@ -5,7 +5,7 @@ import { EditorWorkspace } from "@/features/editor"
 import { ProjectsPanel } from "@/features/projects"
 import { RunStream, RunsPanel } from "@/features/runs"
 import { TriggersPanel } from "@/features/triggers"
-import { useActiveEnvironment } from "@/lib/activeEnvironment"
+import { isWorkspaceBlocked, useActiveEnvironment } from "@/lib/activeEnvironment"
 import { closeWorkspace, useStore } from "@/store"
 import { useNarrowViewport } from "@/lib/useNarrowViewport"
 import { DialogProvider } from "@/components/app/dialog-controller"
@@ -104,10 +104,11 @@ function WorkspaceShell() {
 }
 
 function App() {
-  const { activeEnvironmentId, status, activeCheck } = useActiveEnvironment()
-  // A failed check, a destination's or the mounted environment's own, hides the workspace without unmounting it, so its
-  // unsaved edits wait for Retry or Return; the gate brings the switcher bar along.
-  const blocked = status === 'incompatible' || status === 'unreachable' || activeCheck.status !== 'ready'
+  const environment = useActiveEnvironment()
+  const { activeEnvironmentId } = environment
+  // The gate hides the workspace without unmounting it, so its unsaved edits wait for Retry or Return; the gate brings
+  // the switcher bar along.
+  const blocked = isWorkspaceBlocked(environment)
 
   return (
     <DialogProvider>

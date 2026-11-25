@@ -682,13 +682,12 @@ describe('Same-window multi-environment switching', () => {
         ['the Run Flow dialog', async () => {
             act(() => { window.dispatchEvent(new CustomEvent('spark:run-flow', { detail: {} })) })
             await screen.findByTestId('run-flow-dialog')
-        }, true],
-        // The switch's confirmation takes the shared dialog's place.
+        }, () => screen.getByTestId('run-flow-dialog')],
         ['a confirmation', async (user: ReturnType<typeof userEvent.setup>) => {
             await user.click(await screen.findByRole('button', { name: 'Remove link GPU' }))
             await screen.findByRole('alertdialog', { name: 'Remove environment link?' })
-        }, false],
-    ])('keeps the gate usable over %s left open in the workspace as a re-check failed, and its confirmation over the gate', async (_dialog, openDialog, staysOpen) => {
+        }, () => screen.getByRole('alertdialog', { name: 'Remove environment link?' })],
+    ])('keeps the gate usable over %s left open in the workspace as a re-check failed, and its confirmation over the gate', async (_dialog, openDialog, leftOpen) => {
         const routes: Record<string, Route> = { [`${WIN}${LINKS}`]: () => json({ links: [GPU_LINK] }) }
         const { user, remoteShell } = await mountWindows(routes)
         await openSystemSettings()
@@ -713,7 +712,46 @@ describe('Same-window multi-environment switching', () => {
         await waitFor(() => expect(remoteShell).toBeVisible())
         expect(workspaceMounted()).toBe(remoteShell)
         expect(screen.getByLabelText('Command-line server URL')).toHaveValue('http://draft.example')
-        if (staysOpen) expect(screen.getByTestId('run-flow-dialog')).toBeVisible()
+        expect(leftOpen()).toBeVisible()
+    })
+
+    it('holds a launch\'s confirmation asked as the mounted remote failed its re-check behind the gate, which leaving still asks over, and asks it once the remote passes', async () => {
+        const metadata = deferred<Response>()
+        const metadataUrl = `${WIN}/workspace/api/projects/metadata?directory=${encodeURIComponent('/win/project')}`
+        const routes: Record<string, Route> = {
+            [metadataUrl]: () => metadata.promise,
+            [`POST ${WIN}/attractor/pipelines`]: () => json({ status: 'started', pipeline_id: 'win-run' }, 202),
+        }
+        const { user, backend } = await mountWindows(routes)
+        await openSystemSettings()
+        await user.type(await screen.findByLabelText('Command-line server URL'), 'http://draft.example')
+        const { result } = renderHook(() => useStartPipeline(), { wrapper: DialogProvider })
+        const launch = result.current.startFlow({ projectPath: '/win/project', workingDirectory: '/win/project', flowSource: 'flow', model: null })
+        await waitFor(() => expect(backend.sentTo('env-win')).toContain(metadataUrl))
+
+        // Back upgraded past this bundle while the launch waits on its Git state, which then can't be read.
+        routes[WIN_AUTH] = () => json(descriptor('env-win', { ui_api_version: 3 }))
+        act(() => winLive()!.onerror?.(new Event('error')))
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(gate).toHaveTextContent('Version mismatch with Windows Workstation')
+        await act(async () => metadata.resolve(json({ detail: 'Bad Gateway' }, 502)))
+        expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+
+        // Leaving still asks over the gate.
+        await user.click(within(gate).getByRole('button', { name: 'Return to this machine' }))
+        const leave = await screen.findByRole('alertdialog', { name: 'Discard unsaved settings?' })
+        await user.click(within(leave).getByRole('button', { name: 'Keep editing' }))
+        expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+        const pipelineStarts = () => backend.requests.filter((request) => request.method === 'POST' && request.url.endsWith('/attractor/pipelines'))
+        expect(pipelineStarts()).toEqual([])
+
+        delete routes[WIN_AUTH]
+        await user.click(within(screen.getByTestId('remote-environment-gate')).getByRole('button', { name: 'Retry' }))
+        const confirmation = await screen.findByRole('alertdialog', { name: 'Unable to verify Git state' })
+        expect(screen.queryByTestId('remote-environment-gate')).not.toBeInTheDocument()
+        await user.click(within(confirmation).getByRole('button', { name: 'Continue' }))
+        await expect(launch).resolves.toMatchObject({ status: 'launched', runId: 'win-run' })
+        expect(pipelineStarts().map((request) => request.url)).toEqual([`${WIN}/attractor/pipelines`])
     })
 
     describe.each([

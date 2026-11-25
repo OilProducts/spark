@@ -31,7 +31,7 @@ import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { getActiveEnvironmentId, subscribeActiveEnvironment } from '@/lib/activeEnvironment'
+import { getActiveEnvironmentId, getActiveEnvironmentState, isWorkspaceBlocked, subscribeActiveEnvironment } from '@/lib/activeEnvironment'
 
 type ButtonVariant = ComponentProps<typeof Button>['variant']
 
@@ -71,8 +71,6 @@ type DialogController = {
   alert: (options: AlertDialogOptions) => Promise<void>
   confirm: (options: ConfirmDialogOptions) => Promise<boolean>
   prompt: (options: PromptDialogOptions) => Promise<string | null>
-  /** Brings an open question about leaving over a layer opened after it, such as an environment's error gate. */
-  raiseLeaving: () => void
 }
 
 type AlertDialogRequest = AlertDialogOptions & {
@@ -107,6 +105,8 @@ function resolveClosed(dialog: DialogRequest) {
   }
 }
 
+const leaving = (dialog: DialogRequest) => dialog.kind === 'confirm' && dialog.leaving === true
+
 const DialogControllerContext = createContext<DialogController | null>(null)
 
 const formatFallbackMessage = (title: string, description?: string | null) => (
@@ -139,7 +139,6 @@ const fallbackDialogController: DialogController = {
     }
     return trimmedValue
   },
-  raiseLeaving: () => {},
 }
 
 export function DialogProvider({ children }: PropsWithChildren) {
@@ -147,6 +146,21 @@ export function DialogProvider({ children }: PropsWithChildren) {
   // over it and leaves it, with what was entered, as it was.
   const [dialogs, setDialogs] = useState<DialogRequest[]>([])
   const activeEnvironmentId = useSyncExternalStore(subscribeActiveEnvironment, getActiveEnvironmentId)
+  // While the error gate hides the workspace, its dialogs wait: those open as it came up stay under it, and those asked
+  // since show once it opens again, such as a launch's confirmation, which must not start a run on a blocked
+  // environment. A question about leaving, such as a switch's confirmation, comes over it.
+  const blocked = useSyncExternalStore(subscribeActiveEnvironment, () => isWorkspaceBlocked(getActiveEnvironmentState()))
+  const [blockedAfter, setBlockedAfter] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    setBlockedAfter(blocked ? dialogRequests : null)
+    // The gate mounted first; one asked before it comes over it by mounting again.
+    if (blocked) {
+      setDialogs((open) => (open.some(leaving)
+        ? [...open.filter((dialog) => !leaving(dialog)), ...open.filter(leaving).map((dialog) => ({ ...dialog, id: ++dialogRequests }))]
+        : open))
+    }
+  }, [blocked])
+  const shown = blockedAfter === null ? dialogs : dialogs.filter((dialog) => dialog.id <= blockedAfter || leaving(dialog))
   // A switch to another environment closes, unanswered, the dialogs asked in the one before, such as a deletion's
   // confirmation, before they show over the workspace they would now act in.
   useLayoutEffect(() => {
@@ -198,12 +212,6 @@ export function DialogProvider({ children }: PropsWithChildren) {
           resolve,
         })
       }),
-      raiseLeaving: () => setDialogs((open) => {
-        const leaving = (dialog: DialogRequest) => dialog.kind === 'confirm' && dialog.leaving === true
-        return open.some(leaving)
-          ? [...open.filter((dialog) => !leaving(dialog)), ...open.filter(leaving).map((dialog) => ({ ...dialog, id: ++dialogRequests }))]
-          : open
-      }),
     }
   }, [])
 
@@ -233,7 +241,7 @@ export function DialogProvider({ children }: PropsWithChildren) {
   return (
     <DialogControllerContext.Provider value={controller}>
       {children}
-      {dialogs.map((dialog) => {
+      {shown.map((dialog) => {
         if (dialog.kind !== 'prompt') {
           return (
             <AlertDialog

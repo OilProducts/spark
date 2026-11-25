@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 import { AlertTriangle, Laptop, Loader2, RefreshCw, Server } from 'lucide-react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { Button } from '@/components/ui/button'
-import { useDialogController } from '@/components/app/dialog-controller'
 import { useLiveThinkingStore } from '@/components/app/transcript/liveThinking'
 import { resetModelOptionsCache } from '@/components/model-chooser/useModelOptions'
 import { useRunJournalStore } from '@/features/runs/state/runJournalStore'
@@ -168,13 +167,11 @@ export function EnvironmentSwitcherBar() {
  * Shown, with the workspace hidden but still mounted, when a linked environment fails its check: unreachable, a
  * rejected credential or another identity, or a `ui_api_version` / `protocol_version` this bundle does not speak.
  * A mounted one that failed stays behind it while another is checked or awaits approval, which it shows. It is a modal layer, with the
- * switcher bar, over any dialog the workspace left open, which waits under it; a question about leaving, such as a
- * switch's confirmation, opens over it, or comes over it if it was open as the gate came up.
+ * switcher bar, over any dialog the workspace left open, which waits under it; the dialog provider holds the ones asked
+ * meanwhile behind it, and brings a question about leaving, such as a switch's confirmation, over it.
  */
 export function RemoteEnvironmentGate() {
     const { activeEnvironmentId, selectedEnvironmentId, status, error, links, localDescriptor, remoteDescriptor } = useActiveEnvironment()
-    const { raiseLeaving } = useDialogController()
-    useEffect(raiseLeaving, [raiseLeaving])
     // The mounted environment failed, and the one chosen is still checked, or passed and awaits approval.
     const switching = status === 'checking' || status === 'ready'
     const nameOf = (environmentId: string) => links.find((entry) => entry.environment_id === environmentId)?.label || environmentId
@@ -187,6 +184,8 @@ export function RemoteEnvironmentGate() {
             <DialogPrimitive.Portal>
                 <DialogPrimitive.Content
                     aria-describedby={undefined}
+                    // Keys pressed here stay here: shortcuts of the hidden workspace, such as the flow editor's undo, listen on the document.
+                    onKeyDown={(event) => event.stopPropagation()}
                     className="fixed inset-0 z-50 flex flex-col bg-ground text-foreground antialiased outline-none"
                 >
                     <EnvironmentSwitcherBar />
