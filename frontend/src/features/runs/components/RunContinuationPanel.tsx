@@ -128,7 +128,7 @@ export function RunContinuationPanel({
                 },
                 { onGitPolicyWarning: setGitPolicyWarning },
             )
-            if (result.status !== 'launched') {
+            if (result.status === 'cancelled') {
                 return
             }
             setLastLaunchFailure(null)

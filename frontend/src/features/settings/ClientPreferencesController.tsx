@@ -3,13 +3,20 @@ import { useStore } from '@/store'
 import { AppNotice } from '@/components/app/app-notice'
 import { Button } from '@/components/ui/button'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
+import { applyTheme, cachedAppearance } from '@/lib/theme'
 import { fetchClientPreferences, saveClientPreferences, type ClientPreferences, type ClientPreferencesView } from './services/clientPreferences'
 
-// The change each environment's save refused, with why. It outlives the workspace that made it, as a
-// switch unmounts it: that environment's workspace shows it again, unsaved, with Try again and Discard,
-// until it saves or is discarded.
+// The change each environment's save refused, with why and what it was based on. It outlives the
+// workspace that made it, as a switch unmounts it: that environment's workspace shows it again, unsaved,
+// with Try again and Discard, until it saves or is discarded. Try again saves it against the revision it
+// was based on, so preferences changed since refuse it rather than lose what changed.
 // ponytail: kept for the page's life; a workspace already back before the refusal arrives shows it once remounted.
-const refusedChanges = new Map<string, { draft: Partial<ClientPreferences>; message: string }>()
+const refusedChanges = new Map<string, { base: ClientPreferencesView | null; draft: Partial<ClientPreferences>; message: string }>()
+
+// The appearance is this browser's (lib/theme), kept across switches: only the page's first load, if it is
+// this machine's, restores the appearance this machine saved, to a browser following the system as a new one does.
+// ponytail: a browser that chose System explicitly reads as a new one; record the choice apart if that matters.
+let startup = true
 
 export function ClientPreferencesController() {
     const saved = useRef<ClientPreferencesView | null>(null)
@@ -26,13 +33,17 @@ export function ClientPreferencesController() {
         // left, late answers change nothing.
         const environmentId = getActiveEnvironmentId()
         const scope = environmentId ?? 'local'
-        draft.current = refusedChanges.get(scope)?.draft ?? null
+        const kept = refusedChanges.get(scope)
+        draft.current = kept?.draft ?? null
         const current = () => !cancelled && getActiveEnvironmentId() === environmentId
         const apply = (value: ClientPreferencesView) => {
             saved.current = value
             // A change not saved yet shows over what is saved; changes only carry set values.
             const effective = { ...value.effective, ...draft.current } as ClientPreferencesView['effective']
-            // The appearance is this browser's, kept in it (lib/theme), not an environment's: none replaces it.
+            if (startup) {
+                startup = false
+                if (environmentId === null && value.effective.appearance && cachedAppearance() === 'system') applyTheme(value.effective.appearance)
+            }
             useStore.setState(() => ({
                 clientPreferencesLoaded: true,
                 clientFlowNodePositions: effective.flow_node_positions ?? {},
@@ -71,7 +82,7 @@ export function ClientPreferencesController() {
                 if (draft.current === submitted) { draft.current = null; refusedChanges.delete(scope); if (current()) setError(null) }
             } catch (error) {
                 const message = error instanceof Error ? error.message : 'Unable to save preferences. Your changes are retained.'
-                refusedChanges.set(scope, { draft: draft.current ?? submitted, message })
+                refusedChanges.set(scope, { base: saved.current, draft: draft.current ?? submitted, message })
                 if (current()) setError({ kind: 'save', message })
             } finally { pending.current = false }
             // A second completed interaction may arrive while the first save is pending.
@@ -83,6 +94,8 @@ export function ClientPreferencesController() {
         }
         const retry = () => { if (draft.current) void save(); else refresh() }
         const discard = () => { if (!pending.current) { draft.current = null; refusedChanges.delete(scope); refresh() } }
+        // A kept change shows over its base, which the refresh then leaves in place until it saves or is discarded.
+        if (kept?.base) apply(kept.base)
         refresh()
         window.addEventListener('spark:preferences-completed', complete)
         window.addEventListener('spark:preferences-retry', retry)

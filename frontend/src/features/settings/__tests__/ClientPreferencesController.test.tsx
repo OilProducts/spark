@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { ClientPreferencesController } from '../ClientPreferencesController'
 import { completePreferenceInteraction, fetchClientPreferences, saveClientPreferences, type ClientPreferencesView } from '../services/clientPreferences'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
+import { applyTheme, cachedAppearance, type Appearance } from '@/lib/theme'
 import { deferred, switchEnvironment } from '@/test/environments'
 import userEvent from '@testing-library/user-event'
 
@@ -144,7 +145,94 @@ it('keeps an automatic change refused after a switch away for its own workspace,
     // Saved, it is not offered again.
     back.unmount()
     render(<ClientPreferencesController />)
-    await waitFor(() => expect(fetchClientPreferences).toHaveBeenCalledTimes(4))
+    await waitFor(() => expect(fetchClientPreferences).toHaveBeenCalledTimes(3))
     await act(async () => {})
     expect(screen.queryByTestId('client-preferences-error')).not.toBeInTheDocument()
+})
+
+it('keeps a newer setting made elsewhere when an automatic change refused after a switch away is tried again there', async () => {
+    const at = (revision: string, sort: 'newest' | 'oldest', graph_height: number): ClientPreferencesView => ({ client_id: 'browser-one', revision,
+        stored: { editor_mode: null, editor_sidebar_width: null, run_presentation: { sort, graph_height } },
+        effective: { editor_mode: 'structured', editor_sidebar_width: 288, run_presentation: { sort, graph_height } } })
+    // The remote server, which refuses a save based on a revision it no longer has.
+    let remote = at('remote-1', 'newest', 400)
+    vi.mocked(fetchClientPreferences).mockImplementation(async (environmentId) => (environmentId === null ? at('local-1', 'newest', 500) : remote))
+    const refused = deferred<ClientPreferencesView>()
+    vi.mocked(saveClientPreferences).mockReturnValueOnce(refused.promise).mockImplementation(async (base, preferences) => {
+        if (base.revision !== remote.revision) throw new Error('Preferences changed elsewhere.')
+        return remote = { ...base, revision: `${base.revision}+`, stored: preferences, effective: { ...base.effective, ...preferences } as ClientPreferencesView['effective'] }
+    })
+    const changed = { run_presentation: { sort: 'newest' as const, graph_height: 700 } }
+    const presentation = () => useStore.getState().clientRunPresentation
+
+    await switchEnvironment('env-r')
+    const remoteShell = render(<ClientPreferencesController />)
+    await waitFor(() => expect(presentation().graph_height).toBe(400))
+    act(() => window.dispatchEvent(new CustomEvent('spark:preferences-completed', { detail: changed })))
+    await waitFor(() => expect(saveClientPreferences).toHaveBeenCalledOnce())
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    remoteShell.unmount()
+    await act(async () => refused.reject(new Error('The server is unavailable.')))
+    // Meanwhile another client sorts runs there oldest first.
+    remote = at('remote-2', 'oldest', 400)
+
+    await switchEnvironment('env-r')
+    resetStoreForEnvironmentSwitch(false)
+    render(<ClientPreferencesController />)
+    const user = userEvent.setup()
+    await user.click(within(await screen.findByTestId('client-preferences-error')).getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Preferences changed elsewhere.')).toBeVisible()
+    expect(remote).toEqual(at('remote-2', 'oldest', 400))
+    await user.click(within(screen.getByTestId('client-preferences-error')).getByRole('button', { name: 'Discard changes' }))
+    await waitFor(() => expect(presentation()).toEqual({ sort: 'oldest', graph_height: 400 }))
+    expect(screen.queryByTestId('client-preferences-error')).not.toBeInTheDocument()
+})
+
+it('restores this machine\'s saved appearance on the page\'s first load, to a browser following the system, and on no later or remote load', async () => {
+    const view = (appearance: Appearance): ClientPreferencesView => ({ client_id: 'browser-one', revision: appearance,
+        stored: { editor_mode: null, editor_sidebar_width: null, appearance }, effective: { editor_mode: 'structured', editor_sidebar_width: 288, appearance } })
+    // A page opened anew in `environmentId`: its modules load fresh, and the browser follows the system, as at startup.
+    const openPage = async (environmentId: string | null) => {
+        vi.resetModules()
+        const services = await import('../services/clientPreferences')
+        vi.mocked(services.fetchClientPreferences).mockImplementation(async (id) => view(id === null ? 'dark' : 'light'))
+        const environments = await import('@/test/environments')
+        await environments.switchEnvironment(environmentId)
+        applyTheme('system')
+        const { ClientPreferencesController: Controller } = await import('../ClientPreferencesController')
+        // Shows the workspace of `id`, as a switch remounts it, once its preferences have loaded.
+        const show = async (id: string | null) => {
+            cleanup()
+            await environments.switchEnvironment(id)
+            const loads = vi.mocked(services.fetchClientPreferences).mock.calls.length
+            render(<Controller />)
+            await waitFor(() => expect(services.fetchClientPreferences).toHaveBeenCalledTimes(loads + 1))
+            await act(async () => {})
+        }
+        return show
+    }
+
+    let show = await openPage(null)
+    await show(null)
+    expect(cachedAppearance()).toBe('dark')
+    expect(document.documentElement).toHaveClass('dark')
+    // Back on this machine later, after System is picked here, the browser keeps it.
+    applyTheme('system')
+    await show('env-r')
+    await show(null)
+    expect(cachedAppearance()).toBe('system')
+
+    // Nor does a page opened here in a browser that chose its appearance.
+    show = await openPage(null)
+    applyTheme('light')
+    await show(null)
+    expect(cachedAppearance()).toBe('light')
+
+    // A page opened on a remote environment takes no appearance from it, nor later from this machine.
+    show = await openPage('env-r')
+    await show('env-r')
+    await show(null)
+    expect(cachedAppearance()).toBe('system')
+    expect(document.documentElement).not.toHaveClass('dark')
 })

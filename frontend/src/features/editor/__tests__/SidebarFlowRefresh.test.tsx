@@ -284,7 +284,7 @@ describe('Editor sidebar manual refresh', () => {
             expect(fetchFlowListMock).toHaveBeenCalledTimes(1)
         })
 
-        await user.click(screen.getByTitle('Delete beta.dot'))
+        await user.click(await screen.findByTitle('Delete beta.dot'))
         await user.click(await screen.findByTestId('shared-dialog-confirm'))
 
         await waitFor(() => {
@@ -307,7 +307,7 @@ describe('Editor sidebar manual refresh', () => {
         renderWithFlowProvider(<FlowsPanelHarness />)
         await waitFor(() => expect(fetchFlowListMock).toHaveBeenCalledTimes(1))
 
-        await user.click(screen.getByTitle('Delete beta.dot'))
+        await user.click(await screen.findByTitle('Delete beta.dot'))
         await user.click(await screen.findByTestId('shared-dialog-confirm'))
         await waitFor(() => expect(deleteFlowMock).toHaveBeenCalledOnce())
         await switchEnvironment(null)
@@ -328,7 +328,7 @@ describe('Editor sidebar manual refresh', () => {
         renderWithFlowProvider(<FlowsPanelHarness />)
         await waitFor(() => expect(fetchFlowListMock).toHaveBeenCalledTimes(1))
 
-        await user.click(screen.getByTitle('Delete beta.dot'))
+        await user.click(await screen.findByTitle('Delete beta.dot'))
         await user.click(await screen.findByTestId('shared-dialog-confirm'))
         await waitFor(() => expect(deleteFlowMock).toHaveBeenCalledOnce())
         await switchEnvironment(null)

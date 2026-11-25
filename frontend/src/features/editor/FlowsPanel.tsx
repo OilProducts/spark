@@ -4,7 +4,7 @@ import { ChevronDown, Plus, RefreshCw, Search } from 'lucide-react'
 import { captureShownWorkspace, useStore, whenEnvironmentShown } from '@/store'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { sanitizeFlowId } from '@/lib/canonicalFlowModel'
-import { discardUnsavedFlowEdits, saveFlowContent } from '@/lib/flowPersistence'
+import { saveFlowContent } from '@/lib/flowPersistence'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { Button } from '@/components/ui/button'
 import { InlineError } from '@/components/app/inline-error'
@@ -228,8 +228,6 @@ function useFlowCatalogPanel() {
             whenEnvironmentShown(environmentId, () => void alert({ title: 'Flow not deleted', description }))
             return;
         }
-        // Deleting it discarded its edits, those a save refused included.
-        discardUnsavedFlowEdits(fileName, activeProjectPath, environmentId)
         if (!shown()) return;
 
         if (activeFlow === fileName) {

@@ -18,8 +18,6 @@ import { useStore } from '@/store'
 export type StartPipelineResult =
     | { status: 'launched'; runId: string | null; queued: boolean }
     | { status: 'cancelled' }
-    // Started in the environment the launch began in, after a switch away: nothing shown follows it.
-    | { status: 'elsewhere' }
 
 export interface GitPolicyGateResult {
     allowed: boolean
@@ -101,8 +99,9 @@ export function useStartPipeline() {
         const resolvedWorkingDirectory = form.workingDirectory.trim() || form.projectPath
         const payload = buildPipelineStartPayload({ ...form, workingDirectory: resolvedWorkingDirectory })
         const runData = await fetchPipelineStartValidated(payload, environmentId)
+        // Started where the launch began, after a switch away: nothing shown follows it.
         if (getActiveEnvironmentId() !== environmentId) {
-            return { status: 'elsewhere' }
+            return { status: 'cancelled' }
         }
         return { status: 'launched', ...finalizeLaunch(runData, form.projectPath, projectWasRegistered) }
     }
@@ -126,8 +125,9 @@ export function useStartPipeline() {
         }
         const payload = buildPipelineContinuePayload(form, continuation)
         const runData = await fetchPipelineContinueValidated(sourceRunId, payload, environmentId)
+        // Started where the launch began, after a switch away: nothing shown follows it.
         if (getActiveEnvironmentId() !== environmentId) {
-            return { status: 'elsewhere' }
+            return { status: 'cancelled' }
         }
         return { status: 'launched', ...finalizeLaunch(runData, form.projectPath, projectWasRegistered) }
     }

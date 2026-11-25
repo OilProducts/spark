@@ -32,8 +32,6 @@ import {
     primeFlowSaveBaseline,
     saveFlowContent,
     sendPendingFlowSaves,
-    discardUnsavedFlowEdits,
-    unsavedFlowEdits,
     waitForFlowSaves,
 } from '@/lib/flowPersistence';
 import { requestNavigation } from '@/state/workspaceSlice';
@@ -494,11 +492,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         const { saveState, resetSaveState } = useStore.getState();
         if (saveState === 'error' || saveState === 'conflict') resetSaveState();
     }, [editorMode, fileChangesPending]);
-    // Discarding the flow's unsaved edits drops those a save refused, kept for it, too.
-    const discardUnsavedEdits = useCallback(() => {
-        if (flowName) discardUnsavedFlowEdits(flowName, activeProjectPath, environmentId);
-    }, [activeProjectPath, environmentId, flowName]);
-    useSettingsNavigationProtection(hasUnsavedEdits, false, 'flow edits', discardUnsavedEdits);
+    useSettingsNavigationProtection(hasUnsavedEdits, false, 'flow edits');
     // Leaving first sends edits still waiting to save and waits for this environment's saves in
     // flight: a save refused after the click still asks before its edits are dropped, and never
     // lands on the next flow. Another environment's saves only hold up closing the browser.
@@ -524,14 +518,13 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                     cancelLabel: 'Keep editing',
                     confirmVariant: 'destructive',
                 })) {
-                    discardUnsavedEdits();
                     proceed();
                 }
             });
         };
         window.addEventListener('spark:before-navigation', waitForSaves, { capture: true });
         return () => window.removeEventListener('spark:before-navigation', waitForSaves, { capture: true });
-    }, [confirm, discardUnsavedEdits, environmentId]);
+    }, [confirm, environmentId]);
 
     useEffect(() => {
         expandChildFlowsRef.current = expandChildFlows;
@@ -994,11 +987,9 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                     loadId,
                     fileCount: data.files.length,
                 });
-                // Edits a save refused, kept for the flow, open in place of it as saved: unsaved, with Retry.
-                const unsaved = isReload ? null : unsavedFlowEdits(flowName, activeProjectPath);
 
                 const { preview, elapsedMs } = await requestPreview(
-                    unsaved ?? data.flow,
+                    data.flow,
                     {
                         loadId,
                         source: 'flow-load',
@@ -1046,11 +1037,9 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 if (!expandChildFlowsRef.current) {
                     persistLayoutState(hydrated.layout, false);
                 }
-                if (!unsaved) {
-                    primeFlowSaveBaseline(flowName, {
-                        flow: buildAuthoredFlow(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow),
-                    });
-                }
+                primeFlowSaveBaseline(flowName, {
+                    flow: buildAuthoredFlow(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow),
+                });
                 hydratedRef.current = true;
                 setIsHydrated(true);
                 useStore.getState().setFlowLoadFailure(null);
@@ -1130,6 +1119,8 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             edgeCount: edges.length,
             flowMetadataCount: Object.keys(flowMetadata).length,
         });
+        // A preview answered after the editor moved on (an edit, another flow, a switch away) is not its own.
+        let current = true;
         previewTimer.current = window.setTimeout(() => {
             void requestPreview(flow, {
                 loadId: activeFlowLoadIdRef.current,
@@ -1140,6 +1131,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 debounceMs: previewDebounceMs,
             })
                 .then(({ preview, elapsedMs }) => {
+                    if (!current) return;
                     setLastPreviewMs(elapsedMs);
                     if (preview.diagnostics) {
                         setDiagnostics(preview.diagnostics);
@@ -1156,6 +1148,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         }, previewDebounceMs);
 
         return () => {
+            current = false;
             if (previewTimer.current) {
                 window.clearTimeout(previewTimer.current);
             }
@@ -1547,10 +1540,9 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             cancelLabel: 'Keep editing',
         }))) return;
         clearPendingSave();
-        discardUnsavedEdits();
         useStore.getState().resetSaveState();
         reloadFlow();
-    }, [clearPendingSave, confirm, discardUnsavedEdits, reloadFlow]);
+    }, [clearPendingSave, confirm, reloadFlow]);
 
     /** Saves the file view's edited files, then reloads the flow so the canvas shows them. */
     const saveFileDrafts = useCallback(async () => {

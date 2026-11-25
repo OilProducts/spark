@@ -13,7 +13,7 @@ import { cachedAppearance, applyTheme } from '@/lib/theme'
 import { requestNavigation } from '@/state/workspaceSlice'
 import { ATTENTION_CHANGED_EVENT } from '@/lib/api/attentionApi'
 import { reviewProposedPlanValidated } from '@/lib/api/conversationsApi'
-import { primeFlowSaveBaseline, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, discardUnsavedFlowEdits, unsavedFlowEdits, waitForFlowSaves } from '@/lib/flowPersistence'
+import { primeFlowSaveBaseline, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, waitForFlowSaves } from '@/lib/flowPersistence'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { conversationMutationAck } from '@/test/conversationWire'
@@ -152,7 +152,7 @@ describe('flow saves', () => {
         }
     })
 
-    it('keeps a remote edit whose save fails after a switch away, to open there unsaved, with Retry, until it saves', async () => {
+    it('leaves a remote save refused after a switch away to that environment, with nothing to retry over newer content', async () => {
         await switchEnvironment('env-r')
         const remoteSaved = deferred<unknown>()
         answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : url.startsWith(REMOTE) ? remoteSaved.promise : { status: 'saved' })
@@ -166,59 +166,14 @@ describe('flow saves', () => {
         await expect(remote).resolves.toBe(false)
         // This environment's flow of the same name is untouched.
         expect(useStore.getState()).toBe(local)
-        expect(unsavedFlowEdits('demo', PROJECT)).toBeNull()
-        await expect(retryLastSaveContent()).resolves.toBe(false)
 
+        // Back there, the flow opens as saved, perhaps since saved anew: Retry never sends the refused edits.
         await switchEnvironment('env-r')
         resetStoreForEnvironmentSwitch(false)
         expect(useStore.getState().saveState).toBe('idle')
-        expect(unsavedFlowEdits('demo', PROJECT)).toEqual(flow('Remote').flow)
-        expect(useStore.getState()).toMatchObject({ saveState: 'error', saveErrorKind: 'http', saveErrorMessage: 'unavailable' })
-        // Opened again, as after a load cut short, the flow still has them.
-        useStore.getState().resetSaveState()
-        expect(unsavedFlowEdits('demo', PROJECT)).toEqual(flow('Remote').flow)
-        expect(useStore.getState().saveState).toBe('error')
         sent = []
-        bodies = []
-        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : { status: 'saved' })
-        await expect(retryLastSaveContent()).resolves.toBe(true)
-        expect(sent).toEqual([`POST ${REMOTE}/attractor/preview`, `POST ${REMOTE}/attractor/api/flows`])
-        expect(bodies[1]).toMatchObject({ flow: { title: 'Remote' } })
-        expect(unsavedFlowEdits('demo', PROJECT)).toBeNull()
-    })
-
-    it('keeps refused edits until they are discarded', async () => {
-        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : json({ detail: 'unavailable' }, 503))
-        await expect(saveFlowContent('demo', flow('Refused'), PROJECT)).resolves.toBe(false)
-        expect(unsavedFlowEdits('demo', PROJECT)).toEqual(flow('Refused').flow)
-        discardUnsavedFlowEdits('demo', PROJECT)
-        expect(unsavedFlowEdits('demo', PROJECT)).toBeNull()
-    })
-
-    it('keeps no edits refused as invalid, by the preview or by the server', async () => {
-        answer = (url) => (url.endsWith('/preview') ? { status: 'validation_error', error: 'Step "review" has no route in.' } : { status: 'saved' })
-        await expect(saveFlowContent('demo', flow('Unwired'), PROJECT)).resolves.toBe(false)
-        expect(sent).toEqual(['POST /attractor/preview'])
-        expect(unsavedFlowEdits('demo', PROJECT)).toBeNull()
-        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : json({ detail: { status: 'validation_error', error: 'Step "review" has no route in.' } }, 422))
-        await expect(saveFlowContent('demo', flow('Unwired'), PROJECT)).resolves.toBe(false)
-        expect(unsavedFlowEdits('demo', PROJECT)).toBeNull()
-    })
-
-    it('drops a remote edit kept from a refused save once a later save of the flow lands', async () => {
-        await switchEnvironment('env-r')
-        const refused = deferred<unknown>()
-        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : refused.promise)
-        const first = saveFlowContent('demo', flow('Remote'), PROJECT)
-        await waitFor(() => expect(sent).toContain(`POST ${REMOTE}/attractor/api/flows`))
-        await switchEnvironment(null)
-        refused.resolve(json({ detail: 'unavailable' }, 503))
-        await expect(first).resolves.toBe(false)
-        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : { status: 'saved' })
-        await expect(saveFlowContent('demo', flow('Remote again'), PROJECT, 'env-r')).resolves.toBe(true)
-
-        await switchEnvironment('env-r')
-        expect(unsavedFlowEdits('demo', PROJECT)).toBeNull()
+        await expect(retryLastSaveContent()).resolves.toBe(false)
+        expect(sent).toEqual([])
     })
 
     it('retries the save whose failure is shown, after a switch away and back', async () => {
