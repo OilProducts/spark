@@ -3304,25 +3304,34 @@ fn resolve_codex_executable(
         return codex;
     }
     // An npm install on Windows has only shims, which a launch of `codex.exe`
-    // never finds: the first a bare `codex` finds, in PATHEXT's default order,
-    // past an incomplete `codex.exe`.
+    // never finds.
     if cfg!(windows) {
-        if let Some(shim) = path
-            .into_iter()
-            .flat_map(env::split_paths)
-            .find_map(|directory| {
-                ["codex.bat", "codex.cmd"].into_iter().find_map(|shim| {
-                    crate::local_environment::find_executable_in_directories(
-                        shim,
-                        [directory.clone()],
-                    )
-                })
-            })
-        {
+        if let Some(shim) = find_codex_shim(path, &crate::local_environment::own_pathext()) {
             return shim;
         }
     }
     PathBuf::from(codex_binary_name())
+}
+
+/// The first `codex.bat` or `codex.cmd` on `path`, directory by directory in
+/// `pathext`'s order, as a bare `codex` finds it past an incomplete `codex.exe`.
+fn find_codex_shim(path: Option<&OsStr>, pathext: &OsStr) -> Option<PathBuf> {
+    let pathext = pathext.to_string_lossy();
+    let shims = pathext
+        .split(';')
+        .filter(|extension| {
+            [".bat", ".cmd"]
+                .iter()
+                .any(|batch| extension.eq_ignore_ascii_case(batch))
+        })
+        .map(|extension| format!("codex{extension}"))
+        .collect::<Vec<_>>();
+    env::split_paths(path?).find_map(|directory| {
+        shims
+            .iter()
+            .map(|shim| directory.join(shim))
+            .find(|shim| shim.is_file())
+    })
 }
 
 /// The Codex program every launch runs: the configured one, else
@@ -4133,6 +4142,30 @@ mod tests {
         let resolved = resolve_codex_executable(None, Some(&path), &[]);
 
         assert_eq!(resolved, PathBuf::from(codex_binary_name()));
+    }
+
+    /// Shims are taken directory by directory, each in `PATHEXT`'s order.
+    #[test]
+    fn codex_shims_follow_path_then_pathext_order() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (first, second) = (temp.path().join("first"), temp.path().join("second"));
+        for shim in [
+            first.join("codex"),
+            second.join("codex.bat"),
+            second.join("codex.cmd"),
+        ] {
+            fs::create_dir_all(shim.parent().unwrap()).expect("shim dir");
+            fs::write(shim, "").expect("shim");
+        }
+        let path = env::join_paths([&first, &second]).expect("PATH");
+        // Lowercase, so a case-insensitive file system returns the files as named.
+        let find = |pathext: &str| find_codex_shim(Some(&path), OsStr::new(pathext));
+
+        assert_eq!(find(".exe;.cmd;.bat"), Some(second.join("codex.cmd")));
+        assert_eq!(find(".exe;.bat;.cmd"), Some(second.join("codex.bat")));
+        fs::write(first.join("codex.cmd"), "").expect("earlier shim");
+        assert_eq!(find(".exe;.bat;.cmd"), Some(first.join("codex.cmd")));
+        assert_eq!(find(".exe"), None);
     }
 
     #[cfg(windows)]

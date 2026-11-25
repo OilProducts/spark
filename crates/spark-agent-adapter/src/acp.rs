@@ -1823,11 +1823,7 @@ fn launch_command(
     // an argument, and Spark's instructions have several. Setup checks the
     // declared channel, so it fails as every launch would.
     let program = Path::new(command.get_program());
-    let batch = program.extension().is_some_and(|extension| {
-        ["bat", "cmd"]
-            .iter()
-            .any(|batch| extension.eq_ignore_ascii_case(batch))
-    });
+    let batch = crate::local_environment::is_batch_file(program);
     let raw_argument = harness
         .system_instructions
         .iter()

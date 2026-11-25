@@ -718,10 +718,15 @@ pub(crate) fn merge_env<V>(
 
 /// Whether `key` names the search path: `PATH`, in any case on Windows.
 pub(crate) fn is_path_key(key: &str) -> bool {
+    names_var(key, "PATH")
+}
+
+/// Whether `key` names the variable `name`: in any case on Windows.
+fn names_var(key: &str, name: &str) -> bool {
     if cfg!(windows) {
-        key.eq_ignore_ascii_case("PATH")
+        key.eq_ignore_ascii_case(name)
     } else {
-        key == "PATH"
+        key == name
     }
 }
 
@@ -753,9 +758,44 @@ pub fn spawn_process_group(command: Command) -> std::io::Result<Child> {
     #[cfg(windows)]
     {
         let mut command = command;
+        if let Some(error) = batch_directory_error(&command) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, error));
+        }
         join_spark_job()?;
         command.spawn()
     }
+}
+
+/// Why Windows cannot run `command` where it asks: cmd.exe, which runs a batch
+/// file, starts in the Windows directory instead of a UNC one, so the program
+/// would work outside its project.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn batch_directory_error(command: &Command) -> Option<String> {
+    let program = Path::new(command.get_program());
+    let directory = command.get_current_dir()?;
+    let unc = matches!(
+        directory.components().next(),
+        Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), std::path::Prefix::UNC(..) | std::path::Prefix::VerbatimUNC(..))
+    );
+    (unc && is_batch_file(program)).then(|| {
+        format!(
+            "{} is a batch file, which cmd.exe cannot run in the network directory {}: it \
+             would start in the Windows directory instead. Open the project through a mapped \
+             drive letter, or set the agent's program to its .exe.",
+            program.display(),
+            directory.display()
+        )
+    })
+}
+
+/// Whether Windows runs `program` through cmd.exe: a `.bat` or `.cmd` file.
+pub(crate) fn is_batch_file(program: &Path) -> bool {
+    program.extension().is_some_and(|extension| {
+        ["bat", "cmd"]
+            .iter()
+            .any(|batch| extension.eq_ignore_ascii_case(batch))
+    })
 }
 
 /// A pipe whose close-on-exec write end only this process holds, so its read
@@ -963,27 +1003,41 @@ pub fn find_executable_in_directories(
     name: &str,
     directories: impl IntoIterator<Item = PathBuf>,
 ) -> Option<PathBuf> {
-    let pathext = cfg!(windows).then(|| {
-        env::var_os("PATHEXT").unwrap_or_else(|| std::ffi::OsString::from(".EXE;.BAT;.CMD"))
-    });
+    let pathext = cfg!(windows).then(own_pathext);
     find_executable_in(name, directories, pathext.as_deref())
 }
 
-/// The file `command`'s program names as its child finds it: an explicit path
-/// as given, else the first match on the `PATH` the child receives (else
-/// Spark's own), whose relative entries resolve from the child's directory.
+/// Spark's own `PATHEXT`, else Windows' default.
+pub(crate) fn own_pathext() -> std::ffi::OsString {
+    env::var_os("PATHEXT").unwrap_or_else(|| std::ffi::OsString::from(".EXE;.BAT;.CMD"))
+}
+
+/// The file `command`'s program names as its child finds it, by the `PATH` and
+/// `PATHEXT` the child receives (else Spark's own): an explicit path from the
+/// child's directory, else the first match on `PATH`, whose relative entries
+/// resolve from the child's directory too.
 pub fn child_program(command: &Command) -> Option<PathBuf> {
-    let path = command
-        .get_envs()
-        .filter(|(key, _)| key.to_str().is_some_and(is_path_key))
-        .last()
-        .map(|(_, value)| value.unwrap_or_default().to_os_string())
-        .or_else(|| env::var_os("PATH"))
-        .unwrap_or_default();
+    let child_var = |name: &str| {
+        command
+            .get_envs()
+            .filter(|(key, _)| key.to_str().is_some_and(|key| names_var(key, name)))
+            .last()
+            .map(|(_, value)| value.unwrap_or_default().to_os_string())
+            .or_else(|| env::var_os(name))
+    };
+    let path = child_var("PATH").unwrap_or_default();
+    let pathext = cfg!(windows).then(|| child_var("PATHEXT").unwrap_or_else(own_pathext));
     let directory = command.get_current_dir().unwrap_or(Path::new(""));
-    find_executable_in_directories(
-        command.get_program().to_str()?,
+    let program = Path::new(command.get_program());
+    let program = if program.components().count() > 1 {
+        directory.join(program)
+    } else {
+        program.to_path_buf()
+    };
+    find_executable_in(
+        program.to_str()?,
         env::split_paths(&path).map(|entry| directory.join(entry)),
+        pathext.as_deref(),
     )
 }
 
@@ -1252,6 +1306,53 @@ mod tests {
         );
         assert_eq!(find("first/rg", windows), None);
         assert_eq!(find("src/lib.rs", None), Some(PathBuf::from("src/lib.rs")));
+    }
+
+    /// A child's program is found by the `PATH` and `PATHEXT` it receives, in
+    /// any spelling on Windows, and an explicit relative path from its
+    /// directory.
+    #[test]
+    fn child_program_follows_the_child_environment_and_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin = temp.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        for name in ["agent", "agent.bat", "agent.cmd"] {
+            fs::write(bin.join(name), "").unwrap();
+        }
+
+        let mut explicit = Command::new(Path::new("bin").join("agent"));
+        explicit.current_dir(temp.path());
+        assert_eq!(child_program(&explicit), Some(bin.join("agent")));
+
+        // Lowercase, so a case-insensitive file system returns the files as named.
+        let mut bare = Command::new("agent");
+        bare.current_dir(temp.path())
+            .env_clear()
+            .env("PATH", "bin")
+            .env("Pathext", ".cmd;.bat");
+        let found = if cfg!(windows) { "agent.cmd" } else { "agent" };
+        assert_eq!(child_program(&bare), Some(bin.join(found)));
+    }
+
+    /// cmd.exe would start a batch file in the Windows directory instead of a
+    /// UNC one, so the launch fails first; elsewhere it goes ahead.
+    #[cfg(windows)]
+    #[test]
+    fn a_batch_file_never_starts_outside_its_unc_directory() {
+        let command = |program: &str, directory: &str| {
+            let mut command = Command::new(program);
+            command.current_dir(directory);
+            command
+        };
+        let error = spawn_process_group(command(r"C:\tools\claude.cmd", r"\\server\share\repo"))
+            .unwrap_err();
+        assert!(error.to_string().contains("mapped drive letter"), "{error}");
+        for (program, directory) in [
+            (r"C:\tools\claude.exe", r"\\server\share\repo"),
+            (r"C:\tools\claude.cmd", r"C:\repo"),
+        ] {
+            assert_eq!(batch_directory_error(&command(program, directory)), None);
+        }
     }
 
     #[test]

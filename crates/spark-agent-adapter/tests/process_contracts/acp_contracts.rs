@@ -189,30 +189,18 @@ fn acp_windows_batch_shim_takes_instructions_through_a_file_not_an_argument() {
             AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
             json!(instructions),
         );
-        let harness = serde_json::from_value(
-            chat.metadata["spark.execution.settings"]["configuration"]["agents"]["acp_harnesses"]
-                ["fake"]
-                .clone(),
-        )
-        .unwrap();
-        let setup = acp::discover(
-            "fake",
-            &harness,
-            spark_agent_adapter::EnvironmentInheritancePolicy::InheritCoreOnly,
-            dir.path(),
-        );
-        (setup, run(&chat, |_| {}).0)
+        (setup(&chat), run(&chat, |_| {}).0)
     };
 
-    let (setup, turn) = chat(json!(["--system", "{{instructions}}"]));
-    assert_eq!(setup.setup_status, "unreachable");
-    for error in [setup.error.unwrap(), turn.err().unwrap()] {
+    let (found, turn) = chat(json!(["--system", "{{instructions}}"]));
+    assert_eq!(found.setup_status, "unreachable");
+    for error in [found.error.unwrap(), turn.err().unwrap()] {
         assert!(error.contains("{{instructions_file}}"), "{error}");
     }
     assert_eq!(launches(dir.path()), 0);
 
-    let (setup, turn) = chat(json!(["{{instructions_file}}"]));
-    assert_eq!(setup.setup_status, "ready", "{:?}", setup.error);
+    let (found, turn) = chat(json!(["{{instructions_file}}"]));
+    assert_eq!(found.setup_status, "ready", "{:?}", found.error);
     turn.expect("turn");
     let startup = log(dir.path())
         .into_iter()
@@ -221,6 +209,52 @@ fn acp_windows_batch_shim_takes_instructions_through_a_file_not_an_argument() {
         .unwrap();
     let file = startup["argv"][0].as_str().unwrap();
     assert_eq!(startup["files"][file], instructions);
+}
+
+/// Discovery of the harness `request` registers, in its project.
+#[cfg(windows)]
+fn setup(request: &AgentTurnRequest) -> acp::AcpDiscovery {
+    let harness = serde_json::from_value(
+        request.metadata["spark.execution.settings"]["configuration"]["agents"]["acp_harnesses"]
+            ["fake"]
+            .clone(),
+    )
+    .unwrap();
+    acp::discover(
+        "fake",
+        &harness,
+        spark_agent_adapter::EnvironmentInheritancePolicy::InheritCoreOnly,
+        Path::new(&request.project_path),
+    )
+}
+
+/// A Windows probe and turn run the program the harness's own child would:
+/// by the `PATHEXT` it registers, in any spelling, and an explicit relative
+/// path from the project.
+#[cfg(windows)]
+#[test]
+fn acp_windows_launch_finds_the_program_by_the_harness_pathext_and_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    // Spark's own PATHEXT would pick the failing batch file.
+    std::fs::write(bin.join("agent.bat"), "@exit /b 1\r\n").unwrap();
+    std::fs::write(bin.join("agent.cmd"), format!("@\"{FAKE}\" %*\r\n")).unwrap();
+    for registration in [
+        json!({"executable": "agent", "env": {"PATH": bin, "Pathext": ".CMD;.BAT;.EXE"}}),
+        json!({"executable": r"bin\agent.cmd"}),
+    ] {
+        let chat = request(dir.path(), json!({}), registration.clone());
+        let found = setup(&chat);
+        assert_eq!(
+            found.setup_status, "ready",
+            "{registration}: {:?}",
+            found.error
+        );
+        if let Err(error) = run(&chat, |_| {}).0 {
+            panic!("{registration}: {error}");
+        }
+    }
 }
 
 #[test]
