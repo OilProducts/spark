@@ -76,6 +76,9 @@ const inFlightCounts: Record<string, number> = {}
 // updated row and reloads where it is seen, and a reload that fails after Settings was reopened shows there.
 type ShownCard = { report: (done: string, updated?: DelegationOut) => Promise<void>; fail: (message: string) => void }
 const shownCards = new Map<string, ShownCard>()
+// A reread of this machine's links a card started, while out. One at a time, as with list requests:
+// refreshLocalEnvironments keeps only its latest call's answer, so a slow one stays for the next live refresh.
+let linksReread: Promise<void> | null = null
 const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
 // Delegations still in flight are re-read this often, so new questions and phases show up.
 const LIVE_REFRESH_MS = 4000
@@ -304,10 +307,10 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const [loadError, setLoadError] = useState<string | null>(null)
     // The last change's outcome; a failed reload after it stays until the next one.
     const [status, setStatus] = useState<{ text: string; failed?: boolean } | null>(null)
-    // This machine's links when one was last added or removed, until a list requested since loads. The
-    // change may concern any delegation, so none is answered until those links reload or that list shows
-    // which ones the server paused (removing a link pauses its delegations, spark-storage remove_link).
-    const [changedLinks, setChangedLinks] = useState<EnvironmentLink[] | null>(null)
+    // This machine's links when one was last added or removed, and the last list request then, until a
+    // list requested since loads. The change may concern any delegation, so none is answered until those
+    // links reload or that list shows which ones the server paused (spark-storage remove_link).
+    const [linkChange, setLinkChange] = useState<{ links: EnvironmentLink[]; seq: number } | null>(null)
 
     // Loads the selected filter. A response to an older request, or for a filter no longer
     // selected, is dropped; a current failure, or any failure of a reload after a change, is thrown
@@ -333,7 +336,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                 : seenRef.current
             seenRef.current = { ...kept, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }
             setSeen(seenRef.current)
-            setChangedLinks(null)
+            setLinkChange((change) => (change && change.seq >= seq ? change : null))
             setLoadError(null)
             updateAnswers(env, ({ cancelErrors }) => ({
                 cancelErrors: Object.fromEntries(Object.entries(cancelErrors).filter(([id]) => {
@@ -344,9 +347,9 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
             // A delegation listed as resumed through a link this machine's links lack shows them stale, as
             // when their reload failed after a link was added: each refresh rereads them until they show it.
             const local = getActiveEnvironmentState()
-            if (env === '' && local.linksLoaded && records.some((row) => row.phase !== 'sealed' && !row.paused
+            if (!linksReread && env === '' && local.linksLoaded && records.some((row) => row.phase !== 'sealed' && !row.paused
                 && !local.links.some((link) => link.environment_id === row.environment_id))) {
-                void refreshLocalEnvironments()
+                linksReread = refreshLocalEnvironments().finally(() => { linksReread = null })
             }
             forgetUnasked(env, records, coversOpen)
         } catch (err) {
@@ -414,17 +417,16 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     }, [active, filter, refresh])
 
     // Adding or removing one of this machine's links pauses or resumes the delegations through it. A card
-    // on another Settings tab keeps its rows, so it notes the change and reloads too, superseding any
-    // list requested before it.
+    // on another Settings tab keeps its rows, so it notes the change too, and reloads once shown again.
     useEffect(() => {
         if (activeEnvironmentId !== null) return
         const onLinksChanged = () => {
-            setChangedLinks(getActiveEnvironmentState().links)
-            void refresh()
+            setLinkChange({ links: getActiveEnvironmentState().links, seq: requestSeqRef.current })
+            if (active) void refresh()
         }
         window.addEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, onLinksChanged)
         return () => window.removeEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, onLinksChanged)
-    }, [activeEnvironmentId, refresh])
+    }, [active, activeEnvironmentId, refresh])
 
     const rows = loaded?.filter === filter ? loaded.records : null
     const questionsOf = (record: DelegationOut) => (record.phase === 'accepted'
@@ -575,7 +577,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                             // This machine's links show one removed before the delegation's record does.
                             const unlinked = activeEnvironmentId === null && linksLoaded
                                 && !links.some((link) => link.environment_id === record.environment_id)
-                            const answerable = !record.paused && !record.cancel_requested_at && !unlinked && changedLinks !== links
+                            const answerable = !record.paused && !record.cancel_requested_at && !unlinked && linkChange?.links !== links
                             return (
                                 <li key={record.delegation_id}>
                                     <Well role="group" aria-label={`Delegation ${record.request_key} (${where})`} className="space-y-2 px-3 py-2">
