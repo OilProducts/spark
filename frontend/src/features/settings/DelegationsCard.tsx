@@ -423,15 +423,17 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
 
     useEffect(() => {
         const report: ShownCard['report'] = async (done, updated) => {
-            // The row shows the server's answer now, whether or not the reload below succeeds. An answer older
-            // than the row shown, or than a seal, which is final, has nothing to add: the server records a cancel
-            // before it answers, so that row shows it, and the row and anything announced since stay. A pause
+            // The row shows the server's answer now, whether or not the reload below succeeds, unless the
+            // card already shows a newer record: one sealed is final. An unsealed answer older than the row has
+            // nothing to add: the server records a cancel before it answers, so the row shows it, and the row and
+            // anything announced since stay. A sealed one still announces the outcome the sealed row shows. A pause
             // shown from the answer's second stays over an unpaused answer, which may be the older, until a list
             // drops it; a seal, which clears pauses, still ends it.
             // ponytail: updated_at has whole seconds, so another change in the answer's second loses to it until the next refresh.
             const shown = updated && seenRef.current[updated.delegation_id]
-            if (updated && shown && (shown.phase === 'sealed' || Date.parse(shown.updated_at) > Date.parse(updated.updated_at))) return
-            if (updated) {
+            const stale = updated && shown && (shown.phase === 'sealed' || Date.parse(shown.updated_at) > Date.parse(updated.updated_at))
+            if (stale && updated.phase !== 'sealed') return
+            if (updated && !stale) {
                 const next = shown && shown.paused && !updated.paused && updated.phase !== 'sealed'
                     && Date.parse(shown.updated_at) >= Date.parse(updated.updated_at)
                     ? { ...updated, paused: shown.paused }

@@ -1748,6 +1748,26 @@ it('keeps a retry\'s "Canceled delegation" announcement when an earlier try\'s u
     expect(sent(LIST)).toHaveLength(3)
 })
 
+it('announces a cancel whose row an All poll showed sealed before its response arrived', async () => {
+    const cancel = later()
+    serve({
+        [LIST]: [ok(list(nightly)), ok(list(canceledSeal))],
+        [cancelRoute('del-1')]: [cancel.reply],
+    })
+    const { user } = renderCard()
+    await confirmCancel(user, 'nightly-checks')
+    await waitFor(() => expect(sent(cancelRoute('del-1'))).toHaveLength(1))
+    // The poll shows the seal while the cancel is still out.
+    await act(async () => { vi.advanceTimersByTime(4000) })
+    await waitFor(() => expect(sent(LIST)).toHaveLength(2))
+    expect(await screen.findByText('flow · canceled')).toBeInTheDocument()
+    expect(screen.queryByText('Canceled delegation nightly-checks.')).not.toBeInTheDocument()
+
+    await cancel.resolve(canceledSeal)
+    expect(await screen.findByText('Canceled delegation nightly-checks.')).toBeInTheDocument()
+    expect(screen.getByText('flow · canceled')).toBeInTheDocument()
+})
+
 it('refreshes a cancel started under All with the filter selected when it completes', async () => {
     const cancel = later()
     serve({
