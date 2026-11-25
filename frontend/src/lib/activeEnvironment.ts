@@ -287,20 +287,32 @@ const overStalePage = (check: Check): Check => {
     return local && !speaksThisBundle(local) ? stalePage(local, check.remoteDescriptor) : check
 }
 
+// This Spark's descriptor requests, numbered as sent, and the latest one whose answer was recorded.
+let localRequests = 0
+let localRecorded = 0
+
 /**
- * Records this Spark's descriptor as it answers. One no longer speaking this bundle's versions fails at once the linked
- * environment mounted, its live connection closed, and one chosen whose check concluded, even awaiting approval,
- * whatever their checks still running find; a check of the one chosen still running finds it too.
+ * Asks this Spark for its descriptor and records the answer, unless one to a request sent later came first: an answer
+ * sent before an upgrade can arrive after it. One no longer speaking this bundle's versions fails at once the linked
+ * environment mounted, its live connection closed, and the one chosen, even awaiting approval, whatever their checks
+ * still running find; a check of the one chosen still running only fills in its versions.
  */
-function recordLocalDescriptor(local: EnvironmentDescriptor) {
-    updateState({ localDescriptor: local })
-    if (speaksThisBundle(local)) return
-    const { activeEnvironmentId: active, selectedEnvironmentId: selected } = state
-    if (active !== null) applyActiveCheck(stalePage(local, state.activeCheck.remoteDescriptor))
-    if (selected !== null && selected !== active && state.status !== 'checking') {
-        switchSequence += 1
-        updateState(stalePage(local, state.remoteDescriptor))
-    }
+function fetchLocalDescriptor(): Promise<EnvironmentDescriptor> {
+    const sent = ++localRequests
+    const request = fetchEnvironmentDescriptor(null)
+    request.then((local) => {
+        if (sent < localRecorded) return
+        localRecorded = sent
+        updateState({ localDescriptor: local })
+        if (speaksThisBundle(local)) return
+        const { activeEnvironmentId: active, selectedEnvironmentId: selected } = state
+        if (active !== null) applyActiveCheck(stalePage(local, state.activeCheck.remoteDescriptor))
+        if (selected !== null && selected !== active) {
+            if (state.status !== 'checking') switchSequence += 1
+            updateState(stalePage(local, state.remoteDescriptor))
+        }
+    }, () => {})
+    return request
 }
 
 // The environment that answered a descriptor request: the one its descriptor names, or the other one the proxy refused
@@ -321,13 +333,9 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     const name = linkLabelFor(environmentId)
     // This machine's descriptor is asked for alongside. A refused credential, another identity, a link this Spark no
     // longer has or a peer speaking other versions doesn't wait for it, which then explains a mismatch only if already in.
-    const localRequest = fetchEnvironmentDescriptor(null)
+    const localRequest = fetchLocalDescriptor()
     let localSoFar = null as EnvironmentDescriptor | null
-    // Recorded as it answers, which shows this Spark's own mismatch whatever this check concludes, or concluded already.
-    localRequest.then((local) => {
-        localSoFar = local
-        recordLocalDescriptor(local)
-    }, () => {})
+    localRequest.then((local) => { localSoFar = local }, () => {})
     const localAnswer = Promise.allSettled([localRequest])
     const [authenticated] = await Promise.allSettled([fetchEnvironmentDescriptor(environmentId, '/workspace/api/environment')])
     const error = authenticated.status === 'rejected' ? authenticated.reason : null
@@ -366,7 +374,7 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
 /** Silently loads this machine's descriptor and linked environments for the top-level switcher, each applied as it answers. */
 export async function refreshLocalEnvironments(): Promise<void> {
     const seq = ++refreshSequence
-    const descriptor = fetchEnvironmentDescriptor(null).then(recordLocalDescriptor, () => {})
+    const descriptor = fetchLocalDescriptor().catch(() => {})
     const links = await fetchLocalEnvironmentLinks().catch(() => null)
     if (seq === refreshSequence) {
         // A listing tells whether the row a switch awaits is current; one it can't tell for doesn't go ahead.

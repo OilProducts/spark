@@ -990,6 +990,63 @@ describe('Same-window multi-environment switching', () => {
         expect(winLive()).toBeUndefined()
     })
 
+    it('shows this Spark upgraded under the page, with reload guidance, as soon as it reports it while a switch\'s check waits on the remote, and never mounts the remote once that check passes', async () => {
+        const user = userEvent.setup()
+        const peer = deferred<void>()
+        const routes: Record<string, Route> = { [WIN_AUTH]: () => peer.promise.then(() => json(WIN_ENV)) }
+        const backend = stubBackend(routes)
+        render(<App />)
+        const localShell = workspaceMounted()
+        await user.click(await screen.findByTestId('environment-tab-env-win'))
+        await screen.findByTestId('environment-checking')
+
+        routes['/environment'] = upgradedLocal
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        const gate = await screen.findByTestId('remote-environment-gate')
+        await waitFor(() => expect(gate).toHaveTextContent('Reload the page'))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: 'env-win', status: 'incompatible' })
+
+        await act(async () => peer.resolve())
+        await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+        expect(gate).toHaveTextContent('Reload the page')
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: 'env-win', status: 'incompatible' })
+        expect(workspaceMounted()).toBe(localShell)
+        expect(backend.sentTo('env-win')).toEqual([WIN_AUTH])
+    })
+
+    it('keeps a remote behind the reload guidance, its live connection closed, when this Spark answers a Retry sent before it reported its upgrade late, as it ran before', async () => {
+        const routes: Record<string, Route> = {}
+        const { user, remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        Object.assign(routes, gatewayDown)
+        act(() => winLive()!.onerror?.(new Event('error')))
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(gate).toHaveTextContent('Couldn’t connect to Windows Workstation')
+
+        // Windows is back; Retry's check waits on this Spark's descriptor, which answers late as it ran before its upgrade.
+        delete routes[WIN_AUTH]
+        delete routes[WIN_PUBLIC]
+        const stale = deferred<void>()
+        routes['/environment'] = () => stale.promise.then(() => json(LOCAL_ENV))
+        const before = checks()
+        await user.click(within(gate).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+
+        // The switcher's next refresh gets this Spark's upgraded descriptor first.
+        routes['/environment'] = upgradedLocal
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        await waitFor(() => expect(gate).toHaveTextContent('Reload the page'))
+        const tried = connects()
+
+        await act(async () => stale.resolve())
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', localDescriptor: { ui_api_version: 3 }, status: 'incompatible', activeCheck: { status: 'incompatible' } })
+        expect(gate).toHaveTextContent('Reload the page')
+        expect(remoteShell).not.toBeVisible()
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+    })
+
     it('keeps a remote behind its gate, its live connection closed, when the listing replaces its link while Retry checks the old one, until Retry passes for the current link', async () => {
         let links = [WIN_LINK]
         const routes: Record<string, Route> = { [LINKS]: () => json({ links }) }
