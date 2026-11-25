@@ -707,7 +707,7 @@ it('opens a new chat\'s late-refused first send again once its project, with no 
     shown.unmount()
 })
 
-it('keeps a restored chat\'s newer send pending and sending when its first send\'s answer lands after a live update, and that chat open when an unlisted chat\'s send is refused late', async () => {
+it.each([0, 1])('keeps a restored chat open and sending, its newer send pending, until both its sends a live update let overlap settle, send %i answering first, when an unlisted chat\'s send is refused late', async (first) => {
     const project = (path: string, active: string | null) => ({ project_id: path, project_path: path, display_name: path, is_favorite: false, active_conversation_id: active })
     const thread = (revision: number) => ({
         conversation_id: 'conversation-1', project_path: PROJECT, title: 'Thread', created_at: '2026-09-01T00:00:00Z',
@@ -791,18 +791,20 @@ it('keeps a restored chat\'s newer send pending and sending when its first send\
     await send('Second', 2)
     expect(pendingTurn()).toMatchObject({ conversationId: 'conversation-1', afterRevision: '4' })
 
-    // The first answer lands while the second is in flight; then the unlisted chat's send is refused.
-    await act(async () => turns[0].resolve(accept(0, 4)))
+    // One send's answer lands while the other is in flight; then the unlisted chat's send is refused.
+    // The second send's answer ends its pending turn; the first's leaves it.
+    const pendingAfterFirst = first === 0 ? { conversationId: 'conversation-1', afterRevision: '4' } : null
+    await act(async () => turns[first].resolve(accept(first, 4 + first)))
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(pendingTurn()).toMatchObject({ conversationId: 'conversation-1', afterRevision: '4' })
+    expect(pendingTurn() ?? null).toEqual(pendingAfterFirst)
     expect(useStore.getState().sendingChats).toEqual({ 'conversation-1': true })
     await act(async () => refused.resolve(json({ detail: 'unavailable' }, 503)))
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(openChat()).toBe('conversation-1')
-    expect(pendingTurn()).toMatchObject({ conversationId: 'conversation-1', afterRevision: '4' })
+    expect(pendingTurn() ?? null).toEqual(pendingAfterFirst)
     expect(useStore.getState().sendingChats).toEqual({ 'conversation-1': true })
     expect(shown.result.current.surfaceProps.panelError).toBeNull()
-    await act(async () => turns[1].resolve(accept(1, 5)))
+    await act(async () => turns[1 - first].resolve(accept(1 - first, 5 - first)))
     await waitFor(() => expect(useStore.getState().sendingChats).toEqual({}))
     expect(pendingTurn()).toBeNull()
     expect(openChat()).toBe('conversation-1')

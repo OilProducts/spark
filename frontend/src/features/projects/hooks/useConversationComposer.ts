@@ -32,8 +32,9 @@ import { clearSentAttachments, keptAttachments, refusedAttachmentsFit, restoreRe
 // is one in its environment's chats as shown: the same conversation ID elsewhere, or once a switch away
 // and back starts them anew, is another chat.
 const awaitingSettingsTurn = new Set<string>()
-// Each chat's newest turn still in flight: an earlier turn's answer never ends its pending and sending state.
-const newestTurn = new Map<string, object>()
+// Each chat's turns in flight, oldest first, as its environment's chats show it: the newest ends its pending
+// turn, and the last to settle its sending state.
+const turnsInFlight = new Map<string, object[]>()
 
 // Each project's chat as its environment's projects loaded, or the latest the app opened by itself in its
 // place, until you open another there: none you chose yet. A switch away and back starts them anew.
@@ -489,9 +490,12 @@ export function useConversationComposer({
         }
         const afterRevision = getConversationRecord(conversationId)?.latestRevision ?? '0'
         setPendingConversationTurn({ conversationId, afterRevision })
+        const key = `${getActiveEnvironmentId() ?? 'local'}\n${homeSessionStart()}\n${conversationId}`
         const turn = {}
-        newestTurn.set(conversationId, turn)
-        const newest = () => newestTurn.get(conversationId) === turn
+        const turns = turnsInFlight.get(key) ?? []
+        turns.push(turn)
+        turnsInFlight.set(key, turns)
+        const newest = () => turns.at(-1) === turn
         // The project's pending turn is its open chat's newest: once another chat opens, it is that chat's send.
         const endPending = () => {
             if (newest() && getCurrentConversationId(activeProjectPath) === conversationId) setPendingConversationTurn(null)
@@ -514,13 +518,12 @@ export function useConversationComposer({
         } catch (error) {
             return refusal(error)
         } finally {
-            // A newer turn of this chat, still in flight, keeps its pending and sending state.
-            if (newest()) {
-                if (live()) {
-                    endPending()
-                    setSendingChat(conversationId, false)
-                }
-                newestTurn.delete(conversationId)
+            // A newer turn of this chat, still in flight, keeps its pending state, and any other its sending state.
+            if (live()) endPending()
+            turns.splice(turns.indexOf(turn), 1)
+            if (turns.length === 0) {
+                turnsInFlight.delete(key)
+                if (live()) setSendingChat(conversationId, false)
             }
         }
     }
