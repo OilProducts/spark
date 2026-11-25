@@ -910,41 +910,52 @@ it.each([[0, 4, 5], [1, 5, 4], [0, 5, 6]])('keeps a restored chat open and sendi
     next.unmount()
 })
 
-it('makes a project the last used when its saves answer after a switch away and back, keeping the chat open since and the newer use', async () => {
-    const project = (path: string, usedAt: string, active: string | null) => ({ project_id: path, project_path: path, display_name: path, is_favorite: false, active_conversation_id: active, last_accessed_at: usedAt })
+it('makes a project the last used when its saves answer after a switch away and back while its projects load, keeping its open chat, the newer use and a pin', async () => {
+    const project = (path: string, usedAt: string, active: string | null, pinned = false) => ({ project_id: path, project_path: path, display_name: path, is_favorite: pinned, active_conversation_id: active, last_accessed_at: usedAt })
     const saves: ReturnType<typeof deferred<unknown>>[] = []
+    const listed = deferred<unknown>()
     answer = (url, method) => {
-        if (method === 'GET' && url.endsWith('/workspace/api/projects')) return [project(PROJECT, '2026-09-01T00:00:00Z', 'conversation-2'), project('/tmp/other', '2026-10-01T00:00:00Z', null)]
+        if (method === 'GET' && url.endsWith('/workspace/api/projects')) return listed.promise
         if (method === 'PATCH' && url.endsWith('/projects/state')) {
             saves.push(deferred<unknown>())
             return saves.at(-1)!.promise
         }
         return {}
     }
+    // The Chats view's workspace: it loads every project while it has none.
+    const useWorkspace = () => {
+        const hydrateProjectRegistry = useStore((state) => state.hydrateProjectRegistry)
+        useProjectRegistryBootstrap({ hydrateProjectRegistry, enabled: useStore((state) => Object.keys(state.projectRegistry).length === 0) })
+        return useProjectsHomeController()
+    }
     const show = async (environmentId: string | null) => {
         await switchEnvironment(environmentId)
         resetStoreForEnvironmentSwitch(environmentId === null)
+        useStore.setState({ activeProjectPath: PROJECT })
     }
     const registry = () => useStore.getState().projectRegistry
-    // Two runs start in the project; another environment shows, then this one again.
+    // Two runs start in the project; another environment shows, then this one again, its projects loading.
     const used = [markProjectUsed(PROJECT), markProjectUsed(PROJECT)]
     await waitFor(() => expect(saves).toHaveLength(2))
     await show('env-r')
     await show(null)
-    // The projects load before the saves answer, listing the chat open since.
-    const loaded = renderHook(() => useProjectRegistryBootstrap({ hydrateProjectRegistry: useStore.getState().hydrateProjectRegistry }))
-    await waitFor(() => expect(Object.keys(registry())).toEqual([PROJECT, '/tmp/other']))
-    expect(defaultProjectChoice(registry())).toBe('/tmp/other')
+    const shown = renderHook(useWorkspace, { wrapper: DialogProvider })
+    await waitFor(() => expect(sent).toContain('GET /workspace/api/projects'))
 
-    // The later save answers first; the earlier one's older use doesn't replace it, and neither opens the chat it names.
+    // The later save answers while they load, naming the chat open then; the list, from before the saves, lands after.
     saves[1].resolve(project(PROJECT, '2026-11-02T00:00:00Z', 'conversation-1'))
     await used[1]
+    listed.resolve([project(PROJECT, '2026-09-01T00:00:00Z', 'conversation-2', true), project('/tmp/other', '2026-10-01T00:00:00Z', null)])
+    await waitFor(() => expect(Object.keys(registry())).toEqual([PROJECT, '/tmp/other']))
+    expect(defaultProjectChoice(registry())).toBe(PROJECT)
+    // The earlier save answers last, its use older.
     saves[0].resolve(project(PROJECT, '2026-11-01T00:00:00Z', 'conversation-1'))
     await used[0]
     expect(defaultProjectChoice(registry())).toBe(PROJECT)
-    expect(registry()[PROJECT]?.lastAccessedAt).toBe('2026-11-02T00:00:00Z')
-    expect(useStore.getState().projectSessionsByPath[PROJECT]?.conversationId).toBe('conversation-2')
-    loaded.unmount()
+    expect(registry()[PROJECT]).toMatchObject({ lastAccessedAt: '2026-11-02T00:00:00Z', isFavorite: true })
+    expect(useStore.getState().activeProjectPath).toBe(PROJECT)
+    expect(shown.result.current.sidebarProps.activeConversationId).toBe('conversation-2')
+    shown.unmount()
 })
 
 it('leaves this environment\'s chats and selection as they are when a chat delete\'s refresh finishes after a switch', async () => {

@@ -17,13 +17,30 @@ type PersistProjectStatePatch = {
 }
 
 const usedAt = (at: string | null | undefined) => Date.parse(at ?? '') || 0
+const projectsListed = () => Object.keys(useStore.getState().projectRegistry).length > 0
+
+/**
+ * Runs `apply` once the shown projects have loaded, unless another environment shows first. An entry
+ * added to a list still loading would stop that load, and the load would replace the entry.
+ */
+// ponytail: an environment with no projects keeps the wait, a check per store update, until the next switch.
+function whenProjectsListed(apply: () => void) {
+  if (projectsListed()) return apply()
+  const session = homeSessionStart()
+  const unsubscribe = useStore.subscribe(() => {
+    if (homeSessionStart() !== session) return unsubscribe()
+    if (!projectsListed()) return
+    unsubscribe()
+    apply()
+  })
+}
 
 /**
  * Saves a project's state; its answer shows only while the environment it was saved in is shown. An answer
- * that lands once a switch away and back has loaded the projects anew, or that answers the app's own choice
- * of a chat, such as a project's latest once its list loads, leaves whichever chat is open by then, such as
- * a refused chat opened again in its place, and any newer use or pin; it updates only a project still listed,
- * since a lone entry in a list not yet loaded would stop that list's load.
+ * that lands once a switch away and back has started loading the projects anew, or that answers the app's own
+ * choice of a chat, such as a project's latest once its list loads, waits for that list, then updates only a
+ * project it lists, leaving whichever chat is open by then, such as a refused chat opened again in its place,
+ * and any newer use or pin.
  */
 async function sendProjectState(projectPath: string, patch: PersistProjectStatePatch, upsert: UpsertProjectRegistryEntry) {
   const environmentId = getActiveEnvironmentId()
@@ -32,13 +49,15 @@ async function sendProjectState(projectPath: string, patch: PersistProjectStateP
   const project = toHydratedProjectRecord(await updateProjectStateValidated({ project_path: projectPath, ...patch }))
   if (getActiveEnvironmentId() !== environmentId) return
   if (!byItself && homeSessionStart() === session) return upsert(project)
-  const stored = useStore.getState().projectRegistry[normalizeProjectPath(project.directoryPath)]
-  if (!stored) return
-  upsert({
-    ...project,
-    activeConversationId: null,
-    lastAccessedAt: usedAt(stored.lastAccessedAt) > usedAt(project.lastAccessedAt) ? stored.lastAccessedAt ?? null : project.lastAccessedAt,
-    isFavorite: patch.is_favorite === undefined ? stored.isFavorite : project.isFavorite,
+  whenProjectsListed(() => {
+    const stored = useStore.getState().projectRegistry[normalizeProjectPath(project.directoryPath)]
+    if (!stored) return
+    upsert({
+      ...project,
+      activeConversationId: null,
+      lastAccessedAt: usedAt(stored.lastAccessedAt) > usedAt(project.lastAccessedAt) ? stored.lastAccessedAt ?? null : project.lastAccessedAt,
+      isFavorite: patch.is_favorite === undefined ? stored.isFavorite : project.isFavorite,
+    })
   })
 }
 
