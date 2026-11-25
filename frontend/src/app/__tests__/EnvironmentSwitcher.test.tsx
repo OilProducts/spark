@@ -1049,6 +1049,68 @@ describe('Same-window multi-environment switching', () => {
         expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-gpu', status: 'incompatible', remoteDescriptor: { environment_id: 'env-gpu' } })
     })
 
+    it.each([
+        ['while it awaits approval', true],
+        ['before it is asked', false],
+    ])('shows this Spark upgraded under the page over a return to this machine when it reports it %s, keeping that confirmation answerable, the draft when kept, and the live connection closed', async (_when, asked) => {
+        const routes: Record<string, Route> = {}
+        const { user } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        const gate = () => screen.getByTestId('remote-environment-gate')
+        const leave = () => screen.getByRole('alertdialog', { name: 'Discard unsaved settings?' })
+        const upgrade = async () => {
+            routes['/environment'] = upgradedLocal
+            act(() => { window.dispatchEvent(new Event('focus')) })
+            await waitFor(() => expect(gate()).toHaveTextContent('Reload the page'))
+        }
+        await openSystemSettings()
+        await user.type(await screen.findByLabelText('Command-line server URL'), 'http://draft.example')
+        if (!asked) await upgrade()
+        await user.click(tab('local'))
+        await screen.findByRole('alertdialog', { name: 'Discard unsaved settings?' })
+        if (asked) await upgrade()
+        expect(gate()).toHaveTextContent('Reload the page')
+        expect(leave()).toBeInTheDocument()
+        expect(winLive()).toBeUndefined()
+        const tried = connects()
+
+        await user.click(within(leave()).getByRole('button', { name: 'Keep editing' }))
+        expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'incompatible', activeCheck: { status: 'incompatible' } })
+        expect(gate()).toHaveTextContent('Version mismatch with Windows Workstation')
+        expect(gate()).toHaveTextContent('Reload the page')
+        expect(screen.getByLabelText('Command-line server URL')).toHaveValue('http://draft.example')
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 600)))
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+    })
+
+    it('keeps this Spark\'s reload guidance, and the live connection closed, on a switch from the mounted remote it gates to another, while the other\'s check waits on this Spark\'s descriptor', async () => {
+        const routes: Record<string, Route> = { [GPU_AUTH]: () => json(descriptor('env-gpu', { build_id: '0.3.0+gpu' })) }
+        const { user } = await mountWindows(routes, [WIN_LINK, GPU_LINK])
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        const gate = () => screen.getByTestId('remote-environment-gate')
+        routes['/environment'] = upgradedLocal
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        await waitFor(() => expect(gate()).toHaveTextContent('Reload the page'))
+        const tried = connects()
+
+        const local = deferred<void>()
+        routes['/environment'] = () => local.promise.then(upgradedLocal)
+        await user.click(tab('env-gpu'))
+        expect(gate()).toHaveTextContent('Version mismatch with GPU')
+        expect(gate()).toHaveTextContent('Reload the page')
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-gpu', status: 'incompatible' })
+
+        await act(async () => local.resolve())
+        await waitFor(() => expect(gate()).toHaveTextContent('build 0.3.0+gpu'))
+        expect(gate()).toHaveTextContent('Version mismatch with GPU')
+        expect(gate()).toHaveTextContent('Reload the page')
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 600)))
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+    })
+
     it('keeps a remote behind the reload guidance, its live connection closed, when this Spark answers a Retry sent before it reported its upgrade late, as it ran before', async () => {
         const routes: Record<string, Route> = {}
         const { user, remoteShell, checks } = await mountWindows(routes)
