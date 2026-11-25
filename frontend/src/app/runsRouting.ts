@@ -83,6 +83,11 @@ export function addsEntry(state: AppState, from: Place, to: Place): boolean {
     return Boolean(to.triggerId) && state.triggersSession.triggers.some((trigger) => triggerKey(trigger) === from.triggerId)
 }
 
+/** Whether a move closes a trigger the list still has, as a phone's All triggers does; one that goes away closes by itself. */
+export const closesTrigger = (state: AppState, from: Place, to: Place) =>
+    Boolean(from.triggerId) && to.view === 'triggers' && !to.triggerId
+    && state.triggersSession.triggers.some((trigger) => triggerKey(trigger) === from.triggerId)
+
 export function placeHash(place: Place): string {
     // A remote environment's place names it; this machine's links stay as they were.
     const env = place.envId ? `env=${encodeURIComponent(place.envId)}` : ''

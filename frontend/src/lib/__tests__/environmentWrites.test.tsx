@@ -8,7 +8,7 @@ import { useProjectConversationCache } from '@/features/projects/hooks/useProjec
 import { useProjectsHomeController } from '@/features/projects/hooks/useProjectsHomeController'
 import { useProjectRegistryBootstrap } from '@/features/projects/hooks/useProjectRegistryBootstrap'
 import { useProjectsHomeInteractionState } from '@/features/projects/hooks/useProjectsHomeInteractionState'
-import { applyConversationPageToCache, type NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
+import { applyConversationPageToCache, applySummarySnapshotToCache, type NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { cachedAppearance, applyTheme } from '@/lib/theme'
 import { requestNavigation } from '@/state/workspaceSlice'
@@ -17,8 +17,8 @@ import { reviewProposedPlanValidated } from '@/lib/api/conversationsApi'
 import { closeFlowOpening, primeFlowSaveBaseline, refusedFlowSaves, refusedFlowSaveStatus, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, waitForFlowSaves } from '@/lib/flowPersistence'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
-import { parseConversationPageResponse } from '@/lib/workspaceClient'
-import { conversationAcceptance, conversationMutationAck, conversationPage } from '@/test/conversationWire'
+import { parseConversationPageResponse, parseConversationSummarySnapshotResponse } from '@/lib/workspaceClient'
+import { conversationAcceptance, conversationMutationAck, conversationPage, summarySnapshot } from '@/test/conversationWire'
 import { deferred, switchEnvironment } from '@/test/environments'
 
 // Every write started in a remote environment reaches it, through its proxy, after a switch to local.
@@ -395,12 +395,12 @@ it('sends a message and a mode switch delayed by a settings save to the environm
     expect(state.homeConversationSessionsById).toEqual({})
     expect(state.sendingChats).toEqual({})
 
-    // Back in the remote environment, once its project shows with the chat open, the refused message is its draft again, with the error.
+    // Back in the remote environment, once its project shows, the chat, which no list names here, opens again
+    // with the refused message as its draft, and the error.
     await switchEnvironment('env-r')
     resetStoreForEnvironmentSwitch(false)
     useStore.getState().registerProject(PROJECT)
-    expect(setPanelError).not.toHaveBeenCalled()
-    useStore.getState().updateProjectSessionState(PROJECT, { conversationId: 'conversation-1' })
+    expect(useStore.getState().projectSessionsByPath[PROJECT]?.conversationId).toBe('conversation-1')
     expect(useStore.getState().homeProjectSessionsByPath[PROJECT]?.chatDraft).toBe('Hello there')
     expect(setPanelError).toHaveBeenCalledExactlyOnceWith('Unable to send the project chat turn.')
     await switchEnvironment(null)
@@ -589,6 +589,11 @@ it('keeps a refused send\'s text, files and error for the chat it was sent in, t
     useStore.setState({ activeProjectPath: PROJECT })
     const left = renderHook(useWorkspace, { wrapper: DialogProvider })
     await loaded(left)
+    // The project's chat list names both chats, so either opens again from it.
+    act(() => useStore.getState().commitHomeConversationCache((cache) => applySummarySnapshotToCache(cache, parseConversationSummarySnapshotResponse(summarySnapshot(
+        ['conversation-1', 'conversation-2'].map((conversation_id) => ({ conversation_id, project_path: PROJECT, title: 'Thread', created_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z', revision: 3, turns: [], segments: [] })),
+        { project_path: PROJECT },
+    )), 'http', PROJECT)))
     act(() => left.result.current.surfaceProps.onChatDraftChange('Hello there'))
     act(() => left.result.current.surfaceProps.onAddAttachments([new File(['image'], 'shot.png', { type: 'image/png' })]))
     await waitFor(() => expect(left.result.current.surfaceProps.attachments).toMatchObject([{ status: 'uploaded' }]))

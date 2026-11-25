@@ -3,11 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseConversationComposerCommand, useConversationComposer } from '@/features/projects/hooks/useConversationComposer'
 import type { PendingConversationTurnState } from '@/features/projects/model/conversationState'
 import type { ComposerAttachment } from '@/features/projects/model/types'
-import { applyConversationBatchToCache, applyConversationPageToCache, toHydratedProjectRecord } from '@/features/projects/model/projectsHomeState'
+import { applyConversationBatchToCache, applyConversationPageToCache, applySummarySnapshotToCache, toHydratedProjectRecord } from '@/features/projects/model/projectsHomeState'
 import {
     parseConversationAcceptanceResponse,
     parseConversationMutationAckResponse,
     parseConversationPageResponse,
+    parseConversationSummarySnapshotResponse,
     sendConversationTurnValidated,
     updateConversationSettingsValidated,
     uploadConversationAttachmentValidated,
@@ -16,7 +17,7 @@ import {
 } from '@/lib/workspaceClient'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { deferred, switchEnvironment } from '@/test/environments'
-import { conversationAcceptance, conversationBatch, conversationMutationAck, conversationPage, conversationRow, turnRow } from '@/test/conversationWire'
+import { conversationAcceptance, conversationBatch, conversationMutationAck, conversationPage, conversationRow, summarySnapshot, turnRow } from '@/test/conversationWire'
 
 vi.mock('@/lib/workspaceClient', async (original) => ({
     ...await original<object>(),
@@ -234,6 +235,10 @@ describe('onChatComposerSubmit', () => {
             toHydratedProjectRecord({ project_path: '/tmp/other', is_favorite: false }),
         ])
         const attachmentsOf = (conversationId: string) => useStore.getState().homeConversationSessionsById[conversationId]?.attachments
+        // The project's chat list, as the Chats panel loads it.
+        const listChats = (...conversationIds: string[]) => useStore.getState().commitHomeConversationCache((cache) => applySummarySnapshotToCache(cache,
+            parseConversationSummarySnapshotResponse(summarySnapshot(conversationIds.map((conversation_id) => thread(3, { conversation_id })), { project_path: projectPath })),
+            'http', projectPath))
 
         it('puts a refused attachment-only send back, attachments and error, once its environment shows its chats, even after a return before they load', async () => {
             await show('env-r')
@@ -320,6 +325,40 @@ describe('onChatComposerSubmit', () => {
             expect(draft()).toBe('Hello there')
             expect(attachmentsOf('conversation-1')).toEqual([entry])
             expect(setPanelError.mock.calls).toEqual([[null], ['Unable to send the project chat turn.']])
+        })
+
+        it('opens a refused first send\'s unlisted chat again, with its text, files and error, once its environment shows its chats anew', async () => {
+            await show('env-r')
+            loadProjects(null)
+            listChats('conversation-1')
+            // A new chat's first message, with a file, in the chat that sending opens; no list names it yet.
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId: 'conversation-new' })
+            useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: 'Hello there' })
+            useStore.getState().updateHomeConversationSession('conversation-new', { attachments: [entry] })
+            const sent = deferred<ConversationAcceptance>()
+            vi.mocked(sendConversationTurnValidated).mockReturnValue(sent.promise)
+            const setPanelError = vi.fn()
+            composer({ attachments: [entry], setPanelError, ensureConversationId: () => 'conversation-new', getCurrentConversationId: openChat }).onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalled())
+
+            // Another chat opens, then this machine shows; the send is refused meanwhile.
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId: 'conversation-1' })
+            await show(null)
+            sent.reject(new Error('offline'))
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(setPanelError.mock.calls).toEqual([[null]])
+
+            // Back, its projects load on the chat opened since; the refused chat opens again with all of it.
+            await show('env-r')
+            loadProjects('conversation-1')
+            expect(openChat(projectPath)).toBe('conversation-new')
+            expect(draft()).toBe('Hello there')
+            expect(attachmentsOf('conversation-new')).toEqual([entry])
+            expect(setPanelError.mock.calls).toEqual([[null], ['Unable to send the project chat turn.']])
+            // The chat opened separately stays fresh.
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId: 'conversation-1' })
+            expect(draft()).toBe('')
+            expect(attachmentsOf('conversation-1')).toBeUndefined()
         })
 
         it('leaves a newer send its pending and sending state when an older one\'s answer lands after a switch away and back', async () => {

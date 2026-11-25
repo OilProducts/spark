@@ -312,6 +312,9 @@ export function useConversationComposer({
         if (!conversationId) {
             return
         }
+        // A chat's first accepted send lists it; until then, once left, it can't be opened again.
+        const listed = Boolean(useStore.getState().homeConversationCache.summariesByProjectPath[activeProjectPath]
+            ?.some((summary) => summary.conversation_id === conversationId))
 
         if (parsedCommand?.chatMode === 'plan' && planModeUnsupportedReason) {
             setPanelError(planModeUnsupportedReason)
@@ -375,10 +378,12 @@ export function useConversationComposer({
         if (refusal !== null) {
             updatePendingMessages((messages) => messages.filter((message) => message.id !== clientTurnId))
             // The text, files and error go back to the chat they were sent in while it is open, now or once it
-            // opens again; another chat, or a new one, opened meanwhile keeps its own draft.
-            // ponytail: held for the page's life if that chat never opens again, as when it is deleted.
-            const open = () => projectShown() && useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId === conversationId
-            whenShownAndReady(environmentId, open, () => {
+            // opens again; another chat, or a new one, opened meanwhile keeps its own draft. A chat no list
+            // names, as before its first send, opens again for them once its environment shows its chats anew.
+            // ponytail: held for the page's life if a listed chat never opens again, as when it is deleted.
+            const openChat = () => useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId
+            whenShownAndReady(environmentId, () => projectShown() && (openChat() === conversationId || (!listed && !live())), () => {
+                if (openChat() !== conversationId) useStore.getState().updateProjectSessionState(activeProjectPath, { conversationId })
                 setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n'))
                 if (sending.length > 0) restoreRefusedAttachments(conversationId, sending)
                 setPanelError(refusal)

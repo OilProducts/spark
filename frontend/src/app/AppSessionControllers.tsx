@@ -27,7 +27,7 @@ import { useStore } from '@/store'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { reportRunsTransportLost, requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
-import { addsEntry, missionKey, parsePlaceHash, placeHash, placeOf, roleKey, type Place } from './runsRouting'
+import { addsEntry, closesTrigger, missionKey, parsePlaceHash, placeHash, placeOf, roleKey, type Place } from './runsRouting'
 import { defaultProjectChoice } from '@/features/projects/model/projectChoices'
 import { refreshAttention } from './useAttention'
 
@@ -683,16 +683,18 @@ export function HistoryRoutingController() {
             if ((entry && isForeignPlace(entry)) || (shown && isForeignPlace(shown))) {
                 // Back or Forward left another environment's entry showing: a move here follows it, never
                 // rewriting it. What moves by itself leaves history as it is: the projects loading, which
-                // can open a project and its chat, and what `addsEntry` finds opened by itself, such as a run.
-                // Once they have loaded, a project added or changed is yours: adding the first one before then
-                // looks like their loading, until the server's answer for it changes it.
-                // ponytail: a project's saved state answering only after Back reached this entry adds one too.
-                const loading = Object.keys(projects).length === 0 && state.projectRegistry !== projects
+                // can open a project and its chat, a project's saved state answering, and what `addsEntry`
+                // finds opened by itself, such as a run. The projects have loaded once they hold Home, as a
+                // loaded list always does, so the first project added before then or without it is yours.
+                const loading = !Object.values(projects).some((project) => project.isDefault)
+                    && Object.values(state.projectRegistry).some((project) => project.isDefault)
                 const moved = addsEntry(state, current, next)
-                    // Only you choose a node of the open run, and what no place names.
+                    // Only you choose a node of the open run, close a trigger the list still has, and what no place names.
                     || (next.runId === current.runId && next.nodeId !== current.nodeId)
+                    || closesTrigger(state, current, next)
                     || chosenHere().some((value, index) => value !== chosen[index])
-                    || state.projectRegistry !== projects
+                    // A project added or removed; an answer saving one's state only updates it.
+                    || Object.keys(state.projectRegistry).join('\n') !== Object.keys(projects).join('\n')
                 if (moved && !loading) window.history.pushState({ sparkPlace: next }, '', placeHash(next))
             } else if (addsEntry(state, current, next)) {
                 window.history.pushState({ sparkPlace: next }, '', placeHash(next))
