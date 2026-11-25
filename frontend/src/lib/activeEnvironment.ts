@@ -147,13 +147,14 @@ export function getActiveEnvironmentId(): string | null {
 }
 
 /**
- * Runs proceed once open editors allow leaving; a cancelled or blocked leave never runs it, nor does
- * one let through after a switch to another environment, which it would move instead.
+ * Runs proceed once open editors allow leaving, or cancel when they keep you here; neither runs after a switch to
+ * another environment, which the leave would move instead. An editor that holds a leave calls one of them later.
  */
-export const requestNavigation = (proceed: () => void) => {
+export const requestNavigation = (proceed: () => void, cancel?: () => void) => {
     const environmentId = getActiveEnvironmentId()
-    const go = () => { if (getActiveEnvironmentId() === environmentId) proceed() }
-    if (window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail: { proceed: go } }))) go()
+    const here = (then?: () => void) => () => { if (getActiveEnvironmentId() === environmentId) then?.() }
+    const detail = { proceed: here(proceed), cancel: here(cancel) }
+    if (window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail }))) detail.proceed()
 }
 
 export function isRemoteEnvironmentActive(): boolean {
@@ -270,22 +271,30 @@ function showActiveEnvironment() {
 
 /**
  * Mounts `environmentId` in place of the current workspace once its open editors allow leaving, unless a newer
- * switch came first. While they hold the switch the current workspace shows on; approving later commits once.
+ * switch came first. While they hold the switch the current workspace stays mounted, though no longer the one chosen,
+ * so what waits to show in it waits on; approving later commits once, and cancelling shows it again.
  */
 function commitEnvironment(seq: number, environmentId: string | null, check: Check, onActivated?: () => void): boolean {
-    let committed = false
+    let committed: boolean | null = null
     requestNavigation(() => {
-        if (committed || seq !== switchSequence) return
+        if (committed !== null || seq !== switchSequence) return
         committed = true
+        // Checks of the environment mounted until now, even this same one, find nothing for this mount.
+        reverifySequence += 1
+        reverifying = false
         // Update activeEnvironmentId before wiping stores so any store subscription sees the new environment,
         // then notify React listeners once stores are clean so the remounted subtree starts fresh.
         state = { ...state, activeEnvironmentId: environmentId, selectedEnvironmentId: environmentId, activeCheck: check, ...check }
         resetHandler?.(environmentId)
         emit()
         onActivated?.()
+    }, () => {
+        if (committed !== null || seq !== switchSequence) return
+        committed = false
+        showActiveEnvironment()
     })
-    if (!committed && seq === switchSequence) showActiveEnvironment()
-    return committed
+    if (committed === null && seq === switchSequence) updateState({ selectedEnvironmentId: environmentId, ...check })
+    return committed === true
 }
 
 /**
@@ -325,15 +334,16 @@ export function retrySelectedEnvironment(): Promise<boolean> {
 /**
  * Checks the mounted linked environment again, as when its live connection fails or opens again after failing: one
  * that was upgraded, re-paired as another environment or revoked this Spark's credential hides its workspace behind the
- * gate at once. A switch elsewhere carries on: the gate shows its check, and a return from it shows this error.
+ * gate at once. A switch elsewhere carries on: the gate shows its check, and a return from it shows this error. One
+ * that opens again after an outage's check found it unreachable comes back once its own check passes.
  * Resolves whether the mounted environment passed, or `null` with no answer. A failing connection's checks run one at a
  * time; a `fresh` one, for a connection that opened again, starts anew and outdates any still running.
  */
 export async function reverifyActiveEnvironment(fresh = false): Promise<boolean | null> {
     const environmentId = state.activeEnvironmentId
     if (environmentId === null) return true
-    // An error already found stays until Retry or Return.
-    if (state.activeCheck.status !== 'ready') return false
+    // An error already found stays until Retry or Return, or until a connection that opens again passes a check then.
+    if (state.activeCheck.status !== 'ready' && !fresh) return false
     if (reverifying && !fresh) return null
     const seq = ++reverifySequence
     reverifying = true

@@ -7,20 +7,21 @@ export function useSettingsNavigationProtection(dirty: boolean, pending = false,
     useEffect(() => {
         if (!dirty && !pending) return
         let confirming = false
-        let transitions: Array<() => void> = []
+        let transitions: Array<{ proceed: () => void; cancel?: () => void }> = []
         const unload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
         const navigate = (event: Event) => {
             if (event.defaultPrevented) return
             event.preventDefault()
-            if (pending) return
-            transitions.push((event as CustomEvent<{ proceed: () => void }>).detail.proceed)
+            const leave = (event as CustomEvent<{ proceed: () => void; cancel?: () => void }>).detail
+            if (pending) return leave.cancel?.()
+            transitions.push(leave)
             if (confirming) return
             confirming = true
             void confirm({ title: `Discard unsaved ${subject}?`, description: `Your unsaved ${subject} will be lost.`, confirmLabel: 'Discard and leave', cancelLabel: 'Keep editing', confirmVariant: 'destructive', leaving: true })
                 .then((accepted) => {
-                    if (!accepted) return
+                    if (!accepted) return transitions.forEach(({ cancel }) => cancel?.())
                     onDiscard?.()
-                    transitions.forEach((proceed) => proceed())
+                    transitions.forEach(({ proceed }) => proceed())
                 })
                 .finally(() => { confirming = false; transitions = [] })
         }

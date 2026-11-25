@@ -11,12 +11,12 @@ const descriptor = (environmentId: string) => ({
 /**
  * Makes `environmentId` (`null`: this machine) the active environment, answering the version checks
  * the switch makes itself once `checked` settles; every other request goes to the test's own `fetch`.
- * Open editors let the switch through: what they ask before one is the switcher's own tests' concern.
+ * Open editors let the switch through, unless `guarded`: what they ask before one is the switcher's own tests' concern.
  */
-export async function switchEnvironment(environmentId: string | null, checked?: Promise<unknown>) {
+export async function switchEnvironment(environmentId: string | null, checked?: Promise<unknown>, guarded = false) {
     const testFetch = globalThis.fetch
     const dispatch = window.dispatchEvent
-    window.dispatchEvent = (event: Event) => event.type === 'spark:before-navigation' || dispatch.call(window, event)
+    if (!guarded) window.dispatchEvent = (event: Event) => event.type === 'spark:before-navigation' || dispatch.call(window, event)
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
         if (!url.endsWith('/environment')) return testFetch(input, init)

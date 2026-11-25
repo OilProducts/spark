@@ -342,7 +342,7 @@ export interface RunRecordResponse {
     launch_context?: Record<string, unknown> | null
 }
 
-export interface PreviewRequestOptions {
+interface PreviewRequestOptions {
     flowName?: string | null
     projectPath?: string | null
     expandChildren?: boolean
@@ -1277,7 +1277,7 @@ export interface RunExecutionPrompt {
     content: string
 }
 
-export interface RunSegmentsResponse {
+interface RunSegmentsResponse {
     run_id: string
     segments: RunTranscriptSegment[]
     newest_sequence: number

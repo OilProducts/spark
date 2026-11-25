@@ -502,16 +502,16 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         const waitForSaves = (event: Event) => {
             if (event.defaultPrevented || !sendPendingFlowSaves(environmentId)) return;
             event.preventDefault();
-            const { proceed } = (event as CustomEvent<{ proceed: () => void }>).detail;
+            const { proceed, cancel } = (event as CustomEvent<{ proceed: () => void; cancel?: () => void }>).detail;
             const shown = captureShownWorkspace();
             void waitForFlowSaves().then(async () => {
                 // A switch away ended the navigation: the save's result stays with its own workspace,
                 // and nothing asks or moves in the one shown now.
-                if (!shown()) return;
+                if (!shown()) return cancel?.();
                 const { saveState, saveErrorMessage, saveErrorProblems } = useStore.getState();
                 if (saveState !== 'error' && saveState !== 'conflict') {
                     // Saved: anything else that guards leaving (file drafts) still gets its say.
-                    requestNavigation(proceed);
+                    requestNavigation(proceed, cancel);
                 } else if (await confirm({
                     title: 'Discard unsaved flow edits?',
                     description: `${saveErrorMessage ? `They weren’t saved: ${(saveErrorProblems?.map((problem) => problem.message) ?? flowProblems(saveErrorMessage)).join(' ')} ` : ''}Your unsaved flow edits will be lost.`,
@@ -521,6 +521,8 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                     leaving: true,
                 })) {
                     proceed();
+                } else {
+                    cancel?.();
                 }
             });
         };

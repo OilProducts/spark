@@ -167,7 +167,7 @@ export function EnvironmentSwitcherBar() {
 /**
  * Shown, with the workspace hidden but still mounted, when a linked environment fails its check: unreachable, a
  * rejected credential or another identity, or a `ui_api_version` / `protocol_version` this bundle does not speak.
- * A mounted one that failed stays behind it while another is checked, which it shows. It is a modal layer, with the
+ * A mounted one that failed stays behind it while another is checked or awaits approval, which it shows. It is a modal layer, with the
  * switcher bar, over any dialog the workspace left open, which waits under it; a question about leaving, such as a
  * switch's confirmation, opens over it, or comes over it if it was open as the gate came up.
  */
@@ -175,9 +175,10 @@ export function RemoteEnvironmentGate() {
     const { activeEnvironmentId, selectedEnvironmentId, status, error, links, localDescriptor, remoteDescriptor } = useActiveEnvironment()
     const { raiseLeaving } = useDialogController()
     useEffect(raiseLeaving, [raiseLeaving])
-    const checking = status === 'checking'
+    // The mounted environment failed, and the one chosen is still checked, or passed and awaits approval.
+    const switching = status === 'checking' || status === 'ready'
     const nameOf = (environmentId: string) => links.find((entry) => entry.environment_id === environmentId)?.label || environmentId
-    const name = selectedEnvironmentId ? nameOf(selectedEnvironmentId) : 'Remote environment'
+    const name = selectedEnvironmentId ? nameOf(selectedEnvironmentId) : 'this machine'
     // Back to the workspace still mounted, or to this machine when that is the one failing.
     const returnTo = selectedEnvironmentId === activeEnvironmentId ? null : activeEnvironmentId
 
@@ -195,16 +196,15 @@ export function RemoteEnvironmentGate() {
                     >
                         <div className="w-full max-w-md space-y-4 rounded-xl border border-border bg-background p-6 shadow-sm">
                             <div className="flex items-center justify-center gap-2 text-sm font-semibold text-foreground">
-                                {checking
+                                {switching
                                     ? <Loader2 aria-hidden="true" className="size-4 animate-spin" />
                                     : <AlertTriangle aria-hidden="true" className="size-4 text-warning" />}
                                 <DialogPrimitive.Title asChild>
                                     <span>
-                                        {checking
-                                            ? `Connecting to ${name}…`
-                                            : status === 'incompatible'
-                                                ? `Version mismatch with ${name}`
-                                                : `Couldn’t connect to ${name}`}
+                                        {status === 'checking' ? `Connecting to ${name}…`
+                                            : status === 'ready' ? `Switching to ${name}…`
+                                            : status === 'incompatible' ? `Version mismatch with ${name}`
+                                            : `Couldn’t connect to ${name}`}
                                     </span>
                                 </DialogPrimitive.Title>
                             </div>
@@ -226,7 +226,7 @@ export function RemoteEnvironmentGate() {
                                 </dl>
                             ) : null}
                             <div className="flex flex-wrap justify-center gap-2">
-                                {checking ? null : (
+                                {switching ? null : (
                                     <Button type="button" size="sm" variant="outline" onClick={() => void retrySelectedEnvironment()}>
                                         <RefreshCw aria-hidden="true" className="size-3.5" />
                                         Retry

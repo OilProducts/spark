@@ -2,8 +2,10 @@ import {
   type ComponentProps,
   createContext,
   useContext,
+  useLayoutEffect,
   useMemo,
   useState,
+  useSyncExternalStore,
   type PropsWithChildren,
 } from 'react'
 
@@ -29,6 +31,7 @@ import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { getActiveEnvironmentId, subscribeActiveEnvironment } from '@/lib/activeEnvironment'
 
 type ButtonVariant = ComponentProps<typeof Button>['variant']
 
@@ -88,9 +91,20 @@ type PromptDialogRequest = PromptDialogOptions & {
 }
 
 // Each confirmation or alert is its own layer, so one asked while another layer is open, such as an environment's error
-// gate over a question the workspace left open, opens over it.
-type DialogRequest = (AlertDialogRequest | ConfirmDialogRequest | PromptDialogRequest) & { id: number }
+// gate over a question the workspace left open, opens over it. It answers for the environment shown as it was asked.
+type DialogRequest = (AlertDialogRequest | ConfirmDialogRequest | PromptDialogRequest) & { id: number; environmentId: string | null }
 let dialogRequests = 0
+
+/** Answers a dialog closed without confirming it. */
+function resolveClosed(dialog: DialogRequest) {
+  if (dialog.kind === 'alert') {
+    dialog.resolve()
+  } else if (dialog.kind === 'confirm') {
+    dialog.resolve(false)
+  } else {
+    dialog.resolve(null)
+  }
+}
 
 const DialogControllerContext = createContext<DialogController | null>(null)
 
@@ -130,12 +144,23 @@ const fallbackDialogController: DialogController = {
 export function DialogProvider({ children }: PropsWithChildren) {
   const [currentDialog, setCurrentDialog] = useState<DialogRequest | null>(null)
   const [promptValue, setPromptValue] = useState('')
+  const activeEnvironmentId = useSyncExternalStore(subscribeActiveEnvironment, getActiveEnvironmentId)
+  // A switch to another environment closes, unanswered, a dialog asked in the one before, such as a deletion's
+  // confirmation, before it shows over the workspace it would now act in.
+  useLayoutEffect(() => {
+    setCurrentDialog((dialog) => {
+      if (!dialog || dialog.environmentId === activeEnvironmentId) return dialog
+      resolveClosed(dialog)
+      return null
+    })
+  }, [activeEnvironmentId])
 
   const controller = useMemo<DialogController>(() => ({
     alert: (options) => new Promise<void>((resolve) => {
       setCurrentDialog({
         kind: 'alert',
         id: ++dialogRequests,
+        environmentId: getActiveEnvironmentId(),
         confirmLabel: 'OK',
         confirmVariant: 'default',
         ...options,
@@ -146,6 +171,7 @@ export function DialogProvider({ children }: PropsWithChildren) {
       setCurrentDialog({
         kind: 'confirm',
         id: ++dialogRequests,
+        environmentId: getActiveEnvironmentId(),
         confirmLabel: 'Confirm',
         cancelLabel: 'Cancel',
         confirmVariant: 'default',
@@ -158,6 +184,7 @@ export function DialogProvider({ children }: PropsWithChildren) {
       setCurrentDialog({
         kind: 'prompt',
         id: ++dialogRequests,
+        environmentId: getActiveEnvironmentId(),
         confirmLabel: 'Save',
         cancelLabel: 'Cancel',
         confirmVariant: 'default',
@@ -174,15 +201,8 @@ export function DialogProvider({ children }: PropsWithChildren) {
 
   const closeDialog = () => {
     setCurrentDialog((dialog) => {
-      if (!dialog) {
-        return dialog
-      }
-      if (dialog.kind === 'alert') {
-        dialog.resolve()
-      } else if (dialog.kind === 'confirm') {
-        dialog.resolve(false)
-      } else {
-        dialog.resolve(null)
+      if (dialog) {
+        resolveClosed(dialog)
       }
       return null
     })
