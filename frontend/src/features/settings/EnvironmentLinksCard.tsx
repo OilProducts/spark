@@ -440,7 +440,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             }
             await removeEnvironmentLink(link.environment_id)
             confirmedRemovals.push({ environmentId: activeEnvironmentId, link, at: lastTicket })
-            if (isLocalEnvironment) notifyEnvironmentLinksChanged((links) => links.filter((row) => row.environment_id !== link.environment_id))
+            if (isLocalEnvironment) notifyEnvironmentLinksChanged((links) => links.filter((row) => !sameLink(row, link)))
             await settleMutation(`Removed link to ${name}.`, { unlinked: link })
         })
     }

@@ -572,6 +572,12 @@ export function WorkspaceLiveEventsController() {
                 }
                 reconnectTimer = window.setTimeout(open, 500)
             }
+            // A connection closed before it delivered anything; from the second in a row, Spark is unreachable and
+            // runs say so instead of looking live.
+            const failed = () => {
+                failedConnects += 1
+                if (failedConnects === 2) reportRunsTransportLost()
+            }
             const connected = () => {
                 // This connection's first frames restore whatever is still thinking; the rest ended unseen.
                 useLiveThinkingStore.getState().clear()
@@ -601,6 +607,7 @@ export function WorkspaceLiveEventsController() {
                     }
                     source.close()
                     eventSource = null
+                    failed()
                     if (final()) waitForCheck()
                     else reconnect()
                 })
@@ -612,14 +619,12 @@ export function WorkspaceLiveEventsController() {
                 }
                 source.close()
                 eventSource = null
-                failedConnects += 1
+                failed()
                 unverified.current = true
                 // ponytail: a check per failed attempt while a peer is down; back off if that load matters.
                 void reverifyActiveEnvironment().then(() => {
                     if (!closed && final()) waitForCheck()
                 })
-                // Spark is unreachable: runs say so instead of looking live.
-                if (failedConnects === 2) reportRunsTransportLost()
                 reconnect()
             }
         }

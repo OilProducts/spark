@@ -29,7 +29,7 @@ export type EnvironmentLink = {
 }
 
 // `refused`: the link no longer reaches the Spark it paired with, which revoked this Spark's credential or was replaced
-// by another environment, until it is paired again.
+// by another environment, or this Spark no longer links it, until it is paired again.
 type RemoteEnvironmentStatus = 'ready' | 'checking' | 'incompatible' | 'unreachable' | 'refused'
 
 type ActiveEnvironmentState = {
@@ -123,6 +123,8 @@ const listeners = new Set<() => void>()
 let switchSequence = 0
 let refreshSequence = 0
 let resetHandler: ((targetEnvironmentId: string | null) => void) | null = null
+// The link the latest switch chose, as it was then: one linked anew in its place is another destination.
+let destination: EnvironmentLink | undefined
 // The latest re-check of the mounted environment, and whether one is running. Those numbered up to `outdated` find
 // nothing for it: a newer conclusive answer, a passing Retry or a switch came first.
 let reverifySequence = 0
@@ -189,12 +191,22 @@ export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]
 }
 
 /**
- * A destination removed, here or in another tab, while it is checked or its switch awaits approval is no longer one to
- * switch to, whatever its check or the open editors answer: the workspace mounted stays, with its edits.
+ * A destination removed or linked anew, here or in another tab, while it is checked or its switch awaits approval is no
+ * longer one to switch to, whatever its check or the open editors answer: the workspace mounted stays, with its edits.
+ * A mounted environment no longer linked fails for good, its live connection closed, until Retry passes or you leave it.
  */
 function dropRemovedDestination() {
+    const linked = (environmentId: string) => state.links.find((link) => link.environment_id === environmentId)
+    const active = state.activeEnvironmentId
+    if (active !== null && state.linksLoaded && !linked(active) && !isFinalCheck(state.activeCheck)) {
+        // Checks still running, sent before the link went, find nothing for it.
+        outdated = reverifySequence
+        applyActiveCheck(unlinked(active))
+    }
     const pending = state.selectedEnvironmentId
-    if (pending !== null && pending !== state.activeEnvironmentId && !state.links.some((link) => link.environment_id === pending)) {
+    if (pending === null || pending === active) return
+    const current = linked(pending)
+    if (!current || (destination && (current.origin !== destination.origin || current.created_at !== destination.created_at))) {
         switchSequence += 1
         showActiveEnvironment()
     }
@@ -219,16 +231,20 @@ export function describeEnvironmentVersion(descriptor: EnvironmentDescriptor): s
     ].filter(Boolean).join(' · ')
 }
 
+const BUNDLE_VERSIONS = `UI API v${EXPECTED_UI_API_VERSION} · protocol v${EXPECTED_PROTOCOL_VERSION}`
+
+/** This Spark, upgraded under the page, no longer speaks its bundle's versions: only a reload helps, whatever a peer answers. */
+const describeStalePage = (local: EnvironmentDescriptor) =>
+    `This page was loaded for ${BUNDLE_VERSIONS}, but this Spark now runs ${describeEnvironmentVersion(local)}. Reload the page to load its current UI.`
+
 function describeCompatibilityMismatch(name: string, local: EnvironmentDescriptor | null, remote: EnvironmentDescriptor): string {
-    const expected = `UI API v${EXPECTED_UI_API_VERSION} · protocol v${EXPECTED_PROTOCOL_VERSION}`
-    if (local && !speaksThisBundle(local)) {
-        return `This page was loaded for ${expected}, but this Spark now runs ${describeEnvironmentVersion(local)}. Reload the page to load its current UI.`
-    }
-    const here = local ? `this Spark runs ${describeEnvironmentVersion(local)}` : `this page was loaded for ${expected}`
+    if (local && !speaksThisBundle(local)) return describeStalePage(local)
+    const here = local ? `this Spark runs ${describeEnvironmentVersion(local)}` : `this page was loaded for ${BUNDLE_VERSIONS}`
     return `${name} runs ${describeEnvironmentVersion(remote)}, while ${here}. Update Spark so both environments match.`
 }
 
 const unreachable = (error: string): Check => ({ status: 'unreachable', error, remoteDescriptor: null })
+const unlinked = (name: string): Check => ({ status: 'refused', remoteDescriptor: null, error: `This Spark no longer links ${name}. Link it again in Settings with a new pairing code from ${name}, then Retry.` })
 
 // The environment that answered a descriptor request: the one its descriptor names, or the other one the proxy refused
 // with a 502 naming it in `answered_as`. None answered one the proxy refused naming none, such as a gateway's.
@@ -268,6 +284,8 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     if (other !== undefined && other !== environmentId) {
         return { status: 'refused', remoteDescriptor: null, error: `${name} answered as environment ${other}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.` }
     }
+    // This Spark's proxy answers both with a 404 once it no longer links the environment.
+    if (status === 404 && found.status === 'rejected' && found.reason instanceof ApiHttpError && found.reason.status === 404) return unlinked(name)
     const remote = found.status === 'fulfilled' ? found.value : null
     const incompatible = (peer: EnvironmentDescriptor, local: EnvironmentDescriptor | null): Check =>
         ({ status: 'incompatible', error: describeCompatibilityMismatch(name, local, peer), remoteDescriptor: peer })
@@ -278,7 +296,7 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     const [localResult] = await localAnswer
     const local = localResult.status === 'fulfilled' ? localResult.value : null
     if (local) updateState({ localDescriptor: local })
-    if (remote && local && !speaksThisBundle(local)) return incompatible(remote, local)
+    if (local && !speaksThisBundle(local)) return { status: 'incompatible', error: describeStalePage(local), remoteDescriptor: remote }
     if (localResult.status === 'rejected') {
         throw new Error(`Could not verify this Spark server’s version: ${errorText(localResult.reason)}`)
     }
@@ -366,6 +384,7 @@ export async function selectEnvironment(
     // The link Settings switches to names it in the switcher and remote guidance, though their listing lacks it.
     const link = options?.link
     if (link && !state.links.some((entry) => entry.environment_id === link.environment_id)) updateState({ links: [...state.links, link] })
+    destination = link ?? state.links.find((entry) => entry.environment_id === environmentId)
     const active = state.activeEnvironmentId
     if (environmentId === active && (state.selectedEnvironmentId !== active || state.status === 'ready')) {
         showActiveEnvironment()

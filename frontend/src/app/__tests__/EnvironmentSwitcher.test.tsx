@@ -4,9 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '@/App'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { useStartPipeline } from '@/features/launch'
-import { requestRunsTransportReconnect } from '@/features/runs/services/runsTransportReconnect'
+import { RUNS_TRANSPORT_LOST_EVENT, requestRunsTransportReconnect } from '@/features/runs/services/runsTransportReconnect'
 import { useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import {
+    ENVIRONMENT_LINKS_CHANGED_EVENT,
     EXPECTED_PROTOCOL_VERSION,
     EXPECTED_UI_API_VERSION,
     getActiveEnvironmentId,
@@ -87,6 +88,8 @@ const link = (environment_id: string, label: string) =>
     ({ environment_id, origin: `http://${environment_id}:8000`, label, created_at: '2026-11-24T00:00:00Z' })
 const WIN_LINK = link('env-win', 'Windows Workstation')
 const GPU_LINK = link('env-gpu', 'GPU')
+/** env-win linked anew, as at another origin: another row for the same environment ID. */
+const WIN_RELINKED = { ...WIN_LINK, origin: 'http://env-win-new:8000', created_at: '2026-11-25T00:00:00Z' }
 
 const CONNECTIONS = {
     connections: {
@@ -533,6 +536,94 @@ describe('Same-window multi-environment switching', () => {
         await waitFor(() => expect(winLive()).toBeDefined())
     })
 
+    it.each([
+        ['answers 503', () => json({ detail: 'connection refused' }, 503)],
+        ['gives no answer', () => Promise.reject(new TypeError('Failed to fetch'))],
+    ])('shows this Spark upgraded under the page, with reload guidance, and stops reconnecting, though the mounted remote %s', async (_peer, answer: Route) => {
+        const routes: Record<string, Route> = {}
+        const { remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        routes['/environment'] = upgradedLocal
+        routes[WIN_AUTH] = answer
+        act(() => winLive()!.onerror?.(new Event('error')))
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(gate).toHaveTextContent('Version mismatch with Windows Workstation')
+        expect(gate).toHaveTextContent('this Spark now runs UI API v3')
+        expect(gate).toHaveTextContent('Reload the page')
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'incompatible', activeCheck: { status: 'incompatible' } })
+        expect(remoteShell).not.toBeVisible()
+
+        const tried = connects()
+        const checked = checks()
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+        expect(checks()).toBe(checked)
+    })
+
+    it('says runs may be out of date once reconnected live connections keep failing their check with no answer, though none errors again', async () => {
+        const routes: Record<string, Route> = {}
+        const { remoteShell } = await mountWindows(routes)
+        const lost = vi.fn()
+        window.addEventListener(RUNS_TRANSPORT_LOST_EVENT, lost)
+        routes[WIN_AUTH] = () => json({ detail: 'connection refused' }, 503)
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+        expect(lost).not.toHaveBeenCalled()
+
+        // Each connection that opens again fails its check, and closes before it delivers anything.
+        for (const _attempt of [1, 2]) {
+            const reopened = winLive()!
+            act(() => reopened.onopen?.(new Event('open')))
+            await waitFor(() => expect(reopened.closed).toBe(true))
+            await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+        }
+        expect(lost).toHaveBeenCalledTimes(1)
+        expect(remoteShell).toBeVisible()
+        window.removeEventListener(RUNS_TRANSPORT_LOST_EVENT, lost)
+    })
+
+    it.each([
+        ['its link is gone from this machine\'s listing', 'listing'],
+        ['this Spark\'s proxy answers 404 for both its descriptors', 'proxy'],
+    ])('leaves ready and stops reconnecting a mounted remote once %s, until Retry passes after linking it again', async (_unlinked, how) => {
+        let links = [WIN_LINK]
+        const routes: Record<string, Route> = { [LINKS]: () => json({ links }) }
+        const { user, remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        if (how === 'listing') {
+            links = []
+            act(() => { window.dispatchEvent(new Event('focus')) })
+        } else {
+            const noLink = () => json({ detail: 'No link to environment "env-win".' }, 404)
+            routes[WIN_AUTH] = noLink
+            routes[WIN_PUBLIC] = noLink
+            act(() => winLive()!.onerror?.(new Event('error')))
+        }
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(gate).toHaveTextContent('Couldn’t connect to')
+        expect(gate).toHaveTextContent('This Spark no longer links')
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'refused', activeCheck: { status: 'refused' } })
+        expect(remoteShell).not.toBeVisible()
+
+        const tried = connects()
+        const checked = checks()
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+        expect(checks()).toBe(checked)
+
+        // Linked again: Retry passes and the connection opens again.
+        links = [WIN_LINK]
+        delete routes[WIN_AUTH]
+        delete routes[WIN_PUBLIC]
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        await waitFor(() => expect(getActiveEnvironmentState().links).toEqual([WIN_LINK]))
+        await user.click(within(gate).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(remoteShell).toBeVisible())
+        await waitFor(() => expect(winLive()).toBeDefined())
+    })
+
     it('keeps a remote ready once Retry passes after pairing again during an outage, though an older check answers late with the revoked credential, and its live connection recovers', async () => {
         const routes: Record<string, Route> = {}
         const { user, remoteShell, checks } = await mountWindows(routes)
@@ -883,7 +974,8 @@ describe('Same-window multi-environment switching', () => {
         await waitFor(() => expect(remoteShell).toBeVisible())
         expect(screen.queryByTestId('remote-environment-gate')).not.toBeInTheDocument()
         expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'ready' })
-        expect(reopened.closed).toBe(false)
+        // Two connects failed, so runs were told they may be out of date; back, the stream restarts to reload them.
+        await waitFor(() => expect(winLive()).toBeDefined())
     })
 
     it('keeps what a new mount of a remote found from a check its previous mount started', async () => {
@@ -1204,6 +1296,22 @@ describe('Same-window multi-environment switching', () => {
             expect(draftField()).toHaveValue('http://draft.example')
         })
 
+        it('drops a switch awaiting approval once another tab linked its destination anew, never mounting the new link under the old one\'s check', async () => {
+            let links = [WIN_LINK]
+            const { user, backend, shell } = await renderWithDraft({ [LINKS]: () => json({ links }) })
+            await requestSwitch(user)
+            await screen.findByRole('alertdialog', { name: 'Discard unsaved settings?' })
+
+            links = [WIN_RELINKED]
+            act(() => { window.dispatchEvent(new Event('focus')) })
+            await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+            expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready', links: [WIN_RELINKED] })
+            expect(workspaceMounted()).toBe(shell)
+            expect(shell).toBeVisible()
+            expect(draftField()).toHaveValue('http://draft.example')
+            expect(backend.sentTo('env-win')).toEqual([WIN_AUTH])
+        })
+
         it('keeps this machine\'s workspace and its draft when the check fails', async () => {
             const { user, shell } = await renderWithDraft({ [WIN_AUTH]: () => json({ detail: 'connection refused' }, 503) })
             await requestSwitch(user)
@@ -1399,6 +1507,65 @@ describe('Same-window multi-environment switching', () => {
         expect(screen.queryByTestId('remote-environment-gate')).not.toBeInTheDocument()
         expect(workspaceMounted()).toBe(shell)
         expect(shell).toBeVisible()
+    })
+
+    it('drops a switch from the tab bar whose destination another tab linked anew during its check, though the check then passes', async () => {
+        const user = userEvent.setup()
+        const check = deferred<void>()
+        let links = [WIN_LINK]
+        stubBackend({ [LINKS]: () => json({ links }), [WIN_AUTH]: () => check.promise.then(() => json(WIN_ENV)) })
+        render(<App />)
+        await screen.findByTestId('environment-tab-env-win')
+        const shell = workspaceMounted()
+        await user.click(tab('env-win'))
+        await screen.findByTestId('environment-checking')
+
+        links = [WIN_RELINKED]
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        await waitFor(() => expect(screen.queryByTestId('environment-checking')).not.toBeInTheDocument())
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready', links: [WIN_RELINKED] })
+
+        await act(async () => check.resolve())
+        await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready' })
+        expect(workspaceMounted()).toBe(shell)
+        expect(shell).toBeVisible()
+    })
+
+    it('keeps a link listed anew, and a switch to it, when Settings\' removal of the link it replaced answers late', async () => {
+        const user = userEvent.setup()
+        const removal = deferred<void>()
+        const check = deferred<void>()
+        let links = [WIN_LINK]
+        const backend = stubBackend({
+            [LINKS]: () => json({ links }),
+            [WIN_AUTH]: () => check.promise.then(() => json(WIN_ENV)),
+            [`DELETE ${LINKS}/env-win`]: () => removal.promise.then(() => json({ environment_id: 'env-win', removed: true })),
+        })
+        const changed = vi.fn()
+        window.addEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, changed)
+        render(<App />)
+        await screen.findByTestId('environment-tab-env-win')
+        await openSystemSettings()
+        await user.click(await screen.findByRole('button', { name: 'Remove link Windows Workstation' }))
+        await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Remove link' }))
+        await waitFor(() => expect(backend.requests.some((request) => request.method === 'DELETE')).toBe(true))
+
+        // Linked anew elsewhere once that removal went: the switcher lists the new link, and a switch to it starts.
+        links = [WIN_RELINKED]
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        await waitFor(() => expect(tab('env-win')).toHaveAttribute('title', 'Windows Workstation (http://env-win-new:8000)'))
+        await user.click(tab('env-win'))
+        await screen.findByTestId('environment-checking')
+
+        // The removal answers late: the new link and the switch to it stay.
+        await act(async () => removal.resolve())
+        await waitFor(() => expect(changed).toHaveBeenCalled())
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: 'env-win', status: 'checking', links: [WIN_RELINKED] })
+        await act(async () => check.resolve())
+        await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-win'))
+        expect(getActiveEnvironmentState().links).toEqual([WIN_RELINKED])
+        window.removeEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, changed)
     })
 
     it.each(['launch', 'continuation'])('lets a %s answered during another environment\'s check land in its still-open workspace, and drops one answered after the switch', async (kind) => {
