@@ -148,6 +148,9 @@ export function getActiveEnvironmentId(): string | null {
     return state.activeEnvironmentId
 }
 
+/** A check that found an environment incompatible, or refusing its link until it is paired again, finds so until a change there. */
+export const isFinalCheck = ({ status }: Pick<ActiveEnvironmentState, 'status'>) => status === 'incompatible' || status === 'refused'
+
 /** A failed check, a destination's or the mounted environment's own, hides the workspace behind the error gate. */
 export const isWorkspaceBlocked = ({ status, activeCheck }: ActiveEnvironmentState) => (
     (status !== 'ready' && status !== 'checking') || activeCheck.status !== 'ready'
@@ -363,15 +366,16 @@ export function retrySelectedEnvironment(): Promise<boolean> {
  * Checks the mounted linked environment again, as when its live connection fails or opens again after failing: one
  * that was upgraded, re-paired as another environment or revoked this Spark's credential hides its workspace behind the
  * gate at once. A switch elsewhere carries on: the gate shows its check, and a return from it shows this error. One
- * that opens again after an outage's check found it unreachable comes back once its own check passes.
+ * an outage's check found unreachable comes back once a later check passes.
  * Resolves whether the mounted environment passed, or `null` with no answer. A failing connection's checks run one at a
  * time; a `fresh` one, for a connection that opened again, starts anew and outdates any still running.
  */
 export async function reverifyActiveEnvironment(fresh = false): Promise<boolean | null> {
     const environmentId = state.activeEnvironmentId
     if (environmentId === null) return true
-    // An error already found stays until Retry or Return, or until a connection that opens again passes a check then.
-    if (state.activeCheck.status !== 'ready' && !fresh) return false
+    // A final error stays until Retry or Return, or until a connection that opens again passes a check then. One found
+    // unreachable is checked again, which can find it final while no connection opens.
+    if (isFinalCheck(state.activeCheck) && !fresh) return false
     if (reverifying && !fresh) return null
     const seq = ++reverifySequence
     reverifying = true

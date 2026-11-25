@@ -26,7 +26,7 @@ import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import type { AppState } from '@/state/store-types'
 import { openByItself, opensByItself } from '@/state/homeSessionSlice'
-import { getActiveEnvironmentId, getActiveEnvironmentState, reverifyActiveEnvironment, subscribeActiveEnvironment } from '@/lib/activeEnvironment'
+import { getActiveEnvironmentId, getActiveEnvironmentState, isFinalCheck, reverifyActiveEnvironment, subscribeActiveEnvironment } from '@/lib/activeEnvironment'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { reportRunsTransportLost, requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { addsEntry, closesTrigger, missionKey, parsePlaceHash, placeHash, placeOf, roleKey, type Place } from './runsRouting'
@@ -541,7 +541,7 @@ export function WorkspaceLiveEventsController() {
         // A linked environment found incompatible, or refusing this link until it is paired again, stays so however
         // often it is tried, even when its handshake never opens. One down meanwhile, or whose gateway answers for
         // none, is tried again until a check passes.
-        const final = () => ['incompatible', 'refused'].includes(getActiveEnvironmentState().activeCheck.status)
+        const final = () => isFinalCheck(getActiveEnvironmentState().activeCheck)
         // The connection stays closed, its workspace behind the gate, until a check passes, such as Retry's.
         const waitForCheck = () => {
             if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)

@@ -495,6 +495,40 @@ describe('Same-window multi-environment switching', () => {
         await waitFor(() => expect(winLive()).toBeDefined())
     })
 
+    it.each([
+        ['refuses a revoked credential', () => json({ detail: 'Unauthorized' }, 401), 'refused this Spark’s credential'],
+        ['speaks a version this bundle doesn\'t', () => json(descriptor('env-win', { ui_api_version: 3 })), 'Version mismatch with Windows Workstation'],
+        ['is refused by the proxy for another environment answering', () => proxyRefusal('env-other'), 'answered as environment env-other'],
+    ])('checks a remote a gateway outage hid again as its handshakes keep failing, and stops reconnecting once it %s, until Retry passes', async (_finding, answer, message) => {
+        const routes: Record<string, Route> = {}
+        const { user, remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        routes[WIN_AUTH] = () => proxyRefusal(null)
+        routes[WIN_PUBLIC] = () => json({ detail: 'Bad gateway' }, 502)
+        act(() => winLive()!.onerror?.(new Event('error')))
+        expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent('Couldn’t connect to Windows Workstation')
+        expect(getActiveEnvironmentState().activeCheck.status).toBe('unreachable')
+
+        // No handshake opens again before the next check finds a final failure.
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+        routes[WIN_AUTH] = answer
+        routes[WIN_PUBLIC] = answer
+        act(() => winLive()!.onerror?.(new Event('error')))
+        expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent(message)
+        const tried = connects()
+        const checked = checks()
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+        expect(checks()).toBe(checked)
+
+        delete routes[WIN_AUTH]
+        delete routes[WIN_PUBLIC]
+        await user.click(screen.getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(remoteShell).toBeVisible())
+        await waitFor(() => expect(winLive()).toBeDefined())
+    })
+
     it('keeps a remote\'s live connection closed after a final check while a Run\'s journal, answered late, moves it, until Retry passes', async () => {
         const run = { run_id: 'win-run', flow_name: 'review.dot', status: 'running', outcome: null, working_directory: '/win/project', project_path: '/win/project', started_at: '2026-11-24T00:00:00Z', ended_at: null }
         const routes: Record<string, Route> = {
