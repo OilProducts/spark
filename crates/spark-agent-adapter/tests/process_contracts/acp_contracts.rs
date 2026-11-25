@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 use spark_agent_adapter::acp::{self, AcpSessionRecord, AcpTurn};
 use spark_agent_adapter::{
     AgentTurnEventSink, AgentTurnRequest, AssistantTurn, HistoryTurn, UserTurn,
-    AGENT_INSTRUCTIONS_METADATA_KEY, PROJECT_WORK_DIR_METADATA_KEY,
+    AGENT_INSTRUCTIONS_METADATA_KEY, CONVERSATION_HANDLE_METADATA_KEY,
+    PROJECT_WORK_DIR_METADATA_KEY,
 };
 use spark_common::events::{TurnStreamEvent, TurnStreamEventKind};
 
@@ -413,13 +414,21 @@ fn acp_pinned_instructions_reach_every_harness() {
     // Exact bytes, including quoting, newlines and trailing whitespace.
     let instructions = "Be \"exact\".\nLine two\\n  \n";
 
-    // Neither channel: they lead the first prompt of a fresh session, and a
-    // resumed session already has them.
+    // Neither channel: instructions are pinned into every prompt (fresh,
+    // warm-reused, and cold-resumed) so harness compaction cannot drop them.
     let dir = tempfile::tempdir().unwrap();
-    let mut no_channel = request(dir.path(), json!({"resume": true}), json!({}));
+    let mut no_channel = request(
+        dir.path(),
+        json!({"resume": true, "log_env": ["PATH", "SPARK_CONVERSATION_HANDLE"]}),
+        json!({}),
+    );
     no_channel.metadata.insert(
         AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
         json!(instructions),
+    );
+    no_channel.metadata.insert(
+        CONVERSATION_HANDLE_METADATA_KEY.to_string(),
+        json!("delicate-owl"),
     );
     let turn = run(&no_channel, |_| {}).0.expect("turn");
     assert!(received(dir.path(), "session/new")[0]["systemPrompt"].is_null());
@@ -428,14 +437,29 @@ fn acp_pinned_instructions_reach_every_harness() {
         prompt.contains("<instructions>") && prompt.contains("exact"),
         "{prompt}"
     );
+    let startup_env = &log(dir.path())[0]["env"];
+    assert_eq!(startup_env["SPARK_CONVERSATION_HANDLE"], "delicate-owl");
+    let exe_dir = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let child_path = startup_env["PATH"].as_str().unwrap_or_default();
+    assert!(
+        std::env::split_paths(child_path).any(|entry| entry.to_string_lossy() == exe_dir),
+        "expected ACP child PATH to include {exe_dir}, got {child_path}"
+    );
     let record = turn.record.unwrap();
     run(&with_history(no_channel.clone(), &record), |_| {})
         .0
         .expect("warm reused");
     assert_eq!(launches(dir.path()), 1, "warm chat session is reused");
-    assert!(!received(dir.path(), "session/prompt")[1]
-        .to_string()
-        .contains("<instructions>"));
+    let warm_prompt = received(dir.path(), "session/prompt")[1].to_string();
+    assert!(
+        warm_prompt.contains("<instructions>") && warm_prompt.contains("exact"),
+        "{warm_prompt}"
+    );
     assert!(acp::close_session(
         &no_channel.project_path,
         &no_channel.conversation_id
@@ -444,9 +468,11 @@ fn acp_pinned_instructions_reach_every_harness() {
         .0
         .expect("cold resumed");
     assert_eq!(received(dir.path(), "session/resume").len(), 1);
-    assert!(!received(dir.path(), "session/prompt")[2]
-        .to_string()
-        .contains("<instructions>"));
+    let cold_prompt = received(dir.path(), "session/prompt")[2].to_string();
+    assert!(
+        cold_prompt.contains("<instructions>") && cold_prompt.contains("exact"),
+        "{cold_prompt}"
+    );
 
     // Instruction-free work runs on the same harness.
     let dir = tempfile::tempdir().unwrap();

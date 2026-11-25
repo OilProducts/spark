@@ -33,6 +33,13 @@ mod delegations;
 mod environment_auth;
 mod workspace;
 
+pub use delegations::ProxyTimeouts;
+
+/// Names the environment that answered, on every response, so a linking
+/// proxy can tell the environment it paired with from one now at its origin.
+pub(crate) const ENVIRONMENT_ID_HEADER: header::HeaderName =
+    header::HeaderName::from_static("x-spark-environment-id");
+
 /// Builders open the Spark home's conversation store and hold its exclusive
 /// home lock for the app's lifetime; a second app on the same home fails here
 /// with [`spark_storage::StorageError::HomeLocked`]. A failed build releases
@@ -261,6 +268,8 @@ fn build_app_on_store(
         state.settings.clone(),
         environment_auth::require_trust,
     );
+    let environment_id = HeaderValue::from_str(state.conversation_store.environment_id())
+        .expect("the environment ID is a UUID");
     let app = Router::new()
         .route("/", get(serve_index).layer(CompressionLayer::new()))
         .route(
@@ -293,7 +302,18 @@ fn build_app_on_store(
         .route("/attractor/{*path}", any(attractor_dispatch))
         .fallback(product_fallback)
         .with_state(state)
-        .layer(trust);
+        .layer(trust)
+        .layer(axum::middleware::map_response(
+            move |mut response: Response| {
+                let environment_id = environment_id.clone();
+                async move {
+                    response
+                        .headers_mut()
+                        .insert(ENVIRONMENT_ID_HEADER, environment_id);
+                    response
+                }
+            },
+        ));
     (app, live_hub)
 }
 
@@ -1062,6 +1082,17 @@ async fn attractor_dispatch(
             path_run_sequence,
             &response.body,
         );
+    }
+    if let Some((disposition, content)) = response.download {
+        return (
+            [
+                (header::CONTENT_TYPE, response.content_type),
+                (header::CONTENT_DISPOSITION, disposition),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            ],
+            content,
+        )
+            .into_response();
     }
     let content_type = response.content_type.clone();
     let status =

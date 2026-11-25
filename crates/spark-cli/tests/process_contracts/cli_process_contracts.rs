@@ -1275,6 +1275,104 @@ fn process_run_start_from_a_conversation_and_a_project_explains_the_conflict() {
 }
 
 #[test]
+fn process_run_start_and_mission_create_default_to_spark_conversation_handle_env() {
+    let (base_url, requests) = serve_sequence(vec![
+        HttpResponse::json(200, r#"{"ok":true,"status":"started","run_id":"run-1"}"#),
+        HttpResponse::json(200, r#"{"id":"mission-1"}"#),
+        HttpResponse::json(200, r#"{"ok":true,"status":"started","run_id":"run-2"}"#),
+    ]);
+
+    let run_out = Command::new(spark_bin())
+        .args([
+            "run",
+            "start",
+            "--flow",
+            "examples/simple-linear",
+            "--summary",
+            "Default handle",
+            "--base-url",
+            &base_url,
+        ])
+        .env_clear()
+        .env("SPARK_CONVERSATION_HANDLE", "delicate-owl")
+        .output()
+        .expect("run spark run start");
+    assert_eq!(run_out.status.code(), Some(0), "{run_out:?}");
+
+    let mission_out = Command::new(spark_bin())
+        .args([
+            "mission",
+            "create",
+            "--json",
+            r#"{"fields":{"title":"Fix","description":"Do it"}}"#,
+            "--base-url",
+            &base_url,
+        ])
+        .env_clear()
+        .env("SPARK_CONVERSATION_HANDLE", "delicate-owl")
+        .output()
+        .expect("run spark mission create");
+    assert_eq!(mission_out.status.code(), Some(0), "{mission_out:?}");
+
+    // Explicit --project still wins over SPARK_CONVERSATION_HANDLE.
+    let detached_out = Command::new(spark_bin())
+        .args([
+            "run",
+            "start",
+            "--project",
+            "/repo",
+            "--flow",
+            "examples/simple-linear",
+            "--summary",
+            "Explicit project",
+            "--base-url",
+            &base_url,
+        ])
+        .env_clear()
+        .env("SPARK_CONVERSATION_HANDLE", "delicate-owl")
+        .output()
+        .expect("run spark run start --project");
+    assert_eq!(detached_out.status.code(), Some(0), "{detached_out:?}");
+
+    let paths = [0, 1, 2].map(|_| {
+        requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request")
+            .path
+    });
+    assert_eq!(
+        paths,
+        [
+            "/workspace/api/conversations/by-handle/delicate-owl/flow-run-requests",
+            "/workspace/api/missions?conversation_handle=delicate-owl",
+            "/workspace/api/runs/launch",
+        ]
+    );
+
+    // Without --conversation, --project, or SPARK_CONVERSATION_HANDLE, run start exits with usage error.
+    let missing_out = Command::new(spark_bin())
+        .args([
+            "run",
+            "start",
+            "--flow",
+            "examples/simple-linear",
+            "--summary",
+            "Missing origin",
+            "--base-url",
+            &base_url,
+        ])
+        .env_clear()
+        .output()
+        .expect("run spark run start missing origin");
+    assert_eq!(missing_out.status.code(), Some(2), "{missing_out:?}");
+    assert!(
+        stderr_error(&missing_out).contains("SPARK_CONVERSATION_HANDLE"),
+        "{}",
+        stderr_error(&missing_out)
+    );
+}
+
+#[test]
 fn process_flow_get_inputs_prints_only_the_declared_inputs() {
     let flow_md = "---\ntype: Flow\nid: design\ntitle: Design\nschema_version: '2'\ninputs:\n- key: context.request.problem\n  label: Problem\n  description: What to design.\n  required: true\n---\n\nDesign it.\n";
     let (base_url, requests) = serve_once(HttpResponse::json(
