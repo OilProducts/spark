@@ -249,8 +249,9 @@ fn setup(request: &AgentTurnRequest) -> acp::AcpDiscovery {
 }
 
 /// A Windows probe and turn run the program the harness's own child would:
-/// by the `PATHEXT` it registers, in any spelling, an explicit relative path
-/// from the project, and an explicit path without `.exe`. Where the launch
+/// by the `PATHEXT` it registers, in any spelling, past a project's
+/// extensionless npm script, an explicit relative path from the project, and
+/// an explicit path without `.exe`. Where the launch
 /// would run an `agent.cmd.exe` beside the `agent.cmd` found, both name it, so
 /// multiline instructions reach it as an argument.
 #[cfg(windows)]
@@ -258,16 +259,22 @@ fn setup(request: &AgentTurnRequest) -> acp::AcpDiscovery {
 fn acp_windows_launch_finds_the_program_by_the_harness_pathext_and_project() {
     let dir = tempfile::tempdir().unwrap();
     let (bin, beside) = (dir.path().join("bin"), dir.path().join("beside"));
-    for directory in [&bin, &beside] {
+    let shadow = dir.path().join("node_modules").join(".bin");
+    for directory in [&bin, &beside, &shadow] {
         std::fs::create_dir_all(directory).unwrap();
     }
+    // An npm install from WSL writes a script no Windows launch can start.
+    std::fs::write(shadow.join("agent"), "#!/bin/sh\nexit 1\n").unwrap();
     // Spark's own PATHEXT would pick the failing batch file.
     std::fs::write(bin.join("agent.bat"), "@exit /b 1\r\n").unwrap();
     std::fs::write(bin.join("agent.cmd"), format!("@\"{FAKE}\" %*\r\n")).unwrap();
     std::fs::write(beside.join("agent.cmd"), "@exit /b 1\r\n").unwrap();
     std::fs::copy(FAKE, beside.join("agent.cmd.exe")).unwrap();
     for registration in [
-        json!({"executable": "agent", "env": {"PATH": bin, "Pathext": ".CMD;.BAT;.EXE"}}),
+        json!({
+            "executable": "agent",
+            "env": {"PATH": format!(r"node_modules\.bin;{}", bin.display()), "Pathext": ".CMD;.BAT;.EXE"},
+        }),
         json!({"executable": r"bin\agent.cmd"}),
         json!({"executable": FAKE.strip_suffix(".exe").unwrap()}),
         json!({

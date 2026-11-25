@@ -3326,7 +3326,7 @@ fn find_codex_shim(path: Option<&OsStr>, pathext: &OsStr) -> Option<PathBuf> {
         })
         .map(|extension| format!("codex{extension}"))
         .collect::<Vec<_>>();
-    env::split_paths(path?).find_map(|directory| {
+    crate::local_environment::path_directories(path?).find_map(|directory| {
         shims
             .iter()
             .map(|shim| directory.join(shim))
@@ -3350,8 +3350,7 @@ pub(crate) fn codex_program(
 }
 
 fn find_complete_codex_on_path(path: Option<&OsStr>) -> Option<PathBuf> {
-    let path = path?;
-    env::split_paths(path)
+    crate::local_environment::path_directories(path?)
         .map(|directory| directory.join(codex_binary_name()))
         .find_map(|candidate| complete_codex_candidate(&candidate))
 }
@@ -4167,6 +4166,53 @@ mod tests {
         fs::write(first.join("codex.cmd"), "").expect("earlier shim");
         assert_eq!(find(".exe;.bat;.cmd"), Some(first.join("codex.cmd")));
         assert_eq!(find(".exe"), None);
+    }
+
+    /// Discovery searches an empty `PATH` entry only as a launch does, so on
+    /// Windows a `codex.bat` in Spark's own directory, which a launch never
+    /// searches, diverts nothing from a later shim. A child takes that
+    /// directory, which this process cannot change for its other tests.
+    #[test]
+    fn codex_discovery_takes_an_empty_path_entry_as_a_launch_does() {
+        const PATH_VAR: &str = "SPARK_CODEX_EMPTY_PATH_ENTRY_TEST";
+        let Some(path) = env::var_os(PATH_VAR) else {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let bin = temp.path().join("bin");
+            fs::create_dir_all(&bin).expect("bin dir");
+            fs::write(temp.path().join("codex.bat"), "").expect("stray shim");
+            fs::write(bin.join("codex.cmd"), "").expect("shim");
+            let output = std::process::Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "codex_app_server::tests::codex_discovery_takes_an_empty_path_entry_as_a_launch_does",
+                    "--nocapture",
+                ])
+                .current_dir(temp.path())
+                .env(PATH_VAR, env::join_paths([Path::new(""), &bin]).unwrap())
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        // Lowercase, so a case-insensitive file system returns the files as named.
+        let shim = find_codex_shim(Some(&path), OsStr::new(".bat;.cmd")).expect("shim");
+        if cfg!(windows) {
+            let bin = env::split_paths(&path).last().unwrap();
+            assert_eq!(shim, bin.join("codex.cmd"));
+            let resolved = resolve_codex_executable(None, Some(&path), &[]);
+            let bare = crate::local_environment::find_executable_on_path("codex", Some(&path))
+                .expect("bare codex");
+            for found in [resolved, bare] {
+                assert!(found.as_os_str().eq_ignore_ascii_case(&shim), "{found:?}");
+            }
+        } else {
+            assert_eq!(shim, Path::new("codex.bat"));
+        }
     }
 
     #[cfg(windows)]
