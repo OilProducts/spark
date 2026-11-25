@@ -1,14 +1,19 @@
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use axum::body::{to_bytes, Body};
-use axum::extract::ConnectInfo;
-use axum::http::{Request, StatusCode};
-use axum::response::Response;
-use axum::Router;
+use axum::body::{to_bytes, Body, Bytes};
+use axum::extract::{ConnectInfo, State};
+use axum::http::{HeaderValue, Request, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::{Json, Router};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
+use spark_http::ProxyTimeouts;
+use spark_storage::environment::{EnvironmentLink, EnvironmentRepository};
+use tokio::sync::oneshot;
 use tower::ServiceExt;
 
 const REMOTE: &str = "10.1.2.3:40000";
@@ -585,7 +590,7 @@ async fn public_routes_serve_untrusted_requests() {
         let descriptor = json(descriptor).await;
         assert_eq!(descriptor["environment_id"], environment_id.as_str());
         assert_eq!(descriptor["protocol_version"], 1);
-        assert_eq!(descriptor["ui_api_version"], 1);
+        assert_eq!(descriptor["ui_api_version"], 2);
         assert!(!descriptor["spark_version"]
             .as_str()
             .expect("spark version")
@@ -929,133 +934,1053 @@ async fn delegation_list_and_discovery_routes_are_mounted_and_protected() {
     }
 }
 
+const PROXY: &str = "/workspace/api/environments/links/env-b/proxy/";
+
+/// What the fake peer saw of one request.
+#[derive(Clone, Debug)]
+struct Seen {
+    method: String,
+    target: String,
+    authorization: Option<String>,
+    forwarded: Option<String>,
+    body: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct FakePeer {
+    seen: Arc<Mutex<Vec<Seen>>>,
+    /// Dropped with the live stream's body, when the proxy hangs up.
+    stream_closed: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+impl FakePeer {
+    fn seen(&self) -> Vec<Seen> {
+        self.seen.lock().expect("seen").clone()
+    }
+}
+
+/// A real HTTP server answering as `env-b`, linked as `env-b` from
+/// `settings`' home. The receiver resolves when its live stream is dropped.
+async fn fake_peer(settings: &SparkSettings) -> (FakePeer, oneshot::Receiver<()>) {
+    let (closed, stream_closed) = oneshot::channel();
+    let peer = FakePeer {
+        seen: Default::default(),
+        stream_closed: Arc::new(Mutex::new(Some(closed))),
+    };
+    let app = Router::new()
+        .fallback(fake_peer_route)
+        .with_state(peer.clone());
+    let origin = serve(app).await;
+    link(settings, "env-b", &origin, "stored-peer-token");
+    (peer, stream_closed)
+}
+
+async fn fake_peer_route(State(peer): State<FakePeer>, request: Request<Body>) -> Response {
+    use axum::http::header;
+    let (parts, body) = request.into_parts();
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    };
+    let (method, target) = (parts.method.to_string(), parts.uri.to_string());
+    let (authorization, forwarded) = (header("authorization"), header("forwarded"));
+    let path = parts.uri.path().to_string();
+    let body = to_bytes(body, usize::MAX)
+        .await
+        .expect("peer body")
+        .to_vec();
+    peer.seen.lock().expect("seen").push(Seen {
+        method,
+        target,
+        authorization,
+        forwarded,
+        body: body.clone(),
+    });
+    let page = |content_type: &'static str| {
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CONTENT_DISPOSITION, "inline"),
+            (header::CONTENT_SECURITY_POLICY, "default-src *"),
+            (header::X_CONTENT_TYPE_OPTIONS, "sniff"),
+            (header::SET_COOKIE, "session=peer"),
+        ]
+    };
+    let typed = |content_types: &[&'static [u8]], disposition: &'static [u8]| {
+        let mut response = "typed".into_response();
+        let headers = response.headers_mut();
+        headers.remove(header::CONTENT_TYPE);
+        for value in content_types {
+            headers.append(
+                header::CONTENT_TYPE,
+                HeaderValue::from_bytes(value).expect("type"),
+            );
+        }
+        if !disposition.is_empty() {
+            headers.insert(
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_bytes(disposition).expect("disposition"),
+            );
+        }
+        response
+    };
+    let chunk = |text: String| Ok::<_, std::io::Error>(Bytes::from(text));
+    let mut response = match path.as_str() {
+        "/environment" | "/workspace/api/anonymous" => {
+            return Json(json!({"environment_id": "env-b"})).into_response()
+        }
+        "/workspace/api/denied" => {
+            return (StatusCode::UNAUTHORIZED, Json(json!({"detail": "denied"}))).into_response()
+        }
+        "/workspace/api/page.html" => {
+            (page("text/html; charset=utf-8"), "<p>hi</p>").into_response()
+        }
+        "/workspace/api/badge.svg" => (page("image/svg+xml"), "<svg/>").into_response(),
+        "/workspace/api/latin1.html" => {
+            let mut response = (page("text/html"), "<p>hi</p>").into_response();
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_bytes(b"text/plain, TEXT/HTML ; charset=\xe9").expect("obs-text"),
+            );
+            response
+        }
+        "/workspace/api/nbsp.html" => typed(&[b"text/html"], b"\xc2\xa0attachment"),
+        "/workspace/api/named.html" => {
+            typed(&[b"text/html"], br#"Attachment; filename="page.html""#)
+        }
+        "/workspace/api/spaced.html" => {
+            typed(&[b"text/html"], br#"attachment ; filename="page.html""#)
+        }
+        "/workspace/api/frames" => typed(&[b"multipart/x-mixed-replace; boundary=frame"], b""),
+        "/workspace/api/quoted.png" => typed(&[br#"image/png; note="a, text/html""#], b""),
+        "/workspace/api/escaped.png" => {
+            typed(&[br#"image/png; note="a\", text/html; b=\"c""#], b"")
+        }
+        "/workspace/api/listed.png" => typed(&[b"image/png, text/html"], b""),
+        "/workspace/api/doubled.png" => typed(&[b"image/png", b"text/html"], b""),
+        "/workspace/api/pixel.png" => (
+            [(header::CONTENT_TYPE, "image/png")],
+            b"\x89PNG\r\n\x1a\n".to_vec(),
+        )
+            .into_response(),
+        "/workspace/api/echo" => (
+            [
+                (header::CONTENT_TYPE, "application/octet-stream"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    r#"attachment; filename="echo.bin""#,
+                ),
+            ],
+            body,
+        )
+            .into_response(),
+        "/workspace/api/moved" => (
+            StatusCode::FOUND,
+            [(header::LOCATION, "/workspace/api/projects")],
+        )
+            .into_response(),
+        "/workspace/api/broken" => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"detail": "peer broke"})),
+        )
+            .into_response(),
+        "/workspace/api/silent" => std::future::pending().await,
+        "/workspace/api/stalled" => Body::from_stream(async_stream::stream! {
+            yield chunk("partial".into());
+            std::future::pending::<()>().await;
+        })
+        .into_response(),
+        "/workspace/api/trickle" => Body::from_stream(async_stream::stream! {
+            for index in 0..15 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                yield chunk(format!("{index};"));
+            }
+        })
+        .into_response(),
+        "/workspace/api/live/events" => {
+            let closed = peer.stream_closed.lock().expect("closed").take();
+            let events = async_stream::stream! {
+                let _closed = closed;
+                yield chunk("data: first\n\n".into());
+                // Silent from here: only a hang-up can end the stream soon.
+                std::future::pending::<()>().await;
+            };
+            (
+                [(header::CONTENT_TYPE, "text/event-stream")],
+                Body::from_stream(events),
+            )
+                .into_response()
+        }
+        _ => Json(json!({"ok": true})).into_response(),
+    };
+    response
+        .headers_mut()
+        .insert("x-spark-environment-id", HeaderValue::from_static("env-b"));
+    response
+}
+
+/// Serves `app` on a loopback port as Spark does; returns its origin.
+async fn serve(app: Router) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let origin = spark_http::listener_url(listener.local_addr().expect("address"));
+    tokio::spawn(spark_http::serve(listener, app, std::future::pending()));
+    origin
+}
+
+fn link(settings: &SparkSettings, environment_id: &str, origin: &str, token: &str) {
+    EnvironmentRepository::new(&settings.data_dir)
+        .save_link(
+            &EnvironmentLink {
+                environment_id: environment_id.into(),
+                origin: origin.into(),
+                label: environment_id.into(),
+                created_at: spark_storage::environment::now(),
+            },
+            token,
+        )
+        .expect("save link");
+}
+
+async fn proxy_with(
+    app: &Router,
+    method: &str,
+    target: &str,
+    body: Vec<u8>,
+    timeouts: ProxyTimeouts,
+) -> Response {
+    let (mut parts, _) = request(
+        method,
+        &format!("{PROXY}{target}"),
+        Some(LOCAL),
+        &[("authorization", "Bearer caller-should-not-leak")],
+        None,
+    )
+    .into_parts();
+    parts.extensions.insert(timeouts);
+    let request = Request::from_parts(parts, Body::from(body));
+    app.clone().oneshot(request).await.expect("response")
+}
+
+async fn proxy(app: &Router, target: &str) -> Response {
+    proxy_with(app, "GET", target, Vec::new(), ProxyTimeouts::default()).await
+}
+
+fn header<'a>(response: &'a Response, name: &str) -> Option<&'a str> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+}
+
+/// The proxy's own headers, on everything it answers.
+#[track_caller]
+fn assert_sandboxed(response: &Response) {
+    assert_eq!(
+        (
+            header(response, "content-security-policy"),
+            header(response, "x-content-type-options")
+        ),
+        (Some("sandbox; default-src 'none'"), Some("nosniff"))
+    );
+}
+
+async fn bytes(response: Response) -> Vec<u8> {
+    to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body")
+        .to_vec()
+}
+
 #[tokio::test]
-async fn linked_environment_proxy_injects_bearer_streams_sse_and_blocks_disallowed_paths() {
-    use futures_util::StreamExt;
+async fn linked_environment_proxy_forwards_raw_targets_and_refuses_unsafe_paths() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cfg = settings(temp.path());
+    let app = crate::store_app_default(cfg.clone());
+    let (peer, _) = fake_peer(&cfg).await;
+
+    // Refused before any upstream request: other surfaces, prefix
+    // look-alikes, traversal in any encoding, and bad escapes.
+    for bad in [
+        "",
+        "assets/app.js",
+        "etc/passwd",
+        "attractor",
+        "attractor/",
+        "attractorx/status",
+        "environmentx",
+        "environment/pair",
+        "workspace/apix",
+        "workspace/apis/projects",
+        "workspace",
+        "workspace/api/../environment",
+        "workspace/api/./projects",
+        "workspace/api/%2e%2e/environment",
+        "workspace/api/%2E%2E/environment",
+        "workspace/api/%2e/projects",
+        "workspace/api/..%2Fenvironment",
+        "workspace/api/runs/x%2F..%2F..%2Fenvironment",
+        "attractor/pipelines/%2e%2e%2f%2e%2e%2fenvironment",
+        "workspace/api/a%5Cb",
+        "workspace/api/a%00b",
+        "workspace/api/a%0Ab",
+        "workspace/api/a%7Fb",
+        "workspace/api/%zz",
+        "workspace/api/%4",
+        "workspace/api/%+1",
+    ] {
+        let refused = proxy(&app, bad).await;
+        assert_eq!(refused.status(), StatusCode::NOT_FOUND, "{bad:?}");
+        // An empty path never reaches the proxy route.
+        if !bad.is_empty() {
+            assert_sandboxed(&refused);
+        }
+    }
+    let missing = send(
+        &app,
+        "GET",
+        "/workspace/api/environments/links/env-missing/proxy/environment",
+        Some(LOCAL),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    // A target the URL would re-encode is refused rather than altered.
+    for drifting in ["workspace/api/a{b}", "workspace/api/projects?q=it's"] {
+        let refused = proxy(&app, drifting).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{drifting}");
+    }
+    // The client would send a CONNECT to the peer's authority, not the path.
+    let connect = proxy_with(
+        &app,
+        "CONNECT",
+        "workspace/api/projects",
+        Vec::new(),
+        ProxyTimeouts::default(),
+    )
+    .await;
+    assert_eq!(connect.status(), StatusCode::BAD_REQUEST);
+    assert_sandboxed(&connect);
+    assert!(peer.seen().is_empty(), "{:?}", peer.seen());
+
+    // The peer gets exactly the raw target: encoded slashes, `#` and `?`
+    // in names, and encoded query values, unchanged.
+    let targets = [
+        "attractor/pipelines/run-1/artifacts/notes%23draft%3F.txt",
+        "workspace/api/flows/team%2Fops/files",
+        "workspace/api/flows/team%2fops/files?project_path=%2Fsrv%2Fmy%20repo&q=a%26b%3Dc%23d",
+        "workspace/api/projects?",
+        "workspace/api",
+        "environment",
+    ];
+    for target in targets {
+        let response = proxy(&app, target).await;
+        assert_eq!(response.status(), StatusCode::OK, "{target}");
+    }
+    let seen = peer.seen();
+    assert_eq!(
+        seen.iter()
+            .map(|seen| seen.target.as_str())
+            .collect::<Vec<_>>(),
+        targets.map(|target| format!("/{target}"))
+    );
+    for seen in seen {
+        assert_eq!(
+            seen.authorization.as_deref(),
+            Some("Bearer stored-peer-token")
+        );
+        assert_eq!(seen.forwarded.as_deref(), Some("by=spark-proxy"));
+    }
+}
+
+#[tokio::test]
+async fn linked_environment_proxy_never_sends_a_literal_fragment_over_the_wire() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let temp = tempfile::tempdir().expect("tempdir");
     let cfg = settings(temp.path());
-    let app = crate::store_app_default(cfg.clone());
+    let origin = serve(crate::store_app_default(cfg.clone())).await;
+    let (peer, _) = fake_peer(&cfg).await;
+    let address = origin.trim_start_matches("http://");
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind upstream");
-    let port = listener.local_addr().unwrap().port();
-    let (release_sse_tx, mut release_sse_rx) = tokio::sync::oneshot::channel::<()>();
-
-    let upstream = tokio::spawn(async move {
-        // Request 1: POST JSON to /workspace/api/projects/register?foo=1
-        let (mut sock, _) = listener.accept().await.unwrap();
-        let mut buf = vec![0u8; 4096];
-        let n = sock.read(&mut buf).await.unwrap();
-        let first_req = String::from_utf8_lossy(&buf[..n]).to_string();
-        let body = r#"{"ok":true}"#;
-        let resp = format!(
-            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        sock.write_all(resp.as_bytes()).await.unwrap();
-        drop(sock);
-
-        // Request 2: Streaming SSE on /workspace/api/live/events
-        let (mut sock, _) = listener.accept().await.unwrap();
-        let mut buf = vec![0u8; 4096];
-        let n = sock.read(&mut buf).await.unwrap();
-        let second_req = String::from_utf8_lossy(&buf[..n]).to_string();
-        sock.write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\ndata: first\n\n",
-        )
-        .await
-        .unwrap();
-        sock.flush().await.unwrap();
-        let _ = (&mut release_sse_rx).await;
-        sock.write_all(b"data: second\n\n").await.unwrap();
-        sock.flush().await.unwrap();
-        drop(sock);
-        (first_req, second_req)
-    });
-
-    spark_storage::environment::EnvironmentRepository::new(&cfg.data_dir)
-        .save_link(
-            &spark_storage::environment::EnvironmentLink {
-                environment_id: "env-b".into(),
-                origin: format!("http://127.0.0.1:{port}"),
-                label: "B".into(),
-                created_at: spark_storage::environment::now(),
-            },
-            "stored-peer-token",
-        )
-        .unwrap();
-
-    // Disallowed paths and traversal are refused before contacting upstream.
-    for bad in [
-        "/workspace/api/environments/links/env-b/proxy/assets/app.js",
-        "/workspace/api/environments/links/env-b/proxy/workspace/api/../environment",
-        "/workspace/api/environments/links/env-b/proxy/etc/passwd",
-        "/workspace/api/environments/links/env-missing/proxy/environment",
+    // The HTTP parser drops `#…` from the request line before routing (see
+    // `allowed_proxy_path`), so the proxy cannot see it to refuse it. The
+    // fragment never reaches the peer; encoded `%23` and `%3F` pass unchanged.
+    for target in [
+        "workspace/api/projects#../../environment",
+        "attractor/pipelines/run-1/artifacts/notes%23draft%3F.txt#x",
     ] {
-        let refused = send(&app, "GET", bad, Some(LOCAL), &[], None).await;
-        assert_eq!(refused.status(), StatusCode::NOT_FOUND, "{bad}");
+        let mut socket = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("connect");
+        socket
+            .write_all(
+                format!(
+                    "GET {PROXY}{target} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("request");
+        let mut response = Vec::new();
+        socket.read_to_end(&mut response).await.expect("response");
+        assert!(
+            response.starts_with(b"HTTP/1.1 200 "),
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
+    }
+    assert_eq!(
+        peer.seen()
+            .iter()
+            .map(|seen| seen.target.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "/workspace/api/projects",
+            "/attractor/pipelines/run-1/artifacts/notes%23draft%3F.txt"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn linked_environment_proxy_keeps_methods_bodies_redirects_and_errors() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cfg = settings(temp.path());
+    let app = crate::store_app_default(cfg.clone());
+    let (peer, _) = fake_peer(&cfg).await;
+    let binary = (0..=255u8).cycle().take(70_000).collect::<Vec<_>>();
+
+    for method in ["GET", "POST", "PATCH", "PUT", "DELETE"] {
+        let body = if method == "GET" {
+            Vec::new()
+        } else {
+            binary.clone()
+        };
+        let response = proxy_with(
+            &app,
+            method,
+            "workspace/api/echo",
+            body.clone(),
+            ProxyTimeouts::default(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "{method}");
+        assert_eq!(
+            header(&response, "content-disposition"),
+            Some(r#"attachment; filename="echo.bin""#)
+        );
+        assert_eq!(bytes(response).await, body, "{method}");
+        let seen = peer.seen().pop().expect("seen");
+        assert_eq!((seen.method.as_str(), seen.body == body), (method, true));
     }
 
-    // Request 1: forwards method, query, JSON body, and replaces caller Authorization with link bearer.
-    let posted = send(
-        &app,
-        "POST",
-        "/workspace/api/environments/links/env-b/proxy/workspace/api/projects/register?foo=1",
-        Some(LOCAL),
-        &[("authorization", "Bearer caller-should-not-leak")],
-        Some(r#"{"project_path":"/srv/repo"}"#),
-    )
-    .await;
-    assert_eq!(posted.status(), StatusCode::CREATED);
-    assert_eq!(json(posted).await, json!({"ok": true}));
+    // A redirect comes back as is; the proxy does not follow it.
+    let before = peer.seen().len();
+    let moved = proxy(&app, "workspace/api/moved").await;
+    assert_eq!(moved.status(), StatusCode::FOUND);
+    assert_eq!(peer.seen().len(), before + 1);
 
-    // Request 2: SSE chunk 1 arrives while upstream is still open!
-    let sse = send(
-        &app,
-        "GET",
-        "/workspace/api/environments/links/env-b/proxy/workspace/api/live/events",
-        Some(LOCAL),
-        &[("accept", "text/event-stream")],
-        None,
-    )
-    .await;
+    let broken = proxy(&app, "workspace/api/broken").await;
+    assert_eq!(broken.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(json(broken).await, json!({"detail": "peer broke"}));
+}
+
+#[tokio::test]
+async fn linked_environment_proxy_sandboxes_what_the_peer_serves() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cfg = settings(temp.path());
+    let app = crate::store_app_default(cfg.clone());
+    let _peer = fake_peer(&cfg).await;
+
+    for (target, content_type, disposition, body) in [
+        (
+            "workspace/api/page.html",
+            &b"text/html; charset=utf-8"[..],
+            Some("attachment"),
+            &b"<p>hi</p>"[..],
+        ),
+        (
+            "workspace/api/latin1.html",
+            b"text/plain, TEXT/HTML ; charset=\xe9",
+            Some("attachment"),
+            b"<p>hi</p>",
+        ),
+        (
+            "workspace/api/badge.svg",
+            b"image/svg+xml",
+            Some("attachment"),
+            b"<svg/>",
+        ),
+        // Only a plain ASCII `attachment` followed at once by `;` or the end
+        // survives on markup; anything else is replaced by the proxy's own.
+        (
+            "workspace/api/nbsp.html",
+            b"text/html",
+            Some("attachment"),
+            b"typed",
+        ),
+        (
+            "workspace/api/spaced.html",
+            b"text/html",
+            Some("attachment"),
+            b"typed",
+        ),
+        (
+            "workspace/api/named.html",
+            b"text/html",
+            Some(r#"Attachment; filename="page.html""#),
+            b"typed",
+        ),
+        // A browser renders each part of a multipart stream by its own type.
+        (
+            "workspace/api/frames",
+            b"multipart/x-mixed-replace; boundary=frame",
+            Some("attachment"),
+            b"typed",
+        ),
+        // A comma in a quoted parameter does not start another type; a
+        // listed or repeated markup type counts.
+        (
+            "workspace/api/quoted.png",
+            br#"image/png; note="a, text/html""#,
+            None,
+            b"typed",
+        ),
+        (
+            "workspace/api/escaped.png",
+            br#"image/png; note="a\", text/html; b=\"c""#,
+            None,
+            b"typed",
+        ),
+        (
+            "workspace/api/listed.png",
+            b"image/png, text/html",
+            Some("attachment"),
+            b"typed",
+        ),
+        (
+            "workspace/api/doubled.png",
+            b"image/png",
+            Some("attachment"),
+            b"typed",
+        ),
+        (
+            "workspace/api/pixel.png",
+            b"image/png",
+            None,
+            b"\x89PNG\r\n\x1a\n",
+        ),
+        (
+            "workspace/api/projects",
+            b"application/json",
+            None,
+            br#"{"ok":true}"#,
+        ),
+    ] {
+        let response = proxy(&app, target).await;
+        assert_eq!(response.status(), StatusCode::OK, "{target}");
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .map(HeaderValue::as_bytes),
+            Some(content_type),
+            "{target}"
+        );
+        assert_eq!(
+            header(&response, "content-disposition"),
+            disposition,
+            "{target}"
+        );
+        assert_sandboxed(&response);
+        assert_eq!(header(&response, "set-cookie"), None);
+        assert_eq!(bytes(response).await, body, "{target}");
+    }
+}
+
+/// A forward proxy set in the environment never sees a linked peer's token:
+/// a child test process runs the proxy with every proxy variable pointing at
+/// a listener that must stay undialed.
+#[tokio::test]
+async fn linked_environment_proxy_ignores_ambient_forward_proxies() {
+    const CHILD: &str = "SPARK_AMBIENT_PROXY_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let forward = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        forward.set_nonblocking(true).expect("nonblocking");
+        let url = format!("http://{}", forward.local_addr().expect("address"));
+        let names = [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ];
+        let output = std::process::Command::new(std::env::current_exe().expect("executable"))
+            .args([
+                "--exact",
+                "environment_auth_route_contracts::linked_environment_proxy_ignores_ambient_forward_proxies",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(CHILD, "1")
+            .envs(names.map(|name| (name, &url)))
+            .output()
+            .expect("child test");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            forward.accept().err().map(|error| error.kind()),
+            Some(std::io::ErrorKind::WouldBlock),
+            "the forward proxy was dialed"
+        );
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cfg = settings(temp.path());
+    let app = crate::store_app_default(cfg.clone());
+    let (peer, _) = fake_peer(&cfg).await;
+    let quick = ProxyTimeouts {
+        headers: Duration::from_secs(5),
+        idle: Duration::from_secs(5),
+    };
+    let response = proxy_with(&app, "GET", "workspace/api/projects", Vec::new(), quick).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        peer.seen()
+            .iter()
+            .map(|seen| seen.authorization.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("Bearer stored-peer-token")]
+    );
+}
+
+#[tokio::test]
+async fn linked_environment_proxy_requires_the_peer_to_answer_as_the_link() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cfg = settings(temp.path());
+    let app = crate::store_app_default(cfg.clone());
+    let _peer = fake_peer(&cfg).await;
+
+    // The public descriptor may omit the header; a protected route may not,
+    // except to refuse the token.
+    let descriptor = proxy(&app, "environment").await;
+    assert_eq!(descriptor.status(), StatusCode::OK);
+    let anonymous = proxy(&app, "workspace/api/anonymous").await;
+    assert_eq!(anonymous.status(), StatusCode::BAD_GATEWAY);
+    assert_sandboxed(&anonymous);
+    assert!(json(anonymous).await["detail"]
+        .as_str()
+        .expect("detail")
+        .contains("not the linked \"env-b\""));
+    let denied = proxy(&app, "workspace/api/denied").await;
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+    // The same peer under another environment's link is refused.
+    let origin = EnvironmentRepository::new(&cfg.data_dir)
+        .link("env-b")
+        .expect("link")
+        .expect("env-b")
+        .0
+        .origin;
+    link(&cfg, "env-c", &origin, "stored-peer-token");
+    for target in ["workspace/api/projects", "attractor/status"] {
+        let swapped = send(
+            &app,
+            "GET",
+            &format!("/workspace/api/environments/links/env-c/proxy/{target}"),
+            Some(LOCAL),
+            &[],
+            None,
+        )
+        .await;
+        assert_eq!(swapped.status(), StatusCode::BAD_GATEWAY, "{target}");
+        assert_sandboxed(&swapped);
+    }
+}
+
+#[tokio::test]
+async fn linked_environment_proxy_times_out_silent_and_stalled_peers() {
+    use futures_util::StreamExt;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cfg = settings(temp.path());
+    let app = crate::store_app_default(cfg.clone());
+    let _peer = fake_peer(&cfg).await;
+    // A delegation `wait` holds up to MAX_WAIT before answering; the default
+    // deadline must outlast it, so a pending poll gets its 200, not a 504.
+    assert!(ProxyTimeouts::default().headers > spark_workspace::delegations::MAX_WAIT);
+    let short = ProxyTimeouts {
+        headers: Duration::from_millis(200),
+        idle: Duration::from_millis(200),
+    };
+
+    let started = Instant::now();
+    let silent = proxy_with(&app, "GET", "workspace/api/silent", Vec::new(), short).await;
+    assert_eq!(silent.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_sandboxed(&silent);
+    assert!(json(silent).await["detail"]
+        .as_str()
+        .expect("detail")
+        .contains("sent no response within 200ms"));
+
+    let stalled = proxy_with(&app, "GET", "workspace/api/stalled", Vec::new(), short).await;
+    assert_eq!(stalled.status(), StatusCode::OK);
+    let mut stream = stalled.into_body().into_data_stream();
+    let first = stream.next().await.expect("chunk").expect("bytes");
+    assert_eq!(&first[..], b"partial");
+    let stalled_at = Instant::now();
+    let ended = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("the stalled stream ends");
+    assert!(matches!(ended, Some(Err(_)) | None), "{ended:?}");
+    assert!(stalled_at.elapsed() >= short.idle);
+
+    // Chunks closer together than the idle deadline keep the stream open
+    // well past it.
+    let steady = ProxyTimeouts {
+        idle: Duration::from_millis(300),
+        ..short
+    };
+    let started = Instant::now();
+    let trickle = proxy_with(&app, "GET", "workspace/api/trickle", Vec::new(), steady).await;
+    assert_eq!(trickle.status(), StatusCode::OK);
+    let body = String::from_utf8(bytes(trickle).await).expect("utf-8");
+    assert_eq!(
+        body,
+        (0..15).map(|index| format!("{index};")).collect::<String>()
+    );
+    assert!(started.elapsed() > steady.idle * 2);
+}
+
+#[tokio::test]
+async fn linked_environment_proxy_streams_sse_and_hangs_up_with_the_client() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cfg = settings(temp.path());
+    let origin = serve(crate::store_app_default(cfg.clone())).await;
+    let (peer, stream_closed) = fake_peer(&cfg).await;
+
+    // A real HTTP client on a served Spark router: the event arrives while
+    // the peer's stream is still open.
+    let client = reqwest::Client::new();
+    let mut sse = client
+        .get(format!("{origin}{PROXY}workspace/api/live/events"))
+        .header("accept", "text/event-stream")
+        .send()
+        .await
+        .expect("connect");
     assert_eq!(sse.status(), StatusCode::OK);
     assert_eq!(
         sse.headers()
             .get("content-type")
-            .and_then(|v| v.to_str().ok()),
+            .and_then(|value| value.to_str().ok()),
         Some("text/event-stream")
     );
-    let mut stream = sse.into_body().into_data_stream();
-    let first_chunk = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+    let first = tokio::time::timeout(Duration::from_secs(5), sse.chunk())
         .await
-        .expect("first SSE chunk arrived before upstream closed")
-        .expect("some chunk")
-        .expect("ok bytes");
-    assert_eq!(String::from_utf8_lossy(&first_chunk), "data: first\n\n");
-    let _ = release_sse_tx.send(());
-    let second_chunk = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
-        .await
-        .expect("second SSE chunk")
-        .expect("some chunk")
-        .expect("ok bytes");
-    assert_eq!(String::from_utf8_lossy(&second_chunk), "data: second\n\n");
+        .expect("first event")
+        .expect("read")
+        .expect("chunk");
+    assert_eq!(&first[..], b"data: first\n\n");
 
-    let (first_req, second_req) = upstream.await.unwrap();
-    assert!(first_req.starts_with("POST /workspace/api/projects/register?foo=1 HTTP/"));
-    assert!(first_req
-        .to_ascii_lowercase()
-        .contains("authorization: bearer stored-peer-token"));
-    assert!(!first_req.contains("caller-should-not-leak"));
-    assert!(first_req.contains(r#"{"project_path":"/srv/repo"}"#));
-    assert!(second_req.starts_with("GET /workspace/api/live/events HTTP/"));
-    assert!(second_req
-        .to_ascii_lowercase()
-        .contains("authorization: bearer stored-peer-token"));
+    // Closing the client's socket drops the upstream connection right away,
+    // though the peer has nothing more to send.
+    drop((sse, client));
+    tokio::time::timeout(Duration::from_secs(2), stream_closed)
+        .await
+        .expect("the peer's stream is dropped promptly")
+        .expect_err("dropped, not sent");
+    let seen = peer.seen().pop().expect("seen");
+    assert_eq!(seen.target, "/workspace/api/live/events");
+}
+
+/// Pairs with `app` the way another environment would; returns the token
+/// id and secret.
+async fn pair(app: &Router) -> (String, String) {
+    let code = send(
+        app,
+        "POST",
+        "/workspace/api/environment/pairing-codes",
+        Some(LOCAL),
+        &[],
+        None,
+    )
+    .await;
+    let code = json(code).await["code"].as_str().expect("code").to_string();
+    let paired = send(
+        app,
+        "POST",
+        "/environment/pair",
+        Some(LOCAL),
+        &[],
+        Some(&json!({"code": code}).to_string()),
+    )
+    .await;
+    let paired = json(paired).await;
+    (
+        paired["token_id"].as_str().expect("token id").to_string(),
+        paired["token"].as_str().expect("token").to_string(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
+    let homes = [(); 3].map(|()| tempfile::tempdir().expect("tempdir"));
+    let [a, b, c] = homes.each_ref().map(|home| settings(home.path()));
+    let [app_a, app_b, app_c] = [&a, &b, &c].map(|cfg| crate::store_app_default(cfg.clone()));
+    let b_id = crate::shared_store(&b.data_dir)
+        .environment_id()
+        .to_string();
+    let c_id = crate::shared_store(&c.data_dir)
+        .environment_id()
+        .to_string();
+    let (b_origin, c_origin) = (serve(app_b.clone()).await, serve(app_c.clone()).await);
+    let (b_token_id, b_token) = pair(&app_b).await;
+    let (_, c_token) = pair(&app_c).await;
+    link(&a, &b_id, &b_origin, &b_token);
+    let via = |target: &str| format!("/workspace/api/environments/links/{b_id}/proxy/{target}");
+
+    // Every response names its environment; the identity route needs a token.
+    let direct = send(
+        &app_b,
+        "GET",
+        "/workspace/api/projects",
+        Some(LOCAL),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(
+        header(&direct, "x-spark-environment-id"),
+        Some(b_id.as_str())
+    );
+    let remote = send(
+        &app_b,
+        "GET",
+        "/workspace/api/environment",
+        Some(REMOTE),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(remote.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        header(&remote, "x-spark-environment-id"),
+        Some(b_id.as_str())
+    );
+
+    let identity = send(
+        &app_a,
+        "GET",
+        &via("workspace/api/environment"),
+        Some(LOCAL),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(identity.status(), StatusCode::OK);
+    let identity = json(identity).await;
+    assert_eq!(identity["environment_id"], b_id.as_str());
+    assert_eq!(identity["protocol_version"], 1);
+    // UI API v2 is this wire contract: protected routes must answer with
+    // `X-Spark-Environment-Id` (the proxied 200 above needs it), and the
+    // authenticated `GET /workspace/api/environment` exposes `build_id`
+    // (checked below). A v1 peer fails the version check rather than a
+    // protected route.
+    assert_eq!(spark_storage::environment::UI_API_VERSION, 2);
+    assert_eq!(identity["ui_api_version"], 2);
+    for field in ["display_name", "spark_version"] {
+        assert!(
+            !identity[field].as_str().expect(field).is_empty(),
+            "{field}"
+        );
+    }
+    // The build id is the version plus a hash of the running executable's
+    // bytes, so two builds that differ in any byte announce different ids.
+    let mut executable = std::hash::DefaultHasher::new();
+    std::hash::Hasher::write(
+        &mut executable,
+        &std::fs::read(std::env::current_exe().expect("executable")).expect("read executable"),
+    );
+    assert_eq!(
+        identity["build_id"],
+        format!(
+            "{}+{:016x}",
+            env!("CARGO_PKG_VERSION"),
+            std::hash::Hasher::finish(&executable)
+        )
+    );
+    let projects = send(
+        &app_a,
+        "GET",
+        &via("workspace/api/projects"),
+        Some(LOCAL),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(projects.status(), StatusCode::OK);
+
+    // Polling a pending delegation through the link answers normally.
+    let pending = EnvironmentRepository::new(&b.data_dir)
+        .create_out(&spark_storage::environment::DelegationOut {
+            delegation_id: "delegation-pending".into(),
+            environment_id: c_id.clone(),
+            project_path: "/srv/repo".into(),
+            kind: "flow".into(),
+            request: json!({}),
+            request_sha256: "sha".into(),
+            caller: "test".into(),
+            request_key: "pending".into(),
+            owner_conversation_id: None,
+            phase: "created".into(),
+            target_id: None,
+            last_state: None,
+            result: None,
+            paused: None,
+            cancel_requested_at: None,
+            cancel_acknowledged_at: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        })
+        .expect("pending delegation");
+    let polled = send(
+        &app_a,
+        "GET",
+        &via(&format!(
+            "workspace/api/delegations/{}/wait?timeout_ms=50",
+            pending.delegation_id
+        )),
+        Some(LOCAL),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(polled.status(), StatusCode::OK);
+    let polled = json(polled).await;
+    assert_eq!(
+        (&polled["delegation_id"], &polled["timed_out"]),
+        (&json!("delegation-pending"), &json!(true))
+    );
+
+    // Another environment now at B's link cannot answer for B.
+    link(&a, &b_id, &c_origin, &c_token);
+    for target in [
+        "workspace/api/projects",
+        "workspace/api/environment",
+        "environment",
+    ] {
+        let swapped = send(&app_a, "GET", &via(target), Some(LOCAL), &[], None).await;
+        assert_eq!(swapped.status(), StatusCode::BAD_GATEWAY, "{target}");
+        let detail = json(swapped).await["detail"]
+            .as_str()
+            .expect("detail")
+            .to_string();
+        assert!(detail.contains(&c_id), "{detail}");
+    }
+
+    // A loopback peer still checks the token the proxy relays.
+    link(&a, &b_id, &b_origin, &b_token);
+    let revoke = format!("/workspace/api/environment/tokens/{b_token_id}/revoke");
+    let revoked = send(&app_b, "POST", &revoke, Some(LOCAL), &[], None).await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+    let refused = send(
+        &app_a,
+        "GET",
+        &via("workspace/api/projects"),
+        Some(LOCAL),
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        json(refused).await,
+        json!({"detail": "A peer token is required."})
+    );
+}
+
+#[tokio::test]
+async fn artifact_downloads_are_exact_attachments_the_browser_does_not_sniff() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cfg = settings(temp.path());
+    let app = crate::store_app_default(cfg.clone());
+    let paths = attractor_runtime::RunStore::for_settings(&cfg)
+        .create_run(attractor_runtime::CreateRunRequest {
+            record: attractor_core::RunRecord::new(
+                "run-download",
+                cfg.project_root.to_string_lossy(),
+            ),
+            ..Default::default()
+        })
+        .expect("run");
+    fs::create_dir_all(paths.artifacts_dir()).expect("artifacts");
+    let json_bytes = b"{\"ok\": true}\n".to_vec();
+    let binary = vec![0x89, b'P', b'N', b'G', 0x00, 0xff, 0xfe, b'\n'];
+    fs::write(paths.artifacts_dir().join("result.json"), &json_bytes).expect("json");
+    fs::write(paths.artifacts_dir().join("capture.bin"), &binary).expect("binary");
+    let uri = |name: &str| format!("/attractor/pipelines/run-download/artifacts/artifacts/{name}");
+
+    for (name, content_type, content) in [
+        ("result.json", "application/json", &json_bytes),
+        ("capture.bin", "application/octet-stream", &binary),
+    ] {
+        for query in ["?download=1", "?download=true"] {
+            let download = send(
+                &app,
+                "GET",
+                &format!("{}{query}", uri(name)),
+                Some(LOCAL),
+                &[],
+                None,
+            )
+            .await;
+            assert_eq!(download.status(), StatusCode::OK, "{name}{query}");
+            assert_eq!(header(&download, "content-type"), Some(content_type));
+            assert_eq!(
+                header(&download, "content-disposition"),
+                Some(format!("attachment; filename=\"{name}\"").as_str())
+            );
+            assert_eq!(header(&download, "x-content-type-options"), Some("nosniff"));
+            assert_eq!(&bytes(download).await, content, "{name}{query}");
+        }
+    }
+    // Named by the file storage resolved, however the request spelled it.
+    for spelled in ["result.json/", "./result.json/.", "result.json%20"] {
+        let download = send(
+            &app,
+            "GET",
+            &format!("{}?download=1", uri(spelled)),
+            Some(LOCAL),
+            &[],
+            None,
+        )
+        .await;
+        assert_eq!(download.status(), StatusCode::OK, "{spelled}");
+        assert_eq!(
+            header(&download, "content-disposition"),
+            Some("attachment; filename=\"result.json\""),
+            "{spelled}"
+        );
+        assert_eq!(&bytes(download).await, &json_bytes, "{spelled}");
+    }
+
+    // Previews are unchanged: text as before, binary refused.
+    let preview = send(&app, "GET", &uri("result.json"), Some(LOCAL), &[], None).await;
+    assert_eq!(preview.status(), StatusCode::OK);
+    assert_eq!(header(&preview, "content-disposition"), None);
+    assert_eq!(json(preview).await, json!("{\"ok\": true}\n"));
+    let binary_preview = send(&app, "GET", &uri("capture.bin"), Some(LOCAL), &[], None).await;
+    assert_eq!(binary_preview.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
 
 fn request(

@@ -206,7 +206,7 @@ where
     let (names, matches) = parse(&args)?;
     let names = names.iter().map(String::as_str).collect::<Vec<_>>();
     let mut stdin = RuntimeStdin::new(Some(stdin_text.into()));
-    match route(&names, &matches, &mut stdin)? {
+    match route(&names, &matches, env, &mut stdin)? {
         Route::Api(plan) => with_target(plan, &names, &matches, env),
         Route::ValidateDir { .. } => Err(json_error(
             "spark flow validate --dir runs locally; it sends no request.",
@@ -234,7 +234,7 @@ fn run_agent_shell(
         Err(output) => return output,
     };
     let names = names.iter().map(String::as_str).collect::<Vec<_>>();
-    let plan = match route(&names, &matches, stdin) {
+    let plan = match route(&names, &matches, env, stdin) {
         Ok(Route::Api(plan)) => plan,
         Ok(Route::ValidateDir { dir, project, text }) => {
             return validate_flow_dir(&dir, project.as_deref(), text, env)
@@ -442,20 +442,22 @@ fn mission_command() -> Command {
     domain("mission", "Manage a project's missions.").subcommands([
         leaf("list", "List a project's missions.").arg(project()),
         leaf("get", "Print a mission.").args([mission_id(), project()]),
-        leaf("create", "Create a mission.").args([
-            self::project("The mission's project").conflicts_with("conversation"),
-            value(
-                "conversation",
-                "HANDLE",
-                "Create it from this conversation, in its project; defaults to SPARK_CONVERSATION_HANDLE when --project is omitted",
-            ),
-            value(
-                "json",
-                "JSON",
-                "Mission fields: inline JSON, a file path, or - for stdin",
-            )
-            .required(true),
-        ]),
+        leaf("create", "Create a mission.")
+            .args([
+                self::project("The mission's project"),
+                value(
+                    "conversation",
+                    "HANDLE",
+                    "Create it from this conversation, in its project; defaults to SPARK_CONVERSATION_HANDLE when --project is omitted",
+                ),
+                value(
+                    "json",
+                    "JSON",
+                    "Mission fields: inline JSON, a file path, or - for stdin",
+                )
+                .required(true),
+            ])
+            .group(ArgGroup::new("origin").args(["project", "conversation"])),
         leaf("update", "Change a mission's fields.").args([
             mission_id(),
             project(),
@@ -917,7 +919,12 @@ fn request(method: HttpMethod, path: String) -> ApiRequestPlan {
 
 /// Everything that needs no server, JSON inputs included, before a target
 /// is resolved.
-fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Route, CommandOutput> {
+fn route(
+    names: &[&str],
+    m: &ArgMatches,
+    env: &impl Environment,
+    stdin: &mut RuntimeStdin,
+) -> Result<Route, CommandOutput> {
     use HttpMethod::{Delete, Get, Patch, Post};
     let id = value_of(m, "id").unwrap_or_default();
     let enc_id = encode(&id);
@@ -988,8 +995,12 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
                     "spark run start takes --conversation or --project, not both: a run started from a conversation runs in that conversation's project, under its mission or role budget. Drop --project.",
                 ));
             }
-            let conversation = explicit_conversation
-                .or_else(|| project.is_none().then(env_conversation_handle).flatten());
+            let conversation = explicit_conversation.or_else(|| {
+                project
+                    .is_none()
+                    .then(|| env_conversation_handle(env))
+                    .flatten()
+            });
             if conversation.is_none() && project.is_none() {
                 return Err(usage_error(
                     "spark run start requires --conversation <HANDLE> (or SPARK_CONVERSATION_HANDLE) or --project <PATH>.",
@@ -1020,7 +1031,7 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
             put(
                 &mut retry,
                 "conversation_handle",
-                value_of(m, "conversation").or_else(env_conversation_handle),
+                value_of(m, "conversation").or_else(|| env_conversation_handle(env)),
             );
             ApiRequestPlan {
                 body: body(retry),
@@ -1043,8 +1054,12 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
             put(
                 &mut resume,
                 "conversation_handle",
-                value_of(m, "conversation")
-                    .or_else(|| project.is_none().then(env_conversation_handle).flatten()),
+                value_of(m, "conversation").or_else(|| {
+                    project
+                        .is_none()
+                        .then(|| env_conversation_handle(env))
+                        .flatten()
+                }),
             );
             model_fields(&mut resume, m);
             ApiRequestPlan {
@@ -1090,7 +1105,7 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
             }
         }
         ["send"] => {
-            let from = value_of(m, "from").or_else(env_conversation_handle);
+            let from = value_of(m, "from").or_else(|| env_conversation_handle(env));
             let Some(from) = from else {
                 return Err(usage_error(
                     "spark send requires --from <HANDLE> (or SPARK_CONVERSATION_HANDLE).",
@@ -1119,8 +1134,12 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
                 path = format!("{path}/{leaf}");
             }
             let conversation = if *leaf == "create" {
-                let resolved = value_of(m, "conversation")
-                    .or_else(|| project.is_none().then(env_conversation_handle).flatten());
+                let resolved = value_of(m, "conversation").or_else(|| {
+                    project
+                        .is_none()
+                        .then(|| env_conversation_handle(env))
+                        .flatten()
+                });
                 if resolved.is_none() && project.is_none() {
                     return Err(usage_error(
                         "spark mission create requires --conversation <HANDLE> (or SPARK_CONVERSATION_HANDLE) or --project <PATH>.",
@@ -1302,7 +1321,7 @@ fn route(names: &[&str], m: &ArgMatches, stdin: &mut RuntimeStdin) -> Result<Rou
                 value_of(m, "conversation").or_else(|| {
                     value_of(m, "run")
                         .is_none()
-                        .then(env_conversation_handle)
+                        .then(|| env_conversation_handle(env))
                         .flatten()
                 }),
             );
@@ -1390,13 +1409,10 @@ fn launch_body(
     Ok(body)
 }
 
-fn env_conversation_handle() -> Option<String> {
-    std::env::var(spark_common::project::CONVERSATION_HANDLE_ENV)
-        .ok()
-        .and_then(|value| {
-            let trimmed = value.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        })
+fn env_conversation_handle(env: &impl Environment) -> Option<String> {
+    env.get_var(spark_common::project::CONVERSATION_HANDLE_ENV)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn model_fields(body: &mut Map<String, Value>, m: &ArgMatches) {

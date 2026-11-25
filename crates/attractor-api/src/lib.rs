@@ -273,6 +273,10 @@ pub struct RuntimeRouteResponse {
     pub status_code: u16,
     pub content_type: String,
     pub body: Value,
+    /// A download's `Content-Disposition` and the file's exact bytes, which
+    /// `body` cannot carry.
+    #[serde(skip)]
+    pub download: Option<(String, Vec<u8>)>,
 }
 
 impl RuntimeRouteResponse {
@@ -281,6 +285,7 @@ impl RuntimeRouteResponse {
             status_code,
             content_type: "application/json".to_string(),
             body,
+            download: None,
         }
     }
 
@@ -289,6 +294,7 @@ impl RuntimeRouteResponse {
             status_code,
             content_type: "text/event-stream".to_string(),
             body: Value::String(body.into()),
+            download: None,
         }
     }
 
@@ -301,6 +307,7 @@ impl RuntimeRouteResponse {
             status_code,
             content_type: content_type.into(),
             body: Value::String(body.into()),
+            download: None,
         }
     }
 
@@ -1531,6 +1538,7 @@ impl AttractorApiService {
             status_code: response.status_code,
             content_type: response.content_type,
             body: response.body,
+            download: None,
         }
     }
 
@@ -2244,10 +2252,12 @@ impl AttractorApiService {
         }
     }
 
-    pub fn get_pipeline_artifact_file(
+    /// Reads the run's artifact and hands it to `serve`, or answers why not.
+    fn with_pipeline_artifact(
         &self,
         pipeline_id: &str,
         artifact_path: &str,
+        serve: impl FnOnce(attractor_runtime::RunArtifactFile) -> RuntimeRouteResponse,
     ) -> RuntimeRouteResponse {
         let store = RunStore::for_settings(&self.settings);
         let bundle = match store.read_run_bundle(pipeline_id) {
@@ -2260,22 +2270,55 @@ impl AttractorApiService {
             }
         };
         match store.read_artifact(&bundle.paths, artifact_path) {
-            Ok(Some(file)) => {
-                let content_type = artifact_media_type(&file.absolute_path);
-                match String::from_utf8(file.content) {
-                    Ok(body) => RuntimeRouteResponse::file(200, content_type, body),
-                    Err(_) => RuntimeRouteResponse::json(
-                        415,
-                        json!({"detail": "Artifact is not viewable as text"}),
-                    ),
-                }
-            }
+            Ok(Some(file)) => serve(file),
             Ok(None) => RuntimeRouteResponse::json(404, json!({"detail": "Artifact not found"})),
             Err(attractor_runtime::RuntimeStorageError::UnsafeArtifactPath { .. }) => {
                 RuntimeRouteResponse::json(400, json!({"detail": "Invalid artifact path"}))
             }
             Err(error) => RuntimeRouteResponse::json(500, json!({"detail": error.to_string()})),
         }
+    }
+
+    pub fn get_pipeline_artifact_file(
+        &self,
+        pipeline_id: &str,
+        artifact_path: &str,
+    ) -> RuntimeRouteResponse {
+        self.with_pipeline_artifact(pipeline_id, artifact_path, |file| {
+            let content_type = artifact_media_type(&file.absolute_path);
+            match String::from_utf8(file.content) {
+                Ok(body) => RuntimeRouteResponse::file(200, content_type, body),
+                Err(_) => RuntimeRouteResponse::json(
+                    415,
+                    json!({"detail": "Artifact is not viewable as text"}),
+                ),
+            }
+        })
+    }
+
+    /// The artifact's exact bytes, as a download named after its last
+    /// segment with only characters safe inside a quoted header value.
+    pub fn download_pipeline_artifact(
+        &self,
+        pipeline_id: &str,
+        artifact_path: &str,
+    ) -> RuntimeRouteResponse {
+        self.with_pipeline_artifact(pipeline_id, artifact_path, |file| {
+            // Named by the file storage resolved, not the path as spelled.
+            let name = attachment_file_name(
+                &file
+                    .absolute_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+            );
+            RuntimeRouteResponse {
+                status_code: 200,
+                content_type: artifact_media_type(&file.absolute_path),
+                body: Value::Null,
+                download: Some((format!("attachment; filename=\"{name}\""), file.content)),
+            }
+        })
     }
 
     pub fn get_pipeline_journal(
@@ -3371,9 +3414,12 @@ fn dispatch_pipeline_route(
         ("GET", "artifacts") => service.list_pipeline_artifacts(pipeline_id),
         ("GET", subpath) if subpath.starts_with("artifacts/") => {
             match percent_decode_path(subpath.strip_prefix("artifacts/").unwrap_or(subpath)) {
-                Ok(artifact_path) => {
-                    service.get_pipeline_artifact_file(pipeline_id, &artifact_path)
-                }
+                Ok(artifact_path) => match query_string(query, "download").as_deref() {
+                    Some("1" | "true") => {
+                        service.download_pipeline_artifact(pipeline_id, &artifact_path)
+                    }
+                    _ => service.get_pipeline_artifact_file(pipeline_id, &artifact_path),
+                },
                 Err(()) => {
                     RuntimeRouteResponse::json(400, json!({"detail": "Invalid artifact path"}))
                 }
@@ -4287,6 +4333,20 @@ fn is_terminal_status(status: &str) -> bool {
     )
 }
 
+/// `name` with only characters safe inside a quoted `Content-Disposition`
+/// filename; every other character becomes `_`.
+fn attachment_file_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn artifact_media_type(path: &Path) -> String {
     match path
         .extension()
@@ -4692,4 +4752,21 @@ fn child_event_groups(children: &[RunBundle]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    // Runs on every platform: the name is a string, not a file, so it may hold
+    // characters some filesystems reject.
+    #[test]
+    fn attachment_file_name_replaces_quotes_backslashes_and_control_bytes() {
+        assert_eq!(
+            super::attachment_file_name("my \"capture\";v1\\x\r\n\t\u{0}\u{7f}é.bin"),
+            "my__capture__v1_x______.bin"
+        );
+        assert_eq!(
+            super::attachment_file_name("report-v1_final.bin"),
+            "report-v1_final.bin"
+        );
+    }
 }
