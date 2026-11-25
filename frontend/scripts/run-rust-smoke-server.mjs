@@ -80,6 +80,8 @@ const child = spawn(
       SPARK_CODEX_APP_SERVER_BIN: path.join(targetDir, 'debug', fakeCodex),
       SPARK_FAKE_CODEX_APP_SERVER_MODE: 'gated',
       SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR: path.join(tmpRoot, 'gates'),
+      // A real Claude Code on PATH, started for model discovery, outlives the server and writes into this home as it is removed.
+      SPARK_CLAUDE_CODE_BIN: path.join(tmpRoot, 'no-claude'),
     },
     stdio: 'inherit',
   },

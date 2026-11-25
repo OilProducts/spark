@@ -1,3 +1,4 @@
+import { DialogProvider } from '@/components/app/dialog-controller'
 import { Editor } from '@/features/editor/Editor'
 import { EditorGraphBridgeProvider } from '@/features/editor/EditorGraphBridgeContext'
 import { GraphSettings } from '@/features/editor/GraphSettings'
@@ -1207,6 +1208,29 @@ describe('Editor file view', () => {
     await user.click(screen.getByRole('button', { name: 'Restore' }))
     expect(screen.getByTestId('flow-file-editor')).toHaveValue(files[1].content)
     expect(screen.getByTestId('flow-files-save')).toBeDisabled()
+  })
+
+  it('keeps a New file prompt and its Step ID over a switch checked meanwhile that asks about the edits, when kept editing', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 })))
+    render(<DialogProvider><ReactFlowProvider><Editor /></ReactFlowProvider></DialogProvider>)
+    const edited = '---\nid: demo\n---\nThe edited flow.\n'
+    fireEvent.change(await screen.findByTestId('flow-file-editor'), { target: { value: edited } })
+    const checked = createDeferred<void>()
+    const refused = switchEnvironment('env-r', checked.promise, true).catch((error: Error) => error.message)
+
+    await user.click(screen.getByTestId('flow-file-add'))
+    await user.type(screen.getByRole('textbox', { name: 'Step ID' }), 'review')
+    await act(async () => checked.resolve())
+    const leave = await screen.findByRole('alertdialog', { name: 'Discard unsaved flow edits?' })
+    await user.click(within(leave).getByRole('button', { name: 'Keep editing' }))
+    expect(await refused).toBe('Could not switch to env-r.')
+
+    expect(screen.getByRole('textbox', { name: 'Step ID' })).toHaveValue('review')
+    await user.click(screen.getByRole('button', { name: 'Add file' }))
+    expect(screen.getByTestId('flow-file-editor')).toHaveAccessibleName('review.md')
+    await user.click(screen.getByRole('button', { name: /^flow\.md/ }))
+    expect(screen.getByTestId('flow-file-editor')).toHaveValue(edited)
   })
 
   it('links a refused save’s problems to their files, and clears them once the edit is put back', async () => {
