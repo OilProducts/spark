@@ -1,12 +1,22 @@
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
-import { act, cleanup, render, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { HistoryRoutingController } from '@/app/AppSessionControllers'
+import { HistoryRoutingController, HomeSessionController } from '@/app/AppSessionControllers'
+import { EnvironmentBootstrap } from '@/app/EnvironmentSwitcher'
+import { selectEnvironment, useActiveEnvironment } from '@/lib/activeEnvironment'
 import { addsEntry, buildRunsHash, missionKey, parsePlaceHash, placeHash, roleKey, type Place } from '@/app/runsRouting'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- triggerKey names a trigger; it calls no API
 import { triggerKey, type TriggerResponse } from '@/lib/workspaceClient'
-import { useStore } from '@/store'
+import { toHydratedProjectRecord } from '@/features/projects/model/projectsHomeState'
+import { useAddProject } from '@/features/projects/hooks/useAddProject'
+import { useConversationComposer } from '@/features/projects/hooks/useConversationComposer'
+import { useProjectConversationCache } from '@/features/projects/hooks/useProjectConversationCache'
+import { markProjectUsed, usePersistProjectState } from '@/features/projects/hooks/usePersistProjectState'
+import { ROUTE_STATE_STORAGE_KEY, VIEW_MODE_SESSION_KEY } from '@/state/store-helpers'
+import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
+import { deferred, switchEnvironment } from '@/test/environments'
+import { conversationMutationAck, summarySnapshot } from '@/test/conversationWire'
 
 // A fresh entry, so no Forward entries are left from an earlier test.
 const resetHash = () => {
@@ -68,6 +78,18 @@ describe('runsRouting helpers', () => {
         expect(addsEntry(state, runs('gone'), runs('next'))).toBe(false)
         expect(addsEntry(state, runs('other'), runs('next'))).toBe(true)
         expect(addsEntry(state, runs(null), runs('picked'))).toBe(true)
+    })
+
+    it('names a remote environment in its places\' links, and this machine in none', () => {
+        const places: Place[] = [
+            { envId: 'env-r', view: 'runs', runId: 'run-1', nodeId: 'build' },
+            { envId: 'env r', view: 'triggers', triggerId: triggerKey({ project_path: '/tmp/a', id: 'nightly' }) },
+            { envId: 'env-r', view: 'overview' },
+        ]
+        for (const place of places) expect(parsePlaceHash(placeHash(place))).toEqual(place)
+        expect(placeHash(places[1])).toBe('#/triggers/nightly?project=%2Ftmp%2Fa&env=env%20r')
+        expect(placeHash({ envId: null, view: 'runs', runId: 'run-1' })).toBe(buildRunsHash('run-1'))
+        expect(parsePlaceHash(buildRunsHash('run-1'))).not.toHaveProperty('envId')
     })
 
     it('names no place for unknown or malformed hashes', () => {
@@ -436,5 +458,786 @@ describe('HistoryRoutingController', () => {
             expect(useStore.getState().triggersSession.selectedTriggerId).toBeNull()
         })
         expect(window.location.hash).toBe('#/triggers')
+    })
+})
+
+describe('routing across environments', () => {
+    const savedRoute = () => JSON.parse(window.localStorage.getItem(ROUTE_STATE_STORAGE_KEY) ?? '{}')
+    const selectRun = (runId: string) => act(() => {
+        useStore.getState().setRunsSelectedRunId(runId)
+        useStore.getState().setViewMode('runs')
+    })
+    // As the app does: the switch resets the store while the workspace is still mounted, which then
+    // remounts in the environment switched to.
+    const Workspace = () => <HistoryRoutingController key={useActiveEnvironment().activeEnvironmentId ?? 'local'} />
+    const showEnvironment = (environmentId: string | null) => act(() => switchEnvironment(environmentId))
+    // Follows another environment's link from here, which gives its entry no place of its own.
+    const followForeignLink = async () => {
+        const link = `${buildRunsHash('foreign-run')}?env=review-a`
+        act(() => {
+            window.location.hash = link
+            window.dispatchEvent(new HashChangeEvent('hashchange'))
+        })
+        await waitFor(() => expect(window.location.hash).toBe(link))
+        expect(window.history.state?.sparkPlace).toBeUndefined()
+        return link
+    }
+
+    beforeEach(() => {
+        resetHash()
+        useStore.setState(useStore.getInitialState(), true)
+        useStore.setState({ viewMode: 'home' })
+        // This machine's own environment list, which the bootstrap loads, isn't needed here.
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404 })))
+    })
+
+    afterEach(() => {
+        cleanup()
+        resetHash()
+        vi.unstubAllGlobals()
+    })
+
+    it('keeps the entry a switch leaves for Back and Forward, leaving this machine where it is on another environment\'s entry', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        selectRun('local-run')
+        await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run')))
+        const entries = window.history.length
+
+        await showEnvironment('env-r')
+        expect(window.history.length).toBe(entries + 1)
+        // The local entry the switch happened on opens nothing remotely.
+        expect(selectSelectedRunId(useStore.getState())).toBeNull()
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        await showEnvironment(null)
+        expect(window.history.length).toBe(entries + 3)
+        expect(useStore.getState().viewMode).toBe('runs')
+        expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
+        expect(window.location.hash).toBe(buildRunsHash('local-run'))
+
+        // Back reaches the remote run's entry: nothing here changes, nor the entry.
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
+        expect(savedRoute()).toMatchObject({ selectedRunId: 'local-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run')))
+
+        // Back past both switches reaches this machine's earlier entries.
+        act(() => window.history.go(-4))
+        await waitFor(() => expect(useStore.getState().viewMode).toBe('home'))
+        expect(savedRoute()).toMatchObject({ selectedRunId: 'local-run' })
+    })
+
+    it('adds an entry of this machine\'s own for a project page opened here while a remote environment\'s entry shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        expect(useStore.getState().viewMode).toBe('home')
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        // The project page's link names no more than Chats', yet the move still leaves the remote entry.
+        act(() => useStore.getState().openProjectPage('/tmp/project'))
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home', projectPagePath: '/tmp/project' })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        expect(useStore.getState().projectPagePath).toBe('/tmp/project')
+    })
+
+    it('adds an entry of this machine\'s own for another chat chosen here while a remote environment\'s entry shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        act(() => {
+            useStore.getState().updateProjectSessionState('/tmp/project', { conversationId: 'chat-1' })
+            useStore.setState({ activeProjectPath: '/tmp/project' })
+        })
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        // No link names the chat, yet choosing another still leaves the remote entry.
+        act(() => useStore.getState().updateProjectSessionState('/tmp/project', { conversationId: 'chat-2' }))
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        expect(useStore.getState().projectSessionsByPath['/tmp/project']?.conversationId).toBe('chat-2')
+    })
+
+    it('adds a clean entry of this machine\'s own for a settings category chosen here while a remote environment\'s entry shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        act(() => useStore.getState().setViewMode('settings'))
+        await waitFor(() => expect(window.location.hash).toBe('#/settings'))
+        act(() => window.history.go(-2))
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        act(() => useStore.getState().setSettingsCategory('appearance'))
+        await waitFor(() => expect(window.location.hash).toBe('#/settings'))
+        expect(window.history.state).toEqual({ sparkPlace: { envId: null, view: 'settings' } })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(useStore.getState().settingsCategory).toBe('appearance')
+    })
+
+    // The server's answers when a project is added at /tmp/added.
+    const answerAddingProject = () => {
+        const answer = (payload: unknown) => new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            const url = String(input)
+            if (url.includes('/workspace/api/projects/browse')) return answer({ current_path: '/tmp/added', parent_path: '/tmp', entries: [] })
+            if (url.includes('/workspace/api/projects/metadata')) return answer({ branch: 'main', commit: 'abcdef0' })
+            if (url.includes('/workspace/api/projects/register')) return answer({ project_id: 'added', project_path: '/tmp/added', display_name: 'added', is_favorite: false, active_conversation_id: null })
+            return new Response('{}', { status: 404 })
+        }))
+    }
+
+    it('adds an entry of this machine\'s own for a project added and opened here while a remote environment\'s entry shows', async () => {
+        answerAddingProject()
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        act(() => useStore.getState().hydrateProjectRegistry([toHydratedProjectRecord({ project_path: '/tmp/project', is_favorite: false })]))
+        const addProject = renderHook(useAddProject)
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        await act(() => addProject.result.current.onOpenProjectDirectoryChooser())
+        await act(() => addProject.result.current.onSelectProjectBrowserDirectory())
+        expect(useStore.getState().activeProjectPath).toBe('/tmp/added')
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state).toEqual({ sparkPlace: { envId: null, view: 'home', projectPagePath: null } })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(useStore.getState().activeProjectPath).toBe('/tmp/added')
+    })
+
+    it.each([
+        ['before this machine\'s projects load', false],
+        ['once they have loaded with none', true],
+    ])('adds a clean entry of this machine\'s own for its first project, added %s while a remote environment\'s entry shows', async (_when, loaded) => {
+        answerAddingProject()
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        if (loaded) act(() => useStore.getState().hydrateProjectRegistry([]))
+        const addProject = renderHook(useAddProject)
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        await act(() => addProject.result.current.onOpenProjectDirectoryChooser())
+        await act(() => addProject.result.current.onSelectProjectBrowserDirectory())
+        expect(Object.keys(useStore.getState().projectRegistry)).toEqual(['/tmp/added'])
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state).toEqual({ sparkPlace: { envId: null, view: 'home', projectPagePath: null } })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(useStore.getState().activeProjectPath).toBe('/tmp/added')
+    })
+
+    it('adds a clean entry of this machine\'s own for the New Trigger form opened here while a remote environment\'s entry shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        act(() => useStore.getState().setViewMode('triggers'))
+        await waitFor(() => expect(window.location.hash).toBe('#/triggers'))
+        act(() => window.history.go(-2))
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        // As New Trigger does; no link names the form.
+        act(() => useStore.getState().updateTriggersSession({ createFormOpen: true }))
+        await waitFor(() => expect(window.location.hash).toBe('#/triggers'))
+        expect(window.history.state).toEqual({ sparkPlace: { envId: null, view: 'triggers', triggerId: null } })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(useStore.getState().triggersSession.createFormOpen).toBe(true)
+    })
+
+    it('on a phone, adds a clean entry of this machine\'s own for All triggers chosen here while a remote environment\'s entry shows', async () => {
+        const width = window.innerWidth
+        window.innerWidth = 390
+        try {
+            const nightly = triggerKey({ project_path: '/tmp/project-a', id: 'nightly' })
+            render(<><EnvironmentBootstrap /><Workspace /></>)
+            await showEnvironment('env-r')
+            selectRun('remote-run')
+            await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+            await showEnvironment(null)
+            act(() => {
+                useStore.getState().setViewMode('triggers')
+                useStore.getState().updateTriggersSession({ triggers: [{ project_path: '/tmp/project-a', id: 'nightly' } as TriggerResponse], selectedTriggerId: nightly })
+            })
+            await waitFor(() => expect(window.location.hash).toBe(placeHash({ view: 'triggers', triggerId: nightly })))
+            act(() => window.history.go(-2))
+            await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+            // As All triggers does: the trigger is still listed, so you closed it.
+            act(() => useStore.getState().updateTriggersSession({ createFormOpen: false, selectedTriggerId: null }))
+            await waitFor(() => expect(window.location.hash).toBe('#/triggers'))
+            expect(window.history.state).toEqual({ sparkPlace: { envId: null, view: 'triggers', triggerId: null } })
+            act(() => window.history.back())
+            await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+            expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+            expect(useStore.getState().triggersSession.selectedTriggerId).toBeNull()
+        } finally {
+            window.innerWidth = width
+        }
+    })
+
+    it('leaves Back and Forward as they are when a project\'s saved state answers after Back reached a remote environment\'s entry', async () => {
+        const saved = deferred<Response>()
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => (String(input).includes('/workspace/api/projects/state')
+            ? saved.promise
+            : new Response('{}', { status: 404 }))))
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        act(() => useStore.getState().hydrateProjectRegistry([
+            toHydratedProjectRecord({ project_path: '/tmp/home', is_favorite: false, is_default: true }),
+            toHydratedProjectRecord({ project_path: '/tmp/project', is_favorite: false }),
+        ]))
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        // Work starts in the project, as a launched run's does, saving its state; Back is taken before the answer.
+        const marking = markProjectUsed('/tmp/project')
+        const entries = window.history.length
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        saved.resolve(new Response(JSON.stringify({ project_id: 'project', project_path: '/tmp/project', display_name: 'project', is_favorite: false, active_conversation_id: null, last_accessed_at: '2026-09-02T00:00:00Z' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+        await act(() => marking)
+        expect(useStore.getState().projectRegistry['/tmp/project']?.lastAccessedAt).toBe('2026-09-02T00:00:00Z')
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.history.length).toBe(entries)
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+    })
+
+    it('leaves Back and Forward as they are when an earlier chat choice\'s saved state answers after Back reached a remote environment\'s entry', async () => {
+        const saves: { resolve: (response: Response) => void }[] = []
+        vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+            if (!String(input).includes('/workspace/api/projects/state')) return Promise.resolve(new Response('{}', { status: 404 }))
+            const save = deferred<Response>()
+            saves.push(save)
+            return save.promise
+        }))
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        act(() => {
+            useStore.getState().hydrateProjectRegistry([
+                toHydratedProjectRecord({ project_path: '/tmp/home', is_favorite: false, is_default: true }),
+                toHydratedProjectRecord({ project_path: '/tmp/project', is_favorite: false }),
+            ])
+            useStore.getState().setActiveProjectPath('/tmp/project')
+        })
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        // Two chats chosen in turn, each saved as the project's open chat; Back is taken before either answers.
+        const { result } = renderHook(() => usePersistProjectState(useStore.getState().upsertProjectRegistryEntry))
+        const choose = (conversationId: string) => {
+            act(() => useStore.getState().updateProjectSessionState('/tmp/project', { conversationId }))
+            return result.current('/tmp/project', { active_conversation_id: conversationId })
+        }
+        const first = choose('chat-1')
+        choose('chat-2')
+        await waitFor(() => expect(saves).toHaveLength(2))
+        const entries = window.history.length
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        saves[0].resolve(new Response(JSON.stringify({ project_id: 'project', project_path: '/tmp/project', display_name: 'project', is_favorite: false, active_conversation_id: 'chat-1', last_accessed_at: '2026-09-02T00:00:00Z' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+        await act(() => first)
+        expect(useStore.getState().projectRegistry['/tmp/project']?.lastAccessedAt).toBe('2026-09-02T00:00:00Z')
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.history.length).toBe(entries)
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+    })
+
+    it('keeps a followed link\'s entry of another environment, which has no place of its own, for Back when switching to a third', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        const link = await followForeignLink()
+        const entries = window.history.length
+
+        await showEnvironment('review-b')
+        expect(window.history.length).toBe(entries + 1)
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(link))
+    })
+
+    it('leaves a followed link\'s entry of another environment, which has no place of its own, shown, with Back and Forward, when connecting fails and this machine\'s workspace shows again', async () => {
+        // As the app gates it: the workspace unmounts while another environment connects, or fails to.
+        const Gated = () => {
+            const { activeEnvironmentId, selectedEnvironmentId, status } = useActiveEnvironment()
+            return selectedEnvironmentId === null || (status === 'ready' && activeEnvironmentId === selectedEnvironmentId)
+                ? <div data-testid="workspace"><Workspace /></div>
+                : null
+        }
+        render(<><EnvironmentBootstrap /><Gated /></>)
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        const link = await followForeignLink()
+        const entries = window.history.length
+
+        let connected: boolean | undefined
+        await act(async () => { connected = await selectEnvironment('review-b') })
+        expect(connected).toBe(false)
+        expect(screen.queryByTestId('workspace')).toBeNull()
+        await act(() => selectEnvironment(null))
+        expect(screen.getByTestId('workspace')).toBeTruthy()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.location.hash).toBe(link)
+        expect(window.history.length).toBe(entries)
+
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe(link))
+    })
+
+    it('leaves a remote environment\'s entry shown, and Forward, when connecting to it fails and this machine\'s workspace shows again', async () => {
+        // As the app gates it: the workspace unmounts while another environment connects, or fails to.
+        const Gated = () => {
+            const { activeEnvironmentId, selectedEnvironmentId, status } = useActiveEnvironment()
+            return selectedEnvironmentId === null || (status === 'ready' && activeEnvironmentId === selectedEnvironmentId)
+                ? <div data-testid="workspace"><Workspace /></div>
+                : null
+        }
+        render(<><EnvironmentBootstrap /><Gated /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        const remote = `${buildRunsHash('remote-run')}?env=env-r`
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        await showEnvironment(null)
+        const local = window.location.hash
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        const entries = window.history.length
+
+        let connected: boolean | undefined
+        await act(async () => { connected = await selectEnvironment('env-r') })
+        expect(connected).toBe(false)
+        expect(screen.queryByTestId('workspace')).toBeNull()
+        await act(() => selectEnvironment(null))
+        expect(screen.getByTestId('workspace')).toBeTruthy()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.history.length).toBe(entries)
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe(local))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null })
+
+        // A move here from the remote entry still adds this machine's own.
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        act(() => useStore.getState().openProjectPage('/tmp/project'))
+        await waitFor(() => expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, projectPagePath: '/tmp/project' }))
+        expect(window.history.length).toBe(entries)
+    })
+
+    it('keeps a remote environment\'s project page when Back reaches its entry and that environment shows again', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        act(() => {
+            useStore.getState().setViewMode('home')
+            useStore.getState().openProjectPage('/tmp/remote')
+        })
+        await waitFor(() => expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', projectPagePath: '/tmp/remote' }))
+        await showEnvironment(null)
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats?env=env-r'))
+        const entries = window.history.length
+
+        // Its link names only Chats; its entry still has the page, which opens again with its projects.
+        await showEnvironment('env-r')
+        expect(useStore.getState().projectPagePath).toBe('/tmp/remote')
+        act(() => useStore.getState().hydrateProjectRegistry([toHydratedProjectRecord({ project_path: '/tmp/remote', is_favorite: false })]))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(useStore.getState().projectPagePath).toBe('/tmp/remote')
+        expect(window.history.length).toBe(entries)
+        expect(window.history.state).toEqual({ sparkPlace: { envId: 'env-r', view: 'home', projectPagePath: '/tmp/remote' } })
+    })
+
+    it('adds an entry of this machine\'s own for an open project page\'s Settings opened here while a remote environment\'s entry shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        act(() => useStore.getState().openProjectPage('/tmp/project'))
+        await waitFor(() => expect(window.history.state?.sparkPlace).toMatchObject({ projectPagePath: '/tmp/project' }))
+        act(() => window.history.go(-2))
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        // The page stays as it is; only its Settings open.
+        act(() => useStore.getState().openProjectPage('/tmp/project', 'settings'))
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state).toEqual({ sparkPlace: { envId: null, view: 'home', projectPagePath: '/tmp/project' } })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        expect(useStore.getState().projectPageSettingsRequest).not.toBeNull()
+    })
+
+    it('leaves Back and Forward as they are when this machine\'s Runs opens its first run by itself while a remote environment\'s entry shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        act(() => useStore.getState().setViewMode('runs'))
+        await waitFor(() => expect(window.location.hash).toBe('#/runs'))
+        const entries = window.history.length
+        act(() => window.history.go(-2))
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        // As Runs does once its list loads with none open.
+        act(() => {
+            useStore.getState().setRunsSelectedRunId('first-run', { keepFilters: true })
+            useStore.getState().updateRunsListSession({ autoOpenedRunId: 'first-run', missingRunId: null })
+        })
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.history.length).toBe(entries)
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        expect(selectSelectedRunId(useStore.getState())).toBe('first-run')
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+    })
+
+    it('leaves Back and Forward as they are when this machine\'s projects load, opening one and its chat, while a remote environment\'s entry shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        const entries = window.history.length
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        act(() => useStore.getState().hydrateProjectRegistry([
+            toHydratedProjectRecord({ project_path: '/tmp/home', is_favorite: false, is_default: true }),
+            toHydratedProjectRecord({ project_path: '/tmp/project', is_favorite: false, active_conversation_id: 'chat-1', last_accessed_at: '2026-09-01T00:00:00Z' }),
+        ]))
+        expect(useStore.getState().activeProjectPath).toBe('/tmp/project')
+        expect(useStore.getState().projectSessionsByPath['/tmp/project']?.conversationId).toBe('chat-1')
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.history.length).toBe(entries)
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+    })
+
+    it('leaves Back and Forward as they are when a project with no chat saved opens its latest once its list loads while a remote environment\'s entry shows', async () => {
+        const listed = deferred<void>()
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            if (!String(input).includes('/workspace/api/projects/conversations?project_path=%2Ftmp%2Fproject')) return new Response('{}', { status: 404 })
+            await listed.promise
+            return new Response(JSON.stringify(summarySnapshot([
+                { conversation_id: 'chat-1', project_path: '/tmp/project', title: 'Thread', created_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z', revision: 1, turns: [], segments: [] },
+            ], { project_path: '/tmp/project' })), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }))
+        const Chats = () => <HomeSessionController key={useActiveEnvironment().activeEnvironmentId ?? 'local'} />
+        render(<><EnvironmentBootstrap /><Workspace /><Chats /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        const entries = window.history.length
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        // The projects load, opening the last used one, with no chat saved; its list answers later, opening its latest.
+        act(() => useStore.getState().hydrateProjectRegistry([
+            toHydratedProjectRecord({ project_path: '/tmp/home', is_favorite: false, is_default: true }),
+            toHydratedProjectRecord({ project_path: '/tmp/project', is_favorite: false, last_accessed_at: '2026-09-01T00:00:00Z' }),
+        ]))
+        expect(useStore.getState().activeProjectPath).toBe('/tmp/project')
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        listed.resolve()
+        await waitFor(() => expect(useStore.getState().projectSessionsByPath['/tmp/project']?.conversationId).toBe('chat-1'))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.history.length).toBe(entries)
+        expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`)
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+
+        // A chat chosen here still adds an entry of this machine's own.
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        act(() => useStore.getState().updateProjectSessionState('/tmp/project', { conversationId: 'chat-2' }))
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+    })
+
+    it('leaves Back and Forward as they are, and the chat and its draft, when a new chat\'s refused first send opens it again by itself while a remote environment\'s entry shows, and when the mode change of the chat it replaced answers after', async () => {
+        const turn = deferred<Response>()
+        const modeSaved = deferred<Response>()
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            if (String(input).endsWith('/conversations/chat-new/turns')) return turn.promise
+            if (String(input).endsWith('/conversations/chat-1/settings')) return modeSaved.promise
+            return new Response('{}', { status: 404 })
+        }))
+        const turns = () => vi.mocked(fetch).mock.calls.filter(([input]) => String(input).endsWith('/conversations/chat-new/turns'))
+        const loadProjects = () => act(() => useStore.getState().hydrateProjectRegistry([
+            toHydratedProjectRecord({ project_path: '/tmp/home', is_favorite: false, is_default: true }),
+            toHydratedProjectRecord({ project_path: '/tmp/project', is_favorite: false, active_conversation_id: 'chat-1', last_accessed_at: '2026-09-01T00:00:00Z' }),
+        ]))
+        const openChat = () => useStore.getState().projectSessionsByPath['/tmp/project']?.conversationId
+        const remote = `${buildRunsHash('remote-run')}?env=env-r`
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        loadProjects()
+        // A new chat's first message, sent before a remote environment shows.
+        act(() => useStore.getState().updateProjectSessionState('/tmp/project', { conversationId: 'chat-new' }))
+        useConversationComposer({
+            activeProjectPath: '/tmp/project', chatDraft: 'Hello there', attachments: [], isUploadBlocking: false, isChatInputDisabled: false,
+            ensureConversationId: () => 'chat-new', getCurrentConversationId: openChat, getConversationRecord: () => undefined,
+            applyConversationBatch: vi.fn(), formatErrorMessage: (_error, fallback) => fallback, setChatDraft: vi.fn(),
+            setPanelError: vi.fn(), setPendingConversationTurn: vi.fn(),
+        }).onChatComposerSubmit()
+        await waitFor(() => expect(turns()).toHaveLength(1))
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        await showEnvironment(null)
+        loadProjects()
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        // The chat its projects loaded on changes mode; Back is taken before the change answers.
+        const cache = renderHook(() => useProjectConversationCache({
+            persistProjectState: async () => {},
+            projectSessionsByPath: useStore((state) => state.projectSessionsByPath),
+            updateProjectSessionState: useStore.getState().updateProjectSessionState,
+        }))
+        const switching = useConversationComposer({
+            activeProjectPath: '/tmp/project', chatDraft: '', attachments: [], isUploadBlocking: false, isChatInputDisabled: false,
+            ensureConversationId: () => 'chat-1', getCurrentConversationId: openChat, getConversationRecord: () => undefined,
+            applyConversationBatch: cache.result.current.applyConversationBatch, formatErrorMessage: (_error, fallback) => fallback,
+            setChatDraft: vi.fn(), setPanelError: vi.fn(), setPendingConversationTurn: vi.fn(),
+        }).onSwitchChatMode('plan')
+        await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith('/conversations/chat-1/settings'))).toBe(true))
+        const entries = window.history.length
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        const leftAsTheyAre = async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(openChat()).toBe('chat-new')
+            expect(useStore.getState().homeProjectSessionsByPath['/tmp/project']?.chatDraft).toBe('Hello there')
+            expect(window.history.length).toBe(entries)
+            expect(window.location.hash).toBe(remote)
+            expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        }
+
+        // Refused now, on the chat its projects loaded on: the app opens the refused chat again by itself.
+        await act(async () => turn.resolve(new Response(JSON.stringify({ detail: 'unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json' } })))
+        await waitFor(() => expect(openChat()).toBe('chat-new'))
+        await leftAsTheyAre()
+        // The mode change answers after: it changes its own chat's mode, and nothing shown.
+        await act(async () => {
+            modeSaved.resolve(new Response(JSON.stringify(conversationMutationAck({ conversation_id: 'chat-1', project_path: '/tmp/project', revision: 2, chat_mode: 'plan' })), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+            await switching
+        })
+        expect(useStore.getState().homeConversationCache.conversationsById['chat-1']?.chat_mode).toBe('plan')
+        await leftAsTheyAre()
+        cache.unmount()
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+
+        // A chat chosen here still adds an entry of this machine's own.
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        act(() => useStore.getState().updateProjectSessionState('/tmp/project', { conversationId: 'chat-1' }))
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+    })
+
+    it('leaves Back and Forward as they are when clearing a draft lets a new chat\'s refused first send open it again by itself, once connecting to a remote environment failed and this machine\'s workspace shows again on its entry', async () => {
+        const turn = deferred<Response>()
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => (String(input).endsWith('/conversations/chat-new/turns')
+            ? turn.promise
+            : new Response('{}', { status: 404 }))))
+        const turns = () => vi.mocked(fetch).mock.calls.filter(([input]) => String(input).endsWith('/conversations/chat-new/turns'))
+        const loadProjects = () => act(() => useStore.getState().hydrateProjectRegistry([
+            toHydratedProjectRecord({ project_path: '/tmp/home', is_favorite: false, is_default: true }),
+            toHydratedProjectRecord({ project_path: '/tmp/project', is_favorite: false, active_conversation_id: 'chat-1', last_accessed_at: '2026-09-01T00:00:00Z' }),
+        ]))
+        const openChat = () => useStore.getState().projectSessionsByPath['/tmp/project']?.conversationId
+        const setDraft = (chatDraft: string) => act(() => useStore.getState().updateHomeProjectSession('/tmp/project', { chatDraft }))
+        const remote = `${buildRunsHash('remote-run')}?env=env-r`
+        // As the app gates it: the workspace unmounts while another environment connects, or fails to.
+        const Gated = () => {
+            const { activeEnvironmentId, selectedEnvironmentId, status } = useActiveEnvironment()
+            return selectedEnvironmentId === null || (status === 'ready' && activeEnvironmentId === selectedEnvironmentId)
+                ? <div data-testid="workspace"><Workspace /></div>
+                : null
+        }
+        render(<><EnvironmentBootstrap /><Gated /></>)
+        loadProjects()
+        // A new chat's first message, sent before a remote environment shows.
+        act(() => useStore.getState().updateProjectSessionState('/tmp/project', { conversationId: 'chat-new' }))
+        useConversationComposer({
+            activeProjectPath: '/tmp/project', chatDraft: 'Hello there', attachments: [], isUploadBlocking: false, isChatInputDisabled: false,
+            ensureConversationId: () => 'chat-new', getCurrentConversationId: openChat, getConversationRecord: () => undefined,
+            applyConversationBatch: vi.fn(), formatErrorMessage: (_error, fallback) => fallback, setChatDraft: vi.fn(),
+            setPanelError: vi.fn(), setPendingConversationTurn: vi.fn(),
+        }).onChatComposerSubmit()
+        await waitFor(() => expect(turns()).toHaveLength(1))
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        await showEnvironment(null)
+        loadProjects()
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        // Refused while you write in the chat its projects loaded on: the refused chat waits.
+        setDraft('Draft')
+        await act(async () => turn.resolve(new Response(JSON.stringify({ detail: 'unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json' } })))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(openChat()).toBe('chat-1')
+        const entries = window.history.length
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        await act(async () => { expect(await selectEnvironment('env-r')).toBe(false) })
+        expect(screen.queryByTestId('workspace')).toBeNull()
+        await act(() => selectEnvironment(null))
+        expect(screen.getByTestId('workspace')).toBeTruthy()
+
+        // The draft cleared, the app opens the refused chat by itself.
+        setDraft('')
+        expect(openChat()).toBe('chat-new')
+        expect(useStore.getState().homeProjectSessionsByPath['/tmp/project']?.chatDraft).toBe('Hello there')
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.history.length).toBe(entries)
+        expect(window.location.hash).toBe(remote)
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+
+        // A chat chosen here still adds an entry of this machine's own.
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+        act(() => useStore.getState().updateProjectSessionState('/tmp/project', { conversationId: 'chat-1' }))
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+        expect(window.history.length).toBe(entries)
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(remote))
+    })
+
+    it('keeps a remote environment\'s entries for Back and Forward to reach once it shows again', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        for (const view of ['runs', 'triggers', 'settings'] as const) {
+            act(() => useStore.getState().setViewMode(view))
+            await waitFor(() => expect(window.location.hash).toBe(`#/${view}?env=env-r`))
+        }
+        await showEnvironment(null)
+        const local = { hash: window.location.hash, route: savedRoute(), view: window.sessionStorage.getItem(`${VIEW_MODE_SESSION_KEY}:local`) }
+
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe('#/settings?env=env-r'))
+        expect(useStore.getState().viewMode).toBe('home')
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe(local.hash))
+        expect(useStore.getState().viewMode).toBe('home')
+        expect(savedRoute()).toEqual(local.route)
+        expect(window.sessionStorage.getItem(`${VIEW_MODE_SESSION_KEY}:local`)).toBe(local.view)
+
+        await showEnvironment('env-r')
+        expect(useStore.getState().viewMode).toBe('settings')
+        // This machine's entry, kept by the switch, moves nothing here; the remote entries before it do.
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(local.hash))
+        expect(useStore.getState().viewMode).toBe('settings')
+        act(() => window.history.go(-2))
+        await waitFor(() => expect(useStore.getState().viewMode).toBe('triggers'))
+        expect(window.location.hash).toBe('#/triggers?env=env-r')
+    })
+
+    it('adds an entry after a remote environment\'s entry for a move made here while it shows', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        selectRun('local-run')
+        await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run')))
+        await showEnvironment('env-r')
+        for (const view of ['runs', 'triggers'] as const) {
+            act(() => useStore.getState().setViewMode(view))
+            await waitFor(() => expect(window.location.hash).toBe(`#/${view}?env=env-r`))
+        }
+        await showEnvironment(null)
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe('#/triggers?env=env-r'))
+
+        // A node change, which only rewrites its own entry, leaves the remote one as it is.
+        act(() => useStore.getState().updateRunDetailSession('local-run', { selectedNodeId: 'build' }))
+        await waitFor(() => expect(window.location.hash).toBe(buildRunsHash('local-run', 'build')))
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe('#/triggers?env=env-r'))
+        expect(selectSelectedRunId(useStore.getState())).toBe('local-run')
+    })
+
+    it('opens nothing from a remote environment\'s link a page opens on this machine, replacing its entry so one Back leaves', async () => {
+        window.history.replaceState(null, '', `${buildRunsHash('remote-run')}?env=env-r`)
+        const entries = window.history.length
+        // A page opened anew on the link: its modules load fresh, so routing has run nowhere yet.
+        vi.resetModules()
+        const { HistoryRoutingController: Controller } = await import('@/app/AppSessionControllers')
+        const { useStore: store } = await import('@/store')
+        store.setState({ viewMode: 'home' })
+        render(<Controller />)
+
+        expect(window.location.hash).toBe('#/chats')
+        expect(window.history.length).toBe(entries)
+        expect(store.getState().viewMode).toBe('home')
+        expect(selectSelectedRunId(store.getState())).toBeNull()
+        expect(savedRoute()).not.toMatchObject({ selectedRunId: 'remote-run' })
+    })
+
+    it('keeps each environment\'s view across switches', async () => {
+        act(() => useStore.getState().setViewMode('runs'))
+        await switchEnvironment('env-r')
+        resetStoreForEnvironmentSwitch(false)
+        expect(useStore.getState().viewMode).toBe('overview')
+        act(() => useStore.getState().setViewMode('settings'))
+        expect(window.sessionStorage.getItem(`${VIEW_MODE_SESSION_KEY}:local`)).toBe('runs')
+
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+        expect(useStore.getState().viewMode).toBe('runs')
+        await switchEnvironment('env-r')
+        resetStoreForEnvironmentSwitch(false)
+        expect(useStore.getState().viewMode).toBe('settings')
     })
 })

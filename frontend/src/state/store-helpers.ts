@@ -7,6 +7,7 @@ import type {
     UiDefaults,
     ViewMode,
 } from './store-types'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
 
 export const DEFAULT_UI_DEFAULTS: UiDefaults = {
@@ -199,19 +200,22 @@ export const loadRouteState = (): RouteState => {
     }
 }
 
-/** Spark opens on the Overview; a reload keeps the view you were on. */
-export const loadSessionViewMode = (): ViewMode => {
+// Each environment keeps the view it was last on.
+const viewModeSessionKey = (environmentId: string | null) => `${VIEW_MODE_SESSION_KEY}:${environmentId ?? 'local'}`
+
+/** Spark opens on the Overview; a reload keeps the view you were on, as does a switch back to an environment. */
+export const loadSessionViewMode = (environmentId = getActiveEnvironmentId()): ViewMode => {
     try {
-        const mode = window.sessionStorage.getItem(VIEW_MODE_SESSION_KEY) as ViewMode
+        const mode = window.sessionStorage.getItem(viewModeSessionKey(environmentId)) as ViewMode
         return VIEW_MODES.includes(mode) ? normalizeViewMode(mode) : 'overview'
     } catch {
         return 'overview'
     }
 }
 
-export const saveSessionViewMode = (mode: ViewMode) => {
+export const saveSessionViewMode = (mode: ViewMode, environmentId = getActiveEnvironmentId()) => {
     try {
-        window.sessionStorage.setItem(VIEW_MODE_SESSION_KEY, mode)
+        window.sessionStorage.setItem(viewModeSessionKey(environmentId), mode)
     } catch {
         // Ignore storage failures (private mode, quota, etc.)
     }

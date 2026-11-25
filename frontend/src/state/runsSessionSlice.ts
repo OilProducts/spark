@@ -101,9 +101,14 @@ const trackRecordUpdates = (session: RunDetailSessionState, patch: Partial<NonNu
         .map(([key, value]) => [key, { value }])),
 })
 
-export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionSlice> = (set, get) => ({
+/** The runs' state in a fresh environment: all of it belongs to one environment. */
+export const initialRunsSessionState = () => ({
     runsListSession: DEFAULT_RUNS_LIST_SESSION_STATE,
     runDetailSessionsByRunId: {},
+}) satisfies Partial<RunsSessionSlice>
+
+export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionSlice> = (set, get) => ({
+    ...initialRunsSessionState(),
     reconcileRunRecord: (runId, source, record, completedNodes = [], requestUpdates) => set((state) => {
         const session = state.runDetailSessionsByRunId[runId]
         if (!session) return state

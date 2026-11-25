@@ -13,7 +13,8 @@ import {
 import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeParams } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { useStore, type EditorMode, type FlowDefinitionMetadata } from '@/store';
+import { captureShownWorkspace, useStore, type EditorMode, type FlowDefinitionMetadata } from '@/store';
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment';
 import { LaunchPanel } from '@/features/launch';
 import { defaultProjectChoice, launchWorkingDirectory } from '@/features/projects/model/projectChoices';
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState';
@@ -28,6 +29,7 @@ import {
 import type { FlowFile } from '@/lib/attractorClient';
 import { recordFlowLoadDebug, summarizeDiagnosticsForFlowLoadDebug } from '@/lib/flowLoadDebug';
 import {
+    closeFlowOpening,
     primeFlowSaveBaseline,
     saveFlowContent,
     sendPendingFlowSaves,
@@ -361,6 +363,8 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
     const { setViewport, getZoom } = useReactFlow();
     const [nodes, setNodes] = useNodesState<Node>([]);
     const [edges, setEdges] = useEdgesState<Edge>([]);
+    // Layouts belong to the environment this editor mounted in; one that finishes after a switch is dropped.
+    const [environmentId] = useState(getActiveEnvironmentId);
     const hydratedRef = useRef(false);
     const hydratedFlowNameRef = useRef<string | null>(null);
     // A flow belongs to a project: the same name in another project is another flow.
@@ -490,15 +494,20 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         if (saveState === 'error' || saveState === 'conflict') resetSaveState();
     }, [editorMode, fileChangesPending]);
     useSettingsNavigationProtection(hasUnsavedEdits, false, 'flow edits');
-    // Leaving first sends edits still waiting to save and waits for saves in flight: a save refused
-    // after the click still asks before its edits are dropped, and never lands on the next flow.
+    // Leaving first sends edits still waiting to save and waits for this environment's saves in
+    // flight: a save refused after the click still asks before its edits are dropped, and never
+    // lands on the next flow. Another environment's saves only hold up closing the browser.
     const { confirm } = useDialogController();
     useEffect(() => {
         const waitForSaves = (event: Event) => {
-            if (event.defaultPrevented || !sendPendingFlowSaves()) return;
+            if (event.defaultPrevented || !sendPendingFlowSaves(environmentId)) return;
             event.preventDefault();
             const { proceed } = (event as CustomEvent<{ proceed: () => void }>).detail;
+            const shown = captureShownWorkspace();
             void waitForFlowSaves().then(async () => {
+                // A switch away ended the navigation: the save's result stays with its own workspace,
+                // and nothing asks or moves in the one shown now.
+                if (!shown()) return;
                 const { saveState, saveErrorMessage, saveErrorProblems } = useStore.getState();
                 if (saveState !== 'error' && saveState !== 'conflict') {
                     // Saved: anything else that guards leaving (file drafts) still gets its say.
@@ -516,7 +525,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         };
         window.addEventListener('spark:before-navigation', waitForSaves, { capture: true });
         return () => window.removeEventListener('spark:before-navigation', waitForSaves, { capture: true });
-    }, [confirm]);
+    }, [confirm, environmentId]);
 
     useEffect(() => {
         expandChildFlowsRef.current = expandChildFlows;
@@ -568,9 +577,14 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             ),
         }),
     })
+    // Leaving the flow ends this opening of it, after the save of edits waiting above: a save refused
+    // from then on is reported by the flow's notice, never as the save state of whatever is shown here.
+    useEffect(() => () => {
+        if (flowName) closeFlowOpening(flowName, activeProjectPath, environmentId)
+    }, [activeProjectPath, environmentId, flowName])
 
     const persistLayoutState = useCallback((layout?: SavedFlowLayoutV1 | null, userControlled = true) => {
-        if (!flowName || expandChildFlowsRef.current) {
+        if (!flowName || expandChildFlowsRef.current || getActiveEnvironmentId() !== environmentId) {
             return
         }
         const nextLayout = layout ?? layoutStateRef.current
@@ -584,7 +598,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             nextLayout,
             userControlled,
         )
-    }, [flowName])
+    }, [environmentId, flowName])
 
     const runEdgeRouting = useCallback(async (
         nextNodes: Node[],
@@ -946,6 +960,9 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             loadId,
             session: 'editor',
         });
+        // The flow opens anew as it starts loading: an earlier opening's save not sent yet never goes over
+        // the version this load reads.
+        primeFlowSaveBaseline(flowName, null);
         if (!isReload) {
             setNodes([]);
             setEdges([]);
@@ -1057,10 +1074,15 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                         missing: isMissingFlowError(error),
                         problems: flowLoadProblems(error),
                     });
-                    // An invalid flow's files still read: they open in the file view to be fixed.
+                    // An invalid flow's files still read: they open in the file view to be fixed, in an
+                    // opening of their own.
                     if (isInvalidFlowError(error)) {
                         loadEditorFlowFiles(flowName, activeProjectPath, { signal: loadAbort.signal })
-                            .then((files) => { if (isCurrentLoad()) setFlowFiles(files); })
+                            .then((files) => {
+                                if (!isCurrentLoad()) return;
+                                setFlowFiles(files);
+                                primeFlowSaveBaseline(flowName, null);
+                            })
                             .catch(() => undefined);
                     }
                 }
@@ -1111,6 +1133,8 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             edgeCount: edges.length,
             flowMetadataCount: Object.keys(flowMetadata).length,
         });
+        // A preview answered after the editor moved on (an edit, another flow, a switch away) is not its own.
+        let current = true;
         previewTimer.current = window.setTimeout(() => {
             void requestPreview(flow, {
                 loadId: activeFlowLoadIdRef.current,
@@ -1121,6 +1145,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 debounceMs: previewDebounceMs,
             })
                 .then(({ preview, elapsedMs }) => {
+                    if (!current) return;
                     setLastPreviewMs(elapsedMs);
                     if (preview.diagnostics) {
                         setDiagnostics(preview.diagnostics);
@@ -1137,6 +1162,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         }, previewDebounceMs);
 
         return () => {
+            current = false;
             if (previewTimer.current) {
                 window.clearTimeout(previewTimer.current);
             }
@@ -1559,11 +1585,13 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             return;
         }
         // Each view leaves only once its edits are saved; a refused save keeps them, and its error, in view.
+        // A switch of environment or project meanwhile ends it: what is shown is another flow.
+        const shown = captureShownWorkspace();
         setSwitchingEditorMode(true);
         try {
             if (editorMode === 'files') {
                 const savedDrafts = fileDrafts;
-                if (!(await saveFileDrafts())) return;
+                if (!(await saveFileDrafts()) || !shown()) return;
                 // Edits typed while the save ran aren't in it: stay in the files with them unsaved.
                 if (fileDraftsRef.current !== savedDrafts) return;
                 setFileDrafts({});
@@ -1574,7 +1602,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 // A refused save is reported by the save indicator.
                 flushPendingSave();
                 await waitForFlowSaves();
-                if (!(await saveNow({ nodes, edges }))) return;
+                if (!shown() || !(await saveNow({ nodes, edges })) || !shown()) return;
                 reloadFlow();
             }
             setEditorMode(mode);
@@ -1968,9 +1996,15 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                                 // Runs launch the saved flow by name: persist the current
                                 // content first (a no-op when already saved, a retry after
                                 // a failed autosave), after any earlier save settles.
+                                // A switch of environment or project meanwhile stops the launch: this flow isn't shown there.
                                 prepareLaunch: async () => {
+                                    const shown = captureShownWorkspace();
                                     await waitForFlowSaves();
-                                    if (!(await saveNow({ nodes, edges }))) {
+                                    const saved = shown() && await saveNow({ nodes, edges });
+                                    if (!shown()) {
+                                        throw new Error('The environment or project changed before the run started.');
+                                    }
+                                    if (!saved) {
                                         throw new Error('Saving the flow failed; fix the save error before running.');
                                     }
                                 },

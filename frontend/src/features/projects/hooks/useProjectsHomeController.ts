@@ -1,6 +1,7 @@
 import { useInheritedModelSettingsView } from '@/components/model-chooser/useInheritedModelSettings'
 import { useModelOptions } from '@/components/model-chooser/useModelOptions'
 import { useLlmProfiles } from '@/lib/useLlmProfiles'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -110,7 +111,7 @@ export function useProjectsHomeController() {
     // provider shown under a freshly picked provider).
     const [chatSettingsDrafts, setChatSettingsDrafts] = useState<Record<string, ModelSettings>>({})
     const pendingChatSettings = activeConversationId ? chatSettingsDrafts[activeConversationId] ?? null : null
-    const chatSettingsSaves = useRef(new Map<string, { values: ModelSettings | null; promise: Promise<boolean> }>())
+    const chatSettingsSaves = useRef(new Map<string, { values: ModelSettings | null; promise: Promise<boolean>; revision?: string }>())
     const projectsHomeViewModel = useMemo(() => buildProjectsHomeViewModel({
         activeConversationId,
         activeConversationRecord,
@@ -308,10 +309,13 @@ export function useProjectsHomeController() {
             running.values = values
             return running.promise
         }
-        const save: { values: ModelSettings | null; promise: Promise<boolean> } = {
+        const save: { values: ModelSettings | null; promise: Promise<boolean>; revision?: string } = {
             values,
             promise: Promise.resolve(true),
         }
+        // Coalesced saves go to the environment the first started in; after a switch, their answers show nowhere.
+        const environmentId = getActiveEnvironmentId()
+        const shown = () => getActiveEnvironmentId() === environmentId
         const run = (async (): Promise<boolean> => {
             let revision = getConversationRecord(conversationId)?.settingsRevision ?? '0'
             try {
@@ -323,14 +327,15 @@ export function useProjectsHomeController() {
                         project_path: activeProjectPath,
                         expected_revision: revision,
                         model_settings: saving,
-                    })
+                    }, environmentId)
                     revision = ack.revision
-                    applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'chat-settings-response')
+                    save.revision = revision
+                    if (shown()) applyConversationBatch(activeProjectPath, conversationId, ack.changes, 'mutation', 'chat-settings-response')
                     if (save.values === saving) break
                 }
                 return true
             } catch (error) {
-                setPanelError(extractApiErrorMessage(error, 'Unable to update the project chat settings.'))
+                if (shown()) setPanelError(extractApiErrorMessage(error, 'Unable to update the project chat settings.'))
                 return false
             } finally {
                 if (chatSettingsSaves.current.get(conversationId) === save) {
@@ -349,12 +354,16 @@ export function useProjectsHomeController() {
         return run
     }, [activeProjectPath, applyConversationBatch, ensureConversationId, setPanelError, currentModelSettings])
 
-    const waitForPendingSettingsSave = useCallback(async (conversationId: string): Promise<boolean> => {
+    // A request waiting on these saves gets the settings revision they acknowledged, as it can't read
+    // it from the chat's record once a switch reset it.
+    const waitForPendingSettingsSave = useCallback(async (conversationId: string): Promise<boolean | string> => {
+        let acknowledged: boolean | string = true
         while (true) {
             const running = chatSettingsSaves.current.get(conversationId)
-            if (!running) return true
+            if (!running) return acknowledged
             const ok = await running.promise
             if (!ok) return false
+            acknowledged = running.revision ?? acknowledged
         }
     }, [])
 

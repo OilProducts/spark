@@ -19,13 +19,14 @@ import {
     parseDiagnosticList,
 } from './shared'
 import { notifyAttentionChanged } from './attentionApi'
-import { activeApiPrefix } from '../activeEnvironment'
+import { environmentProxyPrefix, getActiveEnvironmentId } from '../activeEnvironment'
 
 export const ATTRACTOR_BASE = '/attractor'
 export const ATTRACTOR_API_BASE = `${ATTRACTOR_BASE}/api`
 
-export function attractorUrl(path: string): string {
-    return `${activeApiPrefix()}${ATTRACTOR_BASE}${path}`
+/** An attractor URL in `environmentId` (`null`: this machine), by default the active environment. */
+export function attractorUrl(path: string, environmentId: string | null = getActiveEnvironmentId()): string {
+    return `${environmentProxyPrefix(environmentId)}${ATTRACTOR_BASE}${path}`
 }
 
 function projectQuery(projectPath: string | null): string {
@@ -346,6 +347,8 @@ export interface PreviewRequestOptions {
     flowName?: string | null
     projectPath?: string | null
     expandChildren?: boolean
+    /** The environment to preview in, when not the active one. */
+    environmentId?: string | null
 }
 
 export interface RunsListResponse {
@@ -958,8 +961,9 @@ export async function saveFlowValidated(
     name: string,
     content: FlowSaveContent,
     projectPath: string | null,
+    environmentId: string | null = getActiveEnvironmentId(),
 ): Promise<SaveFlowApiResponse> {
-    const response = await fetchSpark(attractorUrl('/api/flows'), {
+    const response = await fetchSpark(attractorUrl('/api/flows', environmentId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1009,7 +1013,7 @@ export async function fetchPreviewValidated(
         payload.expand_children = true
     }
     return fetchJsonWithValidation(
-        attractorUrl('/preview'),
+        attractorUrl('/preview', options?.environmentId),
         {
             ...init,
             method: 'POST',
@@ -1021,9 +1025,12 @@ export async function fetchPreviewValidated(
     )
 }
 
-export async function fetchPipelineStartValidated(payload: PipelineStartPayload): Promise<PipelineStartResponse> {
+export async function fetchPipelineStartValidated(
+    payload: PipelineStartPayload,
+    environmentId: string | null = getActiveEnvironmentId(),
+): Promise<PipelineStartResponse> {
     return fetchJsonWithValidation(
-        attractorUrl('/pipelines'),
+        attractorUrl('/pipelines', environmentId),
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1037,8 +1044,9 @@ export async function fetchPipelineStartValidated(payload: PipelineStartPayload)
 export async function fetchPipelineContinueValidated(
     pipelineId: string,
     payload: PipelineContinuePayload,
+    environmentId: string | null = getActiveEnvironmentId(),
 ): Promise<PipelineStartResponse> {
-    const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/continue`)
+    const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/continue`, environmentId)
     return fetchJsonWithValidation(
         url,
         {
@@ -1130,8 +1138,9 @@ export async function fetchPipelineAnswerValidated(
     selectedValue: string,
     note?: string,
     form?: FormReply,
+    environmentId: string | null = getActiveEnvironmentId(),
 ): Promise<PipelineAnswerResponse> {
-    const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/questions/${encodeURIComponent(questionId)}/answer`)
+    const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/questions/${encodeURIComponent(questionId)}/answer`, environmentId)
     const trimmedNote = note?.trim() ?? ''
     return fetchJsonWithValidation(
         url,
@@ -1147,7 +1156,7 @@ export async function fetchPipelineAnswerValidated(
         },
         '/attractor/pipelines/{id}/questions/{qid}/answer',
         parsePipelineAnswerResponse,
-    ).then(notifyAttentionChanged)
+    ).then(notifyAttentionChanged(environmentId))
 }
 
 export async function fetchPipelineGraphValidated(pipelineId: string): Promise<PipelineGraphResponse> {

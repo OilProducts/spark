@@ -15,7 +15,7 @@ it('completed layout interactions write only user positions and ports to prefere
     try {
         saveSavedFlowLayout('/project', 'flow', 'editor-parent-only', layout)
         expect(completed.mock.calls[0][0].detail).toEqual({ flow_node_positions: { [key]: { a: { x: 12, y: 34 } } }, flow_edge_ports: { [key]: {} } })
-        const cache = JSON.parse(localStorage.getItem(`spark.flow_layout_cache.v1:${key}`)!)
+        const cache = JSON.parse(localStorage.getItem(`spark.flow_layout_cache.v1:local:${key}`)!)
         expect(cache.topologyStamp).toBe('cached-topology')
         expect(cache.nodePositions).toBeUndefined()
     } finally { window.removeEventListener('spark:preferences-completed', completed) }

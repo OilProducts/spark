@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { ChevronDown, Plus, RefreshCw, Search } from 'lucide-react'
 
-import { useStore } from '@/store'
+import { captureShownWorkspace, useStore, whenEnvironmentShown } from '@/store'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { sanitizeFlowId } from '@/lib/canonicalFlowModel'
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { useDialogController } from '@/components/app/dialog-controller'
@@ -193,11 +194,13 @@ function useFlowCatalogPanel() {
             },
         }
 
+        // Created after a switch of environment or project, the flow isn't in the list shown: it opens nothing.
+        const shown = captureShownWorkspace()
         const saved = await saveFlowContent(fileName, { flow })
-        if (!saved) return
+        if (!saved || !shown()) return
 
         await refreshFlows();
-        setActiveFlow(fileName);
+        if (shown()) setActiveFlow(fileName);
     }
 
     const handleDeleteFlow = async (e: MouseEvent, fileName: string) => {
@@ -214,15 +217,18 @@ function useFlowCatalogPanel() {
         })
         if (!confirmed) return;
 
+        // Deleted after a switch of environment or project, the flow isn't the one shown: nothing here changes.
+        const shown = captureShownWorkspace()
+        const environmentId = getActiveEnvironmentId()
         try {
             await deleteFlowCatalogEntry(fileName, activeProjectPath);
         } catch (error) {
-            await alert({
-                title: 'Flow not deleted',
-                description: error instanceof Error ? error.message : String(error),
-            })
+            // Refused after a switch, the error waits for its own workspace rather than opening over another.
+            const description = error instanceof Error ? error.message : String(error)
+            whenEnvironmentShown(environmentId, () => void alert({ title: 'Flow not deleted', description }))
             return;
         }
+        if (!shown()) return;
 
         if (activeFlow === fileName) {
             // Deleting it already discarded its edits: close it without asking again.

@@ -5,6 +5,7 @@ import {
     fetchProjectConversationListValidated,
 } from '@/lib/workspaceClient'
 import { useDialogController } from '@/components/app/dialog-controller'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { useStore } from '@/store'
 import { requestNavigation } from '@/state/workspaceSlice'
 import {
@@ -99,8 +100,11 @@ export function useProjectThreadActions({
         }
         setPanelError(null)
         setPendingDeleteConversationId(conversationId)
+        const environmentId = getActiveEnvironmentId()
         try {
-            await deleteConversationValidated(conversationId, projectPath)
+            await deleteConversationValidated(conversationId, projectPath, environmentId)
+            // Deleted, or refreshed, after a switch: the chats shown are another environment's, and stay as they are.
+            if (getActiveEnvironmentId() !== environmentId) return
             commitConversationCache((current) => removeConversationFromCache({
                 ...current,
                 summariesByProjectPath: {
@@ -109,12 +113,10 @@ export function useProjectThreadActions({
                 },
             }, conversationId))
             clearHomeConversationSession(conversationId)
-            try {
-                const snapshot = await fetchProjectConversationListValidated(projectPath)
-                commitConversationCache((current) => applySummarySnapshotToCache(current, snapshot, 'http', projectPath))
-            } catch {
-                // Keep the local optimistic removal if the follow-up refresh fails.
-            }
+            // Keep the local optimistic removal if the follow-up refresh fails.
+            const snapshot = await fetchProjectConversationListValidated(projectPath).catch(() => null)
+            if (getActiveEnvironmentId() !== environmentId) return
+            if (snapshot) commitConversationCache((current) => applySummarySnapshotToCache(current, snapshot, 'http', projectPath))
             const remainingSummaries = useStore.getState().homeConversationCache.summariesByProjectPath[projectPath] ?? []
 
             if (useStore.getState().projectSessionsByPath[projectPath]?.conversationId === conversationId) {

@@ -2,55 +2,87 @@ import { useEffect, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { AppNotice } from '@/components/app/app-notice'
 import { Button } from '@/components/ui/button'
-import { applyTheme } from '@/lib/theme'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
+import { applyTheme, hasCachedAppearance } from '@/lib/theme'
 import { fetchClientPreferences, saveClientPreferences, type ClientPreferences, type ClientPreferencesView } from './services/clientPreferences'
+
+// The change each environment's save refused, with why and what it was based on. It outlives the
+// workspace that made it, as a switch unmounts it: that environment's workspace shows it again, unsaved,
+// with Try again and Discard, until it saves or is discarded. Try again saves it against the revision it
+// was based on, so preferences changed since refuse it rather than lose what changed.
+// ponytail: kept for the page's life; a workspace already back before the refusal arrives shows it once remounted.
+const refusedChanges = new Map<string, { base: ClientPreferencesView | null; draft: Partial<ClientPreferences>; message: string }>()
+
+// The appearance is this browser's (lib/theme), kept across switches: only the page's first load, if it is
+// this machine's, restores the appearance this machine saved, to a new browser, which has chosen none.
+let startup = true
 
 export function ClientPreferencesController() {
     const saved = useRef<ClientPreferencesView | null>(null)
     const draft = useRef<Partial<ClientPreferences> | null>(null)
     const pending = useRef(false)
     // A failed load leaves the defaults in place; a failed save keeps the change to try again.
-    const [error, setError] = useState<{ kind: 'load' | 'save'; message: string } | null>(null)
+    const [error, setError] = useState<{ kind: 'load' | 'save'; message: string } | null>(() => {
+        const refused = refusedChanges.get(getActiveEnvironmentId() ?? 'local')
+        return refused ? { kind: 'save', message: refused.message } : null
+    })
     useEffect(() => {
         let cancelled = false
+        // These preferences, their writes included, are the environment this mounted in; once it is
+        // left, late answers change nothing.
+        const environmentId = getActiveEnvironmentId()
+        const scope = environmentId ?? 'local'
+        const kept = refusedChanges.get(scope)
+        draft.current = kept?.draft ?? null
+        const current = () => !cancelled && getActiveEnvironmentId() === environmentId
         const apply = (value: ClientPreferencesView) => {
             saved.current = value
-            applyTheme(value.effective.appearance ?? 'system')
+            // A change not saved yet shows over what is saved; changes only carry set values.
+            const effective = { ...value.effective, ...draft.current } as ClientPreferencesView['effective']
+            if (startup) {
+                startup = false
+                if (environmentId === null && value.effective.appearance && !hasCachedAppearance()) applyTheme(value.effective.appearance)
+            }
             useStore.setState(() => ({
                 clientPreferencesLoaded: true,
-                clientFlowNodePositions: value.effective.flow_node_positions ?? {},
-                clientFlowEdgePorts: value.effective.flow_edge_ports ?? {},
-                chatProjectOrder: value.effective.chat_project_order ?? [],
-                clientRunPresentation: value.effective.run_presentation ?? {},
-                preferredEditorMode: value.effective.editor_mode,
-                editorSidebarWidth: value.effective.editor_sidebar_width,
-                preferredAdvancedControls: value.effective.show_advanced_controls ?? false,
-                preferredExpandChildFlows: value.effective.expand_child_flows ?? false,
-                preferredGraphSettingsOpen: value.effective.graph_settings_open ?? false,
-                preferredShowThinking: value.effective.show_thinking ?? true,
-                preferredHomeSidebarPrimarySplitRatio: value.effective.home_sidebar_primary_split_ratio ?? null,
+                clientFlowNodePositions: effective.flow_node_positions ?? {},
+                clientFlowEdgePorts: effective.flow_edge_ports ?? {},
+                chatProjectOrder: effective.chat_project_order ?? [],
+                clientRunPresentation: effective.run_presentation ?? {},
+                preferredEditorMode: effective.editor_mode,
+                editorSidebarWidth: effective.editor_sidebar_width,
+                preferredAdvancedControls: effective.show_advanced_controls ?? false,
+                preferredExpandChildFlows: effective.expand_child_flows ?? false,
+                preferredGraphSettingsOpen: effective.graph_settings_open ?? false,
+                preferredShowThinking: effective.show_thinking ?? true,
+                preferredHomeSidebarPrimarySplitRatio: effective.home_sidebar_primary_split_ratio ?? null,
             }))
         }
+        // Once loaded, a change not saved yet keeps what shows until it saves or is discarded.
         const refresh = () => {
-            if (pending.current || draft.current) return
+            if (pending.current || (draft.current && saved.current)) return
             const base = saved.current
-            void fetchClientPreferences().then((value) => {
-                if (!cancelled && saved.current === base && !pending.current && !draft.current) { apply(value); setError(null) }
-            }).catch(() => { if (!cancelled && saved.current === base && !pending.current && !draft.current) setError({ kind: 'load', message: 'Couldn’t load your preferences, so Spark is using its defaults.' }) })
+            void fetchClientPreferences(environmentId).then((value) => {
+                if (current() && saved.current === base && !pending.current) { apply(value); if (!draft.current) setError(null) }
+            }).catch(() => { if (current() && saved.current === base && !pending.current && !draft.current) setError({ kind: 'load', message: 'Couldn’t load your preferences, so Spark is using its defaults.' }) })
         }
+        // A change completed here is saved here even if the workspace unmounts first, as a switch does
+        // while an earlier save is in flight; only what it shows waits on current().
         const save = async () => {
-            if (!draft.current || pending.current || cancelled) return
+            if (!draft.current || pending.current) return
             const submitted = draft.current
             pending.current = true
             try {
-                const base = saved.current ?? await fetchClientPreferences()
+                const base = saved.current ?? await fetchClientPreferences(environmentId)
                 saved.current = base
-                const value = await saveClientPreferences(base, { ...base.stored, ...submitted })
+                const value = await saveClientPreferences(base, { ...base.stored, ...submitted }, environmentId)
                 saved.current = value
-                useStore.setState({ clientPreferencesLoaded: true })
-                if (draft.current === submitted) { draft.current = null; if (!cancelled) setError(null) }
+                if (current()) useStore.setState({ clientPreferencesLoaded: true })
+                if (draft.current === submitted) { draft.current = null; refusedChanges.delete(scope); if (current()) setError(null) }
             } catch (error) {
-                if (!cancelled) setError({ kind: 'save', message: error instanceof Error ? error.message : 'Unable to save preferences. Your changes are retained.' })
+                const message = error instanceof Error ? error.message : 'Unable to save preferences. Your changes are retained.'
+                refusedChanges.set(scope, { base: saved.current, draft: draft.current ?? submitted, message })
+                if (current()) setError({ kind: 'save', message })
             } finally { pending.current = false }
             // A second completed interaction may arrive while the first save is pending.
             if (draft.current && draft.current !== submitted) void save()
@@ -60,7 +92,9 @@ export function ClientPreferencesController() {
             void save()
         }
         const retry = () => { if (draft.current) void save(); else refresh() }
-        const discard = () => { if (!pending.current) { draft.current = null; refresh() } }
+        const discard = () => { if (!pending.current) { draft.current = null; refusedChanges.delete(scope); refresh() } }
+        // A kept change shows over its base, which the refresh then leaves in place until it saves or is discarded.
+        if (kept?.base) apply(kept.base)
         refresh()
         window.addEventListener('spark:preferences-completed', complete)
         window.addEventListener('spark:preferences-retry', retry)

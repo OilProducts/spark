@@ -1,5 +1,6 @@
 import type { ConversationSummaryResponse } from '@/lib/api/conversationsApi'
 import type { AttentionItem } from '@/lib/api/attentionApi'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import type { Mission } from '@/features/missions/MissionsPanel'
 import { missionTime } from '@/features/missions/model/missionModel'
 import { runKind, runTitle } from '@/features/runs/model/runOverviewModel'
@@ -157,15 +158,16 @@ export function hasUnread(attention: AttentionItem[], runs: RunRecord[], mission
         || finishedSince(runs, missions, finishedWatermark, now).length > 0
 }
 
-// The newest server time the Overview has shown in each section; null before the first visit.
+// The newest server time the Overview has shown in each section of each environment; null before the first visit.
 // ponytail: an item that finished (or was updated) earlier than one already shown but reached its list later is not new.
 const ATTENTION_WATERMARK_KEY = 'spark.overview_attention_watermark'
 const FINISHED_WATERMARK_KEY = 'spark.overview_finished_watermark'
 const listeners = new Set<() => void>()
+const environmentKey = (storageKey: string) => `${storageKey}:${getActiveEnvironmentId() ?? 'local'}`
 
 function readWatermark(storageKey: string): number | null {
     try {
-        const value = window.localStorage.getItem(storageKey)
+        const value = window.localStorage.getItem(environmentKey(storageKey))
         return value === null ? null : Number(value) || 0
     } catch {
         return null
@@ -178,7 +180,7 @@ function advance(storageKey: string, times: number[]) {
     const newest = Math.max(...times)
     if (times.length === 0 || (current !== null && newest <= current)) return
     try {
-        window.localStorage.setItem(storageKey, String(newest))
+        window.localStorage.setItem(environmentKey(storageKey), String(newest))
     } catch {
         // Ignore storage failures (private mode, quota, etc.)
     }

@@ -3,7 +3,9 @@ import { visitKey } from '@/features/runs/model/visitModel'
 import { ClientPreferencesController } from '@/features/settings/ClientPreferencesController'
 import { ModelDefaultsController } from '@/features/settings/ModelDefaultsController'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { AppNotice } from '@/components/app/app-notice'
+import { dismissRefusedFlowSave, refusedFlowSaves, refusedFlowSaveStatus, subscribeRefusedFlowSaves } from '@/lib/flowPersistence'
 
 import { usePersistProjectState } from '@/features/projects/hooks/usePersistProjectState'
 import { useConversationStream } from '@/features/projects/hooks/useConversationStream'
@@ -22,9 +24,12 @@ import { useTriggersList } from '@/features/triggers/hooks/useTriggersList'
 import { buildWorkspaceLiveEventsUrl, dispatchConversationLiveEnvelope } from '@/features/workspace/services/liveEvents'
 import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
+import type { AppState } from '@/state/store-types'
+import { openByItself, opensByItself } from '@/state/homeSessionSlice'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { reportRunsTransportLost, requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
-import { addsEntry, missionKey, parsePlaceHash, placeHash, placeOf, roleKey, type Place } from './runsRouting'
+import { addsEntry, closesTrigger, missionKey, parsePlaceHash, placeHash, placeOf, roleKey, type Place } from './runsRouting'
 import { defaultProjectChoice } from '@/features/projects/model/projectChoices'
 import { refreshAttention } from './useAttention'
 
@@ -100,7 +105,7 @@ function HomeThreadSummariesController({
             }
             const latestConversation = summaries[0] ?? null
             if (latestConversation) {
-                activateConversationThread(projectPath, latestConversation.conversation_id)
+                openByItself(() => activateConversationThread(projectPath, latestConversation.conversation_id))
             }
         }
 
@@ -577,6 +582,23 @@ function projectInView() {
     return state.selectedRole?.projectPath ?? state.activeProjectPath ?? defaultProjectChoice(state.projectRegistry)
 }
 
+/**
+ * Whether a history entry's or a link's place is in another environment than the one shown: another
+ * environment's selections never move this one, nor its saved route.
+ */
+const isForeignPlace = (place: Place) => (place.envId ?? null) !== getActiveEnvironmentId()
+
+/**
+ * What you choose here that no place names: the project open in Chats, the settings category, a project's
+ * Settings, the New Trigger form. Its chat is `openChat`.
+ */
+function chosenHere() {
+    const state = useStore.getState()
+    return [state.activeProjectPath, state.settingsCategory, state.projectPageSettingsRequest, state.triggersSession.createFormOpen]
+}
+
+const openChat = (state: AppState) => state.activeProjectPath ? state.projectSessionsByPath[state.activeProjectPath]?.conversationId ?? null : null
+
 /** Moves the app to a place from a history entry or a link; returns whether it got there now. */
 function applyPlace(place: Place): boolean {
     const state = useStore.getState()
@@ -619,23 +641,46 @@ function applyPlace(place: Place): boolean {
         .every((field) => place[field] === undefined || reached[field] === place[field])
 }
 
+// The environment routing last ran in. The workspace unmounts while another environment connects; shown
+// again in the same one, as after that connection fails, it keeps the entry shown and those after it.
+let routedEnvironment: string | null | undefined
+
 /**
  * Keeps the browser's Back and Forward in step with the app: opening a view, a run, a project
  * page, a flow, a trigger, a mission or a role adds a history entry, and the URL hash names it so a link reopens it.
  */
 export function HistoryRoutingController() {
     useEffect(() => {
+        // This routes the environment it mounted in. A switch resets the store before it unmounts,
+        // and from then on it records and applies nothing, or the reset would add an entry.
+        const environmentId = getActiveEnvironmentId()
+        const retired = () => getActiveEnvironmentId() !== environmentId
         const hash = window.location.hash
-        const linked = parsePlaceHash(hash, projectInView())
-        if (linked) applyPlace(linked)
+        // The entry's place, which keeps what its hash can't name, such as a project page; else the hash's.
+        const entry = window.history.state?.sparkPlace as Place | undefined
+        const linked = entry ?? parsePlaceHash(hash, projectInView())
+        // Another environment's link (a reload while one was shown starts on this machine) opens nothing.
+        const foreign = linked !== null && isForeignPlace(linked)
+        if (linked && !foreign) applyPlace(linked)
         let current = placeOf(useStore.getState())
-        window.history.replaceState({ sparkPlace: current }, '', placeHash(current))
+        let chosen = chosenHere()
+        let projects = useStore.getState().projectRegistry
+        // Another environment's entry, or its link followed, which has no entry of its own, stays for Back and Forward
+        // to reach: a switch here adds this one's after it, and shown again here, as after a failed connection, it stays.
+        // A page opened on such a link replaces it, so one Back returns to where it was followed from.
+        const pageOpened = routedEnvironment === undefined && !entry
+        const switched = routedEnvironment !== environmentId
+        routedEnvironment = environmentId
+        const shown = parsePlaceHash(hash)
+        if (pageOpened || (!(entry && isForeignPlace(entry)) && !(shown && isForeignPlace(shown)))) {
+            window.history.replaceState({ sparkPlace: current }, '', placeHash(current))
+        } else if (switched) window.history.pushState({ sparkPlace: current }, '', placeHash(current))
         // A trigger, mission or role link without a project names its item in one once the projects load,
         // unless you have moved on by then.
         const opened = placeHash(current)
-        const stopWaiting: () => void = projectInView() ? () => {} : useStore.subscribe(() => {
+        const stopWaiting: () => void = projectInView() || foreign ? () => {} : useStore.subscribe(() => {
             const project = projectInView()
-            if (!project) return
+            if (!project || retired()) return
             stopWaiting()
             const place = parsePlaceHash(hash, project)
             if (place && placeHash(placeOf(useStore.getState())) === opened) applyPlace(place)
@@ -643,28 +688,64 @@ export function HistoryRoutingController() {
 
         // One click can change the view and its selection in separate updates; they make one entry.
         let scheduled = false
+        let chatChosen = false
         const record = () => {
             scheduled = false
-            const next = placeOf(useStore.getState())
-            if (addsEntry(useStore.getState(), current, next)) {
+            if (retired()) return
+            const state = useStore.getState()
+            const next = placeOf(state)
+            const entry = window.history.state?.sparkPlace as Place | undefined
+            const shown = parsePlaceHash(window.location.hash)
+            if ((entry && isForeignPlace(entry)) || (shown && isForeignPlace(shown))) {
+                // Back or Forward left another environment's entry showing: a move here follows it, never
+                // rewriting it. What moves by itself leaves history as it is: the projects loading, which
+                // can open a project and its chat, a project's saved state answering, and what `addsEntry`
+                // finds opened by itself, such as a run. The projects have loaded once they hold Home, as a
+                // loaded list always does, so the first project added before then or without it is yours.
+                const loading = !Object.values(projects).some((project) => project.isDefault)
+                    && Object.values(state.projectRegistry).some((project) => project.isDefault)
+                const moved = addsEntry(state, current, next)
+                    // Only you choose a node of the open run, close a trigger the list still has, and what no place names.
+                    || (next.runId === current.runId && next.nodeId !== current.nodeId)
+                    || closesTrigger(state, current, next)
+                    || chosenHere().some((value, index) => value !== chosen[index])
+                    || chatChosen
+                    // A project added or removed; an answer saving one's state only updates it.
+                    || Object.keys(state.projectRegistry).join('\n') !== Object.keys(projects).join('\n')
+                if (moved && !loading) window.history.pushState({ sparkPlace: next }, '', placeHash(next))
+            } else if (addsEntry(state, current, next)) {
                 window.history.pushState({ sparkPlace: next }, '', placeHash(next))
             } else if (placeHash(next) !== window.location.hash) {
                 window.history.replaceState({ sparkPlace: next }, '', placeHash(next))
             }
             current = next
+            chosen = chosenHere()
+            projects = state.projectRegistry
+            chatChosen = false
         }
-        const unsubscribe = useStore.subscribe(() => {
+        // The store as this last saw it. A change made inside another listener, such as the app opening a chat by
+        // itself, reaches later listeners again afterwards with the state before the change that started it as
+        // `previous`; against this, it counts once, as it was made.
+        let seen = useStore.getState()
+        const unsubscribe = useStore.subscribe((state) => {
+            // A chat you choose opens alone; one the projects loading or a project's saved state answering
+            // opens comes with the projects, and the app's own choice of a project's latest is no one's.
+            if (state.projectRegistry === seen.projectRegistry && openChat(state) !== openChat(seen) && !opensByItself()) chatChosen = true
+            seen = state
             if (scheduled) return
             scheduled = true
             queueMicrotask(record)
         })
 
         // Back, Forward, or a followed link: the entry's place, or else the one its hash names.
-        // A link that names no place, or one it can't reach now, leaves the app where it is,
-        // and the link's entry then says where.
+        // A link that names no place, or one it can't reach now, leaves the app where it is, and the
+        // link's entry then says where. Another environment's entry is left as it is, app and entry
+        // both, so Back and Forward still reach it once that environment shows again.
         const onNavigate = () => {
+            if (retired()) return
             const entry = window.history.state?.sparkPlace as Place | undefined
             const place = entry ?? parsePlaceHash(window.location.hash, projectInView())
+            if (place !== null && isForeignPlace(place)) return
             const held = place !== null && !applyPlace(place)
             current = placeOf(useStore.getState())
             // Back or Forward held is still where it was: put that entry back, so the URL and Back stay true.
@@ -684,6 +765,43 @@ export function HistoryRoutingController() {
 }
 
 /**
+ * Flow saves this environment refused out of sight, by flow and project, until dismissed. Behind another
+ * view of the editor that still has the edits, the notice reports them; the editor shows them itself.
+ * Otherwise it shows them to review and make again by hand; nothing sends them over the flow.
+ */
+export function RefusedFlowSaveNotices() {
+    const [environmentId] = useState(getActiveEnvironmentId)
+    const refused = useSyncExternalStore(subscribeRefusedFlowSaves, refusedFlowSaves)
+    const editorShown = useStore((state) => state.viewMode === 'editor')
+    return refused.filter((save) => save.environmentId === environmentId).flatMap((save) => {
+        const status = refusedFlowSaveStatus(save)
+        if (status === 'open' && editorShown) return []
+        const { content } = save
+        const edits = 'flow' in content ? JSON.stringify(content.flow, null, 2)
+            : [...content.files.map((file) => `${file.name}:\n${file.content}`), ...(content.deleted_files ?? []).map((file) => `${file}: deleted`)].join('\n')
+        const next = status === 'open' ? 'Its edits are still in the editor.'
+            : 'These edits weren’t saved. Review and copy them below if you still want to apply them.'
+        return [
+            <AppNotice
+                key={`${save.projectPath}\n${save.name}`}
+                data-testid="refused-flow-save"
+                // The same flow name in another project is another flow, with its own edits.
+                title={`Couldn’t save ${save.name}${save.projectPath ? ` in ${save.projectPath}` : ''}`}
+                onDismiss={() => dismissRefusedFlowSave(save)}
+                actions={status === 'open' ? undefined : (
+                    <details className="w-full">
+                        <summary>These edits</summary>
+                        <pre data-testid="refused-flow-save-edits" className="max-h-48 overflow-auto whitespace-pre-wrap">{edits}</pre>
+                    </details>
+                )}
+            >
+                {`${save.message} ${next}`}
+            </AppNotice>,
+        ]
+    })
+}
+
+/**
  * Problems with the whole app, as banners above the open view. They take their own room rather
  * than float, so they never cover a control such as a composer's Send button.
  */
@@ -692,6 +810,7 @@ export function AppNotices() {
         <div data-testid="app-notices" className="flex shrink-0 flex-col gap-2 px-3 pt-3 empty:hidden">
             <ModelDefaultsController />
             <ClientPreferencesController />
+            <RefusedFlowSaveNotices />
         </div>
     )
 }

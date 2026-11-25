@@ -20,9 +20,11 @@ vi.mock('@/lib/attractorClient', async (importOriginal) => ({
 
 const DEMO_FLOW = { flow: { schema_version: '2', id: 'demo', nodes: {} } }
 
+// The flow saved is the one open, whose save state shows.
 const resetSaveState = () => {
   useStore.setState((state) => ({
     ...state,
+    activeFlow: 'demo',
     saveState: 'idle',
     saveStateVersion: 0,
     saveErrorMessage: null,
@@ -78,7 +80,7 @@ describe('Editor save state behavior', () => {
     })
 
     expect(await saveFlowContent('demo', DEMO_FLOW)).toBe(false)
-    expect(fetchPreviewValidated).toHaveBeenCalledWith(DEMO_FLOW.flow, undefined, { flowName: 'demo', projectPath: '/tmp/project-a' })
+    expect(fetchPreviewValidated).toHaveBeenCalledWith(DEMO_FLOW.flow, undefined, { flowName: 'demo', projectPath: '/tmp/project-a', environmentId: null })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(useStore.getState().saveErrorKind).toBe('validation_error')
     expect(useStore.getState().saveErrorProblems).toEqual([{ message: 'step_1.md: Agent steps need at least one route.', file: null }])

@@ -44,17 +44,45 @@ const resolveHomeConversationSession = (
     ...(sessionsById[conversationId] ?? {}),
 })
 
+// The chats' fresh starts. A switch away and back starts them anew in the same environment, so a
+// request begun before then is no longer the shown chats', though its environment is shown.
+let homeSessionStarts = 0
+/** The chats' current fresh start. */
+export const homeSessionStart = () => homeSessionStarts
+
+// Set while the app opens a project's chat by itself, as its latest once its list loads: no one chose it.
+let openingByItself = false
+/** Whether the chat opening now is one the app opens by itself. */
+export const opensByItself = () => openingByItself
+/** Opens a chat through `open` as the app's own choice, not yours. */
+export function openByItself(open: () => void) {
+    openingByItself = true
+    try {
+        open()
+    } finally {
+        openingByItself = false
+    }
+}
+
+/** The chats' state in a fresh environment: all of it belongs to one environment. */
+export const initialHomeSessionState = () => {
+    homeSessionStarts += 1
+    return {
+        homeConversationCache: {
+            conversationsById: {},
+            summariesByProjectPath: {},
+        },
+        homeThreadSummariesStatusByProjectPath: {},
+        homeThreadSummariesErrorByProjectPath: {},
+        homeProjectSessionsByPath: {},
+        homeConversationSessionsById: {},
+        homeProjectGitMetadataByPath: {},
+        sendingChats: {},
+    } satisfies Partial<HomeSessionSlice>
+}
+
 export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionSlice> = (set) => ({
-    homeConversationCache: {
-        conversationsById: {},
-        summariesByProjectPath: {},
-    },
-    homeThreadSummariesStatusByProjectPath: {},
-    homeThreadSummariesErrorByProjectPath: {},
-    homeProjectSessionsByPath: {},
-    homeConversationSessionsById: {},
-    homeProjectGitMetadataByPath: {},
-    sendingChats: {},
+    ...initialHomeSessionState(),
     setSendingChat: (conversationId, sending) =>
         set((state) => {
             const sendingChats = { ...state.sendingChats }

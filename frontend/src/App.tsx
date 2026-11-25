@@ -6,14 +6,14 @@ import { ProjectsPanel } from "@/features/projects"
 import { RunStream, RunsPanel } from "@/features/runs"
 import { TriggersPanel } from "@/features/triggers"
 import { useActiveEnvironment } from "@/lib/activeEnvironment"
-import { useStore } from "@/store"
+import { closeWorkspace, useStore } from "@/store"
 import { useNarrowViewport } from "@/lib/useNarrowViewport"
 import { DialogProvider } from "@/components/app/dialog-controller"
 import { Sheet } from "@/components/app/view-layout"
 import { MissionsPanel } from "@/features/missions/MissionsPanel"
 import { RolesPanel } from "@/features/roles/RolesPanel"
 import { RunFlowDialog } from "@/features/launch"
-import { lazy, Suspense } from "react"
+import { lazy, Suspense, useEffect } from "react"
 
 // Screens that mount only while open load on first visit, keeping them out of the startup bundle.
 const SettingsPanel = lazy(() => import("@/features/settings/SettingsPanel").then((module) => ({ default: module.SettingsPanel })))
@@ -27,6 +27,8 @@ function WorkspaceShell() {
   const isRunsMode = viewMode === 'runs'
   const isTriggersMode = viewMode === 'triggers'
   const isSettingsMode = viewMode === 'settings'
+  // What it started, such as a launch, no longer shows once it closes, even when it opens again on the same store.
+  useEffect(() => closeWorkspace, [])
 
   return (
     <>

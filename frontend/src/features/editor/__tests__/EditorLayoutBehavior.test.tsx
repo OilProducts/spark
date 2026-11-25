@@ -9,7 +9,8 @@ import { EDGE_RENDER_ROUTE_KEY } from '@/lib/flowLayoutConstants'
 import { buildFlowLayoutKey, saveSavedFlowLayout, type SavedFlowLayoutV1 } from '@/lib/flowLayoutPersistence'
 import { routeFixedNodeGraph, type EdgeRoute } from '@/lib/edgeRouting'
 import * as flowPersistence from '@/lib/flowPersistence'
-import { useStore } from '@/store'
+import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
+import { switchEnvironment } from '@/test/environments'
 import { ReactFlowProvider, type Edge, type Node } from '@xyflow/react'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -27,6 +28,8 @@ const reactFlowHarness = vi.hoisted(() => ({
 const elkHarness = vi.hoisted(() => ({
   calls: [] as Array<Record<string, unknown>>,
   layouts: [] as Array<Record<string, { x: number; y: number }>>,
+  // Holds layouts until it settles, when set.
+  gate: null as Promise<void> | null,
 }))
 
 const routerHarness = vi.hoisted(() => ({
@@ -38,6 +41,7 @@ vi.mock('elkjs/lib/elk.bundled.js', () => ({
   default: class MockElk {
     async layout(graph: { children?: Array<{ id: string }> }) {
       elkHarness.calls.push(graph as unknown as Record<string, unknown>)
+      await elkHarness.gate
       const queuedLayout = elkHarness.layouts.shift() ?? {}
       return {
         children: (graph.children ?? []).map((child, index) => ({
@@ -278,7 +282,7 @@ const layoutKeyFor = (flowName: string) => buildFlowLayoutKey(
 )
 
 const readSavedLayout = (flowName: string): SavedFlowLayoutV1 =>
-  ({ ...JSON.parse(window.localStorage.getItem(`spark.flow_layout_cache.v1:${layoutKeyFor(flowName)}`) ?? '{}'), nodePositions: useStore.getState().clientFlowNodePositions[layoutKeyFor(flowName)] }) as SavedFlowLayoutV1
+  ({ ...JSON.parse(window.localStorage.getItem(`spark.flow_layout_cache.v1:local:${layoutKeyFor(flowName)}`) ?? '{}'), nodePositions: useStore.getState().clientFlowNodePositions[layoutKeyFor(flowName)] }) as SavedFlowLayoutV1
 
 const currentNodePosition = (nodeId: string) => {
   const node = reactFlowHarness.latestProps?.nodes.find((entry) => entry.id === nodeId)
@@ -319,6 +323,7 @@ beforeEach(() => {
   reactFlowHarness.latestProps = null
   elkHarness.calls.length = 0
   elkHarness.layouts.length = 0
+  elkHarness.gate = null
   routerHarness.calls.length = 0
   routerHarness.responders.length = 0
   resetEditorState('flow-a.dot')
@@ -712,7 +717,7 @@ describe('Editor layout behavior', () => {
     await user.click(screen.getByRole('button', { name: 'Reset saved layout' }))
 
     await waitFor(() => {
-      expect(removeItemSpy).toHaveBeenCalledWith(`spark.flow_layout_cache.v1:${layoutKeyFor('flow-a.dot')}`)
+      expect(removeItemSpy).toHaveBeenCalledWith(`spark.flow_layout_cache.v1:local:${layoutKeyFor('flow-a.dot')}`)
       expect(currentNodePosition('a')).toEqual({ x: 140, y: 10 })
       expect(currentNodePosition('b')).toEqual({ x: 500, y: 10 })
       const persistedLayout = readSavedLayout('flow-a.dot')
@@ -721,6 +726,32 @@ describe('Editor layout behavior', () => {
         b: { x: 500, y: 10 },
       })
     })
+  })
+
+  it('drops an Auto-arrange that finishes after a switch to another environment', async () => {
+    const user = userEvent.setup()
+    usePreviewMap({ 'flow-a.dot': buildPreview(['a', 'b'], [{ from: 'a', to: 'b' }]) })
+    await switchEnvironment('env-r')
+    const { unmount } = renderEditor()
+    await waitFor(() => expect(currentNodePosition('b')).not.toBeNull())
+    const layout = createDeferred<void>()
+    elkHarness.gate = layout.promise
+    queueElkLayout({ a: { x: 20, y: 30 }, b: { x: 360, y: 210 } })
+    await user.click(screen.getByRole('button', { name: 'Auto-arrange layout' }))
+
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    unmount()
+    const completed = vi.fn()
+    window.addEventListener('spark:preferences-completed', completed)
+    try {
+      await act(async () => layout.resolve())
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+      expect(useStore.getState().clientFlowNodePositions).toEqual({})
+      expect(window.localStorage.getItem(`spark.flow_layout_cache.v1:local:${layoutKeyFor('flow-a.dot')}`)).toBeNull()
+      expect(completed).not.toHaveBeenCalled()
+    } finally { window.removeEventListener('spark:preferences-completed', completed) }
   })
 
   it('does not overwrite the editable parent-only sidecar layout when expanded child preview mode is toggled on and back off', async () => {

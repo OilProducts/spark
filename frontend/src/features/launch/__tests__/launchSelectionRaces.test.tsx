@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest'
-import { useStore } from '@/store'
+import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
+import { switchEnvironment } from '@/test/environments'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { fetchPipelineStartValidated, fetchPipelineContinueValidated, type PipelineStartResponse } from '@/lib/attractorClient'
 import { useStartPipeline } from '../hooks/useStartPipeline'
@@ -45,4 +46,29 @@ it('does not recreate selections or sessions for a removed launch project', asyn
     await act(async () => { complete({ status: 'queued', pipeline_id: 'removed-a' }); await request })
     expect(useStore.getState().runsListSession.selectedRunId).toBe('b')
     expect(useStore.getState().runDetailSessionsByRunId['removed-a']).toBeUndefined()
+})
+
+it.each(['launch', 'continuation'])('leaves the run chosen after a switch away and back to a delayed %s', async (kind) => {
+    const { result } = renderHook(() => useStartPipeline(), { wrapper: DialogProvider })
+    let request!: Promise<unknown>
+    await act(async () => {
+        request = kind === 'launch'
+            ? result.current.startFlow(form)
+            : result.current.continueFromRun('source', form, { startNodeId: 'review', flowSourceMode: 'snapshot' })
+    })
+    // Away and back: this machine's workspace starts anew, its projects load, and another run is chosen there.
+    await switchEnvironment('env-r')
+    resetStoreForEnvironmentSwitch(false)
+    await switchEnvironment(null)
+    resetStoreForEnvironmentSwitch(true)
+    act(() => {
+        useStore.getState().registerProject('/a')
+        useStore.getState().setRunsSelectedRunId('newer')
+    })
+    await act(async () => {
+        complete({ status: 'started', pipeline_id: 'new-a' })
+        await expect(request).resolves.toEqual({ status: 'cancelled' })
+    })
+    expect(useStore.getState().runsListSession.selectedRunId).toBe('newer')
+    expect(useStore.getState().runDetailSessionsByRunId['new-a']).toBeUndefined()
 })

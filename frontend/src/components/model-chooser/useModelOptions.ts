@@ -46,7 +46,8 @@ export function useModelOptions(projectPath: string | null) {
                                 : error instanceof Error ? error.message : 'Unable to discover Codex models.' } },
                     } }),
                 ).then((value: Discovery) => {
-                    if (request !== revision || (quiet && value.failed && created.value)) return
+                    // A retired entry (reset, or replaced since) takes no late answer.
+                    if (request !== revision || projects.get(scope) !== created || (quiet && value.failed && created.value)) return
                     created.value = value
                     created.listeners.forEach((notify) => notify())
                 })
@@ -64,7 +65,8 @@ export function useModelOptions(projectPath: string | null) {
             entry.listeners.delete(notify)
             // Keep the in-flight request across React StrictMode's effect replay.
             queueMicrotask(() => {
-                if (entry.listeners.size) return
+                // A reset may have replaced this entry meanwhile; the replacement is not this cleanup's.
+                if (entry.listeners.size || projects.get(scope) !== entry) return
                 window.removeEventListener('spark:settings-live-event', entry.refresh)
                 window.removeEventListener('spark:harness-checked', entry.refresh)
                 projects.delete(scope)

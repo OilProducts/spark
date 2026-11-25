@@ -1,4 +1,5 @@
 import { type StateCreator } from 'zustand'
+import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
 import {
     buildHydrateProjectRegistryTransition,
@@ -8,7 +9,7 @@ import {
     buildSetActiveProjectTransition,
 } from './projectScopeTransitions'
 import {
-    DEFAULT_WORKING_DIRECTORY,
+    DEFAULT_ROUTE_STATE,
     loadRouteState,
     loadSessionViewMode,
     pushRecentProjectPath,
@@ -18,36 +19,43 @@ import {
 import type {
     AppState,
     ProjectRegistrationResult,
-    ProjectSessionState,
-    RegisteredProject,
+    RouteState,
     WorkspaceSlice,
 } from './store-types'
 
-const restoredRouteState = loadRouteState()
-const initialProjectRegistry: Record<string, RegisteredProject> = {}
-const initialProjectSessionStates: Record<string, ProjectSessionState> = restoredRouteState.activeProjectPath
-    ? {
-        [restoredRouteState.activeProjectPath]: resolveProjectSessionState(
-            {},
-            restoredRouteState.activeProjectPath,
-        ),
-    }
-    : {}
-const restoredProjectScope = restoredRouteState.activeProjectPath
-    ? resolveProjectSessionState(
-        initialProjectSessionStates[restoredRouteState.activeProjectPath],
-        restoredRouteState.activeProjectPath,
-    )
-    : null
+/**
+ * The workspace's state in a fresh environment, open on `route`: the view that environment last
+ * showed this session and the route's selections. All of it belongs to one environment.
+ */
+export const initialWorkspaceState = (route: RouteState = DEFAULT_ROUTE_STATE) => ({
+    viewMode: loadSessionViewMode(),
+    chatOriginProjectPath: null,
+    projectPagePath: route.projectPagePath,
+    projectPageSettingsRequest: null,
+    selectedMission: route.selectedMission,
+    selectedRole: null,
+    settingsCategory: route.settingsCategory,
+    missionBoard: [],
+    missionBoardLoaded: false,
+    activeProjectPath: route.activeProjectPath,
+    projectRegistry: {},
+    recentProjectPaths: route.activeProjectPath ? [route.activeProjectPath] : [],
+    projectSessionsByPath: route.activeProjectPath
+        ? { [route.activeProjectPath]: resolveProjectSessionState({}, route.activeProjectPath) }
+        : {},
+    projectRegistrationError: null,
+    activeFlow: route.activeFlow,
+    flowLoadFailure: null,
+}) satisfies Partial<WorkspaceSlice>
 
-export const initialWorkspaceEditorState = {
-    activeFlow: restoredRouteState.activeFlow,
-    workingDir: restoredProjectScope ? restoredProjectScope.workingDir : DEFAULT_WORKING_DIRECTORY,
-}
-
-/** Runs proceed once open editors allow leaving; a cancelled or blocked leave never runs it. */
+/**
+ * Runs proceed once open editors allow leaving; a cancelled or blocked leave never runs it, nor does
+ * one let through after a switch to another environment, which it would move instead.
+ */
 export const requestNavigation = (proceed: () => void) => {
-    if (window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail: { proceed } }))) proceed()
+    const environmentId = getActiveEnvironmentId()
+    const go = () => { if (getActiveEnvironmentId() === environmentId) proceed() }
+    if (window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail: { proceed: go } }))) go()
 }
 
 export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice> = (rawSet, get) => {
@@ -65,7 +73,7 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
         else proceed()
     }
     return ({
-    viewMode: loadSessionViewMode(),
+    ...initialWorkspaceState(loadRouteState()),
     setViewMode: (mode) => {
         const nextViewMode = resolveViewModeForProjectScope(mode)
         // Leaving an open chat remembers its project, so a flow run can default to it.
@@ -73,26 +81,14 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
             ? { viewMode: nextViewMode, chatOriginProjectPath: state.activeProjectPath }
             : { viewMode: nextViewMode })
     },
-    chatOriginProjectPath: null,
-    projectPagePath: restoredRouteState.projectPagePath,
-    projectPageSettingsRequest: null,
     openProjectPage: (projectPath, section) => set({
         projectPagePath: projectPath,
         projectPageSettingsRequest: section === 'settings' ? {} : null,
     }),
-    selectedMission: restoredRouteState.selectedMission,
     setSelectedMission: (selection) => set({ selectedMission: selection }),
-    selectedRole: null,
     setSelectedRole: (selection) => set({ selectedRole: selection }),
-    settingsCategory: restoredRouteState.settingsCategory,
     setSettingsCategory: (category) => set({ settingsCategory: category }),
-    missionBoard: [],
-    missionBoardLoaded: false,
     setMissionBoard: (update) => rawSet((state) => ({ missionBoard: update(state.missionBoard) })),
-    activeProjectPath: restoredRouteState.activeProjectPath,
-    projectRegistry: initialProjectRegistry,
-    recentProjectPaths: restoredRouteState.activeProjectPath ? [restoredRouteState.activeProjectPath] : [],
-    projectSessionsByPath: initialProjectSessionStates,
     hydrateProjectRegistry: (projects) =>
         set((state) => {
             const nextState = buildHydrateProjectRegistryTransition(state, projects)
@@ -144,7 +140,6 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
             // Choosing a chat's project shows the chat, not a project page.
             return { ...nextState, projectPagePath: null }
         }),
-    projectRegistrationError: null,
     registerProject: (directoryPath) => {
         let result: ProjectRegistrationResult = {
             ok: false,
@@ -352,10 +347,8 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
         }),
     setProjectRegistrationError: (error) => set({ projectRegistrationError: error }),
     clearProjectRegistrationError: () => set({ projectRegistrationError: null }),
-    activeFlow: initialWorkspaceEditorState.activeFlow,
     setActiveFlow: (flow) =>
         set({ activeFlow: flow }),
-    flowLoadFailure: null,
     setFlowLoadFailure: (flowLoadFailure) => set({ flowLoadFailure }),
     updateProjectSessionState: (projectPath, patch) =>
         set((state) => {

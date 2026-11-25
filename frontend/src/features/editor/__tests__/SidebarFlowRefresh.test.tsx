@@ -2,7 +2,8 @@ import { DialogProvider } from '@/components/app/dialog-controller'
 import { Sidebar } from '@/features/editor/Sidebar'
 import { FlowsPanelActions, FlowsPanelList, useFlowCatalogPanel } from '@/features/editor/FlowsPanel'
 import { CanvasSessionModeProvider } from '@/features/workflow-canvas/canvasSessionContext'
-import { useStore } from '@/store'
+import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
+import { switchEnvironment } from '@/test/environments'
 import { ReactFlow, ReactFlowProvider, useEdgesState, useNodesState } from '@xyflow/react'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -248,6 +249,27 @@ describe('Editor sidebar manual refresh', () => {
         expect(screen.getByRole('button', { name: 'beta-flow' })).toBeVisible()
     })
 
+    it('opens a flow created after a switch to another environment nowhere', async () => {
+        const user = userEvent.setup()
+        const saved = createDeferred<boolean>()
+        saveFlowContentMock.mockReturnValue(saved.promise)
+        fetchFlowListMock.mockResolvedValue(['alpha'])
+        await switchEnvironment('env-r')
+        renderWithFlowProvider(<FlowsPanelHarness />)
+        await waitFor(() => expect(fetchFlowListMock).toHaveBeenCalledTimes(1))
+
+        await user.click(screen.getByRole('button', { name: 'New flow' }))
+        await user.type(screen.getByTestId('shared-dialog-input'), 'Beta')
+        await user.click(screen.getByTestId('shared-dialog-confirm'))
+        await waitFor(() => expect(saveFlowContentMock).toHaveBeenCalledOnce())
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+        act(() => useStore.setState({ activeFlow: 'local-flow' }))
+        await act(async () => saved.resolve(true))
+
+        expect(useStore.getState().activeFlow).toBe('local-flow')
+    })
+
     it('keeps delete-flow refresh behavior intact', async () => {
         const user = userEvent.setup()
 
@@ -262,7 +284,7 @@ describe('Editor sidebar manual refresh', () => {
             expect(fetchFlowListMock).toHaveBeenCalledTimes(1)
         })
 
-        await user.click(screen.getByTitle('Delete beta.dot'))
+        await user.click(await screen.findByTitle('Delete beta.dot'))
         await user.click(await screen.findByTestId('shared-dialog-confirm'))
 
         await waitFor(() => {
@@ -273,6 +295,56 @@ describe('Editor sidebar manual refresh', () => {
 
         expect(screen.queryByRole('button', { name: 'beta.dot' })).not.toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'alpha.dot' })).toBeVisible()
+    })
+
+    it('leaves the flow open after a switch to another environment when a delete started before it finishes', async () => {
+        const user = userEvent.setup()
+        const deleted = createDeferred<undefined>()
+        deleteFlowMock.mockReturnValueOnce(deleted.promise)
+        fetchFlowListMock.mockResolvedValue(['alpha.dot', 'beta.dot'])
+        await switchEnvironment('env-r')
+        resetSidebarState('beta.dot')
+        renderWithFlowProvider(<FlowsPanelHarness />)
+        await waitFor(() => expect(fetchFlowListMock).toHaveBeenCalledTimes(1))
+
+        await user.click(await screen.findByTitle('Delete beta.dot'))
+        await user.click(await screen.findByTestId('shared-dialog-confirm'))
+        await waitFor(() => expect(deleteFlowMock).toHaveBeenCalledOnce())
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+        act(() => useStore.setState({ activeFlow: 'beta.dot' }))
+        await act(async () => deleted.resolve(undefined))
+
+        expect(useStore.getState().activeFlow).toBe('beta.dot')
+    })
+
+    it('shows a delete refused after a switch to another environment only in the workspace it was made in', async () => {
+        const user = userEvent.setup()
+        const deleted = createDeferred<undefined>()
+        deleteFlowMock.mockReturnValueOnce(deleted.promise)
+        fetchFlowListMock.mockResolvedValue(['alpha.dot', 'beta.dot'])
+        await switchEnvironment('env-r')
+        resetSidebarState('beta.dot')
+        renderWithFlowProvider(<FlowsPanelHarness />)
+        await waitFor(() => expect(fetchFlowListMock).toHaveBeenCalledTimes(1))
+
+        await user.click(await screen.findByTitle('Delete beta.dot'))
+        await user.click(await screen.findByTestId('shared-dialog-confirm'))
+        await waitFor(() => expect(deleteFlowMock).toHaveBeenCalledOnce())
+        await switchEnvironment(null)
+        resetStoreForEnvironmentSwitch(true)
+        act(() => useStore.setState({ activeFlow: 'beta.dot' }))
+        await act(async () => deleted.reject(new Error('The flow is running.')))
+
+        // Nothing opens over this machine's workspace.
+        expect(screen.queryByText('Flow not deleted')).not.toBeInTheDocument()
+        expect(useStore.getState().activeFlow).toBe('beta.dot')
+
+        // Back in the remote workspace, the refusal shows there.
+        await switchEnvironment('env-r')
+        act(() => resetStoreForEnvironmentSwitch(false))
+        expect(await screen.findByTestId('shared-dialog-title')).toHaveTextContent('Flow not deleted')
+        expect(screen.getByTestId('shared-dialog-description')).toHaveTextContent('The flow is running.')
     })
 
     it('lists a flow opened from elsewhere that was made since the list loaded', async () => {
