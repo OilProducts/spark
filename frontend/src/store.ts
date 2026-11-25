@@ -108,4 +108,3 @@ export function resetStoreForEnvironmentSwitch(restoreLocalRoute: boolean) {
     heldUntilShown.delete(shown)
     held.forEach((apply) => apply())
 }
-

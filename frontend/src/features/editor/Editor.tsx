@@ -29,6 +29,7 @@ import {
 import type { FlowFile } from '@/lib/attractorClient';
 import { recordFlowLoadDebug, summarizeDiagnosticsForFlowLoadDebug } from '@/lib/flowLoadDebug';
 import {
+    FLOW_SAVE_RECOVERED_EVENT,
     primeFlowSaveBaseline,
     saveFlowContent,
     sendPendingFlowSaves,
@@ -1530,6 +1531,15 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         reloadRequestedRef.current = true;
         setFlowReloadToken((token) => token + 1);
     }, []);
+    // Edits a save refused out of sight, saved since by Retry, change the flow under the canvas: it shows them.
+    useEffect(() => {
+        const reloadRecovered = (event: Event) => {
+            const saved = (event as CustomEvent<{ name: string; projectPath: string | null; environmentId: string | null }>).detail;
+            if (saved.name === flowName && saved.projectPath === activeProjectPath && saved.environmentId === environmentId) reloadFlow();
+        };
+        window.addEventListener(FLOW_SAVE_RECOVERED_EVENT, reloadRecovered);
+        return () => window.removeEventListener(FLOW_SAVE_RECOVERED_EVENT, reloadRecovered);
+    }, [activeProjectPath, environmentId, flowName, reloadFlow]);
 
     // After a save conflict, the way out: drop the unsaved edits and load the flow as saved.
     const reloadSavedFlow = useCallback(async () => {

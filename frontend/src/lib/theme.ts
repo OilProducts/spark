@@ -8,7 +8,8 @@ export function resolveTheme(preference: Appearance, systemPrefersDark: boolean)
     return preference === 'system' ? (systemPrefersDark ? 'dark' : 'light') : preference
 }
 
-export function applyTheme(preference: Appearance) {
+/** Shows `preference` and records it as this browser's choice, unless `remember` is false. */
+export function applyTheme(preference: Appearance, remember = true) {
     stopFollowingSystem()
     const media = window.matchMedia?.('(prefers-color-scheme: dark)')
     const update = () => {
@@ -22,7 +23,14 @@ export function applyTheme(preference: Appearance) {
         media.addEventListener('change', update)
         stopFollowingSystem = () => media.removeEventListener('change', update)
     } else stopFollowingSystem = () => {}
-    try { localStorage.setItem(STORAGE_KEY, preference) } catch { /* storage unavailable; server value still applies */ }
+    if (remember) {
+        try { localStorage.setItem(STORAGE_KEY, preference) } catch { /* storage unavailable; server value still applies */ }
+    }
+}
+
+/** Whether this browser has chosen an appearance, System included; a new one hasn't. */
+export function hasCachedAppearance(): boolean {
+    try { return localStorage.getItem(STORAGE_KEY) !== null } catch { return false }
 }
 
 /** Last applied preference, used before the server value arrives to avoid a flash of the wrong theme. */

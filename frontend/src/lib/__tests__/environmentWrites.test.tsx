@@ -13,7 +13,7 @@ import { cachedAppearance, applyTheme } from '@/lib/theme'
 import { requestNavigation } from '@/state/workspaceSlice'
 import { ATTENTION_CHANGED_EVENT } from '@/lib/api/attentionApi'
 import { reviewProposedPlanValidated } from '@/lib/api/conversationsApi'
-import { primeFlowSaveBaseline, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, waitForFlowSaves } from '@/lib/flowPersistence'
+import { primeFlowSaveBaseline, refusedFlowSaves, refusedFlowSaveStatus, resetFlowSaveBaselines, retryLastSaveContent, retryRefusedFlowSave, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, waitForFlowSaves } from '@/lib/flowPersistence'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { conversationMutationAck } from '@/test/conversationWire'
@@ -117,6 +117,7 @@ describe('flow saves', () => {
         const queued = saveFlowContent('demo', flow('Remote two'), PROJECT)
         await switchEnvironment(null)
         resetStoreForEnvironmentSwitch(true)
+        useStore.setState({ activeFlow: 'demo', activeProjectPath: PROJECT })
         setInvalidDraft('local-field', 'Routes: a line without a target.')
         try {
             firstSaved.resolve({ status: 'saved' })
@@ -152,51 +153,61 @@ describe('flow saves', () => {
         }
     })
 
-    it('leaves a remote save refused after a switch away to that environment, with nothing to retry over newer content', async () => {
+    it('keeps a remote save refused after a switch away for that environment, retrying it only once the flow opens there unchanged', async () => {
         await switchEnvironment('env-r')
+        primeFlowSaveBaseline('demo', flow('Base'), PROJECT)
         const remoteSaved = deferred<unknown>()
         answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : url.startsWith(REMOTE) ? remoteSaved.promise : { status: 'saved' })
         const remote = saveFlowContent('demo', flow('Remote'), PROJECT)
         await waitFor(() => expect(sent).toContain(`POST ${REMOTE}/attractor/api/flows`))
         await switchEnvironment(null)
         resetStoreForEnvironmentSwitch(true)
-        const local = useStore.getState()
-
-        remoteSaved.resolve(json({ detail: 'unavailable' }, 503))
-        await expect(remote).resolves.toBe(false)
-        // This environment's flow of the same name is untouched.
-        expect(useStore.getState()).toBe(local)
-
-        // Back there, the flow opens as saved, perhaps since saved anew: Retry never sends the refused edits.
-        await switchEnvironment('env-r')
-        resetStoreForEnvironmentSwitch(false)
-        expect(useStore.getState().saveState).toBe('idle')
-        sent = []
-        await expect(retryLastSaveContent()).resolves.toBe(false)
-        expect(sent).toEqual([])
-    })
-
-    it('retries the save whose failure is shown, after a switch away and back', async () => {
-        await switchEnvironment('env-r')
-        const remoteSaved = deferred<unknown>()
-        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : url.startsWith(REMOTE) ? remoteSaved.promise : { status: 'saved' })
-        const remote = saveFlowContent('demo', flow('Remote'), PROJECT)
-        await waitFor(() => expect(sent).toContain(`POST ${REMOTE}/attractor/api/flows`))
-        await switchEnvironment(null)
-        resetStoreForEnvironmentSwitch(true)
+        useStore.setState({ activeFlow: 'demo', activeProjectPath: PROJECT })
         await expect(saveFlowContent('demo', flow('Local'), PROJECT)).resolves.toBe(true)
-        await switchEnvironment('env-r')
-        resetStoreForEnvironmentSwitch(false)
+        const local = useStore.getState()
 
         remoteSaved.resolve(json({ detail: 'disk full' }, 500))
         await expect(remote).resolves.toBe(false)
-        expect(useStore.getState().saveState).toBe('error')
+        // This environment's flow of the same name is untouched; the refusal is kept for its own.
+        expect(useStore.getState()).toBe(local)
+        const [refused] = refusedFlowSaves()
+        expect(refused).toMatchObject({ name: 'demo', projectPath: PROJECT, environmentId: 'env-r', message: 'disk full', retryable: true })
+        expect(refusedFlowSaveStatus(refused)).toBe('hidden')
+
+        // Back there, nothing retries it before the flow opens, nor through the save state shown.
+        await switchEnvironment('env-r')
+        resetStoreForEnvironmentSwitch(false)
         sent = []
         bodies = []
         answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : { status: 'saved' })
-        await expect(retryLastSaveContent()).resolves.toBe(true)
+        await expect(retryRefusedFlowSave(refused)).resolves.toBe(false)
+        await expect(retryLastSaveContent()).resolves.toBe(false)
+        expect(sent).toEqual([])
+        // Opened still as the edits found it, Retry sends them there.
+        primeFlowSaveBaseline('demo', flow('Base'), PROJECT)
+        expect(refusedFlowSaveStatus(refused)).toBe('unchanged')
+        await expect(retryRefusedFlowSave(refused)).resolves.toBe(true)
         expect(sent).toEqual([`POST ${REMOTE}/attractor/preview`, `POST ${REMOTE}/attractor/api/flows`])
         expect(bodies[1]).toMatchObject({ flow: { title: 'Remote' } })
+        expect(refusedFlowSaves()).toEqual([])
+    })
+
+    it('never retries a refused save over a version saved since', async () => {
+        primeFlowSaveBaseline('demo', flow('Base'), PROJECT)
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : json({ detail: 'unavailable' }, 503))
+        // Refused while another flow is open.
+        useStore.setState({ activeFlow: 'other', activeProjectPath: PROJECT })
+        await expect(saveFlowContent('demo', flow('Refused'), PROJECT)).resolves.toBe(false)
+        expect(useStore.getState().saveState).toBe('idle')
+        const [refused] = refusedFlowSaves()
+
+        // It opens with newer content saved meanwhile.
+        primeFlowSaveBaseline('demo', flow('Newer'), PROJECT)
+        expect(refusedFlowSaveStatus(refused)).toBe('changed')
+        sent = []
+        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : { status: 'saved' })
+        await expect(retryRefusedFlowSave(refused)).resolves.toBe(false)
+        expect(sent).toEqual([])
     })
 })
 

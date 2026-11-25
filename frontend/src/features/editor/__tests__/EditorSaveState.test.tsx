@@ -20,9 +20,11 @@ vi.mock('@/lib/attractorClient', async (importOriginal) => ({
 
 const DEMO_FLOW = { flow: { schema_version: '2', id: 'demo', nodes: {} } }
 
+// The flow saved is the one open, whose save state shows.
 const resetSaveState = () => {
   useStore.setState((state) => ({
     ...state,
+    activeFlow: 'demo',
     saveState: 'idle',
     saveStateVersion: 0,
     saveErrorMessage: null,

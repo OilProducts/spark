@@ -3,7 +3,10 @@ import { visitKey } from '@/features/runs/model/visitModel'
 import { ClientPreferencesController } from '@/features/settings/ClientPreferencesController'
 import { ModelDefaultsController } from '@/features/settings/ModelDefaultsController'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { AppNotice } from '@/components/app/app-notice'
+import { Button } from '@/components/ui/button'
+import { dismissRefusedFlowSave, refusedFlowSaves, refusedFlowSaveStatus, retryRefusedFlowSave, subscribeRefusedFlowSaves } from '@/lib/flowPersistence'
 
 import { usePersistProjectState } from '@/features/projects/hooks/usePersistProjectState'
 import { useConversationStream } from '@/features/projects/hooks/useConversationStream'
@@ -705,6 +708,34 @@ export function HistoryRoutingController() {
 }
 
 /**
+ * Flow saves this environment refused while their flow wasn't shown, until dismissed or saved. Retry
+ * shows once the flow has opened still as the edits found it; a flow saved since keeps its newer version.
+ */
+export function RefusedFlowSaveNotices() {
+    const [environmentId] = useState(getActiveEnvironmentId)
+    const refused = useSyncExternalStore(subscribeRefusedFlowSaves, refusedFlowSaves)
+    return refused.filter((save) => save.environmentId === environmentId).map((save) => {
+        const status = refusedFlowSaveStatus(save)
+        const retry = save.retryable && status === 'unchanged'
+        const next = status === 'changed' ? 'It was saved since, so these edits weren’t saved over the newer version.'
+            : retry ? 'It is unchanged since: Retry saves these edits.'
+                // A flow never opened here, such as one whose creation was refused, has nothing to reopen.
+                : status === 'hidden' && save.retryable && save.expectedBaseline !== null ? 'Open the flow to try again.' : ''
+        return (
+            <AppNotice
+                key={`${save.projectPath}\n${save.name}`}
+                data-testid="refused-flow-save"
+                title={`Couldn’t save ${save.name}`}
+                onDismiss={() => dismissRefusedFlowSave(save)}
+                actions={retry ? <Button type="button" variant="outline" size="xs" onClick={() => void retryRefusedFlowSave(save)}>Retry save</Button> : undefined}
+            >
+                {`${save.message} ${next}`.trim()}
+            </AppNotice>
+        )
+    })
+}
+
+/**
  * Problems with the whole app, as banners above the open view. They take their own room rather
  * than float, so they never cover a control such as a composer's Send button.
  */
@@ -713,6 +744,7 @@ export function AppNotices() {
         <div data-testid="app-notices" className="flex shrink-0 flex-col gap-2 px-3 pt-3 empty:hidden">
             <ModelDefaultsController />
             <ClientPreferencesController />
+            <RefusedFlowSaveNotices />
         </div>
     )
 }

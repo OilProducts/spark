@@ -3,7 +3,7 @@ import { useStore } from '@/store'
 import { AppNotice } from '@/components/app/app-notice'
 import { Button } from '@/components/ui/button'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
-import { applyTheme, cachedAppearance } from '@/lib/theme'
+import { applyTheme, hasCachedAppearance } from '@/lib/theme'
 import { fetchClientPreferences, saveClientPreferences, type ClientPreferences, type ClientPreferencesView } from './services/clientPreferences'
 
 // The change each environment's save refused, with why and what it was based on. It outlives the
@@ -14,8 +14,7 @@ import { fetchClientPreferences, saveClientPreferences, type ClientPreferences, 
 const refusedChanges = new Map<string, { base: ClientPreferencesView | null; draft: Partial<ClientPreferences>; message: string }>()
 
 // The appearance is this browser's (lib/theme), kept across switches: only the page's first load, if it is
-// this machine's, restores the appearance this machine saved, to a browser following the system as a new one does.
-// ponytail: a browser that chose System explicitly reads as a new one; record the choice apart if that matters.
+// this machine's, restores the appearance this machine saved, to a new browser, which has chosen none.
 let startup = true
 
 export function ClientPreferencesController() {
@@ -42,7 +41,7 @@ export function ClientPreferencesController() {
             const effective = { ...value.effective, ...draft.current } as ClientPreferencesView['effective']
             if (startup) {
                 startup = false
-                if (environmentId === null && value.effective.appearance && cachedAppearance() === 'system') applyTheme(value.effective.appearance)
+                if (environmentId === null && value.effective.appearance && !hasCachedAppearance()) applyTheme(value.effective.appearance)
             }
             useStore.setState(() => ({
                 clientPreferencesLoaded: true,

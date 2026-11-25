@@ -4,7 +4,8 @@ import './index.css'
 import App from './App.tsx'
 import { applyTheme, cachedAppearance } from './lib/theme'
 
-applyTheme(cachedAppearance())
+// Shows the last appearance at once; a new browser's System isn't a choice it made, so it isn't recorded.
+applyTheme(cachedAppearance(), false)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

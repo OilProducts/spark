@@ -172,6 +172,8 @@ describe('Inspector and node authoring behavior', () => {
   })
 
   it('keeps invalid map drafts out of the node config and blocks saving until fixed', async () => {
+    // The flow whose node it edits is the one open, whose save state shows.
+    useStore.setState({ activeFlow: 'demo' })
     const cases = [
       // Each reduced map would itself pass backend validation.
       ['switch', { kind: 'switch', on: 'context.count', cases: { '0': 'clean' }, otherwise: 'conflicts' }, 'Cases', '0 = clean\n0 = conflicts'],

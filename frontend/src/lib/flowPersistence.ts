@@ -1,10 +1,10 @@
 import { useStore, type SaveErrorKind } from '@/store'
-import type { AppState } from '@/state/store-types'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { fetchPreviewValidated, saveFlowValidated, type FlowSaveContent } from '@/lib/attractorClient'
 import { recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 import { duplicateDecisionsInFlow } from '@/lib/canonicalFlowModel'
-import { flowProblemsFromDetail } from '@/features/editor/model/flowLoadFailure'
+import { flowProblemsFromDetail, type FlowProblem } from '@/features/editor/model/flowLoadFailure'
+import { resolveSaveRemediation } from '@/lib/saveRemediation'
 
 interface SaveFlowErrorDetail {
     status?: string
@@ -14,6 +14,9 @@ interface SaveFlowErrorDetail {
 const FALLBACK_SAVE_FAILURE_MESSAGE = 'Flow save failed before confirmation from backend.'
 let lastSaveRequest: { name: string; content: FlowSaveContent; projectPath: string | null; environmentId: string | null } | null = null
 const persistedBaselineByScope = new Map<string, string>()
+// Which opening of each flow (its baseline primed from the server) is the latest.
+const openedByScope = new Map<string, number>()
+let openings = 0
 
 // Flows belong to a project in an environment; the same name elsewhere is a different flow.
 const activeProjectPath = () => useStore.getState().activeProjectPath
@@ -63,12 +66,74 @@ export function primeFlowSaveBaseline(
     projectPath = activeProjectPath(),
     environmentId = getActiveEnvironmentId(),
 ): void {
-    persistedBaselineByScope.set(getSaveScopeKey(name, projectPath, environmentId), JSON.stringify(content))
+    const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
+    persistedBaselineByScope.set(scopeKey, JSON.stringify(content))
+    openedByScope.set(scopeKey, ++openings)
+    if (refusedSaves.has(scopeKey)) refusedSavesChanged()
 }
 
 export function resetFlowSaveBaselines(): void {
     persistedBaselineByScope.clear()
+    openedByScope.clear()
     lastSaveRequest = null
+    refusedSaves.clear()
+    refusedSavesChanged()
+}
+
+// Saves refused while their flow wasn't shown (another flow or environment open, or the flow opened
+// anew since), by scope, with the content saved before their edits. Their environment shows each until
+// it is dismissed or saved: once the flow has opened still as those edits found it, Retry may send them;
+// once it is saved since, nothing does, so the newer version stays.
+// ponytail: kept for this page's life; flow saves carry no revision, so Retry still replaces a version
+// saved elsewhere after the flow opened. Send the base revision if that matters.
+export type RefusedFlowSave = {
+    name: string
+    projectPath: string | null
+    environmentId: string | null
+    content: FlowSaveContent
+    message: string
+    retryable: boolean
+    expectedBaseline: string | null
+    opened: number | undefined
+}
+const refusedSaves = new Map<string, RefusedFlowSave>()
+const refusedSaveListeners = new Set<() => void>()
+let refusedSavesSnapshot: RefusedFlowSave[] = []
+function refusedSavesChanged() {
+    refusedSavesSnapshot = [...refusedSaves.values()]
+    refusedSaveListeners.forEach((listener) => listener())
+}
+
+/** Dispatched once a refused save's edits are saved, so an editor showing the flow as it was reloads it. */
+export const FLOW_SAVE_RECOVERED_EVENT = 'spark:flow-save-recovered'
+
+export function subscribeRefusedFlowSaves(listener: () => void): () => void {
+    refusedSaveListeners.add(listener)
+    return () => { refusedSaveListeners.delete(listener) }
+}
+
+export function refusedFlowSaves(): RefusedFlowSave[] {
+    return refusedSavesSnapshot
+}
+
+/** `hidden` until the flow opens again; then whether it is still as the refused edits found it. */
+export function refusedFlowSaveStatus(refused: RefusedFlowSave): 'hidden' | 'unchanged' | 'changed' {
+    const scopeKey = getSaveScopeKey(refused.name, refused.projectPath, refused.environmentId)
+    if (openedByScope.get(scopeKey) === refused.opened) return 'hidden'
+    return (persistedBaselineByScope.get(scopeKey) ?? null) === refused.expectedBaseline ? 'unchanged' : 'changed'
+}
+
+/** Sends a refused save's edits again, only while its flow, opened since, is still as they found it. */
+export async function retryRefusedFlowSave(refused: RefusedFlowSave): Promise<boolean> {
+    if (!refused.retryable || refusedFlowSaveStatus(refused) !== 'unchanged') return false
+    return saveFlowContent(refused.name, refused.content, refused.projectPath, refused.environmentId)
+}
+
+export function dismissRefusedFlowSave(refused: RefusedFlowSave): void {
+    const scopeKey = getSaveScopeKey(refused.name, refused.projectPath, refused.environmentId)
+    if (refusedSaves.get(scopeKey) !== refused) return
+    refusedSaves.delete(scopeKey)
+    refusedSavesChanged()
 }
 
 // Saves in flight, with the environment each goes to.
@@ -140,16 +205,26 @@ async function persistFlowContent(
 ): Promise<boolean> {
     const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
     const serialized = JSON.stringify(content)
-    // The save state shown is the active environment's; a save that outlives a switch leaves it alone.
-    const shown = () => (getActiveEnvironmentId() === environmentId ? useStore.getState() : null)
-    // Retry repeats the save whose failure is shown.
-    // ponytail: a save refused after a switch away is not shown there on return; nothing safe could retry
-    // it, as flow saves carry no revision and it could replace content saved since.
-    const fail = (show: (state: AppState) => void) => {
+    const expectedBaseline = persistedBaselineByScope.get(scopeKey) ?? null
+    const opened = openedByScope.get(scopeKey)
+    // The save state shown is this flow's, in the editor that sent the save: never another flow's or
+    // environment's, nor this flow's once opened anew, as it then shows what is saved, not these edits.
+    const shown = () => {
+        const state = useStore.getState()
+        return getActiveEnvironmentId() === environmentId && state.activeFlow === name && state.activeProjectPath === projectPath
+            && openedByScope.get(scopeKey) === opened ? state : null
+    }
+    // Retry repeats the save whose failure is shown; one refused out of sight is kept for its environment.
+    const fail = (message: string, kind: SaveErrorKind, problems: FlowProblem[] | null = null) => {
         const state = shown()
         if (state) {
             lastSaveRequest = { name, content, projectPath, environmentId }
-            show(state)
+            if (kind === 'conflict') state.markSaveConflict(message)
+            else state.markSaveFailure(message, kind, problems)
+        } else {
+            const retryable = resolveSaveRemediation('error', kind)?.allowRetry ?? false
+            refusedSaves.set(scopeKey, { name, projectPath, environmentId, content, message, retryable, expectedBaseline, opened })
+            refusedSavesChanged()
         }
         return false
     }
@@ -165,14 +240,11 @@ async function persistFlowContent(
     }
     const draftErrors = [...invalidDrafts.values()].filter((draft) => draft.environmentId === environmentId).map((draft) => draft.message)
     if (draftErrors.length > 0) {
-        return fail((state) => state.markSaveFailure(`Fix the editor's invalid input before saving: ${draftErrors.join(' ')}`, 'validation_error'))
+        return fail(`Fix the editor's invalid input before saving: ${draftErrors.join(' ')}`, 'validation_error')
     }
     const duplicates = duplicateDecisionsInFlow('flow' in content ? content.flow : null)
     if (duplicates.length > 0) {
-        return fail((state) => state.markSaveFailure(
-            `Each decision may be declared once per node; duplicated: ${[...new Set(duplicates)].join(', ')}.`,
-            'validation_error',
-        ))
+        return fail(`Each decision may be declared once per node; duplicated: ${[...new Set(duplicates)].join(', ')}.`, 'validation_error')
     }
     recordFlowLoadDebug('save:request', name, {
         contentLength: serialized.length,
@@ -188,7 +260,7 @@ async function persistFlowContent(
             : null
         if (preview?.status === 'validation_error') {
             const problems = flowProblemsFromDetail(preview)
-            return fail((state) => state.markSaveFailure(buildErrorMessage('validation_error', problems?.map((problem) => problem.message).join(' ') ?? preview.error, 422), 'validation_error', problems))
+            return fail(buildErrorMessage('validation_error', problems?.map((problem) => problem.message).join(' ') ?? preview.error, 422), 'validation_error', problems)
         }
         const response = await saveFlowValidated(name, content, projectPath, environmentId)
         if (!response.ok) {
@@ -201,7 +273,7 @@ async function persistFlowContent(
                 message,
             })
             if (detail.status === 'conflict' || response.statusCode === 409) {
-                return fail((state) => state.markSaveConflict(message))
+                return fail(message, 'conflict')
             }
             let errorKind: SaveErrorKind = 'http'
             if (detail.status === 'parse_error') {
@@ -209,7 +281,7 @@ async function persistFlowContent(
             } else if (detail.status === 'validation_error') {
                 errorKind = 'validation_error'
             }
-            return fail((state) => state.markSaveFailure(message, errorKind, flowProblemsFromDetail(detail)))
+            return fail(message, errorKind, flowProblemsFromDetail(detail))
         }
 
         const status = typeof (response.payload as { status?: unknown } | null)?.status === 'string'
@@ -223,9 +295,9 @@ async function persistFlowContent(
                 message: FALLBACK_SAVE_FAILURE_MESSAGE,
             })
             if (status === 'conflict') {
-                return fail((state) => state.markSaveConflict(buildErrorMessage(status, undefined, response.statusCode)))
+                return fail(buildErrorMessage(status, undefined, response.statusCode), 'conflict')
             }
-            return fail((state) => state.markSaveFailure(FALLBACK_SAVE_FAILURE_MESSAGE, 'unknown'))
+            return fail(FALLBACK_SAVE_FAILURE_MESSAGE, 'unknown')
         }
 
         recordFlowLoadDebug('save:response', name, {
@@ -235,12 +307,20 @@ async function persistFlowContent(
         })
         persistedBaselineByScope.set(scopeKey, serialized)
         shown()?.markSaveSuccess()
+        const refused = refusedSaves.get(scopeKey)
+        if (refused) {
+            // Its edits are saved: sent again, or carried by a later save of the flow before it opened anew.
+            const recovered = JSON.stringify(refused.content) === serialized
+            if (recovered || openedByScope.get(scopeKey) === refused.opened) refusedSaves.delete(scopeKey)
+            refusedSavesChanged()
+            if (recovered) window.dispatchEvent(new CustomEvent(FLOW_SAVE_RECOVERED_EVENT, { detail: { name, projectPath, environmentId } }))
+        }
         return true
     } catch (error) {
         const message = error instanceof Error ? error.message : 'network error while saving flow'
         recordFlowLoadDebug('save:error', name, {
             message,
         })
-        return fail((state) => state.markSaveFailure(`Flow save failed: ${message}`, 'network'))
+        return fail(`Flow save failed: ${message}`, 'network')
     }
 }
