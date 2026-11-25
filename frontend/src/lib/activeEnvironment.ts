@@ -244,10 +244,9 @@ const answeredAs = (result: PromiseSettledResult<EnvironmentDescriptor>): string
  */
 async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     const name = linkLabelFor(environmentId)
-    const [localResult, authenticated] = await Promise.allSettled([
-        fetchEnvironmentDescriptor(null),
-        fetchEnvironmentDescriptor(environmentId, '/workspace/api/environment'),
-    ])
+    // This machine's descriptor is asked for alongside; a refused credential or another identity doesn't wait for it.
+    const localAnswer = Promise.allSettled([fetchEnvironmentDescriptor(null)])
+    const [authenticated] = await Promise.allSettled([fetchEnvironmentDescriptor(environmentId, '/workspace/api/environment')])
     const error = authenticated.status === 'rejected' ? authenticated.reason : null
     const status = error instanceof ApiHttpError ? error.status : 0
     // A refused credential, another environment answering at the link's origin, or a peer speaking other versions is
@@ -264,6 +263,7 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
         return { status: 'refused', remoteDescriptor: null, error: `${name} answered as environment ${other}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.` }
     }
     const remote = found.status === 'fulfilled' ? found.value : null
+    const [localResult] = await localAnswer
     const local = localResult.status === 'fulfilled' ? localResult.value : null
     if (local) updateState({ localDescriptor: local })
     if (remote && !(speaksThisBundle(remote) && (!local || speaksThisBundle(local)))) {
