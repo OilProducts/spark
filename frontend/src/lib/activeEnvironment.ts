@@ -180,14 +180,27 @@ export function isRemoteEnvironmentActive(): boolean {
     return state.activeEnvironmentId !== null
 }
 
+/** Linking an environment again, even with the same origin and label, makes another row: no field changes in place. */
+const sameLink = (a: EnvironmentLink, b: EnvironmentLink) =>
+    a.environment_id === b.environment_id && a.origin === b.origin && a.label === b.label && a.created_at === b.created_at
+
 /** Tells the switcher this machine's links changed; `update` shows the change in its tabs at once, before they reload. */
 export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]) => EnvironmentLink[]) {
     if (update) {
         // A listing already in flight may predate the change; the reload this event starts replaces it.
         refreshSequence += 1
         const previous = state.links
-        updateState({ links: update(previous) })
-        dropRemovedDestination(previous)
+        let links = update(previous)
+        // A change Settings confirmed may be older than the row a switch awaits, as an answer that arrives late is: that
+        // row stays until the reload shows which is current, unless the change removed that very row.
+        const pending = state.selectedEnvironmentId
+        const target = destination
+        if (pending !== null && pending !== state.activeEnvironmentId && target
+            && !(previous.some((row) => sameLink(row, target)) && !links.some((row) => row.environment_id === pending))) {
+            links = [...links.filter((row) => row.environment_id !== pending), ...previous.filter((row) => row.environment_id === pending)]
+        }
+        updateState({ links })
+        dropRemovedDestination(previous, false)
     }
     window.dispatchEvent(new Event(ENVIRONMENT_LINKS_CHANGED_EVENT))
 }
@@ -198,16 +211,13 @@ export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]
  * A mounted environment no longer linked fails for good, its live connection closed, until Retry passes or you leave it;
  * one linked anew since a check failed, until Retry checks the new link. This Spark's own mismatch wins over both.
  */
-const sameRow = (a: EnvironmentLink, b: EnvironmentLink) =>
-    a.environment_id === b.environment_id && a.origin === b.origin && a.created_at === b.created_at
-
-function dropRemovedDestination(previous: EnvironmentLink[]) {
+function dropRemovedDestination(previous: EnvironmentLink[], listed = true) {
     const linked = (environmentId: string, links = state.links) => links.find((link) => link.environment_id === environmentId)
     const active = state.activeEnvironmentId
     const now = active === null ? undefined : linked(active)
     const before = active === null ? undefined : linked(active, previous)
     const gone = active !== null && state.linksLoaded && !now
-    const replaced = now && before && !sameRow(now, before)
+    const replaced = now && before && !sameLink(now, before)
     if (gone || replaced) {
         // Checks still running, sent for the link as it was, find nothing for it: automatic ones, and a Retry's, which
         // runs only while it is the one chosen. A switch elsewhere awaiting approval carries on.
@@ -223,7 +233,8 @@ function dropRemovedDestination(previous: EnvironmentLink[]) {
     const pending = state.selectedEnvironmentId
     if (pending === null || pending === active) return
     const current = linked(pending)
-    if (!current || (destination && !sameRow(current, destination))) {
+    // Short of a listing, only a change that removed the row a switch awaits drops it.
+    if (!current || (listed && destination && !sameLink(current, destination))) {
         switchSequence += 1
         showActiveEnvironment()
     }
@@ -402,14 +413,13 @@ export async function selectEnvironment(
     options?: { onActivated?: () => void; link?: EnvironmentLink },
 ): Promise<boolean> {
     const seq = ++switchSequence
-    // The link Settings switches to, as Settings lists it, names it in the switcher and remote guidance, though their
-    // listing lacks it or still shows the row it replaced.
+    // The link Settings switches to names it in the switcher and remote guidance, though their listing lacks it. One
+    // their listing shows otherwise may be newer or older than it: their listing, reloaded alongside its check, tells.
     const link = options?.link
-    if (link && !state.links.some((entry) => sameRow(entry, link))) {
-        const listed = state.links.some((entry) => entry.environment_id === link.environment_id)
-        updateState({ links: listed ? state.links.map((entry) => (entry.environment_id === link.environment_id ? link : entry)) : [...state.links, link] })
-    }
-    destination = link ?? state.links.find((entry) => entry.environment_id === environmentId)
+    const listed = state.links.find((entry) => entry.environment_id === environmentId)
+    if (link && !listed) updateState({ links: [...state.links, link] })
+    const relisted = link && listed && !sameLink(link, listed) ? refreshLocalEnvironments() : undefined
+    destination = link ?? listed
     const active = state.activeEnvironmentId
     if (environmentId === active && (state.selectedEnvironmentId !== active || state.status === 'ready')) {
         showActiveEnvironment()
@@ -422,6 +432,7 @@ export async function selectEnvironment(
     if (environmentId !== active) updateState({ selectedEnvironmentId: environmentId, status: 'checking', error: null })
     const since = reverifySequence
     const check = await checkRemoteEnvironment(environmentId).catch((error: unknown) => unreachable(errorText(error)))
+    await relisted
     if (seq !== switchSequence) return false
     // An automatic check sent after this Retry that concluded first, such as one finding the link gone, decides.
     if (environmentId === active && outdated > since) return false
@@ -437,6 +448,13 @@ export async function selectEnvironment(
         else updateState(check)
         if (check.status === 'ready') options?.onActivated?.()
         return check.status === 'ready'
+    }
+    // Never mounted under another row the switcher shows. ponytail: a reload a later one outdated may leave the row
+    // unconfirmed, which drops the switch; wait for that later reload if a switch dropped so matters.
+    const shown = state.links.find((entry) => entry.environment_id === environmentId)
+    if (shown && destination && !sameLink(shown, destination)) {
+        showActiveEnvironment()
+        return false
     }
     return commitEnvironment(seq, environmentId, check, options?.onActivated)
 }

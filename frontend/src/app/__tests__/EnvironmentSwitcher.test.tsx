@@ -1873,6 +1873,150 @@ describe('Same-window multi-environment switching', () => {
         window.removeEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, changed)
     })
 
+    it('drops a switch from Settings to the row it still shows once the switcher lists the link made anew, keeping that listing and never mounting the new link under the old origin', async () => {
+        const user = userEvent.setup()
+        const check = deferred<void>()
+        let links = [WIN_LINK]
+        stubBackend({ [LINKS]: () => json({ links }), [WIN_AUTH]: () => check.promise.then(() => json(WIN_ENV)) })
+        render(<App />)
+        await screen.findByTestId('environment-tab-env-win')
+        await openSystemSettings()
+        expect(await screen.findByText('http://env-win:8000 · env-win')).toBeVisible()
+        const shell = workspaceMounted()
+
+        // Linked anew in another tab: the switcher lists it once focused, while Settings still shows the old row.
+        links = [WIN_RELINKED]
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        await waitFor(() => expect(tab('env-win')).toHaveAttribute('title', 'Windows Workstation (http://env-win-new:8000)'))
+        expect(screen.getByText('http://env-win:8000 · env-win')).toBeVisible()
+
+        await user.click(screen.getByRole('button', { name: 'Switch to Windows Workstation' }))
+        expect(getActiveEnvironmentState().links).toEqual([WIN_RELINKED])
+        await waitFor(() => expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready' }))
+        await act(async () => check.resolve())
+        await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready', links: [WIN_RELINKED] })
+        expect(tab('env-win')).toHaveAttribute('title', 'Windows Workstation (http://env-win-new:8000)')
+        expect(workspaceMounted()).toBe(shell)
+        expect(shell).toBeVisible()
+    })
+
+    it('drops a switch from Settings to the row it still shows, though its check passes before the switcher\'s reload of that listing answers', async () => {
+        const user = userEvent.setup()
+        let links = [WIN_LINK]
+        let hold = false
+        const held: Array<() => void> = []
+        stubBackend({ [LINKS]: () => (hold ? new Promise<Response>((resolve) => { held.push(() => resolve(json({ links }))) }) : json({ links })) })
+        render(<App />)
+        await screen.findByTestId('environment-tab-env-win')
+        await openSystemSettings()
+        expect(await screen.findByText('http://env-win:8000 · env-win')).toBeVisible()
+        const shell = workspaceMounted()
+        links = [WIN_RELINKED]
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        await waitFor(() => expect(tab('env-win')).toHaveAttribute('title', 'Windows Workstation (http://env-win-new:8000)'))
+
+        // Another reload outdates the one the switch started before either answers; the check passes meanwhile.
+        hold = true
+        await user.click(screen.getByRole('button', { name: 'Switch to Windows Workstation' }))
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        await waitFor(() => expect(held).toHaveLength(2))
+        await act(async () => held[0]())
+        await waitFor(() => expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready', links: [WIN_RELINKED] }))
+        hold = false
+        await act(async () => held[1]())
+        await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready', links: [WIN_RELINKED] })
+        expect(workspaceMounted()).toBe(shell)
+        expect(shell).toBeVisible()
+    })
+
+    it('keeps a switch to a link made anew, and the switcher\'s row for it, when Settings\' adding of the row it replaced answers late', async () => {
+        const user = userEvent.setup()
+        const added = deferred<void>()
+        const check = deferred<void>()
+        let links = [GPU_LINK]
+        const backend = stubBackend({
+            [LINKS]: () => json({ links }),
+            [WIN_AUTH]: () => check.promise.then(() => json(WIN_ENV)),
+            [`POST ${LINKS}`]: () => added.promise.then(() => json(WIN_LINK)),
+        }, links)
+        const changed = vi.fn()
+        window.addEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, changed)
+        render(<App />)
+        await screen.findByTestId('environment-tab-env-gpu')
+        await openSystemSettings()
+        await user.type(await screen.findByLabelText('Remote origin'), 'http://env-win:8000')
+        await user.type(screen.getByLabelText('Remote environment ID'), 'env-win')
+        await user.type(screen.getByLabelText('Pairing code'), 'code-xyz')
+        await user.type(screen.getByLabelText('Link label (optional)'), 'Windows Workstation')
+        await user.click(screen.getByRole('button', { name: 'Add link' }))
+        await waitFor(() => expect(backend.requests.some((request) => request.method === 'POST')).toBe(true))
+
+        // Paired again from another tab before that answer arrives: the switcher lists the later link, and a switch to it starts.
+        links = [GPU_LINK, WIN_RELINKED]
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        await waitFor(() => expect(tab('env-win')).toHaveAttribute('title', 'Windows Workstation (http://env-win-new:8000)'))
+        await user.click(tab('env-win'))
+        await screen.findByTestId('environment-checking')
+
+        // The earlier pairing answers late: the switch, and the row it awaits, stay.
+        await act(async () => added.resolve())
+        await waitFor(() => expect(changed).toHaveBeenCalled())
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: 'env-win', status: 'checking' })
+        expect(tab('env-win')).toHaveAttribute('title', 'Windows Workstation (http://env-win-new:8000)')
+        await act(async () => check.resolve())
+        await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-win'))
+        expect(getActiveEnvironmentState().links).toEqual([GPU_LINK, WIN_RELINKED])
+        window.removeEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, changed)
+    })
+
+    it('lets a switch from Settings to a link made anew in the same second with the same origin, under another label, finish when the removal of the row it replaced answers late, though the switcher still lists that row', async () => {
+        const user = userEvent.setup()
+        const removal = deferred<void>()
+        const check = deferred<void>()
+        const relabeled = { ...WIN_LINK, label: 'Windows Laptop' }
+        let links = [WIN_LINK]
+        let hold = false
+        const held: Array<() => void> = []
+        const backend = stubBackend({
+            [LINKS]: () => (hold ? new Promise<Response>((resolve) => { held.push(() => resolve(json({ links }))) }) : json({ links })),
+            [WIN_AUTH]: () => check.promise.then(() => json(WIN_ENV)),
+            [`DELETE ${LINKS}/env-win`]: () => removal.promise.then(() => json({ environment_id: 'env-win', removed: true })),
+        })
+        const changed = vi.fn()
+        window.addEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, changed)
+        render(<App />)
+        await screen.findByTestId('environment-tab-env-win')
+        await openSystemSettings()
+        await user.click(await screen.findByRole('button', { name: 'Remove link Windows Workstation' }))
+        await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Remove link' }))
+        await waitFor(() => expect(backend.requests.some((request) => request.method === 'DELETE')).toBe(true))
+
+        // Linked anew at once: Settings, opened again, lists the new row and switches to it, while the switcher, its
+        // reloads unanswered, still lists the row removed.
+        links = [relabeled]
+        act(() => useStore.getState().setViewMode('runs'))
+        await openSystemSettings()
+        const switchTo = await screen.findByRole('button', { name: 'Switch to Windows Laptop' })
+        expect(getActiveEnvironmentState().links).toEqual([WIN_LINK])
+        hold = true
+        await user.click(switchTo)
+        await screen.findByTestId('environment-checking')
+        await act(async () => removal.resolve())
+        await waitFor(() => expect(changed).toHaveBeenCalled())
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: 'env-win', status: 'checking' })
+
+        hold = false
+        await act(async () => held.splice(0).forEach((resolve) => resolve()))
+        await waitFor(() => expect(getActiveEnvironmentState().links).toEqual([relabeled]))
+        expect(getActiveEnvironmentState()).toMatchObject({ selectedEnvironmentId: 'env-win', status: 'checking' })
+        await act(async () => check.resolve())
+        await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-win'))
+        expect(tab('env-win')).toHaveTextContent('Windows Laptop')
+        window.removeEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, changed)
+    })
+
     it.each(['launch', 'continuation'])('lets a %s answered during another environment\'s check land in its still-open workspace, and drops one answered after the switch', async (kind) => {
         const user = userEvent.setup()
         const checked = deferred<void>()
