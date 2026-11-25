@@ -979,56 +979,70 @@ it('disables answering on a delegation whose link is missing', async () => {
     expect(within(screen.getByRole('group', { name: asked('paused-task', 'Why?', 'del-2') })).getByRole('textbox', { name: 'Free-text answer' })).toBeDisabled()
 })
 
-it('disables answering as soon as this machine\'s link to the delegation\'s environment is removed, though the refresh it starts fails', async () => {
-    const link = { environment_id: 'env-b', origin: 'http://env-b.test', label: 'B', created_at: '2026-11-23T00:00:00Z' }
+it('disables answering as soon as a link is removed, and lets delegations to environments the reloaded links keep be answered, though the refresh it starts fails', async () => {
+    const linkTo = (id: string) => ({ environment_id: id, origin: `http://${id}.test`, label: id, created_at: '2026-11-23T00:00:00Z' })
+    const other = delegation('del-3', 'release-task', [approveGate()], { environment_id: 'env-c' })
     const reload = later()
     serve({
         ...ENVIRONMENTS,
-        'GET /workspace/api/environments/links': [ok({ links: [link] }), ok({ links: [] })],
-        [LIST]: [ok(list(nightly)), reload.reply],
+        'GET /workspace/api/environments/links': [ok({ links: [linkTo('env-b'), linkTo('env-c')] }), ok({ links: [linkTo('env-c')] })],
+        [LIST]: [ok(list(nightly, other)), reload.reply],
     })
     await act(async () => { await refreshLocalEnvironments() })
     renderCard()
-    const approve = within(await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' })
-    expect(approve).toBeEnabled()
+    const toB = within(await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' })
+    const toC = within(screen.getByRole('group', { name: 'release-task: Ship this build? (/srv/repo · env env-c · target run-del-3)' })).getByRole('button', { name: 'Approve' })
+    expect(toB).toBeEnabled()
+    expect(toC).toBeEnabled()
     await settled()
 
-    // EnvironmentLinksCard removed the link and announced it, before EnvironmentBootstrap reloads this machine's links.
+    // EnvironmentLinksCard removed env-b's link and announced it, before EnvironmentBootstrap reloads this machine's links.
     act(() => notifyEnvironmentLinksChanged())
     expect(sent(LIST)).toHaveLength(2)
-    expect(approve).toBeDisabled()
-    expect(screen.getByText('Answering is unavailable until delegations reload after a link change.')).toBeInTheDocument()
+    expect(toB).toBeDisabled()
+    expect(toC).toBeDisabled()
+    expect(screen.getAllByText('Answering is unavailable while a link change is checked.')).toHaveLength(2)
 
     await reload.resolve({ detail: 'database is locked' }, 500)
     expect(await screen.findByText('Database is locked')).toBeInTheDocument()
-    expect(approve).toBeDisabled()
+    expect(toB).toBeDisabled()
+    expect(toC).toBeDisabled()
 
     await act(async () => { await refreshLocalEnvironments() })
-    expect(approve).toBeDisabled()
+    expect(toB).toBeDisabled()
     expect(screen.getByText('Answering is unavailable: the link to env-b is missing.')).toBeInTheDocument()
+    expect(toC).toBeEnabled()
+    expect(screen.queryByText('Answering is unavailable while a link change is checked.')).not.toBeInTheDocument()
 })
 
-it('lets a delegation be answered again once a list requested after it is linked again shows it resumed, though the links reload fails', async () => {
+it('keeps answering off while this machine\'s links omit a delegation\'s environment, though a list shows it resumed, until the links show it again', async () => {
+    const link = { environment_id: 'env-b', origin: 'http://env-b.test', label: 'B', created_at: '2026-11-23T00:00:00Z' }
     serve({
         ...ENVIRONMENTS,
-        'GET /workspace/api/environments/links': [ok({ links: [] }), fail(500, 'database is locked')],
+        'GET /workspace/api/environments/links': [ok({ links: [] }), fail(500, 'database is locked'), ok({ links: [link] })],
         [LIST]: [ok(list({ ...nightly, paused: 'The link to this environment was removed.' })), ok(list(nightly))],
     })
     await act(async () => { await refreshLocalEnvironments() })
     renderCard()
-    const gate = await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })
-    expect(within(gate).getByRole('button', { name: 'Approve' })).toBeDisabled()
-    expect(screen.getByText('Answering is unavailable while this delegation is paused or its link is missing.')).toBeInTheDocument()
+    const approve = within(await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' })
+    expect(approve).toBeDisabled()
     await settled()
 
-    // Linking it again resumes its delegations; this machine's links stay as last loaded, without it.
+    // Linking it again resumes its delegations, but this machine's links fail to reload.
     await act(async () => {
         notifyEnvironmentLinksChanged()
         await refreshLocalEnvironments()
     })
-    await waitFor(() => expect(within(gate).getByRole('button', { name: 'Approve' })).toBeEnabled())
+    expect(await screen.findByText('flow · waiting on answer')).toBeInTheDocument()
+    await settled()
+    expect(sent(LIST)).toHaveLength(2)
+    expect(approve).toBeDisabled()
+    expect(screen.getByText('Answering is unavailable: the link to env-b is missing.')).toBeInTheDocument()
+
+    // The next reload of this machine's links, such as on focus, shows the link.
+    await act(async () => { await refreshLocalEnvironments() })
+    expect(approve).toBeEnabled()
     expect(screen.queryByText(/^Answering is unavailable/)).not.toBeInTheDocument()
-    expect(sent('GET /workspace/api/environments/links')).toHaveLength(2)
 })
 
 it('shows a pending cancellation over stale questions and a pause, and disables a duplicate Cancel', async () => {

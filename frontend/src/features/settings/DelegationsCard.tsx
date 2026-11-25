@@ -301,10 +301,10 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const [loadError, setLoadError] = useState<string | null>(null)
     // The last change's outcome; a failed reload after it stays until the next one.
     const [status, setStatus] = useState<{ text: string; failed?: boolean } | null>(null)
-    // This machine's links when the rows shown were requested, or null once a link changed since: removing
-    // a link pauses its delegations and linking again resumes them (spark-storage remove_link, save_link),
-    // so only a list requested after a change tells which can be answered.
-    const [listedLinks, setListedLinks] = useState<EnvironmentLink[] | null>(null)
+    // This machine's links when one was last added or removed, until a list requested since loads. The
+    // change may concern any delegation, so none is answered until those links reload or that list shows
+    // which ones the server paused (removing a link pauses its delegations, spark-storage remove_link).
+    const [changedLinks, setChangedLinks] = useState<EnvironmentLink[] | null>(null)
 
     // Loads the selected filter. A response to an older request, or for a filter no longer
     // selected, is dropped; a current failure, or any failure of a reload after a change, is thrown
@@ -315,7 +315,6 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         // delegation: Paused's live refresh reads it alone, for its rows and to see one pause or seal.
         const fetched = polling && requested === 'paused' ? 'open' : requested
         const env = activeEnv()
-        const linksAtRequest = getActiveEnvironmentState().links
         const seq = ++requestSeqRef.current
         const current = () => mountedRef.current && seq === requestSeqRef.current && requested === filterRef.current
         inFlightCounts[env] = (inFlightCounts[env] ?? 0) + 1
@@ -331,7 +330,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                 : seenRef.current
             seenRef.current = { ...kept, ...Object.fromEntries(records.map((row) => [row.delegation_id, row])) }
             setSeen(seenRef.current)
-            setListedLinks(linksAtRequest)
+            setChangedLinks(null)
             setLoadError(null)
             // A paused delegation with a cancel pending can still be sealed, so its failed seal stays.
             updateAnswers(env, ({ cancelErrors }) => ({
@@ -409,7 +408,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     useEffect(() => {
         if (!active || activeEnvironmentId !== null) return
         const onLinksChanged = () => {
-            setListedLinks(null)
+            setChangedLinks(getActiveEnvironmentState().links)
             void refresh()
         }
         window.addEventListener(ENVIRONMENT_LINKS_CHANGED_EVENT, onLinksChanged)
@@ -562,11 +561,10 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                             const questions = questionsOf(record)
                             // Answers go through the link to the other environment, which a paused
                             // delegation has lost, and a delegation being canceled no longer waits on them.
-                            // This machine's links, when they changed since the rows were requested,
-                            // show one removed before the delegation's record does.
-                            const unlinked = activeEnvironmentId === null && linksLoaded && links !== listedLinks
+                            // This machine's links show one removed before the delegation's record does.
+                            const unlinked = activeEnvironmentId === null && linksLoaded
                                 && !links.some((link) => link.environment_id === record.environment_id)
-                            const answerable = !record.paused && !record.cancel_requested_at && !unlinked && listedLinks !== null
+                            const answerable = !record.paused && !record.cancel_requested_at && !unlinked && changedLinks !== links
                             return (
                                 <li key={record.delegation_id}>
                                     <Well role="group" aria-label={`Delegation ${record.request_key} (${where})`} className="space-y-2 px-3 py-2">
@@ -620,7 +618,7 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                                         ? `Answering is unavailable: the link to ${record.environment_id} is missing.`
                                                         : record.paused
                                                             ? 'Answering is unavailable while this delegation is paused or its link is missing.'
-                                                            : 'Answering is unavailable until delegations reload after a link change.'}
+                                                            : 'Answering is unavailable while a link change is checked.'}
                                             </p>
                                         ) : null}
                                         {questions.map((question) => {
