@@ -575,13 +575,18 @@ describe('Same-window multi-environment switching', () => {
         expect(remoteShell).toBeVisible()
     })
 
-    it('keeps a remote\'s live connection closed after a final check while a Run\'s journal, answered late, moves it, until Retry passes', async () => {
+    const gatewayDown = { [WIN_AUTH]: () => proxyRefusal(null), [WIN_PUBLIC]: () => json({ detail: 'Bad gateway' }, 502) }
+    it.each([
+        ['finds a version this bundle doesn\'t speak', 'a gateway\'s answer for no Spark', () => json(descriptor('env-win', { ui_api_version: 3 })), 'Version mismatch with Windows Workstation', gatewayDown],
+        ['finds its credential refused', 'a gateway\'s answer for no Spark', () => json({ detail: 'Unauthorized' }, 401), 'refused this Spark’s credential', gatewayDown],
+        ['finds its credential refused', 'no answer', () => json({ detail: 'Unauthorized' }, 401), 'refused this Spark’s credential', { [WIN_AUTH]: () => json({ detail: 'connection refused' }, 503) }],
+    ])('keeps a remote\'s live connection closed after a check %s, through a Retry that gets %s and a Run\'s journal, answered late, that moves it, until Retry passes', async (_finding, _inconclusive, failure, message, inconclusive: Record<string, Route>) => {
         const run = { run_id: 'win-run', flow_name: 'review.dot', status: 'running', outcome: null, working_directory: '/win/project', project_path: '/win/project', started_at: '2026-11-24T00:00:00Z', ended_at: null }
         const routes: Record<string, Route> = {
             [`${WIN}/attractor/runs`]: () => json({ runs: [run] }),
             [`${WIN}/attractor/pipelines/win-run`]: () => json({ ...run, pipeline_id: 'win-run' }),
         }
-        const { user, remoteShell } = await mountWindows(routes)
+        const { user, remoteShell, checks } = await mountWindows(routes)
         // The Run's journal answers only once its fetch is let go.
         const journal = deferred<void>()
         const journalUrl = `${WIN}/attractor/pipelines/win-run/journal`
@@ -601,21 +606,29 @@ describe('Same-window multi-environment switching', () => {
         await waitFor(() => expect(winLive()).toBeDefined())
         expect(winLive()!.url).not.toContain('run_id=win-run')
 
-        // Back upgraded past this bundle: the gate shows and the connection stays closed.
-        routes[WIN_AUTH] = () => json(descriptor('env-win', { ui_api_version: 3 }))
+        // A final failure: the gate shows and the connection stays closed.
+        routes[WIN_AUTH] = failure
         act(() => winLive()!.onerror?.(new Event('error')))
-        expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent('Version mismatch with Windows Workstation')
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(gate).toHaveTextContent(message)
         const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
         const tried = connects()
 
-        // The journal answers, which moves the connection to follow the Run: still nothing is tried.
+        // A Retry that gets no conclusive answer keeps the failure, so the journal answering, which moves the
+        // connection to follow the Run, still tries nothing.
+        Object.assign(routes, inconclusive)
+        const checked = checks()
+        await user.click(within(gate).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(checks()).toBe(checked + 1))
         await act(async () => journal.resolve())
         await act(() => new Promise((resolve) => window.setTimeout(resolve, 600)))
+        expect(screen.getByTestId('remote-environment-gate')).toHaveTextContent(message)
+        expect(remoteShell).not.toBeVisible()
         expect(connects()).toBe(tried)
         expect(winLive()).toBeUndefined()
 
         // Retry passes: one connection opens, following the Run.
-        delete routes[WIN_AUTH]
+        for (const url of Object.keys(inconclusive)) delete routes[url]
         await user.click(screen.getByRole('button', { name: 'Retry' }))
         await waitFor(() => expect(remoteShell).toBeVisible())
         await waitFor(() => expect(winLive()?.url).toContain('run_id=win-run'))

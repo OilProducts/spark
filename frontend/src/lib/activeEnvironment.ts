@@ -334,6 +334,16 @@ function commitEnvironment(seq: number, environmentId: string | null, check: Che
 }
 
 /**
+ * Records what a check of the mounted environment found, showing it unless another environment is chosen. One that got
+ * no conclusive answer, such as a gateway's while the peer is down, leaves a final failure as it was, so the workspace
+ * and its live connection stay closed until a check passes or the user switches environments.
+ */
+function applyActiveCheck(check: Check) {
+    if (check.status === 'unreachable' && isFinalCheck(state.activeCheck)) return
+    updateState(state.selectedEnvironmentId === state.activeEnvironmentId ? { activeCheck: check, ...check } : { activeCheck: check })
+}
+
+/**
  * Switches the workspace to `environmentId` (`null`: this machine). A linked environment is checked first while the
  * current workspace stays mounted; a failed check hides it, keeping its edits, until the user retries or returns. One
  * that failed its own check stays hidden while another is checked.
@@ -365,7 +375,8 @@ export async function selectEnvironment(
         reverifying = false
     }
     if (environmentId === active || check.status !== 'ready') {
-        updateState(environmentId === active ? { activeCheck: check, ...check } : check)
+        if (environmentId === active) applyActiveCheck(check)
+        else updateState(check)
         if (check.status === 'ready') options?.onActivated?.()
         return check.status === 'ready'
     }
@@ -402,7 +413,7 @@ export async function reverifyActiveEnvironment(fresh = false): Promise<boolean 
         if (seq === reverifySequence) reverifying = false
     }
     if (seq !== reverifySequence || state.activeEnvironmentId !== environmentId) return null
-    updateState(state.selectedEnvironmentId === environmentId ? { activeCheck: check, ...check } : { activeCheck: check })
+    applyActiveCheck(check)
     return check.status === 'ready'
 }
 
