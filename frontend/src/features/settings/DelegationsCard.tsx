@@ -37,7 +37,7 @@ type Failure = { requestKey: string; message: string }
 
 /**
  * An environment's drafts, the questions answered there, and its refused replies, each by question,
- * its failed cancels by delegation, each shown on its row while it can still be canceled or sealed,
+ * its failed cancels by delegation, each shown on its row until a refresh shows it sealed, or canceling with no seal to retry,
  * and a reload after a change that failed while no card showed the environment, for the next one to show.
  */
 type Answers = {
@@ -79,6 +79,8 @@ const shownCards = new Map<string, ShownCard>()
 // A reread of this machine's links a card started, while out. One at a time, as with list requests:
 // refreshLocalEnvironments keeps only its latest call's answer, so a slow one stays for the next live refresh.
 let linksReread: Promise<void> | null = null
+// The last cancel sent for each delegation, by environment: a failure that a newer try overtook isn't reported.
+const latestCancels = new Map<string, symbol>()
 const FILTER_QUERY = { all: undefined, open: { open: true }, paused: { paused: true } } as const
 // Delegations still in flight are re-read this often, so new questions and phases show up.
 const LIVE_REFRESH_MS = 4000
@@ -480,14 +482,19 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         }
         setBusy(true)
         const env = activeEnv()
+        const attempt = Symbol(record.delegation_id)
+        const attemptKey = JSON.stringify([env, record.delegation_id])
+        latestCancels.set(attemptKey, attempt)
         updateAnswers(env, ({ cancelErrors: { [record.delegation_id]: _retried, ...cancelErrors } }) => ({ cancelErrors }))
         let updated: DelegationOut
         try {
             updated = await cancelDelegation(record.delegation_id)
         } catch (err) {
-            // Kept by environment, so a card reopened meanwhile shows it on the row.
+            // Kept by environment, so a card reopened meanwhile shows it on the row, sealed or not.
             const message = errorText(err, 'Could not cancel delegation.')
-            updateAnswers(env, ({ cancelErrors }) => ({ cancelErrors: { ...cancelErrors, [record.delegation_id]: message } }))
+            if (latestCancels.get(attemptKey) === attempt) {
+                updateAnswers(env, ({ cancelErrors }) => ({ cancelErrors: { ...cancelErrors, [record.delegation_id]: message } }))
+            }
             setStatus(null)
             setBusy(false)
             return
@@ -622,14 +629,13 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
                                         {record.paused ? (
                                             <div className="text-xs text-warning">{record.paused}</div>
                                         ) : null}
-                                        {/* Shown while another try can be made: one that arrives after another try sealed it is moot. */}
-                                        {cancelable(record) && cancelErrors[record.delegation_id] ? <InlineError>{cancelErrors[record.delegation_id]}</InlineError> : null}
+                                        {cancelErrors[record.delegation_id] ? <InlineError>{cancelErrors[record.delegation_id]}</InlineError> : null}
                                         {questions.length > 0 && !answerable ? (
                                             <p className="text-xs text-muted-foreground">
-                                                {record.cancel_requested_at
-                                                    ? 'Answering is unavailable while cancellation is pending.'
-                                                    : unlinked
-                                                        ? `Answering is unavailable: the link to ${record.environment_id} is missing.`
+                                                {unlinked
+                                                    ? `Answering is unavailable: the link to ${record.environment_id} is missing.`
+                                                    : record.cancel_requested_at
+                                                        ? 'Answering is unavailable while cancellation is pending.'
                                                         : record.paused
                                                             ? 'Answering is unavailable while this delegation is paused or its link is missing.'
                                                             : 'Answering is unavailable while a link change is checked.'}

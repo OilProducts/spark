@@ -1015,6 +1015,29 @@ it('disables answering as soon as a link is removed, and lets delegations to env
     expect(screen.queryByText('Answering is unavailable while a link change is checked.')).not.toBeInTheDocument()
 })
 
+it('shows a link removed while a delegation is canceling on its row, with answering still off, though the refresh fails', async () => {
+    const link = { environment_id: 'env-b', origin: 'http://env-b.test', label: 'B', created_at: '2026-11-23T00:00:00Z' }
+    serve({
+        ...ENVIRONMENTS,
+        'GET /workspace/api/environments/links': [ok({ links: [link] }), ok({ links: [] })],
+        [LIST]: [ok(list({ ...nightly, ...requested })), fail(500, 'database is locked')],
+    })
+    await act(async () => { await refreshLocalEnvironments() })
+    renderCard()
+    const approve = within(await screen.findByRole('group', { name: asked('nightly-checks', 'Ship this build?', 'del-1') })).getByRole('button', { name: 'Approve' })
+    expect(screen.getByText('Answering is unavailable while cancellation is pending.')).toBeInTheDocument()
+    await settled()
+
+    await act(async () => {
+        notifyEnvironmentLinksChanged()
+        await refreshLocalEnvironments()
+    })
+    expect(await screen.findByText('Database is locked')).toBeInTheDocument()
+    expect(screen.getByText('Answering is unavailable: the link to env-b is missing.')).toBeInTheDocument()
+    expect(screen.getByText('flow · canceling')).toBeInTheDocument()
+    expect(approve).toBeDisabled()
+})
+
 it('keeps answering off on return to System after a link is removed while another Settings tab is shown, and reloads only once System is shown', async () => {
     const link = { environment_id: 'env-b', origin: 'http://env-b.test', label: 'B', created_at: '2026-11-23T00:00:00Z' }
     const before = later()
@@ -1337,6 +1360,31 @@ it('keeps a local seal that fails during a reopen on its row while the reopened 
     await waitFor(() => expect(sent(LIST)).toHaveLength(3))
     await settled()
     expect(within(row).getByText('Database is locked')).toBeInTheDocument()
+})
+
+it('shows a local seal that fails after Settings was reopened on the row the reopened list shows sealed', async () => {
+    const unlinked = { ...nightly, ...requested, paused: 'No link to this environment; link it again to resume.' }
+    const sealed = { ...unlinked, paused: null, phase: 'sealed', result: { status: 'canceled' }, updated_at: '2026-11-23T00:03:00Z' }
+    const seal = later()
+    serve({
+        // The seal commits before its request fails, so the reopened list shows it sealed.
+        [LIST]: [ok(list(unlinked)), ok(list(sealed))],
+        [cancelRoute('del-1')]: [seal.reply],
+    })
+    const first = renderCard()
+    await first.user.click(await screen.findByRole('button', { name: 'Seal delegation nightly-checks as canceled' }))
+    await first.user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel delegation' }))
+    await waitFor(() => expect(sent(cancelRoute('del-1'))).toHaveLength(1))
+    first.unmount()
+
+    renderCard()
+    expect(await screen.findByText('flow · canceled')).toBeInTheDocument()
+    await settled()
+    await seal.resolve({ detail: 'database is locked' }, 500)
+    const row = screen.getByRole('group', { name: /^Delegation nightly-checks/ })
+    expect(within(row).getByText('Database is locked')).toBeInTheDocument()
+    expect(within(row).getByText('flow · canceled')).toBeInTheDocument()
+    expect(within(row).queryByRole('button', { name: /Cancel delegation|Seal delegation/ })).not.toBeInTheDocument()
 })
 
 it('leaves a row sealed by a retry after Settings was reopened clear of an earlier try\'s failure that arrives later', async () => {
