@@ -361,6 +361,61 @@ describe('onChatComposerSubmit', () => {
             expect(attachmentsOf('conversation-1')).toBeUndefined()
         })
 
+        it('leaves a chat started after a return as it is when an unlisted chat\'s send is refused late, opening that chat with all of it at the next return', async () => {
+            await show('env-r')
+            loadProjects(null)
+            listChats('conversation-1')
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId: 'conversation-new' })
+            useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: 'Hello there' })
+            useStore.getState().updateHomeConversationSession('conversation-new', { attachments: [entry] })
+            const sent = deferred<ConversationAcceptance>()
+            vi.mocked(sendConversationTurnValidated).mockReturnValue(sent.promise)
+            const setPanelError = vi.fn()
+            composer({ attachments: [entry], setPanelError, ensureConversationId: () => 'conversation-new', getCurrentConversationId: openChat }).onChatComposerSubmit()
+            await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalled())
+
+            // Away and back, its projects load, and New chat starts with its own draft; then the send is refused.
+            await show(null)
+            await show('env-r')
+            loadProjects('conversation-1')
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId: null })
+            useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: 'Newer' })
+            sent.reject(new Error('offline'))
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(openChat(projectPath)).toBeNull()
+            expect(draft()).toBe('Newer')
+            expect(setPanelError.mock.calls).toEqual([[null]])
+
+            // The next return opens the refused chat with its text, files and error.
+            await show(null)
+            await show('env-r')
+            loadProjects('conversation-1')
+            expect(openChat(projectPath)).toBe('conversation-new')
+            expect(draft()).toBe('Hello there')
+            expect(attachmentsOf('conversation-new')).toEqual([entry])
+            expect(setPanelError.mock.calls).toEqual([[null], ['Unable to send the project chat turn.']])
+        })
+
+        it('puts a send back unsent, with its files and why, when its settings fail to save after a switch away', async () => {
+            loadProjects('conversation-1')
+            useStore.getState().updateHomeConversationSession('conversation-1', { attachments: [entry] })
+            const settings = deferred<boolean | string>()
+            const waitForPendingSettingsSave = vi.fn(() => settings.promise)
+            const setPanelError = vi.fn()
+            composer({ attachments: [entry], setPanelError, waitForPendingSettingsSave }).onChatComposerSubmit()
+            await vi.waitFor(() => expect(waitForPendingSettingsSave).toHaveBeenCalled())
+
+            await show('env-r')
+            settings.resolve(false)
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            await show(null)
+            loadProjects('conversation-1')
+            expect(draft()).toBe('Hello there')
+            expect(attachmentsOf('conversation-1')).toEqual([entry])
+            expect(setPanelError.mock.calls).toEqual([['The message was not sent: its chat settings did not save.']])
+            expect(sendConversationTurnValidated).not.toHaveBeenCalled()
+        })
+
         it('leaves a newer send its pending and sending state when an older one\'s answer lands after a switch away and back', async () => {
             const first = deferred<ConversationAcceptance>()
             const second = deferred<ConversationAcceptance>()

@@ -24,6 +24,7 @@ import { useTriggersList } from '@/features/triggers/hooks/useTriggersList'
 import { buildWorkspaceLiveEventsUrl, dispatchConversationLiveEnvelope } from '@/features/workspace/services/liveEvents'
 import type { ConversationBatch } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
+import type { AppState } from '@/state/store-types'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { reportRunsTransportLost, requestRunsTransportReconnect, useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
@@ -587,14 +588,15 @@ function projectInView() {
 const isForeignPlace = (place: Place) => (place.envId ?? null) !== getActiveEnvironmentId()
 
 /**
- * What you choose here that no place names: the project and chat open in Chats, the settings category, a
- * project's Settings, the New Trigger form.
+ * What you choose here that no place names: the project open in Chats, the settings category, a project's
+ * Settings, the New Trigger form. Its chat is `openChat`.
  */
 function chosenHere() {
     const state = useStore.getState()
-    const chat = state.activeProjectPath ? state.projectSessionsByPath[state.activeProjectPath]?.conversationId ?? null : null
-    return [state.activeProjectPath, chat, state.settingsCategory, state.projectPageSettingsRequest, state.triggersSession.createFormOpen]
+    return [state.activeProjectPath, state.settingsCategory, state.projectPageSettingsRequest, state.triggersSession.createFormOpen]
 }
+
+const openChat = (state: AppState) => state.activeProjectPath ? state.projectSessionsByPath[state.activeProjectPath]?.conversationId ?? null : null
 
 /** Moves the app to a place from a history entry or a link; returns whether it got there now. */
 function applyPlace(place: Place): boolean {
@@ -673,6 +675,7 @@ export function HistoryRoutingController() {
 
         // One click can change the view and its selection in separate updates; they make one entry.
         let scheduled = false
+        let chatChosen = false
         const record = () => {
             scheduled = false
             if (retired()) return
@@ -693,6 +696,7 @@ export function HistoryRoutingController() {
                     || (next.runId === current.runId && next.nodeId !== current.nodeId)
                     || closesTrigger(state, current, next)
                     || chosenHere().some((value, index) => value !== chosen[index])
+                    || chatChosen
                     // A project added or removed; an answer saving one's state only updates it.
                     || Object.keys(state.projectRegistry).join('\n') !== Object.keys(projects).join('\n')
                 if (moved && !loading) window.history.pushState({ sparkPlace: next }, '', placeHash(next))
@@ -704,8 +708,12 @@ export function HistoryRoutingController() {
             current = next
             chosen = chosenHere()
             projects = state.projectRegistry
+            chatChosen = false
         }
-        const unsubscribe = useStore.subscribe(() => {
+        const unsubscribe = useStore.subscribe((state, previous) => {
+            // A chat you choose opens alone; one the projects loading or a project's saved state answering
+            // opens comes with the projects.
+            if (state.projectRegistry === previous.projectRegistry && openChat(state) !== openChat(previous)) chatChosen = true
             if (scheduled) return
             scheduled = true
             queueMicrotask(record)

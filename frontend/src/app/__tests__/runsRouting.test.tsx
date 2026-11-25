@@ -10,7 +10,7 @@ import { addsEntry, buildRunsHash, missionKey, parsePlaceHash, placeHash, roleKe
 import { triggerKey, type TriggerResponse } from '@/lib/workspaceClient'
 import { toHydratedProjectRecord } from '@/features/projects/model/projectsHomeState'
 import { useAddProject } from '@/features/projects/hooks/useAddProject'
-import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState'
+import { markProjectUsed, usePersistProjectState } from '@/features/projects/hooks/usePersistProjectState'
 import { ROUTE_STATE_STORAGE_KEY, VIEW_MODE_SESSION_KEY } from '@/state/store-helpers'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { deferred, switchEnvironment } from '@/test/environments'
@@ -713,6 +713,51 @@ describe('routing across environments', () => {
 
         saved.resolve(new Response(JSON.stringify({ project_id: 'project', project_path: '/tmp/project', display_name: 'project', is_favorite: false, active_conversation_id: null, last_accessed_at: '2026-09-02T00:00:00Z' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
         await act(() => marking)
+        expect(useStore.getState().projectRegistry['/tmp/project']?.lastAccessedAt).toBe('2026-09-02T00:00:00Z')
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(window.history.length).toBe(entries)
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: 'env-r', runId: 'remote-run' })
+        act(() => window.history.forward())
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
+    })
+
+    it('leaves Back and Forward as they are when an earlier chat choice\'s saved state answers after Back reached a remote environment\'s entry', async () => {
+        const saves: { resolve: (response: Response) => void }[] = []
+        vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+            if (!String(input).includes('/workspace/api/projects/state')) return Promise.resolve(new Response('{}', { status: 404 }))
+            const save = deferred<Response>()
+            saves.push(save)
+            return save.promise
+        }))
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await showEnvironment('env-r')
+        selectRun('remote-run')
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+        await showEnvironment(null)
+        act(() => {
+            useStore.getState().hydrateProjectRegistry([
+                toHydratedProjectRecord({ project_path: '/tmp/home', is_favorite: false, is_default: true }),
+                toHydratedProjectRecord({ project_path: '/tmp/project', is_favorite: false }),
+            ])
+            useStore.getState().setActiveProjectPath('/tmp/project')
+        })
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        // Two chats chosen in turn, each saved as the project's open chat; Back is taken before either answers.
+        const { result } = renderHook(() => usePersistProjectState(useStore.getState().upsertProjectRegistryEntry))
+        const choose = (conversationId: string) => {
+            act(() => useStore.getState().updateProjectSessionState('/tmp/project', { conversationId }))
+            return result.current('/tmp/project', { active_conversation_id: conversationId })
+        }
+        const first = choose('chat-1')
+        choose('chat-2')
+        await waitFor(() => expect(saves).toHaveLength(2))
+        const entries = window.history.length
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(`${buildRunsHash('remote-run')}?env=env-r`))
+
+        saves[0].resolve(new Response(JSON.stringify({ project_id: 'project', project_path: '/tmp/project', display_name: 'project', is_favorite: false, active_conversation_id: 'chat-1', last_accessed_at: '2026-09-02T00:00:00Z' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+        await act(() => first)
         expect(useStore.getState().projectRegistry['/tmp/project']?.lastAccessedAt).toBe('2026-09-02T00:00:00Z')
         await new Promise((resolve) => setTimeout(resolve, 0))
         expect(window.history.length).toBe(entries)
