@@ -1,3 +1,4 @@
+import { parseFormQuestion, type FormQuestion, type FormReply } from '@/lib/forms'
 import { fetchWorkspaceJsonValidated } from './apiClient'
 import {
     activeApiPrefix,
@@ -44,15 +45,24 @@ export type DelegationSubQuestion = {
     id: string
     header?: string
     question: string
+    question_type?: string
     options?: DelegationQuestionOption[]
+    allow_other: boolean
+    is_secret: boolean
 }
 
 export type DelegationQuestion = {
     question_id: string
     prompt?: string
+    origin?: string
+    question_type?: string
     options?: DelegationQuestionOption[]
     questions?: DelegationSubQuestion[]
-    form?: Record<string, unknown>
+    form?: FormQuestion
+    // A child run's gate names its run, node and flow: children may share question IDs and prompts.
+    run_id?: string
+    node_id?: string
+    flow_name?: string
 }
 
 export type DelegationLastState = {
@@ -74,6 +84,8 @@ export type DelegationOut = {
     paused: string | null
     cancel_requested_at: string | null
     created_at: string
+    // When the follower first sent it; null means the linked environment never saw it.
+    submitted_at: string | null
     updated_at: string
     last_state: DelegationLastState | null
     result: Record<string, unknown> | null
@@ -82,7 +94,7 @@ export type DelegationOut = {
 export type DelegationAnswerBody = {
     selected_value?: string
     answers?: Record<string, string>
-    form?: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
+    form?: FormReply
 }
 
 function parsePairingCode(payload: unknown, endpoint: string): PairingCodeReceipt {
@@ -148,15 +160,23 @@ function parseQuestions(value: unknown): DelegationQuestion[] {
                     id: String(entry.id),
                     header: asOptionalString(entry.header),
                     question: asOptionalString(entry.question) ?? String(entry.id),
+                    question_type: asOptionalString(entry.question_type),
                     options: parseOptions(entry.options),
+                    allow_other: (entry.allow_other ?? entry.isOther) === true,
+                    is_secret: (entry.is_secret ?? entry.isSecret) === true,
                 }))
             : undefined
         questions.push({
             question_id,
             prompt: asOptionalString(record?.prompt) ?? asOptionalString(record?.text),
+            origin: asOptionalString(record?.origin),
+            question_type: asOptionalString(record?.question_type),
             options: parseOptions(record?.options),
             questions: subQuestions && subQuestions.length > 0 ? subQuestions : undefined,
-            form: asUnknownRecord(record?.form) ?? undefined,
+            form: parseFormQuestion(record?.form) ?? undefined,
+            run_id: asOptionalString(record?.run_id),
+            node_id: asOptionalString(record?.node_id),
+            flow_name: asOptionalString(record?.flow_name),
         })
     }
     return questions
@@ -185,6 +205,7 @@ function parseDelegation(payload: unknown, endpoint: string): DelegationOut {
         paused: asOptionalNullableString(row.paused) ?? null,
         cancel_requested_at: asOptionalNullableString(row.cancel_requested_at) ?? null,
         created_at: asOptionalString(row.created_at) ?? '',
+        submitted_at: asOptionalNullableString(row.submitted_at) ?? null,
         updated_at: asOptionalString(row.updated_at) ?? '',
         last_state,
         result: asUnknownRecord(row.result),
