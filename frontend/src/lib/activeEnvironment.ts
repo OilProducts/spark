@@ -153,12 +153,13 @@ export const isWorkspaceBlocked = ({ status, activeCheck }: ActiveEnvironmentSta
 
 /**
  * Runs proceed once open editors allow leaving, or cancel when they keep you here; neither runs after a switch to
- * another environment, which the leave would move instead. An editor that holds a leave calls one of them later.
+ * another environment, which the leave would move instead. An editor that holds a leave calls one of them later, or
+ * asks again with itself among the `approved` editors, which let it pass, so the others still get their say.
  */
-export const requestNavigation = (proceed: () => void, cancel?: () => void) => {
+export const requestNavigation = (proceed: () => void, cancel?: () => void, approved: object[] = []) => {
     const environmentId = getActiveEnvironmentId()
     const here = (then?: () => void) => () => { if (getActiveEnvironmentId() === environmentId) then?.() }
-    const detail = { proceed: here(proceed), cancel: here(cancel) }
+    const detail = { proceed: here(proceed), cancel: here(cancel), approved }
     if (window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail }))) detail.proceed()
 }
 
@@ -309,9 +310,12 @@ function commitEnvironment(seq: number, environmentId: string | null, check: Che
  */
 export async function selectEnvironment(
     environmentId: string | null,
-    options?: { onActivated?: () => void },
+    options?: { onActivated?: () => void; link?: EnvironmentLink },
 ): Promise<boolean> {
     const seq = ++switchSequence
+    // The link Settings switches to names it in the switcher and remote guidance, though their listing lacks it.
+    const link = options?.link
+    if (link && !state.links.some((entry) => entry.environment_id === link.environment_id)) updateState({ links: [...state.links, link] })
     const active = state.activeEnvironmentId
     if (environmentId === active && (state.selectedEnvironmentId !== active || state.status === 'ready')) {
         showActiveEnvironment()

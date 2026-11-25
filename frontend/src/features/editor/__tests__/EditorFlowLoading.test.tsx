@@ -14,7 +14,7 @@ import { HistoryRoutingController, RefusedFlowSaveNotices } from '@/app/AppSessi
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
 import { ApiHttpError } from '@/lib/attractorClient'
 import { switchEnvironment } from '@/test/environments'
-import { getActiveEnvironmentId, resetActiveEnvironmentForTests, subscribeActiveEnvironment } from '@/lib/activeEnvironment'
+import { getActiveEnvironmentId, getActiveEnvironmentState, resetActiveEnvironmentForTests, subscribeActiveEnvironment } from '@/lib/activeEnvironment'
 import {
   loadEditorFlowFiles,
   loadEditorFlowPayload,
@@ -1263,6 +1263,61 @@ describe('Editor file view', () => {
       await answer('Discard unsaved settings?', 'Discard and leave')
       await answer('Discard unsaved flow edits?', 'Discard and leave')
       expect(getActiveEnvironmentId()).toBe('env-r')
+      expect(commits).toEqual(['env-r'])
+      expect(dropSettings).toHaveBeenCalledTimes(1)
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    } finally {
+      stop()
+      resetActiveEnvironmentForTests()
+    }
+  })
+
+  it('still asks about a Settings draft once the edits of a flow save refused after a switch started are discarded', async () => {
+    const user = userEvent.setup()
+    let save = createDeferred<Response>()
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => (String(url).endsWith('/api/flows') && init?.method === 'POST'
+      ? save.promise
+      : Promise.resolve(new Response(JSON.stringify({ status: 'ok' }), { status: 200 })))))
+    const dropSettings = vi.fn()
+    const SettingsDraft = () => { useSettingsNavigationProtection(true, false, 'settings', dropSettings); return null }
+    render(<DialogProvider><ReactFlowProvider><Editor /></ReactFlowProvider><SettingsDraft /></DialogProvider>)
+    const edited = '---\nid: demo\n---\nThe edited flow.\n'
+    fireEvent.change(await screen.findByTestId('flow-file-editor'), { target: { value: edited } })
+    const commits: Array<string | null> = []
+    const stop = subscribeActiveEnvironment(() => { if (getActiveEnvironmentId() !== (commits.at(-1) ?? null)) commits.push(getActiveEnvironmentId()) })
+    const answer = async (title: string, button: 'Discard and leave' | 'Keep editing') => {
+      await user.click(within(await screen.findByRole('alertdialog', { name: title })).getByRole('button', { name: button }))
+    }
+    // The flow is saved, the user switches while the save is in flight, and the save is then refused.
+    const switchWhileSaving = async () => {
+      save = createDeferred<Response>()
+      await user.click(screen.getByTestId('flow-files-save'))
+      void switchEnvironment('env-r', undefined, true).catch(() => {})
+      // Checked, the switch waits on the save.
+      await waitFor(() => expect(getActiveEnvironmentState()).toMatchObject({ selectedEnvironmentId: 'env-r', status: 'ready' }))
+      await act(async () => save.resolve(new Response(JSON.stringify({ detail: { status: 'validation_error', error: 'Steps must be a list.' } }), { status: 422 })))
+    }
+    const keptBoth = () => {
+      expect(getActiveEnvironmentId()).toBeNull()
+      expect(commits).toEqual([])
+      expect(dropSettings).not.toHaveBeenCalled()
+      expect(screen.getByTestId('flow-file-editor')).toHaveValue(edited)
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    }
+    try {
+      await switchWhileSaving()
+      await answer('Discard unsaved flow edits?', 'Keep editing')
+      keptBoth()
+
+      await switchWhileSaving()
+      await answer('Discard unsaved flow edits?', 'Discard and leave')
+      await answer('Discard unsaved settings?', 'Keep editing')
+      keptBoth()
+
+      await switchWhileSaving()
+      await answer('Discard unsaved flow edits?', 'Discard and leave')
+      await answer('Discard unsaved settings?', 'Discard and leave')
+      await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-r'))
       expect(commits).toEqual(['env-r'])
       expect(dropSettings).toHaveBeenCalledTimes(1)
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()

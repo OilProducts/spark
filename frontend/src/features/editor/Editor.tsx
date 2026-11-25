@@ -493,7 +493,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         const { saveState, resetSaveState } = useStore.getState();
         if (saveState === 'error' || saveState === 'conflict') resetSaveState();
     }, [editorMode, fileChangesPending]);
-    useSettingsNavigationProtection(hasUnsavedEdits, false, 'flow edits');
+    const flowEditsGuard = useSettingsNavigationProtection(hasUnsavedEdits, false, 'flow edits');
     // Leaving first sends edits still waiting to save and waits for this environment's saves in
     // flight: a save refused after the click still asks before its edits are dropped, and never
     // lands on the next flow. Another environment's saves only hold up closing the browser.
@@ -502,7 +502,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         const waitForSaves = (event: Event) => {
             if (event.defaultPrevented || !sendPendingFlowSaves(environmentId)) return;
             event.preventDefault();
-            const { proceed, cancel } = (event as CustomEvent<{ proceed: () => void; cancel?: () => void }>).detail;
+            const { proceed, cancel, approved = [] } = (event as CustomEvent<{ proceed: () => void; cancel?: () => void; approved?: object[] }>).detail;
             const shown = captureShownWorkspace();
             void waitForFlowSaves().then(async () => {
                 // A switch away ended the navigation: the save's result stays with its own workspace,
@@ -511,7 +511,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 const { saveState, saveErrorMessage, saveErrorProblems } = useStore.getState();
                 if (saveState !== 'error' && saveState !== 'conflict') {
                     // Saved: anything else that guards leaving (file drafts) still gets its say.
-                    requestNavigation(proceed, cancel);
+                    requestNavigation(proceed, cancel, approved);
                 } else if (await confirm({
                     title: 'Discard unsaved flow edits?',
                     description: `${saveErrorMessage ? `They weren’t saved: ${(saveErrorProblems?.map((problem) => problem.message) ?? flowProblems(saveErrorMessage)).join(' ')} ` : ''}Your unsaved flow edits will be lost.`,
@@ -520,7 +520,8 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                     confirmVariant: 'destructive',
                     leaving: true,
                 })) {
-                    proceed();
+                    // Other editors the leave drops, such as Settings drafts, still ask; the flow's own guard passes.
+                    requestNavigation(proceed, cancel, [...approved, flowEditsGuard]);
                 } else {
                     cancel?.();
                 }
@@ -528,7 +529,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         };
         window.addEventListener('spark:before-navigation', waitForSaves, { capture: true });
         return () => window.removeEventListener('spark:before-navigation', waitForSaves, { capture: true });
-    }, [confirm, environmentId]);
+    }, [confirm, environmentId, flowEditsGuard]);
 
     useEffect(() => {
         expandChildFlowsRef.current = expandChildFlows;

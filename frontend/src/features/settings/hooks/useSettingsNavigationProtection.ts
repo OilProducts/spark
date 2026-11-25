@@ -1,21 +1,23 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { requestNavigation } from '@/state/workspaceSlice'
 
-/** Asks before a navigation or page unload drops unsaved edits; `subject` names what is lost, `onDiscard` drops what outlives the view. */
+/**
+ * Asks before a navigation or page unload drops unsaved edits; `subject` names what is lost, `onDiscard` drops what
+ * outlives the view. Returns this editor's identity, which a leave it already agreed to carries among its `approved`.
+ */
 export function useSettingsNavigationProtection(dirty: boolean, pending = false, subject = 'settings', onDiscard?: () => void) {
     const { confirm } = useDialogController()
+    const [guard] = useState({})
     useEffect(() => {
         if (!dirty && !pending) return
         let confirming = false
-        // Set once this editor agreed to a leave, until the other editors it passed the leave on to settle it.
-        let approved = false
-        let transitions: Array<{ proceed: () => void; cancel?: () => void }> = []
+        let transitions: Array<{ proceed: () => void; cancel?: () => void; approved?: object[] }> = []
         const unload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
         const navigate = (event: Event) => {
-            if (event.defaultPrevented || approved) return
+            const leave = (event as CustomEvent<{ proceed: () => void; cancel?: () => void; approved?: object[] }>).detail
+            if (event.defaultPrevented || (!pending && leave.approved?.includes(guard))) return
             event.preventDefault()
-            const leave = (event as CustomEvent<{ proceed: () => void; cancel?: () => void }>).detail
             if (pending) return leave.cancel?.()
             transitions.push(leave)
             if (confirming) return
@@ -27,9 +29,7 @@ export function useSettingsNavigationProtection(dirty: boolean, pending = false,
                     // another environment, still asks; it goes, dropping what outlives this view, once all agree.
                     // ponytail: every editor with unsaved edits asks about any leave, even one that keeps it mounted;
                     // scope leaves to the editors they drop if that asks too often.
-                    approved = true
-                    const settle = (then?: () => void) => () => { approved = false; then?.() }
-                    transitions.forEach(({ proceed, cancel }) => requestNavigation(settle(() => { onDiscard?.(); proceed() }), settle(cancel)))
+                    transitions.forEach(({ proceed, cancel, approved = [] }) => requestNavigation(() => { onDiscard?.(); proceed() }, cancel, [...approved, guard]))
                 })
                 .finally(() => { confirming = false; transitions = [] })
         }
@@ -40,5 +40,6 @@ export function useSettingsNavigationProtection(dirty: boolean, pending = false,
             window.removeEventListener('beforeunload', unload)
             window.removeEventListener('spark:before-navigation', navigate, { capture: pending })
         }
-    }, [dirty, pending, subject, confirm, onDiscard])
+    }, [dirty, pending, subject, confirm, onDiscard, guard])
+    return guard
 }

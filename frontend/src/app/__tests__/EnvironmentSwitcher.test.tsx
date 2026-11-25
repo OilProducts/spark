@@ -754,6 +754,35 @@ describe('Same-window multi-environment switching', () => {
         expect(pipelineStarts().map((request) => request.url)).toEqual([`${WIN}/attractor/pipelines`])
     })
 
+    it('names a peer Settings switched to, and its direct webhook URL, though the switcher could not list it', async () => {
+        const user = userEvent.setup()
+        const webhook = {
+            id: 'trigger-webhook', project_path: '/remote/project', name: 'Webhook trigger', enabled: true, protected: false,
+            revision: 'revision-1', source_type: 'webhook', created_at: '2026-11-24T00:00:00Z', updated_at: '2026-11-24T00:00:00Z',
+            action: { flow_name: 'demo', static_context: {} }, source: { webhook_key: 'webhook-key-1' },
+            state: { last_fired_at: null, last_result: null, last_error: null, next_run_at: null, recent_history: [] },
+            webhook_secret: null,
+        }
+        let listings = 0
+        stubBackend({
+            // The switcher's own listing, at startup, fails; Settings lists the link once opened.
+            [LINKS]: () => (++listings === 1 ? json({ detail: 'unavailable' }, 503) : json({ links: [WIN_LINK] })),
+            [`${WIN}/workspace/api/triggers`]: () => json([webhook]),
+        })
+        render(<App />)
+        await openSystemSettings()
+        await user.click(await screen.findByRole('button', { name: 'Switch to Windows Workstation' }))
+        await waitFor(() => expect(getActiveEnvironmentId()).toBe('env-win'))
+        expect(listings).toBeGreaterThan(1)
+        expect(tab('env-win')).toHaveTextContent('Windows Workstation')
+
+        act(() => useStore.getState().setViewMode('triggers'))
+        await user.click(await screen.findByTestId('trigger-row-trigger-webhook'))
+        const guidance = screen.getByTestId('trigger-webhook-remote')
+        expect(guidance).toHaveTextContent('This trigger runs on Windows Workstation at http://env-win:8000.')
+        expect(guidance).toHaveTextContent('directly to http://env-win:8000/workspace/api/webhooks, not through this Spark')
+    })
+
     describe.each([
         // The tab bar opens the environment on its own last view; Settings' Switch opens it on its Overview.
         ['the tab bar', (user: ReturnType<typeof userEvent.setup>) => user.click(tab('env-win')), 'settings'],
