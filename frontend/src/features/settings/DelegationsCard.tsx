@@ -310,7 +310,8 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
     const requestSeqRef = useRef(0)
     // The last rows loaded and the filter they answer: another filter's rows are never shown.
     const [loaded, setLoaded] = useState<{ filter: Filter; records: DelegationOut[] } | null>(null)
-    // Whether a list of every open delegation (All, Open) has loaded: until one has, the card can't tell none is in flight.
+    // Whether a list of every open delegation (All, Open) has loaded since the card last showed a change's result:
+    // until one has, the card can't tell none is in flight.
     const [openListed, setOpenListed] = useState(false)
     const { activeEnvironmentId, links: sharedLinks, linksLoaded } = useActiveEnvironment()
     const env = activeEnvironmentId ?? ''
@@ -422,21 +423,24 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
 
     useEffect(() => {
         const report: ShownCard['report'] = async (done, updated) => {
-            // The row shows the server's answer now, whether or not the reload below succeeds, unless the
-            // card already shows a newer record: one sealed is final. A pause shown from the answer's second
-            // stays over an unpaused answer, which may be the older, until a list drops it; a seal, which
-            // clears pauses, still ends it.
+            // The row shows the server's answer now, whether or not the reload below succeeds. An answer older
+            // than the row shown, or than a seal, which is final, has nothing to add: the server records a cancel
+            // before it answers, so that row shows it, and the row and anything announced since stay. A pause
+            // shown from the answer's second stays over an unpaused answer, which may be the older, until a list
+            // drops it; a seal, which clears pauses, still ends it.
             // ponytail: updated_at has whole seconds, so another change in the answer's second loses to it until the next refresh.
             const shown = updated && seenRef.current[updated.delegation_id]
-            // A response older than a seal the row shows has nothing to add: the seal's announcement, if any, stays.
-            if (shown?.phase === 'sealed' && updated?.phase !== 'sealed') return
-            if (updated && !(shown && (shown.phase === 'sealed' || Date.parse(shown.updated_at) > Date.parse(updated.updated_at)))) {
+            if (updated && shown && (shown.phase === 'sealed' || Date.parse(shown.updated_at) > Date.parse(updated.updated_at))) return
+            if (updated) {
                 const next = shown && shown.paused && !updated.paused && updated.phase !== 'sealed'
                     && Date.parse(shown.updated_at) >= Date.parse(updated.updated_at)
                     ? { ...updated, paused: shown.paused }
                     : updated
                 seenRef.current = { ...seenRef.current, [next.delegation_id]: next }
                 setSeen(seenRef.current)
+                // Other delegations may have started since the last All or Open list, so a change shown here stops
+                // live refresh only once another such list shows none in flight.
+                setOpenListed(false)
                 setLoaded((current) => current && {
                     ...current,
                     records: current.records.flatMap((row) => (
@@ -579,6 +583,9 @@ export function DelegationsCard({ active = true }: { active?: boolean }) {
         editDraft(env, key, { sending: true, error: null })
         setBusy(true)
         try {
+            // ponytail: the answer route carries no run ID, so the linked environment answers the first open gate
+            // with this ID, which may be another child run's (spark-workspace delegations::answer_incoming). The
+            // owner deferred the route fix to a follow-up change.
             await answerDelegationQuestion(record.delegation_id, question.question_id, body)
         } catch (err) {
             // The draft stays to fix and resend. A refresh that dropped the question meanwhile (it closed
