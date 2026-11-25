@@ -434,6 +434,48 @@ it.each([
 })
 
 it.each([
+    ['before', true],
+    ['after', false],
+])('keeps a removal confirmed in Settings reopened twice when a late add response arrives for the link it deleted, showing the add only if it saved after the deletion: saved %s it', async (_order, addSavedFirst) => {
+    const user = userEvent.setup()
+    const backend = stubBackend()
+    // The server stamps each link as it saves it. The link removed is the add's own, or one another tab linked first.
+    const first = { ...link('env-gpu', 'GPU'), created_at: '2026-11-24T00:00:01Z' }
+    const later = { ...first, created_at: '2026-11-24T00:00:02Z' }
+    const settings = render(card())
+    await screen.findByText('No linked environments configured.')
+    const finishAdd = await addGpuHeld(user, backend)
+
+    // The add is saved, or another tab links env-gpu, before Settings reopens; the reopened card lists that link and
+    // removes it, with the DELETE held.
+    settings.unmount()
+    backend.links = [first]
+    const reopened = render(card())
+    let finishDelete = () => {}
+    backend.replies[`DELETE ${LINKS}/env-gpu`] = () => new Promise<undefined>((resolve) => { finishDelete = () => resolve(undefined) })
+    await user.click(await screen.findByRole('button', { name: 'Remove link GPU' }))
+    await user.click(await screen.findByRole('button', { name: 'Remove link' }))
+    await waitFor(() => expect(backend.mutations).toEqual([`POST ${LINKS}`, `DELETE ${LINKS}/env-gpu`]))
+
+    // Settings reopens again and link listings fail from then on. The deletion is confirmed; then the add, unless it was
+    // saved before, is saved, and its response arrives.
+    reopened.unmount()
+    backend.replies[LINKS] = () => json({ detail: 'link listing failed' }, 500)
+    render(card())
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
+    await act(async () => finishDelete())
+    expect(backend.links).toEqual([])
+    if (!addSavedFirst) backend.links = [later]
+    await act(async () => finishAdd(json(addSavedFirst ? first : later)))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled())
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load linked environments: Link listing failed')
+    if (addSavedFirst) expect(screen.queryByRole('button', { name: 'Remove link GPU' })).not.toBeInTheDocument()
+    else expect(screen.getByRole('button', { name: 'Remove link GPU' })).toBeInTheDocument()
+    expect(backend.links).toEqual(addSavedFirst ? [] : [later])
+})
+
+it.each([
     ['here', true],
     ['in another tab', false],
 ])('shows a pending relink confirmed in a reopened card after an earlier pairing with the same public fields is removed %s, beside a failed follow-up listing', async (_where, removeHere) => {

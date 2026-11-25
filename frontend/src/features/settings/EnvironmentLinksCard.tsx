@@ -63,6 +63,10 @@ let undeliveredError: string | null = null
 // requests are sent, and a confirmed link change takes one as it shows. Start order stands in for read order only where
 // no listed row shows which listing read later.
 let lastTicket = 0
+// Link removals the server confirmed, with the environment they were made on and the last ticket taken then. Unlike what
+// a card lists, they outlive the card, so a card opened afterwards still knows the link version is gone.
+// ponytail: grows by one per confirmed removal while the page is open.
+const confirmedRemovals: { environmentId: string | null; link: EnvironmentLink; at: number }[] = []
 
 const msLeft = (receipt: PairingCodeReceipt) => Date.parse(receipt.expires_at) - Date.now()
 
@@ -209,14 +213,18 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             const older = (row: EnvironmentLink) => before.some((seen) => sameLink(seen, row))
                 || listedLinksRef.current.some((seen) => seen.first < sent && sameLink(seen.link, row))
             // What a card shows after first listing the created link once the add was sent is newer: the add came before
-            // that listing. Where no listing shows which came first, the row the card shows for that ID is newer if the server
+            // that listing. So is the absence of a link version whose removal was confirmed since: the add saved before that
+            // deletion. Where no listing shows which came first, the row the card shows for that ID is newer if the server
             // stamped it later, since links carry no other save order (created_at is fixed-width UTC, so it compares as
             // text). Otherwise the add replaces that row; within one second, the add confirmed last counts as saved last.
             // ponytail: a server clock set back, or two saves of one ID in the same second whose responses arrive in the
             // opposite order, shows the earlier save until a listing succeeds, as does a card that first lists an earlier
             // pairing with the same public fields while the add is pending; telling them apart needs a write order from
             // the server.
-            if (!older(created) && listedLinksRef.current.some((seen) => seen.first >= sent && sameLink(seen.link, created))) return
+            const since = listedLinksRef.current.some((seen) => seen.first >= sent && sameLink(seen.link, created))
+                || confirmedRemovals.some((removal) => removal.environmentId === activeEnvironmentId && removal.at >= sent
+                    && sameLink(removal.link, created))
+            if (since && !older(created)) return
             const shown = linksRef.current.find((row) => row.environment_id === created.environment_id)
             if (shown && !older(shown) && shown.created_at > created.created_at) return
             linksShownRef.current = ++lastTicket
@@ -227,7 +235,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
             // Only a listing can say no links remain.
             setLinksLoaded(false)
         }
-    }, [forgetProjects, replaceLink, showLinks])
+    }, [activeEnvironmentId, forgetProjects, replaceLink, showLinks])
 
     useEffect(() => {
         if (!active) return
@@ -431,6 +439,7 @@ export function EnvironmentLinksCard({ active = true }: { active?: boolean }) {
                 throw new Error(`The link to ${name} changed since you chose to remove it, so nothing was removed. Review the current link before removing it again.`)
             }
             await removeEnvironmentLink(link.environment_id)
+            confirmedRemovals.push({ environmentId: activeEnvironmentId, link, at: lastTicket })
             if (isLocalEnvironment) notifyEnvironmentLinksChanged()
             await settleMutation(`Removed link to ${name}.`, { unlinked: link })
         })
