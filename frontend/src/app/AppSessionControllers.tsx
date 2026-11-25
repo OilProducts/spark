@@ -562,6 +562,19 @@ export function WorkspaceLiveEventsController() {
                 failedConnects = 0
                 unverified.current = false
             }
+            // The connection stays closed, its workspace behind the gate, until a check passes, such as Retry's.
+            const waitForCheck = () => {
+                if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
+                eventSource?.close()
+                eventSource = null
+                stopWaiting()
+                stopWaiting = subscribeActiveEnvironment(() => {
+                    const { activeEnvironmentId, selectedEnvironmentId, status } = getActiveEnvironmentState()
+                    if (selectedEnvironmentId !== activeEnvironmentId || status !== 'ready') return
+                    stopWaiting()
+                    open()
+                })
+            }
             source.onopen = () => {
                 if (!isCurrent(source)) return
                 if (!unverified.current || getActiveEnvironmentId() === null) return connected()
@@ -580,13 +593,7 @@ export function WorkspaceLiveEventsController() {
                     source.close()
                     eventSource = null
                     if (verified === null) return reconnect()
-                    // It failed: the connection stays closed, its workspace behind the gate, until Retry passes a check.
-                    stopWaiting = subscribeActiveEnvironment(() => {
-                        const { activeEnvironmentId, selectedEnvironmentId, status } = getActiveEnvironmentState()
-                        if (selectedEnvironmentId !== activeEnvironmentId || status !== 'ready') return
-                        stopWaiting()
-                        open()
-                    })
+                    waitForCheck()
                 })
             }
             source.onmessage = (event) => handleMessage(event, source)
@@ -598,9 +605,12 @@ export function WorkspaceLiveEventsController() {
                 eventSource = null
                 failedConnects += 1
                 unverified.current = true
-                // A linked environment that revoked this Spark's credential refuses every reconnect and never opens.
+                // A linked environment that revoked this Spark's credential refuses every reconnect and never opens:
+                // once a check finds it refused, none is tried until a check passes. One down meanwhile is retried.
                 // ponytail: a check per failed attempt while a peer is down; back off if that load matters.
-                void reverifyActiveEnvironment()
+                void reverifyActiveEnvironment().then(() => {
+                    if (!closed && getActiveEnvironmentState().activeCheck.status === 'refused') waitForCheck()
+                })
                 // Spark is unreachable: runs say so instead of looking live.
                 if (failedConnects === 2) reportRunsTransportLost()
                 reconnect()

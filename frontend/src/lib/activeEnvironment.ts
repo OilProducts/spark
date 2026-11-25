@@ -28,7 +28,8 @@ export type EnvironmentLink = {
     created_at: string
 }
 
-type RemoteEnvironmentStatus = 'ready' | 'checking' | 'incompatible' | 'unreachable'
+// `refused`: the peer refused this Spark's credential, and refuses every request until it is paired again.
+type RemoteEnvironmentStatus = 'ready' | 'checking' | 'incompatible' | 'unreachable' | 'refused'
 
 type ActiveEnvironmentState = {
     /** Environment currently mounted in the workspace (`null` = this local machine). */
@@ -148,18 +149,21 @@ export function getActiveEnvironmentId(): string | null {
 
 /** A failed check, a destination's or the mounted environment's own, hides the workspace behind the error gate. */
 export const isWorkspaceBlocked = ({ status, activeCheck }: ActiveEnvironmentState) => (
-    status === 'incompatible' || status === 'unreachable' || activeCheck.status !== 'ready'
+    (status !== 'ready' && status !== 'checking') || activeCheck.status !== 'ready'
 )
+
+/** A leave open editors are asked about: `approved` editors let it pass; once `live` says no, it no longer goes ahead. */
+export type NavigationRequest = { proceed: () => void; cancel?: () => void; approved?: object[]; live?: () => boolean }
 
 /**
  * Runs proceed once open editors allow leaving, or cancel when they keep you here; neither runs after a switch to
  * another environment, which the leave would move instead. An editor that holds a leave calls one of them later, or
  * asks again with itself among the `approved` editors, which let it pass, so the others still get their say.
  */
-export const requestNavigation = (proceed: () => void, cancel?: () => void, approved: object[] = []) => {
+export const requestNavigation = (proceed: () => void, cancel?: () => void, leave: Pick<NavigationRequest, 'approved' | 'live'> = {}) => {
     const environmentId = getActiveEnvironmentId()
     const here = (then?: () => void) => () => { if (getActiveEnvironmentId() === environmentId) then?.() }
-    const detail = { proceed: here(proceed), cancel: here(cancel), approved }
+    const detail: NavigationRequest = { approved: leave.approved, live: leave.live, proceed: here(proceed), cancel: here(cancel) }
     if (window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail }))) detail.proceed()
 }
 
@@ -173,14 +177,21 @@ export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]
         // A listing already in flight may predate the change; the reload this event starts replaces it.
         refreshSequence += 1
         updateState({ links: update(state.links) })
-        // A destination removed while it is checked is no longer one to switch to, whatever its check answers.
-        const pending = state.selectedEnvironmentId
-        if (pending !== null && pending !== state.activeEnvironmentId && !state.links.some((link) => link.environment_id === pending)) {
-            switchSequence += 1
-            showActiveEnvironment()
-        }
+        dropRemovedDestination()
     }
     window.dispatchEvent(new Event(ENVIRONMENT_LINKS_CHANGED_EVENT))
+}
+
+/**
+ * A destination removed, here or in another tab, while it is checked or its switch awaits approval is no longer one to
+ * switch to, whatever its check or the open editors answer: the workspace mounted stays, with its edits.
+ */
+function dropRemovedDestination() {
+    const pending = state.selectedEnvironmentId
+    if (pending !== null && pending !== state.activeEnvironmentId && !state.links.some((link) => link.environment_id === pending)) {
+        switchSequence += 1
+        showActiveEnvironment()
+    }
 }
 
 function linkLabelFor(environmentId: string): string {
@@ -235,7 +246,7 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
         const error = remoteResult.reason
         const status = error instanceof ApiHttpError ? error.status : 0
         if (status === 401) {
-            return unreachable(`${name} refused this Spark’s credential (HTTP 401): its peer token was revoked or is invalid. Remove the link in Settings and pair again with a new pairing code from ${name}.`)
+            return { status: 'refused', remoteDescriptor: null, error: `${name} refused this Spark’s credential (HTTP 401): its peer token was revoked or is invalid. Remove the link in Settings and pair again with a new pairing code from ${name}.` }
         }
         // An older peer has no authenticated descriptor (404), or answers without its identity, which the proxy refuses (502).
         if (status !== 404 && status !== 502) throw error
@@ -268,6 +279,7 @@ export async function refreshLocalEnvironments(): Promise<void> {
     if (Object.keys(patch).length > 0) {
         updateState(patch)
     }
+    if (patch.links) dropRemovedDestination()
 }
 
 /** Shows the mounted environment again as its own last check left it, without remounting it. */
@@ -282,6 +294,7 @@ function showActiveEnvironment() {
  */
 function commitEnvironment(seq: number, environmentId: string | null, check: Check, onActivated?: () => void): boolean {
     let committed: boolean | null = null
+    const live = () => committed === null && seq === switchSequence
     requestNavigation(() => {
         if (committed !== null || seq !== switchSequence) return
         committed = true
@@ -298,7 +311,7 @@ function commitEnvironment(seq: number, environmentId: string | null, check: Che
         if (committed !== null || seq !== switchSequence) return
         committed = false
         showActiveEnvironment()
-    })
+    }, { live })
     if (committed === null && seq === switchSequence) updateState({ selectedEnvironmentId: environmentId, ...check })
     return committed === true
 }

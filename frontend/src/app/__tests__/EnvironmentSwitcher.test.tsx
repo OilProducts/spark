@@ -448,6 +448,34 @@ describe('Same-window multi-environment switching', () => {
         return { user, backend, remoteShell: workspaceMounted(), checks: () => backend.requests.filter((request) => request.url === WIN_AUTH).length }
     }
 
+    it('stops reconnecting a remote whose live handshakes keep refusing a revoked credential, until Retry passes a check', async () => {
+        const routes: Record<string, Route> = {}
+        const { user, remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        // Every handshake is refused; the first failure's check answers late, so the connection is tried again meanwhile.
+        const refusal = deferred<Response>()
+        routes[WIN_AUTH] = () => refusal.promise
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+        act(() => winLive()!.onerror?.(new Event('error')))
+        routes[WIN_AUTH] = () => json({ detail: 'Unauthorized' }, 401)
+        await act(async () => refusal.resolve(json({ detail: 'Unauthorized' }, 401)))
+        expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent('refused this Spark’s credential')
+
+        // Nothing is tried or checked again while it stays refused.
+        const tried = connects()
+        const checked = checks()
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+        expect(checks()).toBe(checked)
+
+        delete routes[WIN_AUTH]
+        await user.click(screen.getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(remoteShell).toBeVisible())
+        await waitFor(() => expect(winLive()).toBeDefined())
+    })
+
     it('checks a reconnected remote anew while its outage\'s check still runs, and keeps what the new check found', async () => {
         const routes: Record<string, Route> = {}
         const { checks } = await mountWindows(routes)
@@ -633,7 +661,7 @@ describe('Same-window multi-environment switching', () => {
         await user.click(within(gate).getByRole('button', { name: 'Return to Windows Workstation' }))
 
         expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent('refused this Spark’s credential')
-        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'unreachable' })
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'refused' })
         expect(workspaceMounted()).toBe(remoteShell)
         expect(remoteShell).not.toBeVisible()
     })
@@ -704,7 +732,7 @@ describe('Same-window multi-environment switching', () => {
         await user.click(within(gate).getByRole('button', { name: 'Return to this machine' }))
         const confirmation = await screen.findByRole('alertdialog', { name: 'Discard unsaved settings?' })
         await user.click(within(confirmation).getByRole('button', { name: 'Keep editing' }))
-        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'unreachable' })
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'refused' })
 
         // Retry shows the same workspace with its draft, and the dialog it left open still there.
         delete routes[WIN_AUTH]
@@ -816,6 +844,23 @@ describe('Same-window multi-environment switching', () => {
             expect(backend.sentTo('env-win')).toEqual([WIN_AUTH])
         })
 
+        it('drops a switch awaiting approval once Settings in another tab removed its destination, keeping this workspace and its draft', async () => {
+            let links = [WIN_LINK]
+            const { user, shell } = await renderWithDraft({ [LINKS]: () => json({ links }) })
+            await requestSwitch(user)
+            await screen.findByRole('alertdialog', { name: 'Discard unsaved settings?' })
+
+            // The link is removed elsewhere; this tab's switcher sees it once focused again.
+            links = []
+            act(() => { window.dispatchEvent(new Event('focus')) })
+            await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+            expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready' })
+            expect(screen.queryByTestId('environment-tab-env-win')).not.toBeInTheDocument()
+            expect(workspaceMounted()).toBe(shell)
+            expect(shell).toBeVisible()
+            expect(draftField()).toHaveValue('http://draft.example')
+        })
+
         it('keeps this machine\'s workspace and its draft when the check fails', async () => {
             const { user, shell } = await renderWithDraft({ [WIN_AUTH]: () => json({ detail: 'connection refused' }, 503) })
             await requestSwitch(user)
@@ -913,7 +958,7 @@ describe('Same-window multi-environment switching', () => {
         await user.click(within(confirmation).getByRole('button', { name: answer }))
 
         if (answer === 'Keep editing') {
-            expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'unreachable' })
+            expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'refused' })
             expect(screen.getByTestId('remote-environment-gate')).toHaveTextContent('refused this Spark’s credential')
             expect(remoteShell).not.toBeVisible()
             expect(screen.getByLabelText('Command-line server URL')).toHaveValue('http://draft.example')

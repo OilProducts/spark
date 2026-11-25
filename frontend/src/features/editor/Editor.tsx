@@ -14,7 +14,7 @@ import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeP
 import '@xyflow/react/dist/style.css';
 
 import { captureShownWorkspace, useStore, type EditorMode, type FlowDefinitionMetadata } from '@/store';
-import { getActiveEnvironmentId } from '@/lib/activeEnvironment';
+import { getActiveEnvironmentId, type NavigationRequest } from '@/lib/activeEnvironment';
 import { LaunchPanel } from '@/features/launch';
 import { defaultProjectChoice, launchWorkingDirectory } from '@/features/projects/model/projectChoices';
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState';
@@ -502,7 +502,8 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         const waitForSaves = (event: Event) => {
             if (event.defaultPrevented || !sendPendingFlowSaves(environmentId)) return;
             event.preventDefault();
-            const { proceed, cancel, approved = [] } = (event as CustomEvent<{ proceed: () => void; cancel?: () => void; approved?: object[] }>).detail;
+            const leave = (event as CustomEvent<NavigationRequest>).detail;
+            const { proceed, cancel } = leave;
             const shown = captureShownWorkspace();
             void waitForFlowSaves().then(async () => {
                 // A switch away ended the navigation: the save's result stays with its own workspace,
@@ -511,7 +512,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 const { saveState, saveErrorMessage, saveErrorProblems } = useStore.getState();
                 if (saveState !== 'error' && saveState !== 'conflict') {
                     // Saved: anything else that guards leaving (file drafts) still gets its say.
-                    requestNavigation(proceed, cancel, approved);
+                    requestNavigation(proceed, cancel, leave);
                 } else if (await confirm({
                     title: 'Discard unsaved flow edits?',
                     description: `${saveErrorMessage ? `They weren’t saved: ${(saveErrorProblems?.map((problem) => problem.message) ?? flowProblems(saveErrorMessage)).join(' ')} ` : ''}Your unsaved flow edits will be lost.`,
@@ -519,9 +520,10 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                     cancelLabel: 'Keep editing',
                     confirmVariant: 'destructive',
                     leaving: true,
+                    live: leave.live,
                 })) {
                     // Other editors the leave drops, such as Settings drafts, still ask; the flow's own guard passes.
-                    requestNavigation(proceed, cancel, [...approved, flowEditsGuard]);
+                    requestNavigation(proceed, cancel, { ...leave, approved: [...(leave.approved ?? []), flowEditsGuard] });
                 } else {
                     cancel?.();
                 }

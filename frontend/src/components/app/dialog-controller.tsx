@@ -44,6 +44,8 @@ type ConfirmDialogOptions = {
   confirmVariant?: ButtonVariant
   /** Asks whether to leave the current view, such as for a switch to another environment awaiting approval. */
   leaving?: boolean
+  /** Whether what it asks about still goes ahead: once not, it closes unanswered, or is never shown. */
+  live?: () => boolean
 }
 
 type AlertDialogOptions = {
@@ -174,6 +176,12 @@ export function DialogProvider({ children }: PropsWithChildren) {
       return stale.length ? open.filter((dialog) => dialog.environmentId === activeEnvironmentId) : open
     })
   }, [activeEnvironmentId])
+  // Such as a switch's confirmation once its destination was removed in another tab.
+  useLayoutEffect(() => subscribeActiveEnvironment(() => setDialogs((open) => {
+    const outdated = open.filter((dialog) => dialog.kind === 'confirm' && dialog.live?.() === false)
+    outdated.forEach(resolveClosed)
+    return outdated.length ? open.filter((dialog) => !outdated.includes(dialog)) : open
+  })), [])
 
   const controller = useMemo<DialogController>(() => {
     const push = (dialog: DialogRequest) => setDialogs((open) => [...open, dialog])
@@ -190,6 +198,7 @@ export function DialogProvider({ children }: PropsWithChildren) {
         })
       }),
       confirm: (options) => new Promise<boolean>((resolve) => {
+        if (options.live?.() === false) return resolve(false)
         push({
           kind: 'confirm',
           id: ++dialogRequests,
