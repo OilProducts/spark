@@ -10,13 +10,14 @@ const descriptor = (environmentId: string) => ({
 
 /**
  * Makes `environmentId` (`null`: this machine) the active environment, answering the version checks
- * the switch makes itself; every other request goes to the test's own `fetch`.
+ * the switch makes itself once `checked` settles; every other request goes to the test's own `fetch`.
  */
-export async function switchEnvironment(environmentId: string | null) {
+export async function switchEnvironment(environmentId: string | null, checked?: Promise<unknown>) {
     const testFetch = globalThis.fetch
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
         if (!url.endsWith('/environment')) return testFetch(input, init)
+        await checked
         const id = url === '/environment' ? 'local' : environmentId ?? 'local'
         return new Response(JSON.stringify(descriptor(id)), { headers: { 'Content-Type': 'application/json' } })
     }) as typeof fetch

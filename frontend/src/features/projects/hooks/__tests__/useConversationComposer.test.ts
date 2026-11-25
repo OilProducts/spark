@@ -271,6 +271,49 @@ describe('onChatComposerSubmit', () => {
             expect(attachmentsOf('conversation-1')).toEqual([entry])
         })
 
+        describe('refused while another environment\'s connection is checked, its workspace closed', () => {
+            // As the workspace sets it: in its environment's store, which a switch that goes through wipes.
+            const setPanelError = (message: string | null) => useStore.getState().updateHomeProjectSession(projectPath, { panelError: message })
+            const panelError = () => useStore.getState().homeProjectSessionsByPath[projectPath]?.panelError
+            const refusedWhileChecking = async () => {
+                loadProjects('conversation-1')
+                useStore.getState().updateHomeConversationSession('conversation-1', { attachments: [entry] })
+                const sent = deferred<ConversationAcceptance>()
+                vi.mocked(sendConversationTurnValidated).mockReturnValue(sent.promise)
+                composer({ chatDraft: '', attachments: [entry], setPanelError }).onChatComposerSubmit()
+                await vi.waitFor(() => expect(sendConversationTurnValidated).toHaveBeenCalled())
+                const checked = deferred<void>()
+                const switching = switchEnvironment('env-b', checked.promise)
+                sent.reject(new Error('offline'))
+                await new Promise((resolve) => setTimeout(resolve, 0))
+                return { checked, switching }
+            }
+
+            it('puts an attachment-only send back, attachment and error, on a return once the switch went through', async () => {
+                const { checked, switching } = await refusedWhileChecking()
+                checked.resolve()
+                await switching
+                resetStoreForEnvironmentSwitch(false)
+
+                await show(null)
+                loadProjects('conversation-1')
+                expect(attachmentsOf('conversation-1')).toEqual([entry])
+                expect(panelError()).toBe('Unable to send the project chat turn.')
+            })
+
+            it('puts it back once its workspace shows again after the connection failed', async () => {
+                const { checked, switching } = await refusedWhileChecking()
+                checked.reject(new Error('unreachable'))
+                await expect(switching).rejects.toThrow()
+                await switchEnvironment(null)
+
+                // Its projects load again as its workspace opens.
+                loadProjects('conversation-1')
+                expect(attachmentsOf('conversation-1')).toEqual([entry])
+                expect(panelError()).toBe('Unable to send the project chat turn.')
+            })
+        })
+
         it('keeps a send refused while another chat sends for its own chat, leaving that chat open with its draft and pending send', async () => {
             loadProjects('conversation-1')
             useStore.getState().updateHomeConversationSession('conversation-1', { attachments: [entry] })

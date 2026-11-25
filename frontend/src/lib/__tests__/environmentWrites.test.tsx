@@ -910,7 +910,7 @@ it.each([[0, 4, 5], [1, 5, 4], [0, 5, 6]])('keeps a restored chat open and sendi
     next.unmount()
 })
 
-it('makes a project the last used when its save answers after a switch away and back, keeping its open chat and any newer use or pin', async () => {
+it('makes a project the last used when its save answers after a switch away and back, keeping its open chat, any newer use or pin, and the execution profile loaded since', async () => {
     const project = (path: string, usedAt: string, more: object = {}) => ({ project_id: path, project_path: path, display_name: path, is_favorite: false, active_conversation_id: null, last_accessed_at: usedAt, ...more })
     const saves: ReturnType<typeof deferred<unknown>>[] = []
     const listed = deferred<unknown>()
@@ -948,9 +948,10 @@ it('makes a project the last used when its save answers after a switch away and 
     await waitFor(() => expect(sent).toContain('GET /workspace/api/projects'))
     await answered(0, project('/tmp/other', '2026-10-15T00:00:00Z'))
 
-    // The list, from before the saves, loads in full: the other project was used last, this one pinned, conversation-2 open.
+    // The list, from before the saves, loads in full: the other project was used last, this one pinned, conversation-2
+    // open, and its runs moved to new-profile since the saves answered with old-profile.
     await act(async () => listed.resolve([
-        project(PROJECT, '2026-09-01T00:00:00Z', { is_favorite: true, active_conversation_id: 'conversation-2' }),
+        project(PROJECT, '2026-09-01T00:00:00Z', { is_favorite: true, active_conversation_id: 'conversation-2', execution_profile_id: 'new-profile' }),
         project('/tmp/other', '2026-10-01T00:00:00Z'),
     ]))
     await waitFor(() => expect(Object.keys(registry())).toEqual([PROJECT, '/tmp/other']))
@@ -959,15 +960,16 @@ it('makes a project the last used when its save answers after a switch away and 
     expect(shown.result.current.sidebarProps.activeConversationId).toBe('conversation-2')
 
     // This project's later save answers: it becomes the last used, its open chat still selected.
-    await answered(2, project(PROJECT, '2026-11-02T00:00:00Z', { active_conversation_id: 'conversation-1' }))
+    await answered(2, project(PROJECT, '2026-11-02T00:00:00Z', { active_conversation_id: 'conversation-1', execution_profile_id: 'old-profile' }))
     expect(defaultProjectChoice(registry())).toBe(PROJECT)
+    expect(registry()[PROJECT]).toMatchObject({ lastAccessedAt: '2026-11-02T00:00:00Z', executionProfileId: 'new-profile' })
     expect(useStore.getState().activeProjectPath).toBe(PROJECT)
     expect(shown.result.current.sidebarProps.activeConversationId).toBe('conversation-2')
 
     // Its earlier save answers last, with an older use.
-    await answered(1, project(PROJECT, '2026-11-01T00:00:00Z', { active_conversation_id: 'conversation-1' }))
+    await answered(1, project(PROJECT, '2026-11-01T00:00:00Z', { active_conversation_id: 'conversation-1', execution_profile_id: 'old-profile' }))
     expect(defaultProjectChoice(registry())).toBe(PROJECT)
-    expect(registry()[PROJECT]).toMatchObject({ lastAccessedAt: '2026-11-02T00:00:00Z', isFavorite: true })
+    expect(registry()[PROJECT]).toMatchObject({ lastAccessedAt: '2026-11-02T00:00:00Z', isFavorite: true, executionProfileId: 'new-profile' })
     expect(shown.result.current.sidebarProps.activeConversationId).toBe('conversation-2')
     shown.unmount()
 })

@@ -770,6 +770,24 @@ describe('routing across environments', () => {
         expect(window.history.state?.sparkPlace).toMatchObject({ envId: null, view: 'home' })
     })
 
+    it('keeps a followed link\'s entry of another environment, which has no place of its own, for Back when switching to a third', async () => {
+        render(<><EnvironmentBootstrap /><Workspace /></>)
+        await waitFor(() => expect(window.location.hash).toBe('#/chats'))
+        const link = `${buildRunsHash('foreign-run')}?env=review-a`
+        act(() => {
+            window.location.hash = link
+            window.dispatchEvent(new HashChangeEvent('hashchange'))
+        })
+        await waitFor(() => expect(window.location.hash).toBe(link))
+        expect(window.history.state?.sparkPlace).toBeUndefined()
+        const entries = window.history.length
+
+        await showEnvironment('review-b')
+        expect(window.history.length).toBe(entries + 1)
+        act(() => window.history.back())
+        await waitFor(() => expect(window.location.hash).toBe(link))
+    })
+
     it('leaves a remote environment\'s entry shown, and Forward, when connecting to it fails and this machine\'s workspace shows again', async () => {
         // As the app gates it: the workspace unmounts while another environment connects, or fails to.
         const Gated = () => {

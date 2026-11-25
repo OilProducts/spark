@@ -665,11 +665,14 @@ export function HistoryRoutingController() {
         let current = placeOf(useStore.getState())
         let chosen = chosenHere()
         let projects = useStore.getState().projectRegistry
-        // Switched here from another environment's entry: it stays for Back and Forward to reach.
+        // Switched here from another environment's entry, or its link followed, which has no entry of its own: it
+        // stays for Back and Forward to reach.
         const switched = routedEnvironment !== environmentId
         routedEnvironment = environmentId
-        if (!entry || !foreign) window.history.replaceState({ sparkPlace: current }, '', placeHash(current))
-        else if (switched) window.history.pushState({ sparkPlace: current }, '', placeHash(current))
+        const shown = parsePlaceHash(hash)
+        if (switched && ((entry && isForeignPlace(entry)) || (shown && isForeignPlace(shown)))) {
+            window.history.pushState({ sparkPlace: current }, '', placeHash(current))
+        } else if (!entry || !foreign) window.history.replaceState({ sparkPlace: current }, '', placeHash(current))
         // A trigger, mission or role link without a project names its item in one once the projects load,
         // unless you have moved on by then.
         const opened = placeHash(current)

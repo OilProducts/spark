@@ -8,7 +8,7 @@ import {
     selectModelSettings,
     type ModelDiscoveryState,
 } from '@/components/model-chooser/modelSelection'
-import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
+import { getActiveEnvironmentId, getActiveEnvironmentState } from '@/lib/activeEnvironment'
 import type { ModelSettings } from '@/lib/api/settingsApi'
 import type { LlmProfileMetadata } from '@/lib/llmSuggestions'
 import {
@@ -60,13 +60,17 @@ useStore.subscribe((state, previous) => {
 /**
  * Applies what a refused turn puts back once its environment is shown and `ready`, such as with its project's
  * chats loaded. A switch away first holds it again for that environment's next showing, which starts its chats anew.
+ * Its workspace closes while a connection is checked, its environment still active: it waits then too, so a
+ * switch that goes through holds it for that next showing, rather than wiping it with the chats it left.
  */
 function whenShownAndReady(environmentId: string | null, ready: () => boolean, apply: () => void) {
     whenEnvironmentShown(environmentId, () => {
         const session = homeSessionStart()
         const attempt = () => {
             const restarted = homeSessionStart() !== session
-            if (!restarted && !ready()) return
+            const { selectedEnvironmentId, status } = getActiveEnvironmentState()
+            const closed = selectedEnvironmentId !== environmentId || status !== 'ready'
+            if (!restarted && (closed || !ready())) return
             stop()
             if (restarted) whenShownAndReady(environmentId, ready, apply)
             else apply()

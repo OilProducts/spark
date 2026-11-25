@@ -8,6 +8,7 @@ import {
 } from '@/lib/attractorClient'
 import { normalizeProjectPath } from '@/lib/projectPaths'
 import { fetchProjectMetadataValidated } from '@/lib/workspaceClient'
+import { homeSessionStart } from '@/state/homeSessionSlice'
 import {
     buildPipelineContinuePayload,
     buildPipelineStartPayload,
@@ -28,6 +29,13 @@ export interface GitPolicyGateResult {
 // A run record's native path (C:\repo) finds the registry entry keyed by its normalized form (C:/repo).
 const isRegisteredProject = (projectPath: string) => Boolean(useStore.getState().projectRegistry[normalizeProjectPath(projectPath)])
 
+// The workspace a launch began in: its environment, until a switch away and back starts that one anew.
+const shownWorkspace = () => {
+    const environmentId = getActiveEnvironmentId()
+    const session = homeSessionStart()
+    return () => getActiveEnvironmentId() === environmentId && homeSessionStart() === session
+}
+
 const logUnexpectedLaunchError = (error: unknown) => {
     if (error instanceof ApiHttpError) {
         return
@@ -47,7 +55,7 @@ export function useStartPipeline() {
     const { confirm } = useDialogController()
     const setRunsSelectedRunId = useStore((state) => state.setRunsSelectedRunId)
 
-    const confirmGitPolicyGate = async (projectPath: string, environmentId: string | null): Promise<GitPolicyGateResult> => {
+    const confirmGitPolicyGate = async (projectPath: string, shown: () => boolean): Promise<GitPolicyGateResult> => {
         if (!projectPath) {
             return { allowed: true, warning: null }
         }
@@ -60,8 +68,8 @@ export function useStartPipeline() {
             if (err instanceof ApiHttpError && err.detail) {
                 console.warn(err.detail)
             }
-            // Not asked in another environment's view: the launch it would allow is not there.
-            if (getActiveEnvironmentId() !== environmentId) {
+            // Not asked in another workspace: the launch it would allow is not there.
+            if (!shown()) {
                 return { allowed: false, warning }
             }
             const allowed = await confirm({
@@ -94,8 +102,9 @@ export function useStartPipeline() {
         options: { onGitPolicyWarning?: (warning: string | null) => void } = {},
     ): Promise<StartPipelineResult> => {
         const environmentId = getActiveEnvironmentId()
+        const shown = shownWorkspace()
         const projectWasRegistered = isRegisteredProject(form.projectPath)
-        const gate = await confirmGitPolicyGate(form.projectPath, environmentId)
+        const gate = await confirmGitPolicyGate(form.projectPath, shown)
         options.onGitPolicyWarning?.(gate.warning)
         if (!gate.allowed) {
             return { status: 'cancelled' }
@@ -103,8 +112,8 @@ export function useStartPipeline() {
         const resolvedWorkingDirectory = form.workingDirectory.trim() || form.projectPath
         const payload = buildPipelineStartPayload({ ...form, workingDirectory: resolvedWorkingDirectory })
         const runData = await fetchPipelineStartValidated(payload, environmentId)
-        // Started where the launch began, after a switch away: nothing shown follows it.
-        if (getActiveEnvironmentId() !== environmentId) {
+        // Started where the launch began, after a switch away, even one back since: nothing shown follows it.
+        if (!shown()) {
             return { status: 'cancelled' }
         }
         return { status: 'launched', ...finalizeLaunch(runData, form.projectPath, projectWasRegistered) }
@@ -121,16 +130,17 @@ export function useStartPipeline() {
         options: { onGitPolicyWarning?: (warning: string | null) => void } = {},
     ): Promise<StartPipelineResult> => {
         const environmentId = getActiveEnvironmentId()
+        const shown = shownWorkspace()
         const projectWasRegistered = isRegisteredProject(form.projectPath)
-        const gate = await confirmGitPolicyGate(form.projectPath, environmentId)
+        const gate = await confirmGitPolicyGate(form.projectPath, shown)
         options.onGitPolicyWarning?.(gate.warning)
         if (!gate.allowed) {
             return { status: 'cancelled' }
         }
         const payload = buildPipelineContinuePayload(form, continuation)
         const runData = await fetchPipelineContinueValidated(sourceRunId, payload, environmentId)
-        // Started where the launch began, after a switch away: nothing shown follows it.
-        if (getActiveEnvironmentId() !== environmentId) {
+        // Started where the launch began, after a switch away, even one back since: nothing shown follows it.
+        if (!shown()) {
             return { status: 'cancelled' }
         }
         return { status: 'launched', ...finalizeLaunch(runData, form.projectPath, projectWasRegistered) }

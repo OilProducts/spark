@@ -40,7 +40,7 @@ function whenProjectsListed(apply: () => void) {
  * that lands once a switch away and back has started loading the projects anew, or that answers the app's own
  * choice of a chat, such as a project's latest once its list loads, waits for that list, then updates only a
  * project it lists, leaving whichever chat is open by then, such as a refused chat opened again in its place,
- * and any newer use or pin.
+ * any newer use or pin, and the rest of the project as that list has it, such as its execution profile.
  */
 async function sendProjectState(projectPath: string, patch: PersistProjectStatePatch, upsert: UpsertProjectRegistryEntry) {
   const environmentId = getActiveEnvironmentId()
@@ -52,10 +52,10 @@ async function sendProjectState(projectPath: string, patch: PersistProjectStateP
   whenProjectsListed(() => {
     const stored = useStore.getState().projectRegistry[normalizeProjectPath(project.directoryPath)]
     if (!stored) return
+    // The answer predates the list loaded since: only what this save set comes from it.
     upsert({
-      ...project,
-      activeConversationId: null,
-      lastAccessedAt: usedAt(stored.lastAccessedAt) > usedAt(project.lastAccessedAt) ? stored.lastAccessedAt ?? null : project.lastAccessedAt,
+      ...stored,
+      lastAccessedAt: usedAt(project.lastAccessedAt) > usedAt(stored.lastAccessedAt) ? project.lastAccessedAt : stored.lastAccessedAt,
       isFavorite: patch.is_favorite === undefined ? stored.isFavorite : project.isFavorite,
     })
   })
