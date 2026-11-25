@@ -124,8 +124,11 @@ const listeners = new Set<() => void>()
 let switchSequence = 0
 let refreshSequence = 0
 let resetHandler: ((targetEnvironmentId: string | null) => void) | null = null
-// The link the latest switch chose, as it was then: one linked anew in its place is another destination.
+// The link the latest switch chose, as it was then: one linked anew in its place is another destination. Whether it is
+// still current is `unconfirmed` while a change made in Settings leaves that unknown, until the latest `listing` tells.
 let destination: EnvironmentLink | undefined
+let unconfirmed = false
+let listing: Promise<void> = Promise.resolve()
 // The latest re-check of the mounted environment, and whether one is running. Those numbered up to `outdated` find
 // nothing for it: a newer conclusive answer, a passing Retry or a switch came first.
 let reverifySequence = 0
@@ -194,10 +197,14 @@ export function notifyEnvironmentLinksChanged(update?: (links: EnvironmentLink[]
         // A change Settings confirmed may be older than the row a switch awaits, as an answer that arrives late is: that
         // row stays until the reload shows which is current, unless the change removed that very row.
         const pending = state.selectedEnvironmentId
-        const target = destination
-        if (pending !== null && pending !== state.activeEnvironmentId && target
-            && !(previous.some((row) => sameLink(row, target)) && !links.some((row) => row.environment_id === pending))) {
-            links = [...links.filter((row) => row.environment_id !== pending), ...previous.filter((row) => row.environment_id === pending)]
+        if (pending !== null && pending !== state.activeEnvironmentId && destination) {
+            const before = previous.find((row) => row.environment_id === pending)
+            const after = links.find((row) => row.environment_id === pending)
+            const unchanged = before && after ? sameLink(before, after) : before === after
+            if (!unchanged && !(before && !after && sameLink(before, destination))) {
+                unconfirmed = true
+                links = [...links.filter((row) => row.environment_id !== pending), ...(before ? [before] : [])]
+            }
         }
         updateState({ links })
         dropRemovedDestination(previous, false)
@@ -316,7 +323,7 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
         return { status: 'refused', remoteDescriptor: null, error: `${name} answered as environment ${other}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.` }
     }
     // This Spark's proxy answers both with a 404 once it no longer links the environment.
-    if (status === 404 && found.status === 'rejected' && found.reason instanceof ApiHttpError && found.reason.status === 404) return unlinked(name)
+    const missing = status === 404 && found.status === 'rejected' && found.reason instanceof ApiHttpError && found.reason.status === 404
     const remote = found.status === 'fulfilled' ? found.value : null
     const incompatible = (peer: EnvironmentDescriptor, local: EnvironmentDescriptor | null): Check =>
         ({ status: 'incompatible', error: describeCompatibilityMismatch(name, local, peer), remoteDescriptor: peer })
@@ -328,6 +335,9 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     const local = localResult.status === 'fulfilled' ? localResult.value : null
     if (local) updateState({ localDescriptor: local })
     if (local && !speaksThisBundle(local)) return stalePage(local, remote)
+    // A mismatch this Spark reported before wins over the link found gone, as it does in the listing.
+    const known = state.localDescriptor
+    if (missing) return known && !speaksThisBundle(known) ? stalePage(known) : unlinked(name)
     if (localResult.status === 'rejected') {
         throw new Error(`Could not verify this Spark server’s version: ${errorText(localResult.reason)}`)
     }
@@ -337,7 +347,21 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
 }
 
 /** Silently loads this machine's descriptor and linked environments for the top-level switcher. */
-export async function refreshLocalEnvironments(): Promise<void> {
+export function refreshLocalEnvironments(): Promise<void> {
+    listing = loadLocalEnvironments()
+    return listing
+}
+
+/** Resolves once the latest listing answered: one a later reload outdated tells nothing. */
+async function latestListing() {
+    let seen
+    do {
+        seen = listing
+        await seen
+    } while (seen !== listing)
+}
+
+async function loadLocalEnvironments() {
     const seq = ++refreshSequence
     const [descriptorResult, linksResult] = await Promise.allSettled([
         fetchEnvironmentDescriptor(null),
@@ -356,7 +380,10 @@ export async function refreshLocalEnvironments(): Promise<void> {
     if (Object.keys(patch).length > 0) {
         updateState(patch)
     }
-    if (patch.links) dropRemovedDestination(previous)
+    if (patch.links) {
+        unconfirmed = false
+        dropRemovedDestination(previous)
+    }
 }
 
 /** Shows the mounted environment again as its own last check left it, without remounting it. */
@@ -372,8 +399,7 @@ function showActiveEnvironment() {
 function commitEnvironment(seq: number, environmentId: string | null, check: Check, onActivated?: () => void): boolean {
     let committed: boolean | null = null
     const live = () => committed === null && seq === switchSequence
-    requestNavigation(() => {
-        if (committed !== null || seq !== switchSequence) return
+    const mount = () => {
         committed = true
         // Checks of the environment mounted until now, even this same one, find nothing for this mount.
         outdated = reverifySequence
@@ -384,10 +410,24 @@ function commitEnvironment(seq: number, environmentId: string | null, check: Che
         resetHandler?.(environmentId)
         emit()
         onActivated?.()
-    }, () => {
-        if (committed !== null || seq !== switchSequence) return
+    }
+    const cancel = () => {
         committed = false
         showActiveEnvironment()
+    }
+    requestNavigation(() => {
+        if (committed !== null || seq !== switchSequence) return
+        if (!unconfirmed) return mount()
+        // Approved while a change made in Settings leaves unknown whether the destination's row is current: it mounts
+        // once the latest listing shows that row, never under another, nor when no listing loads.
+        void latestListing().then(() => {
+            if (committed !== null || seq !== switchSequence) return
+            if (unconfirmed) cancel()
+            else mount()
+        })
+    }, () => {
+        if (committed !== null || seq !== switchSequence) return
+        cancel()
     }, { live })
     if (committed === null && seq === switchSequence) updateState({ selectedEnvironmentId: environmentId, ...check })
     return committed === true
@@ -418,7 +458,8 @@ export async function selectEnvironment(
     const link = options?.link
     const listed = state.links.find((entry) => entry.environment_id === environmentId)
     if (link && !listed) updateState({ links: [...state.links, link] })
-    const relisted = link && listed && !sameLink(link, listed) ? refreshLocalEnvironments() : undefined
+    unconfirmed = Boolean(link && listed && !sameLink(link, listed))
+    if (unconfirmed) void refreshLocalEnvironments()
     destination = link ?? listed
     const active = state.activeEnvironmentId
     if (environmentId === active && (state.selectedEnvironmentId !== active || state.status === 'ready')) {
@@ -432,7 +473,7 @@ export async function selectEnvironment(
     if (environmentId !== active) updateState({ selectedEnvironmentId: environmentId, status: 'checking', error: null })
     const since = reverifySequence
     const check = await checkRemoteEnvironment(environmentId).catch((error: unknown) => unreachable(errorText(error)))
-    await relisted
+    if (unconfirmed) await latestListing()
     if (seq !== switchSequence) return false
     // An automatic check sent after this Retry that concluded first, such as one finding the link gone, decides.
     if (environmentId === active && outdated > since) return false
@@ -448,13 +489,6 @@ export async function selectEnvironment(
         else updateState(check)
         if (check.status === 'ready') options?.onActivated?.()
         return check.status === 'ready'
-    }
-    // Never mounted under another row the switcher shows. ponytail: a reload a later one outdated may leave the row
-    // unconfirmed, which drops the switch; wait for that later reload if a switch dropped so matters.
-    const shown = state.links.find((entry) => entry.environment_id === environmentId)
-    if (shown && destination && !sameLink(shown, destination)) {
-        showActiveEnvironment()
-        return false
     }
     return commitEnvironment(seq, environmentId, check, options?.onActivated)
 }
@@ -514,6 +548,8 @@ export function resetActiveEnvironmentForTests() {
     refreshSequence += 1
     outdated = reverifySequence
     reverifying = false
+    unconfirmed = false
+    listing = Promise.resolve()
     state = { ...INITIAL_STATE }
     emit()
 }
