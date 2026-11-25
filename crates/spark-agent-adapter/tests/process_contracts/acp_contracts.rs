@@ -119,7 +119,8 @@ fn other(events: &[TurnStreamEvent], kind: &str) -> Vec<TurnStreamEvent> {
 /// Elsewhere than Windows a launch searches PATH as the system does: an entry
 /// relative to the work area, such as `node_modules/.bin`, finds the project's
 /// program, and a file it cannot run earlier on PATH is passed over. A program
-/// on no PATH entry is not installed.
+/// on no PATH entry is not installed; one found whose interpreter is missing
+/// failed to launch.
 #[cfg(unix)]
 #[test]
 fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
@@ -132,6 +133,9 @@ fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
     }
     std::os::unix::fs::symlink(FAKE, bin.join("agent")).unwrap();
     std::fs::write(blocker.join("agent"), "not a program").unwrap();
+    let broken = bin.join("broken");
+    std::fs::write(&broken, "#!/missing/interpreter\n").unwrap();
+    std::fs::set_permissions(&broken, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let discover = |executable: &str| {
         let harness = serde_json::from_value(json!({
             "name": "Project agent",
@@ -151,6 +155,18 @@ fn acp_unix_launch_searches_path_from_the_work_area_past_files_it_cannot_run() {
     assert_eq!(found.setup_status, "ready", "{:?}", found.error);
     let missing = discover("missing-agent");
     assert_eq!(missing.setup_status, "not_installed", "{:?}", missing.error);
+    for executable in ["broken", broken.to_str().unwrap()] {
+        let failed = discover(executable);
+        assert_eq!(failed.setup_status, "unreachable", "{executable}");
+        assert!(
+            failed
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("launch failed")),
+            "{executable}: {:?}",
+            failed.error
+        );
+    }
 }
 
 #[test]

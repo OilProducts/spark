@@ -2373,13 +2373,7 @@ pub fn utility_cli_command(
         }
         command.arg("-");
     } else {
-        command = std::process::Command::new(
-            native
-                .as_ref()
-                .and_then(|config| config.claude_binary.as_ref())
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(crate::claude_code::claude_code_executable),
-        );
+        command = std::process::Command::new(crate::claude_code::claude_program(native.as_ref()));
         command
             .args([
                 "-p",

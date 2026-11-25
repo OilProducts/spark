@@ -789,13 +789,13 @@ pub fn program_found(program: &str, path: Option<&str>) -> bool {
         .is_some()
 }
 
-/// `harness`'s program with the environment it inherits under `inheritance`,
-/// its own `env`, then `bindings`, applied in that order. The program is named
-/// as the child's own `PATH` finds it: the last binding of `PATH`, in any case
-/// on Windows, as the child receives it.
+/// `harness`'s program in `cwd` (else Spark's own directory) with the
+/// environment it inherits under `inheritance`, its own `env`, then
+/// `bindings`, applied in that order.
 fn harness_command(
     harness: &AcpHarness,
     inheritance: EnvironmentInheritancePolicy,
+    cwd: Option<&Path>,
     bindings: impl IntoIterator<Item = (String, OsString)>,
 ) -> Command {
     let env = crate::local_environment::inherited_environment(inheritance)
@@ -804,17 +804,24 @@ fn harness_command(
         .map(|(key, value)| (key, OsString::from(value)))
         .chain(bindings)
         .collect::<Vec<_>>();
-    let path = env
-        .iter()
-        .rev()
-        .find(|(key, _)| crate::local_environment::is_path_key(key))
-        .map(|(_, value)| value.as_os_str());
-    let mut command = Command::new(crate::local_environment::launch_program(
-        PathBuf::from(&harness.executable),
-        path,
-    ));
-    command.env_clear().envs(env);
-    command
+    let command = |program: &std::ffi::OsStr| {
+        let mut command = Command::new(program);
+        command.env_clear().envs(env.iter().cloned());
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        command
+    };
+    let named = command(harness.executable.as_ref());
+    // Launching a bare name on Windows tries only `.exe`, so the launch names
+    // the file its child finds, such as a project's npm `.cmd` shim.
+    match cfg!(windows)
+        .then(|| crate::local_environment::child_program(&named))
+        .flatten()
+    {
+        Some(program) => command(program.as_os_str()),
+        None => named,
+    }
 }
 
 /// The configuration generation a launch of `harness` records: its
@@ -992,12 +999,14 @@ fn probe(
         .chain(&harness.args)
         .cloned()
         .collect();
+    // Only a program its child cannot find is missing; one that exists but
+    // cannot start, such as a script whose interpreter is gone, failed.
+    let missing = crate::local_environment::child_program(&command).is_none();
     let connection = stdio_transport::launch(command, LIMITS, move |endpoints| {
         probe_protocol(endpoints, cwd, program, method, done)
     })
     .map_err(|error| match error.kind() {
-        // Found or not as the launch's own environment finds it.
-        std::io::ErrorKind::NotFound => ProbeFailure {
+        std::io::ErrorKind::NotFound if missing => ProbeFailure {
             missing: true,
             message: format!("executable not found: {}", harness.executable),
             ..Default::default()
@@ -1804,15 +1813,13 @@ fn launch_command(
     let mut command = harness_command(
         harness,
         inheritance,
+        Some(cwd),
         channel_env
             .into_iter()
             .map(|(key, value)| (key, OsString::from(value)))
             .chain(crate::agent::agent_turn_env(metadata)),
     );
-    command
-        .args(&harness.args)
-        .args(channel_args)
-        .current_dir(cwd);
+    command.args(&harness.args).args(channel_args);
     Ok((command, instruction_file))
 }
 
@@ -3751,7 +3758,7 @@ pub fn read_antigravity_usage(
     harness: &AcpHarness,
     inheritance: EnvironmentInheritancePolicy,
 ) -> Result<Vec<crate::UsageWindow>, String> {
-    let mut command = harness_command(harness, inheritance, []);
+    let mut command = harness_command(harness, inheritance, None, []);
     crate::local_environment::configure_process_group(&mut command);
     command
         .args(["-p", "/usage", "--output-format", "json"])
@@ -4109,7 +4116,8 @@ done
     }
 
     /// The program is the one the child's own `PATH` finds: `Path` is bound
-    /// after `PATH` in a registration, and a channel's binding comes last.
+    /// after `PATH` in a registration, a channel's binding comes last, and a
+    /// relative entry resolves from the work area.
     #[cfg(windows)]
     #[test]
     fn a_windows_launch_names_the_program_on_the_path_its_child_receives() {
@@ -4130,6 +4138,7 @@ done
             let command = harness_command(
                 &harness,
                 EnvironmentInheritancePolicy::InheritNone,
+                None,
                 bindings,
             );
             let path = command
@@ -4151,6 +4160,28 @@ done
         named(
             launch(vec![("PATH".into(), dirs[2].clone().into())]),
             dirs[2].as_path(),
+        );
+
+        let project = temp.path().join("project");
+        let bin = project.join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("agent.cmd"), "").unwrap();
+        let local = AcpHarness {
+            env: BTreeMap::from([("PATH".to_string(), r"node_modules\.bin".to_string())]),
+            ..harness.clone()
+        };
+        let command = harness_command(
+            &local,
+            EnvironmentInheritancePolicy::InheritNone,
+            Some(&project),
+            [],
+        );
+        assert!(
+            command
+                .get_program()
+                .eq_ignore_ascii_case(bin.join("agent.cmd")),
+            "{:?}",
+            command.get_program()
         );
     }
 }

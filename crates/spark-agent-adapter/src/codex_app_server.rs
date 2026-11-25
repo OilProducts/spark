@@ -3057,15 +3057,20 @@ pub(crate) fn build_codex_runtime_environment_with_settings(
         ))
     })?;
 
-    for (key, path) in [
-        ("HOME", runtime_root.clone()),
-        ("USERPROFILE", runtime_root),
-        ("CODEX_HOME", codex_home),
-        ("XDG_CONFIG_HOME", xdg_config_home),
-        ("XDG_DATA_HOME", xdg_data_home),
-    ] {
-        env_map.insert(key.to_string(), path.into_os_string());
-    }
+    // On Windows these replace an inherited spelling such as `UserProfile`,
+    // which would otherwise reach the child after them and win.
+    crate::local_environment::merge_env(
+        &mut env_map,
+        [
+            ("HOME", runtime_root.clone()),
+            ("USERPROFILE", runtime_root),
+            ("CODEX_HOME", codex_home),
+            ("XDG_CONFIG_HOME", xdg_config_home),
+            ("XDG_DATA_HOME", xdg_data_home),
+        ]
+        .map(|(key, path)| (key.to_string(), path.into_os_string())),
+        cfg!(windows),
+    );
     Ok(env_map)
 }
 
@@ -3323,7 +3328,6 @@ pub(crate) fn codex_program(
             .and_then(|config| config.codex_binary.as_ref())
             .map(PathBuf::from)
             .unwrap_or_else(codex_executable),
-        None,
     )
 }
 

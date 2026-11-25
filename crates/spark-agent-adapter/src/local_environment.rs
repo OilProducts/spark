@@ -110,7 +110,7 @@ impl LocalExecutionEnvironment {
 
     fn build_environment(&self, env_vars: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let mut environment = inherited_environment(self.environment_inheritance_policy);
-        merge_env(&mut environment, env_vars, cfg!(windows));
+        merge_env(&mut environment, env_vars.clone(), cfg!(windows));
         environment
     }
 
@@ -703,16 +703,16 @@ fn inherit(
 /// Sets `vars` over `environment`. With `ignore_case`, as Windows treats
 /// names, a caller's `PATH` replaces an inherited `Path` instead of both
 /// reaching the child, where the inherited one could win.
-fn merge_env(
-    environment: &mut BTreeMap<String, String>,
-    vars: &BTreeMap<String, String>,
+pub(crate) fn merge_env<V>(
+    environment: &mut BTreeMap<String, V>,
+    vars: impl IntoIterator<Item = (String, V)>,
     ignore_case: bool,
 ) {
     for (key, value) in vars {
         if ignore_case {
-            environment.retain(|existing, _| !existing.eq_ignore_ascii_case(key));
+            environment.retain(|existing, _| !existing.eq_ignore_ascii_case(&key));
         }
-        environment.insert(key.clone(), value.clone());
+        environment.insert(key, value);
     }
 }
 
@@ -955,23 +955,49 @@ pub fn find_executable_on_path(
     let path_var = path_override
         .map(std::ffi::OsStr::to_os_string)
         .or_else(|| env::var_os("PATH"));
+    find_executable_in_directories(name, path_var.iter().flat_map(env::split_paths))
+}
+
+/// [`find_executable_on_path`] over `directories` in order, each taken whole.
+pub fn find_executable_in_directories(
+    name: &str,
+    directories: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
     let pathext = cfg!(windows).then(|| {
         env::var_os("PATHEXT").unwrap_or_else(|| std::ffi::OsString::from(".EXE;.BAT;.CMD"))
     });
-    find_executable_in(name, path_var.as_deref(), pathext.as_deref())
+    find_executable_in(name, directories, pathext.as_deref())
 }
 
-/// `program` as a launch with `path` (else Spark's own `PATH`) should name it.
-/// On Windows, where launching a bare name tries only `.exe`, the match
-/// [`find_executable_on_path`] finds, such as an npm `.cmd` shim. Elsewhere,
-/// and when nothing matches, `program` as given: the system's own search
-/// resolves relative `PATH` entries from the child's directory and skips files
-/// it cannot run, and a failure names `program`.
-pub fn launch_program(program: PathBuf, path: Option<&std::ffi::OsStr>) -> PathBuf {
+/// The file `command`'s program names as its child finds it: an explicit path
+/// as given, else the first match on the `PATH` the child receives (else
+/// Spark's own), whose relative entries resolve from the child's directory.
+pub fn child_program(command: &Command) -> Option<PathBuf> {
+    let path = command
+        .get_envs()
+        .filter(|(key, _)| key.to_str().is_some_and(is_path_key))
+        .last()
+        .map(|(_, value)| value.unwrap_or_default().to_os_string())
+        .or_else(|| env::var_os("PATH"))
+        .unwrap_or_default();
+    let directory = command.get_current_dir().unwrap_or(Path::new(""));
+    find_executable_in_directories(
+        command.get_program().to_str()?,
+        env::split_paths(&path).map(|entry| directory.join(entry)),
+    )
+}
+
+/// `program` as a launch should name it. On Windows, where launching a bare
+/// name tries only `.exe`, the match [`find_executable_on_path`] finds, such
+/// as an npm `.cmd` shim. Elsewhere, and when nothing matches, `program` as
+/// given: the system's own search resolves relative `PATH` entries from the
+/// child's directory and skips files it cannot run, and a failure names
+/// `program`.
+pub fn launch_program(program: PathBuf) -> PathBuf {
     if cfg!(windows) {
         if let Some(found) = program
             .to_str()
-            .and_then(|name| find_executable_on_path(name, path))
+            .and_then(|name| find_executable_on_path(name, None))
         {
             return found;
         }
@@ -979,10 +1005,11 @@ pub fn launch_program(program: PathBuf, path: Option<&std::ffi::OsStr>) -> PathB
     program
 }
 
-/// [`find_executable_on_path`] with `pathext` given, `None` outside Windows.
+/// [`find_executable_in_directories`] with `pathext` given, `None` outside
+/// Windows.
 fn find_executable_in(
     name: &str,
-    path_var: Option<&std::ffi::OsStr>,
+    directories: impl IntoIterator<Item = PathBuf>,
     pathext: Option<&std::ffi::OsStr>,
 ) -> Option<PathBuf> {
     let candidate = Path::new(name);
@@ -1009,7 +1036,7 @@ fn find_executable_in(
         .map(|extension| format!("{name}{extension}"))
         .chain([name.to_string()])
         .collect::<Vec<_>>();
-    env::split_paths(path_var?).find_map(|directory| {
+    directories.into_iter().find_map(|directory| {
         names
             .iter()
             .map(|name| directory.join(name))
@@ -1210,7 +1237,7 @@ mod tests {
         let path = env::join_paths([temp.path(), &first, &second]).unwrap();
         // Lowercase, so a case-insensitive file system returns the files as named.
         let windows = Some(std::ffi::OsStr::new(".com;.exe;.bat;.cmd"));
-        let find = |name: &str, pathext| find_executable_in(name, Some(&path), pathext);
+        let find = |name: &str, pathext| find_executable_in(name, env::split_paths(&path), pathext);
 
         // Windows runs the shim beside the script; elsewhere the script runs.
         assert_eq!(find("rg", windows), Some(first.join("rg.cmd")));
@@ -1238,7 +1265,7 @@ mod tests {
         let caller = BTreeMap::from([("PATH".to_string(), "caller".to_string())]);
 
         let mut windows = inherited();
-        merge_env(&mut windows, &caller, true);
+        merge_env(&mut windows, caller.clone(), true);
         assert_eq!(
             windows,
             BTreeMap::from([
@@ -1248,7 +1275,7 @@ mod tests {
         );
 
         let mut unix = inherited();
-        merge_env(&mut unix, &caller, false);
+        merge_env(&mut unix, caller, false);
         assert_eq!(unix.get("Path").map(String::as_str), Some("inherited"));
         assert_eq!(unix.get("PATH").map(String::as_str), Some("caller"));
     }

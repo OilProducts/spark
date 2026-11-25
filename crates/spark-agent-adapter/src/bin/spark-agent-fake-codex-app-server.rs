@@ -13,6 +13,11 @@ fn main() {
     if let Some(pid_file) = env::var_os("SPARK_FAKE_CODEX_APP_SERVER_PID_FILE") {
         fs::write(pid_file, std::process::id().to_string()).expect("write pid file");
     }
+    // The profile directory as the app-server reads it, by any spelling on Windows.
+    if let Some(file) = env::var_os("SPARK_FAKE_CODEX_APP_SERVER_PROFILE_FILE") {
+        let profile = env::var_os("USERPROFILE").unwrap_or_default();
+        fs::write(file, profile.to_string_lossy().as_bytes()).expect("write profile file");
+    }
     if mode == "hold-stdout" {
         // A descendant that keeps the app-server's stdout open after it exits.
         std::thread::sleep(std::time::Duration::from_secs(30));

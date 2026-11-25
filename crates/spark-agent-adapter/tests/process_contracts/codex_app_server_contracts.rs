@@ -1811,6 +1811,33 @@ fn runtime_environment_prepends_first_party_tool_bin_to_path() {
     assert_eq!(entries.last(), Some(&PathBuf::from(original_path)));
 }
 
+/// Windows names variables in any case: Codex reads the redirected
+/// `USERPROFILE` even when Spark inherited it spelled `UserProfile`.
+#[test]
+fn runtime_environment_reaches_the_codex_child_over_an_inherited_userprofile_spelling() {
+    let _lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let runtime_root = temp.path().join("codex-runtime");
+    let profile = temp.path().join("profile.txt");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _runtime_guard = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", &runtime_root);
+    let _seed_guard =
+        EnvVarGuard::set("ATTRACTOR_CODEX_SEED_DIR", temp.path().join("missing-seed"));
+    let _profile_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_PROFILE_FILE", &profile);
+    let _userprofile_guard = EnvVarGuard::remove("USERPROFILE");
+    let _inherited_guard = EnvVarGuard::set("UserProfile", temp.path().join("host-profile"));
+
+    // Connecting waits for the app-server, which records the profile first.
+    CodexAppServerClient::connect(temp.path().to_path_buf()).expect("connect");
+
+    assert_eq!(
+        fs::read_to_string(&profile).map(PathBuf::from).ok(),
+        Some(runtime_root)
+    );
+}
+
 #[test]
 fn runtime_environment_never_overwrites_an_existing_runtime_auth_file() {
     let _lock = ENV_LOCK
