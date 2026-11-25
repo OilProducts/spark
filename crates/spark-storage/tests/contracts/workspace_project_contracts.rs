@@ -4,8 +4,8 @@ use std::fs;
 use serde_json::{json, Value};
 use spark_common::project::build_project_id;
 use spark_storage::conversation::{
-    Accepted, Admission, CatchUp, ChangeScope, ConversationCommit, ExecutionOutcome, MessageInput,
-    Settlement, TOOL_OUTPUT_INLINE_LIMIT_BYTES,
+    Accepted, Admission, ConversationCommit, ExecutionOutcome, MessageInput, Settlement,
+    TOOL_OUTPUT_INLINE_LIMIT_BYTES,
 };
 use spark_storage::{
     ConversationRepository, ConversationStore, DeletedProjectRecord, ProjectRecordUpdate,
@@ -16,7 +16,7 @@ use spark_storage::{
 fn project_registry_registers_lists_and_survives_restart_as_rows() {
     let temp = tempfile::tempdir().expect("tempdir");
     // Canonicalize: registered records hold canonical paths (macOS /var -> /private/var).
-    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let root = spark_common::paths::canonicalize_clean(temp.path()).expect("canonical tempdir");
     let home = root.join("spark-home");
     let project_dir = root.join("Registered Project");
     fs::create_dir_all(&project_dir).expect("project dir");
@@ -144,7 +144,12 @@ fn project_registry_updates_optional_state_and_deletes_project_handles() {
     let project_path = "/projects/my-app";
     let registry = ProjectRegistry::new(&home);
     let record = registry.register_project(project_path).expect("register");
-    assert_eq!(record.project_path, project_path);
+    assert_eq!(
+        record.project_path,
+        spark_common::paths::normalize_path(project_path)
+            .expect("normalize")
+            .to_string_lossy()
+    );
     assert_eq!(
         registry
             .project_settings("/projects/other")
@@ -570,6 +575,7 @@ fn seed_private_rows(home: &std::path::Path, path: &str, project_id: &str) {
 
 /// Removal deletes the project's private rows, keeps its global milestone,
 /// and a late trigger outcome recreates nothing.
+#[cfg(unix)]
 fn assert_private_rows_removed(home: &std::path::Path, path: &str, project_id: &str) {
     use spark_storage::workspace_records::{RecordRepository, WorkflowMilestones};
     assert_eq!(
@@ -618,8 +624,10 @@ fn assert_private_rows_removed(home: &std::path::Path, path: &str, project_id: &
         .any(|entry| entry["project_path"] == path));
 }
 
+#[cfg(unix)]
 #[test]
 fn project_deletion_tombstones_everything_then_removes_only_conversation_files() {
+    use spark_storage::conversation::{CatchUp, ChangeScope};
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     let path = "/projects/doomed";
@@ -704,6 +712,7 @@ fn project_deletion_tombstones_everything_then_removes_only_conversation_files()
 }
 
 /// Every file under `root`, with its bytes.
+#[cfg(unix)]
 fn tree(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
     let mut files = Vec::new();
     let mut pending = vec![root.to_path_buf()];
@@ -724,6 +733,7 @@ fn tree(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
 /// What project removal keeps: learned memory with a symlink out, a Git
 /// worktree under `work` with an uncommitted edit, default and external run
 /// roots, and an unknown sibling in `G`.
+#[cfg(unix)]
 struct Retained {
     roots: Vec<std::path::PathBuf>,
     snapshot: Vec<Vec<(std::path::PathBuf, Vec<u8>)>>,
@@ -731,6 +741,7 @@ struct Retained {
     outside: std::path::PathBuf,
 }
 
+#[cfg(unix)]
 impl Retained {
     fn seed(home: &std::path::Path, project_id: &str, scratch: &std::path::Path) -> Self {
         let storage = home.join("projects").join(project_id);
@@ -830,6 +841,7 @@ impl Retained {
 /// that is busy, incomplete, without a WAL, or failing removes a byte of the
 /// project; restart finishes the cleanup, and another project's live rows
 /// still reference existing bytes.
+#[cfg(unix)]
 #[test]
 fn deferred_project_cleanup_keeps_every_file_until_restart_finishes_it() {
     use spark_storage::conversation::CheckpointFault;
@@ -1112,15 +1124,17 @@ fn registration_and_deletion_of_one_project_never_interleave() {
     registry.register_project(path).unwrap();
     let store = ConversationStore::open(&home).unwrap();
     let deleted = registry.deletable_project(path).unwrap();
+    // Callers key the gate on the normalized path, as deletion does.
+    let gate_path = deleted.project_path.clone();
     let (inside_tx, inside_rx) = std::sync::mpsc::channel();
     let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
     let registering = {
         let (store, home) = (store.clone(), home.clone());
         std::thread::spawn(move || {
-            store.register_project(path, || {
+            store.register_project(&gate_path, || {
                 inside_tx.send(()).unwrap();
                 finish_rx.recv().unwrap();
-                ProjectRegistry::new(&home).register_project(path)
+                ProjectRegistry::new(&home).register_project(&gate_path)
             })
         })
     };
@@ -1262,16 +1276,18 @@ fn project_state_updates_and_deletion_never_interleave() {
     registry.register_project(path).unwrap();
     let store = ConversationStore::open(&home).unwrap();
     let deleted = registry.deletable_project(path).unwrap();
+    // Callers key the gate on the normalized path, as deletion does.
+    let gate_path = deleted.project_path.clone();
     let (inside_tx, inside_rx) = std::sync::mpsc::channel();
     let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
     let updating = {
         let (store, home) = (store.clone(), home.clone());
         std::thread::spawn(move || {
-            store.update_project(path, || {
+            store.update_project(&gate_path, || {
                 inside_tx.send(()).unwrap();
                 finish_rx.recv().unwrap();
                 ProjectRegistry::new(&home).update_project_record(
-                    path,
+                    &gate_path,
                     ProjectRecordUpdate {
                         is_favorite: Some(true),
                         ..ProjectRecordUpdate::default()
