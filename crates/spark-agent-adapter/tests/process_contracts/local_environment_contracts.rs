@@ -91,9 +91,12 @@ const PRINT_ENV: &str = "set";
 const PRINT_ENV: &str = "env";
 
 fn printed_env(result: &ExecResult) -> BTreeMap<String, String> {
-    result
-        .stdout
-        .lines()
+    env_lines(&result.stdout)
+}
+
+/// `KEY=VALUE` lines as a map.
+fn env_lines(text: &str) -> BTreeMap<String, String> {
+    text.lines()
         .filter_map(|line| line.split_once('='))
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect()
@@ -281,21 +284,30 @@ fn local_environment_inherit_core_only_passes_windows_system_variables_to_the_ch
         "USERPROFILE",
         "WINDIR",
     ];
-    // Windows keeps its own values, so its shell still starts; any key
-    // missing, as elsewhere, is set for the check.
+    // Windows' own values are checked as they are, since its shell needs
+    // some, such as `COMSPEC`; elsewhere each missing key is set for the check.
     let mut missing = Vec::new();
-    let expected = keys.map(|key| {
-        let value = std::env::var_os(key)
-            .map(|value| value.to_string_lossy().into_owned())
-            .unwrap_or_else(|| {
+    let expected = keys
+        .into_iter()
+        .filter_map(|key| match std::env::var_os(key) {
+            Some(value) => Some((key, value.to_string_lossy().into_owned())),
+            None if cfg!(windows) => None,
+            None => {
                 missing.push(key);
                 let value = format!("{key}-value");
                 std::env::set_var(key, &value);
-                value
-            });
-        (key, value)
-    });
+                Some((key, value))
+            }
+        })
+        .collect::<Vec<_>>();
 
+    // Windows' `set` writes a pipe in the console's code page, so there
+    // `cmd /U` writes UTF-16 to a file instead, which keeps a value such as
+    // `C:\Users\René` exact.
+    #[cfg(windows)]
+    let dump_env = "cmd /U /C set > env.txt";
+    #[cfg(not(windows))]
+    let dump_env = "env > env.txt";
     let result = LocalExecutionEnvironment::with_options(
         tempdir.path(),
         5_000,
@@ -304,7 +316,7 @@ fn local_environment_inherit_core_only_passes_windows_system_variables_to_the_ch
     )
     .into_execution_environment()
     .exec_command(
-        PRINT_ENV,
+        dump_env,
         CommandOptions {
             timeout_ms: Some(60_000),
             ..CommandOptions::default()
@@ -314,7 +326,19 @@ fn local_environment_inherit_core_only_passes_windows_system_variables_to_the_ch
         std::env::remove_var(key);
     }
 
-    let env = printed_env(&result.expect("env command"));
+    let result = result.expect("env command");
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    let dump = std::fs::read(tempdir.path().join("env.txt")).expect("environment dump");
+    #[cfg(windows)]
+    let dump = String::from_utf16(
+        &dump
+            .chunks_exact(2)
+            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+            .collect::<Vec<_>>(),
+    );
+    #[cfg(not(windows))]
+    let dump = String::from_utf8(dump);
+    let env = env_lines(&dump.expect("environment dump text"));
     for (key, value) in expected {
         // Windows spells some differently, such as `SystemRoot`.
         let received = env

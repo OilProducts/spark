@@ -314,12 +314,16 @@ fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
     }
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
     // Each fake agent records the environment Spark launched it with, then exits.
+    // cmd reads a script in the console's code page, so the Windows one names
+    // its dump by its own directory, `%~dp0`, rather than by a path written in
+    // it, and `cmd /U` writes the values as UTF-16, keeping a home such as
+    // `C:\Users\René` exact.
     #[cfg(windows)]
     let fake = |name: &str| {
         let path = root.join(format!("{name}.cmd"));
         fs::write(
             &path,
-            format!("@echo off\r\nset > \"{}\"\r\n", dumps.join(name).display()),
+            format!("@echo off\r\ncmd /U /C set > \"%~dp0agent-env\\{name}\"\r\n"),
         )
         .expect("fake agent");
         path
@@ -366,8 +370,18 @@ fn serve_gives_codex_and_claude_code_agents_homes_under_its_data_directory() {
 
     let data_dir = root.join("spark-home");
     let agent_env = |name: &str| -> BTreeMap<String, String> {
-        fs::read_to_string(dumps.join(name))
-            .unwrap_or_else(|error| panic!("{name} was not launched: {error}"))
+        let dump = fs::read(dumps.join(name))
+            .unwrap_or_else(|error| panic!("{name} was not launched: {error}"));
+        #[cfg(windows)]
+        let dump = String::from_utf16(
+            &dump
+                .chunks_exact(2)
+                .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                .collect::<Vec<_>>(),
+        );
+        #[cfg(unix)]
+        let dump = String::from_utf8(dump);
+        dump.expect("environment dump text")
             .lines()
             .filter_map(|line| line.split_once('='))
             .map(|(key, value)| (key.to_string(), value.to_string()))
