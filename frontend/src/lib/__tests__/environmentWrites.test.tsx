@@ -13,7 +13,7 @@ import { cachedAppearance, applyTheme } from '@/lib/theme'
 import { requestNavigation } from '@/state/workspaceSlice'
 import { ATTENTION_CHANGED_EVENT } from '@/lib/api/attentionApi'
 import { reviewProposedPlanValidated } from '@/lib/api/conversationsApi'
-import { closeFlowOpening, FLOW_SAVE_RESTORED_EVENT, openRefusedFlowSave, primeFlowSaveBaseline, refusedFlowSaves, refusedFlowSaveStatus, resetFlowSaveBaselines, restoreRefusedFlowSave, retryLastSaveContent, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, waitForFlowSaves } from '@/lib/flowPersistence'
+import { closeFlowOpening, primeFlowSaveBaseline, refusedFlowSaves, refusedFlowSaveStatus, resetFlowSaveBaselines, retryLastSaveContent, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, waitForFlowSaves } from '@/lib/flowPersistence'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { conversationMutationAck } from '@/test/conversationWire'
@@ -155,7 +155,7 @@ describe('flow saves', () => {
         }
     })
 
-    it('keeps a remote save refused after a switch away for that environment, opening it only once the flow opens there unchanged, sending nothing', async () => {
+    it('keeps a remote save refused after a switch away for that environment, judging it once the flow opens there, sending nothing', async () => {
         await switchEnvironment('env-r')
         primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
         const remoteSaved = deferred<unknown>()
@@ -174,28 +174,22 @@ describe('flow saves', () => {
         // This environment's flow of the same name is untouched; the refusal is kept for its own.
         expect(useStore.getState()).toBe(local)
         const [refused] = refusedFlowSaves()
-        expect(refused).toMatchObject({ name: 'demo', projectPath: PROJECT, environmentId: 'env-r', message: 'disk full', kind: 'http', baseFiles: JSON.stringify(files('Base')) })
+        expect(refused).toMatchObject({ name: 'demo', projectPath: PROJECT, environmentId: 'env-r', message: 'disk full', kind: 'http', baseFiles: JSON.stringify(files('Base')), baseline: JSON.stringify(flow('Base')) })
         expect(refusedFlowSaveStatus(refused)).toBe('hidden')
 
-        // Back there, nothing opens it before the flow opens, nor retries it through the save state shown.
+        // Back there, nothing retries it through the save state shown; opened still as the edits found it,
+        // it says so, and nothing is sent.
         await switchEnvironment('env-r')
         resetStoreForEnvironmentSwitch(false)
         sent = []
-        await expect(openRefusedFlowSave(refused)).resolves.toBe(false)
         await expect(retryLastSaveContent()).resolves.toBe(false)
-        // Opened still as the edits found it, the editor is asked to open them; nothing is read or sent.
         primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
         expect(refusedFlowSaveStatus(refused)).toBe('unchanged')
-        const restored = vi.fn()
-        window.addEventListener(FLOW_SAVE_RESTORED_EVENT, restored)
-        try {
-            await expect(openRefusedFlowSave(refused)).resolves.toBe(true)
-        } finally { window.removeEventListener(FLOW_SAVE_RESTORED_EVENT, restored) }
-        expect(restored).toHaveBeenCalledWith(expect.objectContaining({ detail: refused }))
+        await expect(retryLastSaveContent()).resolves.toBe(false)
         expect(sent).toEqual([])
     })
 
-    it('never offers edits refused after an autosave, whose files are unknown, even once the flow opens as it persisted', async () => {
+    it('judges edits refused after an autosave by the content it persisted, never by a version saved after it', async () => {
         primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
         await expect(saveFlowContent('demo', flow('Saved'), PROJECT)).resolves.toBe(true)
         // A later edit is refused while another flow is open.
@@ -203,56 +197,24 @@ describe('flow saves', () => {
         answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : json({ detail: 'unavailable' }, 503))
         await expect(saveFlowContent('demo', flow('Refused'), PROJECT)).resolves.toBe(false)
         const [refused] = refusedFlowSaves()
-        expect(refused).toMatchObject({ baseFiles: null })
+        expect(refused).toMatchObject({ baseFiles: null, baseline: JSON.stringify(flow('Saved')) })
 
-        // Files edited elsewhere could open as the same flow: the edits are kept, never offered over them.
         primeFlowSaveBaseline('demo', flow('Saved'), files('Saved'), PROJECT)
+        expect(refusedFlowSaveStatus(refused)).toBe('unchanged')
+        primeFlowSaveBaseline('demo', flow('Elsewhere'), files('Elsewhere'), PROJECT)
         expect(refusedFlowSaveStatus(refused)).toBe('changed')
-        sent = []
-        await expect(openRefusedFlowSave(refused)).resolves.toBe(false)
-        expect(sent).toEqual([])
-        expect(refusedFlowSaves()).toEqual([refused])
     })
 
-    it('never offers edits refused late over ones restored in the flow and not saved yet', async () => {
-        primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
-        useStore.setState({ activeFlow: 'other', activeProjectPath: PROJECT })
-        const later = deferred<unknown>()
-        const flowSaves = () => sent.filter((request) => request.endsWith('/api/flows'))
-        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : flowSaves().length === 1 ? json({ detail: 'unavailable' }, 503) : later.promise)
-        await expect(saveFlowContent('demo', flow('Refused'), PROJECT)).resolves.toBe(false)
-        const [refused] = refusedFlowSaves()
-        const late = saveFlowContent('demo', flow('Late'), PROJECT)
-        await waitFor(() => expect(flowSaves()).toHaveLength(2))
-        // The flow opens unchanged and the editor restores the first edits there; then the later save is refused.
-        useStore.setState({ activeFlow: 'demo', viewMode: 'editor' })
-        primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
-        restoreRefusedFlowSave(refused)
-        later.resolve(json({ detail: 'unavailable' }, 503))
-        await expect(late).resolves.toBe(false)
-        const [kept] = refusedFlowSaves()
-        expect(kept).toMatchObject({ content: flow('Late') })
-        expect(refusedFlowSaveStatus(kept)).toBe('changed')
-    })
-
-    it('saves edits restored in their flow only once it reads with the files they opened over, sending nothing while it can’t be read', async () => {
+    it('never retries a save refused in its flow once the flow opens anew', async () => {
+        useStore.setState({ activeFlow: 'demo', activeProjectPath: PROJECT, viewMode: 'editor' })
         primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
         answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : json({ detail: 'unavailable' }, 503))
-        useStore.setState({ activeFlow: 'other', activeProjectPath: PROJECT })
         await expect(saveFlowContent('demo', flow('Refused'), PROJECT)).resolves.toBe(false)
-        const [refused] = refusedFlowSaves()
-        useStore.setState({ activeFlow: 'demo', viewMode: 'editor' })
-        primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
-        restoreRefusedFlowSave(refused)
-        const flowSaves = () => sent.filter((request) => request.startsWith('POST') && request.endsWith('/api/flows'))
+        expect(useStore.getState()).toMatchObject({ saveState: 'error', saveErrorMessage: 'unavailable' })
+        primeFlowSaveBaseline('demo', flow('Elsewhere'), files('Elsewhere'), PROJECT)
         sent = []
-
         await expect(retryLastSaveContent()).resolves.toBe(false)
-        expect(flowSaves()).toEqual([])
-        expect(useStore.getState()).toMatchObject({ saveState: 'error', saveErrorKind: 'network', saveErrorMessage: expect.stringContaining('Couldn’t read the saved flow') })
-        answer = (url, method) => (url.endsWith('/preview') ? { status: 'ok' } : method === 'GET' ? { files: files('Base') } : { status: 'saved' })
-        await expect(retryLastSaveContent()).resolves.toBe(true)
-        expect(flowSaves()).toHaveLength(1)
+        expect(sent).toEqual([])
     })
 
     it('never offers a refused save over a version saved since', async () => {
@@ -267,9 +229,6 @@ describe('flow saves', () => {
         // It opens with newer content saved meanwhile.
         primeFlowSaveBaseline('demo', flow('Newer'), files('Newer'), PROJECT)
         expect(refusedFlowSaveStatus(refused)).toBe('changed')
-        sent = []
-        await expect(openRefusedFlowSave(refused)).resolves.toBe(false)
-        expect(sent).toEqual([])
     })
 
     it('never sends a save queued before its flow opened anew, keeping it for the flow’s notice', async () => {
@@ -297,35 +256,8 @@ describe('flow saves', () => {
         await expect(retryLastSaveContent()).resolves.toBe(false)
         expect(flowSaves()).toHaveLength(1)
         const [refused] = refusedFlowSaves()
-        expect(refused).toMatchObject({ content: flow('Two'), message: 'These edits weren’t sent: the flow opened again first.', kind: 'unknown', baseFiles: JSON.stringify(files('Base')) })
+        expect(refused).toMatchObject({ content: flow('Two'), message: 'These edits weren’t sent: the flow opened again first.', kind: 'unknown', baseFiles: JSON.stringify(files('Base')), baseline: null })
         expect(refusedFlowSaveStatus(refused)).toBe('changed')
-    })
-
-    it.each([
-        ['saved', { status: 'saved' }],
-        ['refused', json({ detail: 'unavailable' }, 503)],
-    ])('sends edits still waiting to save before opening a refused save, which then keeps them, %s', async (_, newerAnswer) => {
-        primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
-        answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : json({ detail: 'unavailable' }, 503))
-        useStore.setState({ activeFlow: 'other', activeProjectPath: PROJECT })
-        await expect(saveFlowContent('demo', flow('Refused'), PROJECT)).resolves.toBe(false)
-        const [refused] = refusedFlowSaves()
-        // The flow opens unchanged, and an edit there waits to save when Edit flow is clicked.
-        useStore.setState({ activeFlow: 'demo', viewMode: 'editor' })
-        primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
-        expect(refusedFlowSaveStatus(refused)).toBe('unchanged')
-        const { result, unmount } = renderHook(() => useFlowSaveScheduler({ flowName: 'demo', debounceMs: 60_000, buildContent: () => flow('Newer') }))
-        try {
-            act(() => result.current.scheduleSave())
-            sent = []
-            bodies = []
-            // Refused, they are still newer than the refused save's, in the editor that holds them.
-            answer = (url) => (url.endsWith('/preview') ? { status: 'ok' } : newerAnswer)
-            await expect(openRefusedFlowSave(refused)).resolves.toBe(false)
-            expect(sent.filter((request) => request.endsWith('/api/flows'))).toEqual(['POST /attractor/api/flows'])
-            expect(bodies[sent.indexOf('POST /attractor/api/flows')]).toMatchObject({ flow: { title: 'Newer' } })
-            expect(refusedFlowSaveStatus(refusedFlowSaves()[0])).toBe('changed')
-        } finally { unmount() }
     })
 })
 
