@@ -13,7 +13,7 @@ import { cachedAppearance, applyTheme } from '@/lib/theme'
 import { requestNavigation } from '@/state/workspaceSlice'
 import { ATTENTION_CHANGED_EVENT } from '@/lib/api/attentionApi'
 import { reviewProposedPlanValidated } from '@/lib/api/conversationsApi'
-import { closeFlowOpening, primeFlowSaveBaseline, refusedFlowSaves, refusedFlowSaveStatus, resetFlowSaveBaselines, retryLastSaveContent, retryRefusedFlowSave, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, waitForFlowSaves } from '@/lib/flowPersistence'
+import { closeFlowOpening, FLOW_SAVE_RESTORED_EVENT, markFlowOpeningRestored, primeFlowSaveBaseline, refusedFlowSaves, refusedFlowSaveStatus, resetFlowSaveBaselines, retryLastSaveContent, retryRefusedFlowSave, saveFlowContent, sendPendingFlowSaves, setInvalidDraft, waitForFlowSaves } from '@/lib/flowPersistence'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { resetStoreForEnvironmentSwitch, useStore } from '@/store'
 import { conversationMutationAck } from '@/test/conversationWire'
@@ -187,17 +187,76 @@ describe('flow saves', () => {
         await expect(retryRefusedFlowSave(refused)).resolves.toBe(false)
         await expect(retryLastSaveContent()).resolves.toBe(false)
         expect(sent).toEqual([])
-        // Opened still as the edits found it, Retry reads the files there again just before sending the edits.
+        // Opened still as the edits found it, Retry reads the files there again, then has the editor open the
+        // edits to save them from there.
         primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
         expect(refusedFlowSaveStatus(refused)).toBe('unchanged')
-        await expect(retryRefusedFlowSave(refused)).resolves.toBe(true)
+        const restored = vi.fn()
+        window.addEventListener(FLOW_SAVE_RESTORED_EVENT, restored)
+        try {
+            await expect(retryRefusedFlowSave(refused)).resolves.toBe(true)
+        } finally { window.removeEventListener(FLOW_SAVE_RESTORED_EVENT, restored) }
+        expect(sent).toEqual([`GET ${REMOTE}/workspace/api/flows/demo/files?project_path=%2Ftmp%2Fproject`])
+        expect(restored).toHaveBeenCalledWith(expect.objectContaining({ detail: refused }))
+    })
+
+    it('saves restored edits only while the flow still has the files they were made on, and never once it changed', async () => {
+        useStore.setState({ activeFlow: 'demo', activeProjectPath: PROJECT, viewMode: 'editor' })
+        primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
+        markFlowOpeningRestored('demo', PROJECT, null)
+        answer = (url, method) => (method === 'GET' ? flowRead('Base') : url.endsWith('/preview') ? { status: 'ok' } : { status: 'saved' })
+        await expect(saveFlowContent('demo', flow('Restored'), PROJECT)).resolves.toBe(true)
         expect(sent).toEqual([
-            `POST ${REMOTE}/attractor/preview`,
-            `GET ${REMOTE}/attractor/api/flows/demo?project_path=%2Ftmp%2Fproject`,
-            `POST ${REMOTE}/attractor/api/flows`,
+            'POST /attractor/preview',
+            'GET /workspace/api/flows/demo/files?project_path=%2Ftmp%2Fproject',
+            'POST /attractor/api/flows',
         ])
-        expect(bodies[2]).toMatchObject({ flow: { title: 'Remote' } })
-        expect(refusedFlowSaves()).toEqual([])
+        // Saved, they are this opening's own: later saves from it go as any.
+        sent = []
+        await expect(saveFlowContent('demo', flow('Restored and more'), PROJECT)).resolves.toBe(true)
+        expect(sent).toEqual(['POST /attractor/preview', 'POST /attractor/api/flows'])
+
+        // Saved elsewhere before the next restored edits send, they don't, nor any later save from there.
+        primeFlowSaveBaseline('demo', flow('Base'), files('Base'), PROJECT)
+        markFlowOpeningRestored('demo', PROJECT, null)
+        answer = (url, method) => (method === 'GET' ? flowRead('Elsewhere') : url.endsWith('/preview') ? { status: 'ok' } : { status: 'saved' })
+        sent = []
+        await expect(saveFlowContent('demo', flow('Restored'), PROJECT)).resolves.toBe(false)
+        expect(useStore.getState()).toMatchObject({ saveState: 'conflict', saveErrorMessage: 'The flow was saved elsewhere since these edits were made, so they weren’t saved over it.' })
+        await expect(saveFlowContent('demo', flow('Restored and more'), PROJECT)).resolves.toBe(false)
+        await expect(retryLastSaveContent()).resolves.toBe(false)
+        expect(sent.filter((request) => request.startsWith('POST /attractor/api/flows'))).toEqual([])
+    })
+
+    it('never takes a save’s files read back for its own once another client reordered a gate’s decisions', async () => {
+        const gate = (title: string, order: string[]) => ({ flow: { schema_version: '2', id: 'demo', title, nodes: {
+            review: { kind: 'human_gate', routes: Object.fromEntries(order.map((decision) => [decision, { to: 'done' }])) },
+            done: { kind: 'exit' },
+        } } })
+        // As the server answers: previews canonical, keys sorted; reads sorted too, with each step's routes in order.
+        const sorted = (value: unknown): unknown => (Array.isArray(value) ? value.map(sorted)
+            : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, item]) => [key, sorted(item)]))
+                : value)
+        const preview = () => ({ status: 'ok', flow: sorted((bodies.at(-1) as { flow: unknown }).flow) })
+        primeFlowSaveBaseline('demo', gate('Base', ['approve', 'reject']), files('Base'), PROJECT)
+        // An autosave lands; another client reorders the gate's decisions before its files are read back.
+        answer = (url, method) => (method === 'GET'
+            ? { name: 'demo', files: files('Reordered'), flow: sorted(gate('Saved', ['approve', 'reject']).flow), route_order: { review: ['reject', 'approve'] } }
+            : url.endsWith('/preview') ? preview() : { status: 'saved' })
+        await expect(saveFlowContent('demo', gate('Saved', ['approve', 'reject']), PROJECT)).resolves.toBe(true)
+        // A later edit is refused while another flow is open.
+        useStore.setState({ activeFlow: 'other', activeProjectPath: PROJECT })
+        answer = (url) => (url.endsWith('/preview') ? preview() : json({ detail: 'unavailable' }, 503))
+        await expect(saveFlowContent('demo', gate('Refused', ['approve', 'reject']), PROJECT)).resolves.toBe(false)
+        const [refused] = refusedFlowSaves()
+
+        // The flow opens as the other client left it: the edits are kept, never offered over it.
+        primeFlowSaveBaseline('demo', gate('Saved', ['reject', 'approve']), files('Reordered'), PROJECT)
+        expect(refusedFlowSaveStatus(refused)).toBe('changed')
+        sent = []
+        await expect(retryRefusedFlowSave(refused)).resolves.toBe(false)
+        expect(sent).toEqual([])
+        expect(refusedFlowSaves()).toEqual([refused])
     })
 
     it('never retries a refused save over a version saved since', async () => {

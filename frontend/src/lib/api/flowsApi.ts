@@ -149,11 +149,13 @@ export async function fetchWorkspaceFlowFilesValidated(
     flowName: string,
     projectPath: string | null,
     init?: RequestInit,
+    environmentId?: string | null,
 ): Promise<FlowFile[]> {
     return fetchWorkspaceJsonValidated(
         `/flows/${encodeFlowPath(flowName)}/files${projectQuery(projectPath)}`,
         init,
         '/workspace/api/flows/{flow_name}/files',
         (payload, endpoint) => expectFlowFiles(expectObjectRecord(payload, endpoint).files, endpoint),
+        environmentId,
     )
 }
