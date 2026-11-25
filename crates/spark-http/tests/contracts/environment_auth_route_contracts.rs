@@ -2018,10 +2018,12 @@ async fn linked_environment_proxy_requires_the_peer_to_answer_as_the_link() {
     let anonymous = proxy(&app, "workspace/api/anonymous").await;
     assert_eq!(anonymous.status(), StatusCode::BAD_GATEWAY);
     assert_sandboxed(&anonymous);
-    assert!(json(anonymous).await["detail"]
+    let anonymous = json(anonymous).await;
+    assert!(anonymous["detail"]
         .as_str()
         .expect("detail")
         .contains("not the linked \"env-b\""));
+    assert_eq!(anonymous["answered_as"], Value::Null);
     let denied = proxy(&app, "workspace/api/denied").await;
     assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
 
@@ -2323,11 +2325,10 @@ async fn linked_spark_environments_check_identity_and_tokens_over_loopback() {
     ] {
         let swapped = send(&app_a, "GET", &via(target), Some(LOCAL), &[], None).await;
         assert_eq!(swapped.status(), StatusCode::BAD_GATEWAY, "{target}");
-        let detail = json(swapped).await["detail"]
-            .as_str()
-            .expect("detail")
-            .to_string();
+        let swapped = json(swapped).await;
+        let detail = swapped["detail"].as_str().expect("detail").to_string();
         assert!(detail.contains(&c_id), "{detail}");
+        assert_eq!(swapped["answered_as"], json!(c_id), "{target}");
     }
 
     // A loopback peer still checks the token the proxy relays.

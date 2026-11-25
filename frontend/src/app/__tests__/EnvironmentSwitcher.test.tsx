@@ -61,6 +61,11 @@ const LINKS = '/workspace/api/environments/links'
 const LOCAL_BOOTSTRAP = ['/environment', LINKS]
 
 const VERSIONS = { protocol_version: EXPECTED_PROTOCOL_VERSION, ui_api_version: EXPECTED_UI_API_VERSION }
+/** This Spark's proxy refusing an answer at env-win's origin that names `answeredAs`, or none, as crates/spark-http/src/delegations.rs does. */
+const proxyRefusal = (answeredAs: string | null) => json({
+    detail: `http://env-win:8000 answered as environment ${answeredAs === null ? 'None' : `Some("${answeredAs}")`}, not the linked "env-win"; link it again if it moved.`,
+    answered_as: answeredAs,
+}, 502)
 const LOCAL_ENV = { environment_id: 'env-local', display_name: 'mac-studio', ...VERSIONS, spark_version: '0.3.0' }
 const descriptor = (environmentId: string, overrides: Record<string, unknown> = {}) =>
     ({ environment_id: environmentId, display_name: `${environmentId}-box`, ...VERSIONS, spark_version: '0.3.0', ...overrides })
@@ -312,7 +317,8 @@ describe('Same-window multi-environment switching', () => {
         ['an invalid protocol_version', remoteAnswers(json(descriptor('env-win', { protocol_version: 'v1' }))), 'Version mismatch with', /unversioned protocol/],
         ['a mismatched protocol_version', remoteAnswers(json(descriptor('env-win', { protocol_version: 2 }))), 'Version mismatch with', /UI API v2 · protocol v2/],
         ['an older peer without the authenticated descriptor', remoteAnswers(null, descriptor('env-win', { ui_api_version: undefined, protocol_version: 1 })), 'Version mismatch with', /Windows Workstation runs unversioned UI API/],
-        ['an older peer the proxy refuses for its missing identity', remoteAnswers(json({ detail: 'http://env-win:8000 answered as environment None, not the linked "env-win"; link it again if it moved.' }, 502), descriptor('env-win', { ui_api_version: 1 })), 'Version mismatch with', /UI API v1/],
+        ['an older peer the proxy refuses for its missing identity', remoteAnswers(proxyRefusal(null), descriptor('env-win', { ui_api_version: 1 })), 'Version mismatch with', /UI API v1/],
+        ['another environment the proxy refuses at the link\'s origin', { [WIN_AUTH]: () => proxyRefusal('env-other'), [WIN_PUBLIC]: () => proxyRefusal('env-other') }, 'Couldn’t connect to', /answered as environment env-other, not the linked env-win\. Remove the link in Settings and pair again/],
         ['a peer whose only compatible descriptor is the public one', remoteAnswers(null), 'Couldn’t connect to', /Not Found/],
         ['a wrong environment_id', remoteAnswers(json(descriptor('env-other'))), 'Couldn’t connect to', /answered as environment env-other, not the linked env-win\. Remove the link in Settings and pair again/],
         ['a revoked bearer', remoteAnswers(json({ detail: 'Unauthorized' }, 401)), 'Couldn’t connect to', /refused this Spark’s credential \(HTTP 401\).*pair again with a new pairing code/],
@@ -453,6 +459,7 @@ describe('Same-window multi-environment switching', () => {
         ['refuse a revoked credential, though this machine gives no descriptor', { [WIN_AUTH]: () => json({ detail: 'Unauthorized' }, 401), '/environment': () => json({ detail: 'unavailable' }, 503) }, 'refused this Spark’s credential'],
         ['speak a version this bundle doesn\'t', { [WIN_AUTH]: () => json(descriptor('env-win', { ui_api_version: 3 })) }, 'Version mismatch with Windows Workstation'],
         ['answer as another environment', { [WIN_AUTH]: () => json(descriptor('env-other')) }, 'answered as environment env-other'],
+        ['are refused by the proxy for another environment answering', { [WIN_AUTH]: () => proxyRefusal('env-other'), [WIN_PUBLIC]: () => proxyRefusal('env-other') }, 'answered as environment env-other'],
     ])('stops reconnecting a remote whose live handshakes never open and whose checks %s, until Retry passes a check', async (_finding, failures: Record<string, Route>, message) => {
         const routes: Record<string, Route> = {}
         const { user, remoteShell, checks } = await mountWindows(routes)
@@ -542,13 +549,20 @@ describe('Same-window multi-environment switching', () => {
     it('checks a remote whose outage\'s check found a gateway that answers for no Spark as its live connection opens again, and comes back once it passes', async () => {
         const routes: Record<string, Route> = {}
         const { remoteShell } = await mountWindows(routes)
-        routes[WIN_AUTH] = () => json({ detail: 'Bad gateway' }, 502)
-        routes[WIN_PUBLIC] = routes[WIN_AUTH]
+        routes[WIN_AUTH] = () => proxyRefusal(null)
+        routes[WIN_PUBLIC] = () => json({ detail: 'Bad gateway' }, 502)
         act(() => winLive()!.onerror?.(new Event('error')))
         expect(await screen.findByTestId('remote-environment-gate')).toBeInTheDocument()
         expect(remoteShell).not.toBeVisible()
 
+        // The outage outlasts the first connection that opens again: its check fails alike, and it is tried again.
         await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+        const early = winLive()!
+        act(() => early.onopen?.(new Event('open')))
+        await waitFor(() => expect(early.closed).toBe(true))
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+        expect(screen.getByTestId('remote-environment-gate')).toBeInTheDocument()
+
         delete routes[WIN_AUTH]
         delete routes[WIN_PUBLIC]
         const reopened = winLive()!

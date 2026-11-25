@@ -237,9 +237,16 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     ])
     const error = remoteResult.status === 'rejected' ? remoteResult.reason : null
     const status = error instanceof ApiHttpError ? error.status : 0
-    // A refused credential is final, whatever this machine answers.
+    // A refused credential, or another environment answering at the link's origin, is final whatever this machine
+    // answers. The proxy refuses an answer naming another environment with a 502 whose `answered_as` names it; one
+    // naming none, such as a gateway's while the peer is down, is not final.
     if (status === 401) {
         return { status: 'refused', remoteDescriptor: null, error: `${name} refused this Spark’s credential (HTTP 401): its peer token was revoked or is invalid. Remove the link in Settings and pair again with a new pairing code from ${name}.` }
+    }
+    const answeredAs = remoteResult.status === 'fulfilled' ? remoteResult.value.environment_id
+        : status === 502 ? asOptionalString((error.payload as { answered_as?: unknown } | null)?.answered_as) : undefined
+    if (answeredAs !== undefined && answeredAs !== environmentId) {
+        return { status: 'refused', remoteDescriptor: null, error: `${name} answered as environment ${answeredAs}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.` }
     }
     if (localResult.status === 'rejected') {
         throw new Error(`Could not verify this Spark server’s version: ${errorText(localResult.reason)}`)
@@ -256,9 +263,6 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
         return (older?.environment_id === environmentId ? mismatch(older) : null) ?? unreachable(errorText(error))
     }
     const remote = remoteResult.value
-    if (remote.environment_id !== environmentId) {
-        return { status: 'refused', remoteDescriptor: null, error: `${name} answered as environment ${remote.environment_id}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.` }
-    }
     return mismatch(remote) ?? { status: 'ready', error: null, remoteDescriptor: remote }
 }
 

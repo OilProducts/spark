@@ -371,7 +371,7 @@ export function TriggersPanel() {
                 {selectedTrigger.source_type === 'webhook' ? (
                   <Well className="mt-6 space-y-2 text-sm">
                     <SectionHeading>Calling this webhook</SectionHeading>
-                    <div className="text-muted-foreground"><WebhookDestination />, with these headers:</div>
+                    <div className="text-muted-foreground"><WebhookDestination then=", with these headers:" /></div>
                     <div className="font-mono text-xs text-foreground">Content-Type: application/json</div>
                     <div className="font-mono text-xs text-foreground">
                       X-Spark-Webhook-Key: {String(selectedTrigger.source.webhook_key ?? '')}

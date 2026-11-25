@@ -564,6 +564,10 @@ export function WorkspaceLiveEventsController() {
                 failedConnects = 0
                 unverified.current = false
             }
+            // A linked environment found incompatible, or refusing this link until it is paired again, stays so however
+            // often it is tried, even when its handshake never opens. One down meanwhile, or whose gateway answers for
+            // none, is tried again until a check passes.
+            const final = () => ['incompatible', 'refused'].includes(getActiveEnvironmentState().activeCheck.status)
             // The connection stays closed, its workspace behind the gate, until a check passes, such as Retry's.
             const waitForCheck = () => {
                 if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
@@ -595,8 +599,8 @@ export function WorkspaceLiveEventsController() {
                     }
                     source.close()
                     eventSource = null
-                    if (verified === null) return reconnect()
-                    waitForCheck()
+                    if (final()) waitForCheck()
+                    else reconnect()
                 })
             }
             source.onmessage = (event) => handleMessage(event, source)
@@ -608,14 +612,9 @@ export function WorkspaceLiveEventsController() {
                 eventSource = null
                 failedConnects += 1
                 unverified.current = true
-                // A linked environment found incompatible, or refusing this link until it is paired again, stays so
-                // however often it is tried, even when its handshake never opens: none is tried until a check passes.
-                // One down meanwhile is retried.
-                // ponytail: a check per failed attempt while a peer is down; back off if that load matters. The proxy's
-                // 502 for a peer answering as another environment reads like a gateway outage, so it is retried as one.
+                // ponytail: a check per failed attempt while a peer is down; back off if that load matters.
                 void reverifyActiveEnvironment().then(() => {
-                    const { status } = getActiveEnvironmentState().activeCheck
-                    if (!closed && (status === 'incompatible' || status === 'refused')) waitForCheck()
+                    if (!closed && final()) waitForCheck()
                 })
                 // Spark is unreachable: runs say so instead of looking live.
                 if (failedConnects === 2) reportRunsTransportLost()

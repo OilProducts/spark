@@ -161,21 +161,24 @@ function IntervalField({
 }
 
 /**
- * Where another service sends a webhook trigger's POST request: a linked environment's own webhook endpoint, called
- * directly, since this Spark's proxy to it serves only this machine.
+ * Where another service sends a webhook trigger's POST request, then `then`: a linked environment's own webhook
+ * endpoint, called directly, since this Spark's proxy to it serves only this machine. Once its link is gone, as when
+ * another tab removed it, where that is isn't known here.
  */
-export function WebhookDestination() {
+export function WebhookDestination({ then }: { then: string }) {
     const { activeEnvironmentId, links } = useActiveEnvironment()
     const link = links.find((entry) => entry.environment_id === activeEnvironmentId)
     return (
         <span data-testid="trigger-webhook-destination">
             {activeEnvironmentId === null ? (
-                <>Another service starts this trigger by sending a POST request with a JSON body to <code>{SHARED_WEBHOOK_ENDPOINT}</code></>
-            ) : (
+                <>Another service starts this trigger by sending a POST request with a JSON body to <code>{SHARED_WEBHOOK_ENDPOINT}</code>{then}</>
+            ) : link ? (
                 <>
-                    This trigger runs on {link?.label || activeEnvironmentId}. Another service starts it by sending a POST request with a
-                    JSON body directly to <code>{link ? `${link.origin}${SHARED_WEBHOOK_ENDPOINT}` : `${SHARED_WEBHOOK_ENDPOINT} on that environment`}</code>, not through this Spark
+                    This trigger runs on {link.label || activeEnvironmentId}. Another service starts it by sending a POST request with a
+                    JSON body directly to <code>{`${link.origin}${SHARED_WEBHOOK_ENDPOINT}`}</code>, not through this Spark{then}
                 </>
+            ) : (
+                <>This trigger runs on {activeEnvironmentId}, which this Spark is no longer linked to, so its webhook address is unavailable.</>
             )}
         </span>
     )
@@ -428,7 +431,7 @@ export function TriggerEditor({
 
             {form.sourceType === 'webhook' ? (
                 <Well className="p-3 text-sm text-muted-foreground sm:col-span-2">
-                    <WebhookDestination />, with a key and secret that Spark creates for it.
+                    <WebhookDestination then=", with a key and secret that Spark creates for it." />
                 </Well>
             ) : null}
 
