@@ -28,7 +28,8 @@ export type EnvironmentLink = {
     created_at: string
 }
 
-// `refused`: the peer refused this Spark's credential, and refuses every request until it is paired again.
+// `refused`: the link no longer reaches the Spark it paired with, which revoked this Spark's credential or was replaced
+// by another environment, until it is paired again.
 type RemoteEnvironmentStatus = 'ready' | 'checking' | 'incompatible' | 'unreachable' | 'refused'
 
 type ActiveEnvironmentState = {
@@ -234,6 +235,12 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
         fetchEnvironmentDescriptor(null),
         fetchEnvironmentDescriptor(environmentId, '/workspace/api/environment'),
     ])
+    const error = remoteResult.status === 'rejected' ? remoteResult.reason : null
+    const status = error instanceof ApiHttpError ? error.status : 0
+    // A refused credential is final, whatever this machine answers.
+    if (status === 401) {
+        return { status: 'refused', remoteDescriptor: null, error: `${name} refused this Spark’s credential (HTTP 401): its peer token was revoked or is invalid. Remove the link in Settings and pair again with a new pairing code from ${name}.` }
+    }
     if (localResult.status === 'rejected') {
         throw new Error(`Could not verify this Spark server’s version: ${errorText(localResult.reason)}`)
     }
@@ -243,11 +250,6 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
         ? null
         : { status: 'incompatible', error: describeCompatibilityMismatch(name, local, remote), remoteDescriptor: remote }
     if (remoteResult.status === 'rejected') {
-        const error = remoteResult.reason
-        const status = error instanceof ApiHttpError ? error.status : 0
-        if (status === 401) {
-            return { status: 'refused', remoteDescriptor: null, error: `${name} refused this Spark’s credential (HTTP 401): its peer token was revoked or is invalid. Remove the link in Settings and pair again with a new pairing code from ${name}.` }
-        }
         // An older peer has no authenticated descriptor (404), or answers without its identity, which the proxy refuses (502).
         if (status !== 404 && status !== 502) throw error
         const older = await fetchEnvironmentDescriptor(environmentId).catch(() => null)
@@ -255,7 +257,7 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     }
     const remote = remoteResult.value
     if (remote.environment_id !== environmentId) {
-        return unreachable(`${name} answered as environment ${remote.environment_id}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.`)
+        return { status: 'refused', remoteDescriptor: null, error: `${name} answered as environment ${remote.environment_id}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.` }
     }
     return mismatch(remote) ?? { status: 'ready', error: null, remoteDescriptor: remote }
 }

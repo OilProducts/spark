@@ -316,6 +316,7 @@ describe('Same-window multi-environment switching', () => {
         ['a peer whose only compatible descriptor is the public one', remoteAnswers(null), 'Couldn’t connect to', /Not Found/],
         ['a wrong environment_id', remoteAnswers(json(descriptor('env-other'))), 'Couldn’t connect to', /answered as environment env-other, not the linked env-win\. Remove the link in Settings and pair again/],
         ['a revoked bearer', remoteAnswers(json({ detail: 'Unauthorized' }, 401)), 'Couldn’t connect to', /refused this Spark’s credential \(HTTP 401\).*pair again with a new pairing code/],
+        ['a revoked bearer while this machine gives no descriptor', { ...remoteAnswers(json({ detail: 'Unauthorized' }, 401)), '/environment': () => json({ detail: 'unavailable' }, 503) }, 'Couldn’t connect to', /refused this Spark’s credential \(HTTP 401\)/],
     ])('refuses %s, never mounting the remote and keeping this machine\'s workspace', async (_name, routes, heading, detail) => {
         const user = userEvent.setup()
         const backend = stubBackend(routes)
@@ -448,21 +449,32 @@ describe('Same-window multi-environment switching', () => {
         return { user, backend, remoteShell: workspaceMounted(), checks: () => backend.requests.filter((request) => request.url === WIN_AUTH).length }
     }
 
-    it('stops reconnecting a remote whose live handshakes keep refusing a revoked credential, until Retry passes a check', async () => {
+    it.each([
+        ['refuse a revoked credential, though this machine gives no descriptor', { [WIN_AUTH]: () => json({ detail: 'Unauthorized' }, 401), '/environment': () => json({ detail: 'unavailable' }, 503) }, 'refused this Spark’s credential'],
+        ['speak a version this bundle doesn\'t', { [WIN_AUTH]: () => json(descriptor('env-win', { ui_api_version: 3 })) }, 'Version mismatch with Windows Workstation'],
+        ['answer as another environment', { [WIN_AUTH]: () => json(descriptor('env-other')) }, 'answered as environment env-other'],
+    ])('stops reconnecting a remote whose live handshakes never open and whose checks %s, until Retry passes a check', async (_finding, failures: Record<string, Route>, message) => {
         const routes: Record<string, Route> = {}
         const { user, remoteShell, checks } = await mountWindows(routes)
         const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
-        // Every handshake is refused; the first failure's check answers late, so the connection is tried again meanwhile.
-        const refusal = deferred<Response>()
-        routes[WIN_AUTH] = () => refusal.promise
+        // An outage first: its check gets no answer, and the connection is tried again with the workspace still shown.
+        routes[WIN_AUTH] = () => json({ detail: 'connection refused' }, 503)
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+        expect(remoteShell).toBeVisible()
+
+        // Then every handshake fails; the first failure's check answers late, so the connection is tried again meanwhile.
+        const late = deferred<Response>()
+        Object.assign(routes, failures, { [WIN_AUTH]: () => late.promise })
         act(() => winLive()!.onerror?.(new Event('error')))
         await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
         act(() => winLive()!.onerror?.(new Event('error')))
-        routes[WIN_AUTH] = () => json({ detail: 'Unauthorized' }, 401)
-        await act(async () => refusal.resolve(json({ detail: 'Unauthorized' }, 401)))
-        expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent('refused this Spark’s credential')
+        routes[WIN_AUTH] = failures[WIN_AUTH]
+        await act(async () => late.resolve(await failures[WIN_AUTH]()))
+        expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent(message)
+        expect(getActiveEnvironmentState().status).not.toBe('ready')
 
-        // Nothing is tried or checked again while it stays refused.
+        // Nothing is tried or checked again while it stays so.
         const tried = connects()
         const checked = checks()
         await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
@@ -470,10 +482,25 @@ describe('Same-window multi-environment switching', () => {
         expect(winLive()).toBeUndefined()
         expect(checks()).toBe(checked)
 
-        delete routes[WIN_AUTH]
+        for (const url of Object.keys(failures)) delete routes[url]
         await user.click(screen.getByRole('button', { name: 'Retry' }))
         await waitFor(() => expect(remoteShell).toBeVisible())
         await waitFor(() => expect(winLive()).toBeDefined())
+    })
+
+    it('opens no live connection to a remote whose reconnect found it incompatible as you return to this machine', async () => {
+        const routes: Record<string, Route> = {}
+        const { user } = await mountWindows(routes)
+        routes[WIN_AUTH] = () => json(descriptor('env-win', { ui_api_version: 3 }))
+        act(() => winLive()!.onerror?.(new Event('error')))
+        const gate = await screen.findByTestId('remote-environment-gate')
+        expect(gate).toHaveTextContent('Version mismatch with Windows Workstation')
+        const opened = MockEventSource.instances.length
+
+        await user.click(within(gate).getByRole('button', { name: 'Return to this machine' }))
+        await waitFor(() => expect(getActiveEnvironmentId()).toBeNull())
+        await waitFor(() => expect(MockEventSource.instances.filter((source) => !source.closed)).toHaveLength(1))
+        expect(MockEventSource.instances.slice(opened).map((source) => source.url.startsWith(`${WIN}/`))).toEqual([false])
     })
 
     it('checks a reconnected remote anew while its outage\'s check still runs, and keeps what the new check found', async () => {
@@ -512,35 +539,24 @@ describe('Same-window multi-environment switching', () => {
         expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent('Version mismatch with Windows Workstation')
     })
 
-    it.each([
-        ['a gateway that answers for no Spark, and comes back once it passes', () => json({ detail: 'Bad gateway' }, 502), WIN_PUBLIC, true],
-        ['a version this bundle doesn\'t speak, and stays closed behind the gate while it still does', () => json(descriptor('env-win', { ui_api_version: 3 })), null, false],
-    ])('checks a remote whose outage\'s check found %s, as its live connection opens again', async (_found, answer, alsoFails, recovers) => {
+    it('checks a remote whose outage\'s check found a gateway that answers for no Spark as its live connection opens again, and comes back once it passes', async () => {
         const routes: Record<string, Route> = {}
         const { remoteShell } = await mountWindows(routes)
-        routes[WIN_AUTH] = answer
-        if (alsoFails) routes[alsoFails] = answer
+        routes[WIN_AUTH] = () => json({ detail: 'Bad gateway' }, 502)
+        routes[WIN_PUBLIC] = routes[WIN_AUTH]
         act(() => winLive()!.onerror?.(new Event('error')))
         expect(await screen.findByTestId('remote-environment-gate')).toBeInTheDocument()
         expect(remoteShell).not.toBeVisible()
 
         await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
-        if (recovers) {
-            delete routes[WIN_AUTH]
-            delete routes[WIN_PUBLIC]
-        }
+        delete routes[WIN_AUTH]
+        delete routes[WIN_PUBLIC]
         const reopened = winLive()!
         act(() => reopened.onopen?.(new Event('open')))
-        if (recovers) {
-            await waitFor(() => expect(remoteShell).toBeVisible())
-            expect(screen.queryByTestId('remote-environment-gate')).not.toBeInTheDocument()
-            expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'ready' })
-            expect(reopened.closed).toBe(false)
-        } else {
-            await waitFor(() => expect(reopened.closed).toBe(true))
-            expect(screen.getByTestId('remote-environment-gate')).toHaveTextContent('Version mismatch with Windows Workstation')
-            expect(remoteShell).not.toBeVisible()
-        }
+        await waitFor(() => expect(remoteShell).toBeVisible())
+        expect(screen.queryByTestId('remote-environment-gate')).not.toBeInTheDocument()
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', selectedEnvironmentId: 'env-win', status: 'ready' })
+        expect(reopened.closed).toBe(false)
     })
 
     it('keeps what a new mount of a remote found from a check its previous mount started', async () => {
@@ -806,9 +822,9 @@ describe('Same-window multi-environment switching', () => {
 
         act(() => useStore.getState().setViewMode('triggers'))
         await user.click(await screen.findByTestId('trigger-row-trigger-webhook'))
-        const guidance = screen.getByTestId('trigger-webhook-remote')
-        expect(guidance).toHaveTextContent('This trigger runs on Windows Workstation at http://env-win:8000.')
-        expect(guidance).toHaveTextContent('directly to http://env-win:8000/workspace/api/webhooks, not through this Spark')
+        for (const guidance of screen.getAllByTestId('trigger-webhook-destination')) {
+            expect(guidance).toHaveTextContent('This trigger runs on Windows Workstation. Another service starts it by sending a POST request with a JSON body directly to http://env-win:8000/workspace/api/webhooks, not through this Spark')
+        }
     })
 
     describe.each([

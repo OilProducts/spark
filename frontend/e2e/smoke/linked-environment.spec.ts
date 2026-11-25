@@ -28,6 +28,8 @@ test('a linked Spark’s workspace loads and updates live through this Spark’s
     let peer: ChildProcess | undefined
     let peerApi: APIRequestContext | undefined
     let peerId = ''
+    // Only a link made here is removed, so a failed pairing reports its own failure.
+    let paired = false
     try {
         const port = await freePort()
         const origin = `http://127.0.0.1:${port}`
@@ -69,6 +71,7 @@ test('a linked Spark’s workspace loads and updates live through this Spark’s
             data: { origin, expected_id: peerId, code: (await pairing.json()).code, label: 'Peer B' },
         })
         expect(linked.ok(), await linked.text()).toBe(true)
+        paired = true
         const projectPath = path.join(peerRoot, 'peer-project')
         mkdirSync(projectPath)
         expect((await peerApi.post('/workspace/api/projects/register', { data: { project_path: projectPath } })).ok()).toBe(true)
@@ -135,7 +138,7 @@ test('a linked Spark’s workspace loads and updates live through this Spark’s
     } finally {
         try {
             // Later specs share A, so the link goes first; B and its home go whatever happens here.
-            if (peerId) expect((await page.request.delete(`/workspace/api/environments/links/${encodeURIComponent(peerId)}`)).ok()).toBe(true)
+            if (paired) expect((await page.request.delete(`/workspace/api/environments/links/${encodeURIComponent(peerId)}`)).ok()).toBe(true)
         } finally {
             await peerApi?.dispose().catch(() => {})
             if (peer?.pid !== undefined && peer.exitCode === null && peer.signalCode === null) {

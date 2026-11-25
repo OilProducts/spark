@@ -327,6 +327,8 @@ export function WorkspaceLiveEventsController() {
         // What a reconnected linked environment sends before its check passes, which applies it.
         let held: MessageEvent<string>[] | null = null
         let stopWaiting = () => {}
+        // The environment this connection belongs to; another one mounted remounts the workspace with its own.
+        const environmentId = getActiveEnvironmentId()
 
         // Summary changes that arrive before a cursorless connection's snapshot wait for it.
         let awaitingSummarySnapshot = false
@@ -570,6 +572,7 @@ export function WorkspaceLiveEventsController() {
                 stopWaiting()
                 stopWaiting = subscribeActiveEnvironment(() => {
                     const { activeEnvironmentId, selectedEnvironmentId, status } = getActiveEnvironmentState()
+                    if (activeEnvironmentId !== environmentId) return stopWaiting()
                     if (selectedEnvironmentId !== activeEnvironmentId || status !== 'ready') return
                     stopWaiting()
                     open()
@@ -605,11 +608,14 @@ export function WorkspaceLiveEventsController() {
                 eventSource = null
                 failedConnects += 1
                 unverified.current = true
-                // A linked environment that revoked this Spark's credential refuses every reconnect and never opens:
-                // once a check finds it refused, none is tried until a check passes. One down meanwhile is retried.
-                // ponytail: a check per failed attempt while a peer is down; back off if that load matters.
+                // A linked environment found incompatible, or refusing this link until it is paired again, stays so
+                // however often it is tried, even when its handshake never opens: none is tried until a check passes.
+                // One down meanwhile is retried.
+                // ponytail: a check per failed attempt while a peer is down; back off if that load matters. The proxy's
+                // 502 for a peer answering as another environment reads like a gateway outage, so it is retried as one.
                 void reverifyActiveEnvironment().then(() => {
-                    if (!closed && getActiveEnvironmentState().activeCheck.status === 'refused') waitForCheck()
+                    const { status } = getActiveEnvironmentState().activeCheck
+                    if (!closed && (status === 'incompatible' || status === 'refused')) waitForCheck()
                 })
                 // Spark is unreachable: runs say so instead of looking live.
                 if (failedConnects === 2) reportRunsTransportLost()

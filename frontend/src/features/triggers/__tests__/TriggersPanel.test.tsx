@@ -325,7 +325,7 @@ describe('TriggersPanel', () => {
     renderTriggersPanel()
 
     await user.click(await screen.findByTestId('trigger-row-trigger-webhook'))
-    expect(screen.getByText(/Send a POST request/i)).toBeVisible()
+    expect(screen.getByText(/, with these headers:/)).toBeVisible()
     expect(screen.getAllByText(/webhook-key-1/).length).toBeGreaterThan(0)
 
     await user.click(screen.getByTestId('trigger-regenerate-secret-button'))
@@ -338,8 +338,9 @@ describe('TriggersPanel', () => {
   it.each([
     ['this machine', null],
     ['a linked environment', 'env-win'],
-  ])('names where a webhook on %s is called, never this Spark\'s proxy to a remote', async (_where, environmentId) => {
+  ])('names where a webhook on %s is called alike as it is created, edited and shown, never this Spark\'s proxy to a remote', async (_where, environmentId) => {
     const proxy = '/workspace/api/environments/links/env-win/proxy'
+    const direct = 'https://win-box:8000/workspace/api/webhooks'
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
       const url = resolveRequestUrl(input)
       if (url === '/workspace/api/environments/links') {
@@ -348,24 +349,43 @@ describe('TriggersPanel', () => {
       if (url.endsWith('/workspace/api/triggers')) {
         return jsonResponse([makeTrigger({ id: 'trigger-webhook', name: 'Webhook trigger', source_type: 'webhook', source: { webhook_key: 'webhook-key-1' } })])
       }
+      if (isFlowList(url.replace(proxy, ''))) return jsonResponse(PROJECT_FLOWS)
       throw new Error(`Unhandled request: ${url}`)
     })
     await refreshLocalEnvironments()
     if (environmentId) await switchEnvironment(environmentId)
     const user = userEvent.setup()
     renderTriggersPanel()
-
-    await user.click(await screen.findByTestId('trigger-row-trigger-webhook'))
-    const guidance = screen.getByText(/Send a POST request/i)
-    if (environmentId === null) {
-      expect(guidance).toHaveTextContent('Send a POST request with a JSON body to /workspace/api/webhooks and these headers:')
-      expect(screen.queryByTestId('trigger-webhook-remote')).not.toBeInTheDocument()
-    } else {
-      expect(guidance).toHaveTextContent('This trigger runs on Windows Workstation at https://win-box:8000.')
-      expect(guidance).toHaveTextContent('directly to https://win-box:8000/workspace/api/webhooks, not through this Spark')
-      expect(guidance).not.toHaveTextContent(proxy)
-      expect(guidance).not.toHaveTextContent(window.location.origin)
+    const expectDestinations = (count: number) => {
+      const destinations = screen.getAllByTestId('trigger-webhook-destination')
+      expect(destinations).toHaveLength(count)
+      for (const destination of destinations) {
+        if (environmentId === null) {
+          expect(destination).toHaveTextContent('Another service starts this trigger by sending a POST request with a JSON body to /workspace/api/webhooks')
+          expect(destination).not.toHaveTextContent('runs on')
+        } else {
+          expect(destination).toHaveTextContent(`This trigger runs on Windows Workstation. Another service starts it by sending a POST request with a JSON body directly to ${direct}, not through this Spark`)
+        }
+      }
+      // A remote's page names its webhooks only by their direct URL.
+      const page = document.body.textContent ?? ''
+      if (environmentId) {
+        expect(page.replaceAll(direct, '')).not.toContain('/workspace/api/webhooks')
+        expect(page).not.toContain(proxy)
+        expect(page).not.toContain(window.location.origin)
+      }
     }
+
+    // The saved trigger's edit form and its details.
+    await user.click(await screen.findByTestId('trigger-row-trigger-webhook'))
+    expect(screen.getByText(/, with these headers:/)).toContainElement(screen.getAllByTestId('trigger-webhook-destination')[1])
+    expectDestinations(2)
+
+    // The create form.
+    const form = await openCreateTriggerForm(user)
+    await user.selectOptions(form.getByLabelText('Starts when'), 'webhook')
+    expect(form.getByTestId('trigger-webhook-destination').parentElement).toHaveTextContent(/, with a key and secret that Spark creates for it\.$/)
+    expectDestinations(1)
   })
 
   it('shows errors at the field in plain words, and saves an interval in a unit as seconds', async () => {
