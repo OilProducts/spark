@@ -987,9 +987,10 @@ pub fn terminate_process_group(process_group_id: u32, mut child: Option<&mut Chi
 /// separator) as given if it is a file, else the first match on
 /// `path_override` (else Spark's own `PATH`). A name with an extension is
 /// matched as written. On Windows a bare name tries, in `PATHEXT`'s order,
-/// only each extension a launch can run, so neither an extensionless `rg`
-/// script, such as one a WSL npm install writes, nor an npm `.ps1` shim hides
-/// a later runnable match.
+/// each extension a launch can run, then the name itself only if it is an
+/// image, so a `rg.cmd` shim wins over a native `rg` beside it, and neither an
+/// extensionless script, such as one a WSL npm install writes, nor an npm
+/// `.ps1` shim hides a later runnable match.
 pub fn find_executable_on_path(
     name: &str,
     path_override: Option<&std::ffi::OsStr>,
@@ -1087,22 +1088,23 @@ fn find_executable_in(
         let launched = launched(candidate.to_path_buf());
         return is_executable(&launched).then_some(launched);
     }
-    let names = match pathext {
-        // A launch runs an image or, through cmd.exe, a batch file; neither an
-        // extensionless script nor another extension, such as an npm `.ps1`
-        // shim's, can start.
-        Some(pathext) if candidate.extension().is_none() => pathext
-            .to_string_lossy()
-            .split(';')
-            .filter(|extension| {
-                [".com", ".exe", ".bat", ".cmd"]
-                    .iter()
-                    .any(|runnable| extension.eq_ignore_ascii_case(runnable))
-            })
-            .map(|extension| format!("{name}{extension}"))
-            .collect::<Vec<_>>(),
-        _ => vec![name.to_string()],
-    };
+    let bare = pathext.is_some() && candidate.extension().is_none();
+    let pathext = pathext
+        .filter(|_| bare)
+        .map(std::ffi::OsStr::to_string_lossy)
+        .unwrap_or_default();
+    // A launch runs an image or, through cmd.exe, a batch file; other
+    // extensions, such as an npm `.ps1` shim's, cannot start.
+    let names = pathext
+        .split(';')
+        .filter(|extension| {
+            [".com", ".exe", ".bat", ".cmd"]
+                .iter()
+                .any(|runnable| extension.eq_ignore_ascii_case(runnable))
+        })
+        .map(|extension| format!("{name}{extension}"))
+        .chain([name.to_string()])
+        .collect::<Vec<_>>();
     // Windows searches no empty entry; elsewhere one names the launch's own
     // directory.
     directories
@@ -1112,9 +1114,22 @@ fn find_executable_in(
             names
                 .iter()
                 .map(|name| directory.join(name))
-                .find(|candidate| is_executable(candidate))
+                .find(|file| {
+                    is_executable(file) && (!bare || file.extension().is_some() || is_image(file))
+                })
                 .map(launched)
         })
+}
+
+/// Whether `path` begins as a Windows image does, with `MZ`: the only
+/// extensionless file a Windows launch can start, unlike a script such as one
+/// a WSL npm install writes.
+fn is_image(path: &Path) -> bool {
+    let mut magic = [0; 2];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .is_ok()
+        && magic == *b"MZ"
 }
 
 /// The file a launch of the path `program` runs. For any path not ending in
@@ -1341,6 +1356,8 @@ mod tests {
         let shadow = temp.path().join("shadow");
         for file in [
             shadow.join("rg"),
+            shadow.join("native"),
+            second.join("native"),
             first.join("rg"),
             first.join("rg.ps1"),
             first.join("rg.cmd"),
@@ -1350,17 +1367,24 @@ mod tests {
         ] {
             executable(&file);
         }
+        for image in [first.join("rg"), second.join("native")] {
+            fs::write(image, "MZ").unwrap();
+        }
         let path = env::join_paths([temp.path(), &shadow, &first, &second]).unwrap();
         // Lowercase, so a case-insensitive file system returns the files as named.
         let pathext = |pathext| Some(std::ffi::OsStr::new(pathext));
         let windows = pathext(".com;.exe;.ps1;.bat;.cmd");
         let find = |name: &str, pathext| find_executable_in(name, env::split_paths(&path), pathext);
 
-        // Windows runs the first shim, past extensionless scripts, such as a
-        // WSL npm install writes, and an npm PowerShell shim, none of which a
-        // launch can start; elsewhere the first script runs.
+        // Windows runs the first shim, ahead of an image beside it and past an
+        // extensionless script, such as a WSL npm install writes, and an npm
+        // PowerShell shim, neither of which a launch can start; elsewhere the
+        // first script runs.
         assert_eq!(find("rg", windows), Some(first.join("rg.cmd")));
         assert_eq!(find("rg", None), Some(shadow.join("rg")));
+        // With no shim, Windows runs an extensionless image past such a script.
+        assert_eq!(find("native", windows), Some(second.join("native")));
+        assert_eq!(find("native", None), Some(shadow.join("native")));
         // A name with an extension is taken as written, whatever PATHEXT
         // holds, and found as Windows launches it: past a path not ending in
         // `.exe`, the file with `.exe` appended when it exists.

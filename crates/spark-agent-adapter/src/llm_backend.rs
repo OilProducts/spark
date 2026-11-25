@@ -2417,11 +2417,14 @@ fn run_utility_process(
     use std::io::{Read, Write};
     use std::process::Stdio;
     let program = command.get_program().to_string_lossy().into_owned();
-    let mut child = command
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    // Its own group, so a timeout also stops what it starts, such as the agent
+    // an npm shim runs, before the call's directory goes.
+    crate::local_environment::configure_process_group(&mut command);
+    let mut child = crate::local_environment::spawn_process_group(command)
         .map_err(|error| format!("utility model launch failed for {program}: {error}"))?;
     let mut stdin = child.stdin.take();
     let input = input.to_owned();
@@ -2450,7 +2453,7 @@ fn run_utility_process(
             break status;
         }
         if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
+            crate::local_environment::terminate_process_group(child.id(), Some(&mut child));
             let _ = child.wait();
             return Err(utility_timeout_message(timeout));
         }

@@ -3519,6 +3519,71 @@ fn utility_cli_call_runs_outside_the_project_and_surfaces_timeouts_and_failures(
     assert!(error.contains("no text"), "{error}");
 }
 
+/// A utility call through a shim, as npm installs Claude Code and Codex, that
+/// starts the agent and outlives the call's timeout: the timeout stops the
+/// agent too before the call returns and removes its directory. The agent is
+/// this test binary, run again in that role.
+#[test]
+fn utility_cli_timeout_stops_the_agent_a_shim_started() {
+    const AGENT_DIR: &str = "SPARK_UTILITY_SHIM_AGENT_DIR";
+    const TEST: &str = "llm_backend_contracts::utility_cli_timeout_stops_the_agent_a_shim_started";
+    if let Some(dir) = std::env::var_os(AGENT_DIR) {
+        let dir = Path::new(&dir);
+        let started = format!(
+            "{}\n{}",
+            std::process::id(),
+            std::env::current_dir().unwrap().display()
+        );
+        fs::write(dir.join("agent.tmp"), started).unwrap();
+        fs::rename(dir.join("agent.tmp"), dir.join("agent")).unwrap();
+        thread::sleep(Duration::from_secs(60));
+        return;
+    }
+    let temp = tempfile::tempdir().expect("tempdir");
+    let exe = std::env::current_exe().unwrap();
+    #[cfg(windows)]
+    let shim = {
+        let shim = temp.path().join("claude.cmd");
+        let body = format!(
+            "@set \"{AGENT_DIR}={}\"\r\n@\"{}\" --exact {TEST}\r\n",
+            temp.path().display(),
+            exe.display()
+        );
+        fs::write(&shim, body).expect("shim");
+        shim
+    };
+    #[cfg(not(windows))]
+    let shim = {
+        use std::os::unix::fs::PermissionsExt;
+        let shim = temp.path().join("claude");
+        let body = format!(
+            "#!/bin/sh\n{AGENT_DIR}='{}' '{}' --exact {TEST} & wait\n",
+            temp.path().display(),
+            exe.display()
+        );
+        fs::write(&shim, body).expect("shim");
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod");
+        shim
+    };
+    let mut call = utility_call(
+        "claude-code",
+        json!({"spark.execution.settings": {"configuration": {"agents": {"native": {"claude_binary": shim}}}}}),
+    );
+    call.timeout = Duration::from_secs(5);
+
+    let error =
+        spark_agent_adapter::run_utility_call(&Client::default(), &call).expect_err("timeout");
+
+    assert!(error.contains("timed out"), "{error}");
+    let agent = fs::read_to_string(temp.path().join("agent")).expect("the shim started the agent");
+    let (pid, work_dir) = agent.split_once('\n').unwrap();
+    assert!(
+        !super::spark_exit_contracts::running(pid.parse().unwrap()),
+        "the agent outlived the timeout"
+    );
+    assert!(!Path::new(work_dir).exists(), "{work_dir} is removed");
+}
+
 type StreamScript = dyn Fn(usize, &Request) -> Result<Vec<StreamEvent>, AdapterError> + Send + Sync;
 
 /// An `openai` model whose streamed responses come from `script`, by call index.
