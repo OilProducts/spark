@@ -313,6 +313,7 @@ describe('Same-window multi-environment switching', () => {
         ['a missing ui_api_version', remoteAnswers(json(descriptor('env-win', { ui_api_version: undefined }))), 'Version mismatch with', /unversioned UI API · protocol v1/],
         ['an invalid ui_api_version', remoteAnswers(json(descriptor('env-win', { ui_api_version: '2' }))), 'Version mismatch with', /unversioned UI API/],
         ['a mismatched ui_api_version', remoteAnswers(json(descriptor('env-win', { ui_api_version: 3 }))), 'Version mismatch with', /Windows Workstation runs UI API v3/],
+        ['a mismatched ui_api_version while this machine gives no descriptor', { ...remoteAnswers(json(descriptor('env-win', { ui_api_version: 3 }))), '/environment': () => json({ detail: 'unavailable' }, 503) }, 'Version mismatch with', /Windows Workstation runs UI API v3 · protocol v1.*, while this page was loaded for UI API v2 · protocol v1/],
         ['a missing protocol_version', remoteAnswers(json(descriptor('env-win', { protocol_version: undefined }))), 'Version mismatch with', /UI API v2 · unversioned protocol/],
         ['an invalid protocol_version', remoteAnswers(json(descriptor('env-win', { protocol_version: 'v1' }))), 'Version mismatch with', /unversioned protocol/],
         ['a mismatched protocol_version', remoteAnswers(json(descriptor('env-win', { protocol_version: 2 }))), 'Version mismatch with', /UI API v2 · protocol v2/],
@@ -460,6 +461,9 @@ describe('Same-window multi-environment switching', () => {
         ['speak a version this bundle doesn\'t', { [WIN_AUTH]: () => json(descriptor('env-win', { ui_api_version: 3 })) }, 'Version mismatch with Windows Workstation'],
         ['answer as another environment', { [WIN_AUTH]: () => json(descriptor('env-other')) }, 'answered as environment env-other'],
         ['are refused by the proxy for another environment answering', { [WIN_AUTH]: () => proxyRefusal('env-other'), [WIN_PUBLIC]: () => proxyRefusal('env-other') }, 'answered as environment env-other'],
+        ['speak a version this bundle doesn\'t, though this machine gives no descriptor', { [WIN_AUTH]: () => json(descriptor('env-win', { ui_api_version: 3 })), '/environment': () => json({ detail: 'unavailable' }, 503) }, 'Version mismatch with Windows Workstation'],
+        ['answer with no identity, while the public descriptor names another environment', { [WIN_AUTH]: () => proxyRefusal(null), [WIN_PUBLIC]: () => json(descriptor('env-other')) }, 'answered as environment env-other'],
+        ['answer with no identity, while the proxy refuses the public descriptor for another environment', { [WIN_AUTH]: () => proxyRefusal(null), [WIN_PUBLIC]: () => proxyRefusal('env-other') }, 'answered as environment env-other'],
     ])('stops reconnecting a remote whose live handshakes never open and whose checks %s, until Retry passes a check', async (_finding, failures: Record<string, Route>, message) => {
         const routes: Record<string, Route> = {}
         const { user, remoteShell, checks } = await mountWindows(routes)
@@ -527,6 +531,48 @@ describe('Same-window multi-environment switching', () => {
         await user.click(screen.getByRole('button', { name: 'Retry' }))
         await waitFor(() => expect(remoteShell).toBeVisible())
         await waitFor(() => expect(winLive()).toBeDefined())
+    })
+
+    it('keeps a remote ready once Retry passes after pairing again during an outage, though an older check answers late with the revoked credential, and its live connection recovers', async () => {
+        const routes: Record<string, Route> = {}
+        const { user, remoteShell, checks } = await mountWindows(routes)
+        routes[WIN_AUTH] = () => proxyRefusal(null)
+        routes[WIN_PUBLIC] = () => json({ detail: 'Bad gateway' }, 502)
+        act(() => winLive()!.onerror?.(new Event('error')))
+        expect(await screen.findByTestId('remote-environment-gate')).toHaveTextContent('Couldn’t connect to Windows Workstation')
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+
+        // The next failure's check goes out with the credential that pairing again then replaces; it answers late.
+        const before = checks()
+        const revoked = deferred<Response>()
+        routes[WIN_AUTH] = () => revoked.promise
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+
+        // Paired again and back: Retry passes.
+        delete routes[WIN_AUTH]
+        delete routes[WIN_PUBLIC]
+        await user.click(screen.getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(remoteShell).toBeVisible())
+
+        await act(async () => revoked.resolve(json({ detail: 'Unauthorized' }, 401)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'ready', activeCheck: { status: 'ready' } })
+        expect(screen.queryByTestId('remote-environment-gate')).not.toBeInTheDocument()
+        expect(remoteShell).toBeVisible()
+
+        // Its live connection opens again, passes its own check and applies what it sends.
+        const applied = vi.fn()
+        window.addEventListener('spark:harness-checked', applied)
+        await waitFor(() => expect(winLive()).toBeDefined(), { timeout: 2000 })
+        const recovered = winLive()!
+        act(() => {
+            recovered.onopen?.(new Event('open'))
+            recovered.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'harness.checked' }) }))
+        })
+        await waitFor(() => expect(applied).toHaveBeenCalledTimes(1))
+        window.removeEventListener('spark:harness-checked', applied)
+        expect(getActiveEnvironmentState().status).toBe('ready')
+        expect(remoteShell).toBeVisible()
     })
 
     it('keeps a remote\'s live connection closed after a final check while a Run\'s journal, answered late, moves it, until Retry passes', async () => {

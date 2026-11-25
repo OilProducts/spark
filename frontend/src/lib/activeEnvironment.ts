@@ -217,56 +217,64 @@ export function describeEnvironmentVersion(descriptor: EnvironmentDescriptor): s
     ].filter(Boolean).join(' · ')
 }
 
-function describeCompatibilityMismatch(name: string, local: EnvironmentDescriptor, remote: EnvironmentDescriptor): string {
+function describeCompatibilityMismatch(name: string, local: EnvironmentDescriptor | null, remote: EnvironmentDescriptor): string {
     const expected = `UI API v${EXPECTED_UI_API_VERSION} · protocol v${EXPECTED_PROTOCOL_VERSION}`
-    if (!speaksThisBundle(local)) {
+    if (local && !speaksThisBundle(local)) {
         return `This page was loaded for ${expected}, but this Spark now runs ${describeEnvironmentVersion(local)}. Reload the page to load its current UI.`
     }
-    return `${name} runs ${describeEnvironmentVersion(remote)}, while this Spark runs ${describeEnvironmentVersion(local)}. Update Spark so both environments match.`
+    const here = local ? `this Spark runs ${describeEnvironmentVersion(local)}` : `this page was loaded for ${expected}`
+    return `${name} runs ${describeEnvironmentVersion(remote)}, while ${here}. Update Spark so both environments match.`
 }
 
 const unreachable = (error: string): Check => ({ status: 'unreachable', error, remoteDescriptor: null })
 
+// The environment that answered a descriptor request: the one its descriptor names, or the other one the proxy refused
+// with a 502 naming it in `answered_as`. None answered one the proxy refused naming none, such as a gateway's.
+const answeredAs = (result: PromiseSettledResult<EnvironmentDescriptor>): string | undefined => result.status === 'fulfilled'
+    ? result.value.environment_id
+    : result.reason instanceof ApiHttpError && result.reason.status === 502
+        ? asOptionalString((result.reason.payload as { answered_as?: unknown } | null)?.answered_as)
+        : undefined
+
 /**
  * Checks a linked environment before its workspace shows: its authenticated descriptor must name it, and it and this
- * machine, as each runs now, must both speak this bundle's versions. An older peer's public descriptor only explains a
- * mismatch. It throws when this machine or the link's proxy gives no answer, such as while the peer restarts.
+ * machine, as each runs now, must both speak this bundle's versions. A public descriptor, an older peer's or one a
+ * gateway's answer leaves to tell, only explains a mismatch or another identity. It throws when this machine or the
+ * link's proxy gives no answer, such as while the peer restarts.
  */
 async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     const name = linkLabelFor(environmentId)
-    const [localResult, remoteResult] = await Promise.allSettled([
+    const [localResult, authenticated] = await Promise.allSettled([
         fetchEnvironmentDescriptor(null),
         fetchEnvironmentDescriptor(environmentId, '/workspace/api/environment'),
     ])
-    const error = remoteResult.status === 'rejected' ? remoteResult.reason : null
+    const error = authenticated.status === 'rejected' ? authenticated.reason : null
     const status = error instanceof ApiHttpError ? error.status : 0
-    // A refused credential, or another environment answering at the link's origin, is final whatever this machine
-    // answers. The proxy refuses an answer naming another environment with a 502 whose `answered_as` names it; one
-    // naming none, such as a gateway's while the peer is down, is not final.
+    // A refused credential, another environment answering at the link's origin, or a peer speaking other versions is
+    // final whatever this machine answers.
     if (status === 401) {
         return { status: 'refused', remoteDescriptor: null, error: `${name} refused this Spark’s credential (HTTP 401): its peer token was revoked or is invalid. Remove the link in Settings and pair again with a new pairing code from ${name}.` }
     }
-    const answeredAs = remoteResult.status === 'fulfilled' ? remoteResult.value.environment_id
-        : status === 502 ? asOptionalString((error.payload as { answered_as?: unknown } | null)?.answered_as) : undefined
-    if (answeredAs !== undefined && answeredAs !== environmentId) {
-        return { status: 'refused', remoteDescriptor: null, error: `${name} answered as environment ${answeredAs}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.` }
+    // An older peer has no authenticated descriptor (404); an answer naming no environment (502) may be a gateway's while
+    // the peer is down. The public descriptor tells which environment, if any, is there.
+    const fallback = (status === 404 || status === 502) && answeredAs(authenticated) === undefined
+    const [found] = fallback ? await Promise.allSettled([fetchEnvironmentDescriptor(environmentId)]) : [authenticated]
+    const other = answeredAs(found)
+    if (other !== undefined && other !== environmentId) {
+        return { status: 'refused', remoteDescriptor: null, error: `${name} answered as environment ${other}, not the linked ${environmentId}. Remove the link in Settings and pair again with the Spark you mean.` }
+    }
+    const remote = found.status === 'fulfilled' ? found.value : null
+    const local = localResult.status === 'fulfilled' ? localResult.value : null
+    if (local) updateState({ localDescriptor: local })
+    if (remote && !(speaksThisBundle(remote) && (!local || speaksThisBundle(local)))) {
+        return { status: 'incompatible', error: describeCompatibilityMismatch(name, local, remote), remoteDescriptor: remote }
     }
     if (localResult.status === 'rejected') {
         throw new Error(`Could not verify this Spark server’s version: ${errorText(localResult.reason)}`)
     }
-    const local = localResult.value
-    updateState({ localDescriptor: local })
-    const mismatch = (remote: EnvironmentDescriptor): Check | null => speaksThisBundle(local) && speaksThisBundle(remote)
-        ? null
-        : { status: 'incompatible', error: describeCompatibilityMismatch(name, local, remote), remoteDescriptor: remote }
-    if (remoteResult.status === 'rejected') {
-        // An older peer has no authenticated descriptor (404), or answers without its identity, which the proxy refuses (502).
-        if (status !== 404 && status !== 502) throw error
-        const older = await fetchEnvironmentDescriptor(environmentId).catch(() => null)
-        return (older?.environment_id === environmentId ? mismatch(older) : null) ?? unreachable(errorText(error))
-    }
-    const remote = remoteResult.value
-    return mismatch(remote) ?? { status: 'ready', error: null, remoteDescriptor: remote }
+    if (fallback) return unreachable(errorText(error))
+    if (!remote) throw error
+    return { status: 'ready', error: null, remoteDescriptor: remote }
 }
 
 /** Silently loads this machine's descriptor and linked environments for the top-level switcher. */
@@ -350,6 +358,12 @@ export async function selectEnvironment(
     if (environmentId !== active) updateState({ selectedEnvironmentId: environmentId, status: 'checking', error: null })
     const check = await checkRemoteEnvironment(environmentId).catch((error: unknown) => unreachable(errorText(error)))
     if (seq !== switchSequence) return false
+    if (environmentId === active) {
+        // A Retry's check outdates the mounted environment's automatic ones still running, as one sent with a
+        // credential pairing again since replaced.
+        reverifySequence += 1
+        reverifying = false
+    }
     if (environmentId === active || check.status !== 'ready') {
         updateState(environmentId === active ? { activeCheck: check, ...check } : check)
         if (check.status === 'ready') options?.onActivated?.()
