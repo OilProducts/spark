@@ -1111,6 +1111,35 @@ describe('Same-window multi-environment switching', () => {
         expect(winLive()).toBeUndefined()
     })
 
+    it('shows this Spark upgraded under the page as soon as Settings\' Environment pairing & links refresh reports it while a switch\'s check waits on the remote, and never mounts the remote or opens its live connection once that check passes', async () => {
+        const user = userEvent.setup()
+        const peer = deferred<void>()
+        const routes: Record<string, Route> = { [WIN_AUTH]: () => peer.promise.then(() => json(WIN_ENV)) }
+        const backend = stubBackend(routes)
+        render(<App />)
+        await screen.findByTestId('environment-tab-env-win')
+        const localShell = workspaceMounted()
+        await openSystemSettings()
+        const card = (await screen.findByRole('heading', { name: 'Environment pairing & links' })).parentElement!
+        await user.click(tab('env-win'))
+        await screen.findByTestId('environment-checking')
+
+        // Only Settings' refresh asks this Spark for its descriptor now.
+        routes['/environment'] = upgradedLocal
+        await user.click(within(card).getByRole('button', { name: 'Refresh' }))
+        const gate = await screen.findByTestId('remote-environment-gate')
+        await waitFor(() => expect(gate).toHaveTextContent('Reload the page'))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: 'env-win', status: 'incompatible', localDescriptor: { ui_api_version: 3 } })
+
+        await act(async () => peer.resolve())
+        await act(() => new Promise((resolve) => setTimeout(resolve, 600)))
+        expect(gate).toHaveTextContent('Reload the page')
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: 'env-win', status: 'incompatible' })
+        expect(workspaceMounted()).toBe(localShell)
+        expect(backend.sentTo('env-win')).toEqual([WIN_AUTH])
+        expect(MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/`))).toEqual([])
+    })
+
     it('keeps a remote behind the reload guidance, its live connection closed, when this Spark answers a Retry sent before it reported its upgrade late, as it ran before', async () => {
         const routes: Record<string, Route> = {}
         const { user, remoteShell, checks } = await mountWindows(routes)

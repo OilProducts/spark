@@ -85,14 +85,17 @@ export function parseEnvironmentLinks(payload: unknown, endpoint: string): Envir
 
 /**
  * An environment's descriptor (`environmentId` `null`: this machine), by default the active one's: the public
- * `/environment`, or the authenticated `/workspace/api/environment`, which also checks the link's credential.
+ * `/environment`, or the authenticated `/workspace/api/environment`, which also checks the link's credential. This
+ * machine's public one is its report of the versions it runs, whoever asks, such as Settings: it is recorded.
  */
 export function fetchEnvironmentDescriptor(
     environmentId: string | null = state.activeEnvironmentId,
     path: '/environment' | '/workspace/api/environment' = '/environment',
 ): Promise<EnvironmentDescriptor> {
     const url = `${environmentProxyPrefix(environmentId)}${path}`
-    return fetchJsonWithValidation(url, undefined, `GET ${url}`, parseEnvironmentDescriptor)
+    const request = fetchJsonWithValidation(url, undefined, `GET ${url}`, parseEnvironmentDescriptor)
+    if (url === '/environment') recordLocalDescriptor(request)
+    return request
 }
 
 export function fetchLocalEnvironmentLinks(): Promise<EnvironmentLink[]> {
@@ -292,16 +295,15 @@ let localRequests = 0
 let mismatchSeenAt = 0
 
 /**
- * Asks this Spark for its descriptor and records the answer. A mismatch always counts, whatever answered before it; a
+ * Records this Spark's answer to a request for its descriptor. A mismatch always counts, whatever answered before it; a
  * compatible answer only to a request sent since the last mismatch was seen, as one sent before an upgrade can arrive
  * after it. A mismatch fails at once the linked environment mounted, its live connection closed, and shows on the one
  * chosen, whatever their checks still running find: a switch to another linked environment awaiting approval goes no
  * further, one back to this machine stays for open editors to answer, and a check of the one chosen still running,
  * though shown failed, only fills in its versions.
  */
-function fetchLocalDescriptor(): Promise<EnvironmentDescriptor> {
+function recordLocalDescriptor(request: Promise<EnvironmentDescriptor>) {
     const sent = ++localRequests
-    const request = fetchEnvironmentDescriptor(null)
     request.then((local) => {
         const compatible = speaksThisBundle(local)
         if (compatible && sent <= mismatchSeenAt) return
@@ -315,7 +317,6 @@ function fetchLocalDescriptor(): Promise<EnvironmentDescriptor> {
             updateState(stalePage(local, state.remoteDescriptor))
         }
     }, () => {})
-    return request
 }
 
 // The environment that answered a descriptor request: the one its descriptor names, or the other one the proxy refused
@@ -336,7 +337,7 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     const name = linkLabelFor(environmentId)
     // This machine's descriptor is asked for alongside. A refused credential, another identity, a link this Spark no
     // longer has or a peer speaking other versions doesn't wait for it, which then explains a mismatch only if already in.
-    const localRequest = fetchLocalDescriptor()
+    const localRequest = fetchEnvironmentDescriptor(null)
     let localSoFar = null as EnvironmentDescriptor | null
     localRequest.then((local) => { localSoFar = local }, () => {})
     const localAnswer = Promise.allSettled([localRequest])
@@ -377,7 +378,7 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
 /** Silently loads this machine's descriptor and linked environments for the top-level switcher, each applied as it answers. */
 export async function refreshLocalEnvironments(): Promise<void> {
     const seq = ++refreshSequence
-    const descriptor = fetchLocalDescriptor().catch(() => {})
+    const descriptor = fetchEnvironmentDescriptor(null).catch(() => {})
     const links = await fetchLocalEnvironmentLinks().catch(() => null)
     if (seq === refreshSequence) {
         // A listing tells whether the row a switch awaits is current; one it can't tell for doesn't go ahead.
