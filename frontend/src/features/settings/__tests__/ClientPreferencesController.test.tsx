@@ -7,7 +7,7 @@ import { applyTheme, cachedAppearance, type Appearance } from '@/lib/theme'
 import { deferred, switchEnvironment } from '@/test/environments'
 import userEvent from '@testing-library/user-event'
 
-vi.mock('../services/clientPreferences', () => ({ fetchClientPreferences: vi.fn(), saveClientPreferences: vi.fn(), completePreferenceInteraction: vi.fn() }))
+vi.mock('../services/clientPreferences', async (original) => ({ ...await original<typeof import('../services/clientPreferences')>(), fetchClientPreferences: vi.fn(), saveClientPreferences: vi.fn(), completePreferenceInteraction: vi.fn() }))
 const initial = useStore.getState()
 afterEach(() => { cleanup(); useStore.setState(initial, true); vi.resetAllMocks() })
 it('applies persisted preferences and saves completed interactions with revisions, retaining failed drafts', async () => {
@@ -191,33 +191,39 @@ it('keeps a newer setting made elsewhere when an automatic change refused after 
 
 const appearanceView = (appearance: Appearance): ClientPreferencesView => ({ client_id: 'browser-one', revision: appearance,
     stored: { editor_mode: null, editor_sidebar_width: null, appearance }, effective: { editor_mode: 'structured', editor_sidebar_width: 288, appearance } })
-// A page opened anew in `environmentId`, this machine's server storing Dark: its modules load fresh, and it
-// shows the browser's appearance without recording it, as main.tsx does at startup.
+// A page opened anew in `environmentId`: its modules load fresh and main.tsx starts it, the app itself
+// left out. This machine's server stores Dark, the remote one Light; a save keeps what it is sent.
 const openPage = async (environmentId: string | null) => {
     vi.resetModules()
+    vi.doMock('@/App.tsx', () => ({ default: () => null }))
     const services = await import('../services/clientPreferences')
     vi.mocked(services.fetchClientPreferences).mockImplementation(async (id) => appearanceView(id === null ? 'dark' : 'light'))
+    vi.mocked(services.saveClientPreferences).mockImplementation(async (base, preferences) => ({ ...base, revision: `${base.revision}+`,
+        stored: preferences, effective: { ...base.effective, ...preferences } as ClientPreferencesView['effective'] }))
     const environments = await import('@/test/environments')
     await environments.switchEnvironment(environmentId)
-    const theme = await import('@/lib/theme')
-    theme.applyTheme(theme.cachedAppearance(), false)
+    document.getElementById('root')?.remove()
+    document.body.append(Object.assign(document.createElement('div'), { id: 'root' }))
+    await act(async () => { await import('@/main.tsx') })
     const { ClientPreferencesController: Controller } = await import('../ClientPreferencesController')
-    // Shows the workspace of `id`, as a switch remounts it, once its preferences have loaded.
-    const show = async (id: string | null) => {
+    const { ClientPreferencesEditor: Settings } = await import('../ClientPreferencesEditor')
+    const { DialogProvider } = await import('@/components/app/dialog-controller')
+    // Shows the workspace of `id`, as a switch remounts it, with its Settings open when asked, once loaded.
+    const show = async (id: string | null, settings = false) => {
         cleanup()
         await environments.switchEnvironment(id)
         const loads = vi.mocked(services.fetchClientPreferences).mock.calls.length
-        render(<Controller />)
-        await waitFor(() => expect(services.fetchClientPreferences).toHaveBeenCalledTimes(loads + 1))
+        render(<><Controller />{settings ? <DialogProvider><Settings /></DialogProvider> : null}</>)
+        await waitFor(() => expect(services.fetchClientPreferences).toHaveBeenCalledTimes(loads + (settings ? 2 : 1)))
         await act(async () => {})
     }
-    return show
+    return { show, services }
 }
 
 it('restores this machine\'s saved appearance on the page\'s first load, to a new browser, and on no later or remote load', async () => {
     // A new browser, which has chosen no appearance, takes the one this machine saved.
     localStorage.removeItem('spark.appearance')
-    let show = await openPage(null)
+    let { show } = await openPage(null)
     await show(null)
     expect(cachedAppearance()).toBe('dark')
     expect(document.documentElement).toHaveClass('dark')
@@ -229,13 +235,13 @@ it('restores this machine\'s saved appearance on the page\'s first load, to a ne
 
     // Nor does a page opened here in a browser that chose its appearance.
     applyTheme('light')
-    show = await openPage(null)
+    ;({ show } = await openPage(null))
     await show(null)
     expect(cachedAppearance()).toBe('light')
 
     // A page opened on a remote environment in a new browser takes no appearance from it, nor later from this machine.
     localStorage.removeItem('spark.appearance')
-    show = await openPage('env-r')
+    ;({ show } = await openPage('env-r'))
     await show('env-r')
     await show(null)
     expect(cachedAppearance()).toBe('system')
@@ -244,12 +250,19 @@ it('restores this machine\'s saved appearance on the page\'s first load, to a ne
 
 it('keeps System saved from remote Settings across a reload into this machine, whose server stores Dark', async () => {
     applyTheme('light')
-    let show = await openPage('env-r')
-    await show('env-r')
-    // Settings there saves System, and applies it to this browser once saved.
-    applyTheme('system')
+    const remote = await openPage('env-r')
+    await remote.show('env-r', true)
+    // Settings there saves System, which applies to this browser once saved.
+    const user = userEvent.setup()
+    const theme = await screen.findByLabelText('Theme')
+    await waitFor(() => expect(theme).toHaveValue('light'))
+    await user.selectOptions(theme, 'system')
+    await user.click(screen.getByRole('button', { name: /^Save/ }))
+    await screen.findByText('Saved.')
+    expect(remote.services.saveClientPreferences).toHaveBeenCalledWith(appearanceView('light'), expect.objectContaining({ appearance: 'system' }), 'env-r')
+    expect(localStorage.getItem('spark.appearance')).toBe('system')
 
-    show = await openPage(null)
+    const { show } = await openPage(null)
     await show(null)
     expect(localStorage.getItem('spark.appearance')).toBe('system')
     expect(document.documentElement).not.toHaveClass('dark')

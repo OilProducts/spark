@@ -29,8 +29,11 @@ import {
 import type { FlowFile } from '@/lib/attractorClient';
 import { recordFlowLoadDebug, summarizeDiagnosticsForFlowLoadDebug } from '@/lib/flowLoadDebug';
 import {
+    closeFlowOpening,
     FLOW_SAVE_RECOVERED_EVENT,
+    FLOW_SAVE_RESTORED_EVENT,
     primeFlowSaveBaseline,
+    type RefusedFlowSave,
     saveFlowContent,
     sendPendingFlowSaves,
     waitForFlowSaves,
@@ -577,6 +580,11 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
             ),
         }),
     })
+    // Leaving the flow ends this opening of it, after the save of edits waiting above: a save refused
+    // from then on is reported by the flow's notice, never as the save state of whatever is shown here.
+    useEffect(() => () => {
+        if (flowName) closeFlowOpening(flowName, activeProjectPath, environmentId)
+    }, [activeProjectPath, environmentId, flowName])
 
     const persistLayoutState = useCallback((layout?: SavedFlowLayoutV1 | null, userControlled = true) => {
         if (!flowName || expandChildFlowsRef.current || getActiveEnvironmentId() !== environmentId) {
@@ -1040,7 +1048,7 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
                 }
                 primeFlowSaveBaseline(flowName, {
                     flow: buildAuthoredFlow(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, hydrated.flow),
-                });
+                }, data.files);
                 hydratedRef.current = true;
                 setIsHydrated(true);
                 useStore.getState().setFlowLoadFailure(null);
@@ -1540,6 +1548,22 @@ export function Editor({ isActive = true, title = null, flowList }: { isActive?:
         window.addEventListener(FLOW_SAVE_RECOVERED_EVENT, reloadRecovered);
         return () => window.removeEventListener(FLOW_SAVE_RECOVERED_EVENT, reloadRecovered);
     }, [activeProjectPath, environmentId, flowName, reloadFlow]);
+    // File edits refused as invalid out of sight come back as drafts to correct, with why, unsent.
+    useEffect(() => {
+        const restoreRefused = (event: Event) => {
+            const { name, projectPath, environmentId: refusedIn, content, message, problems } = (event as CustomEvent<RefusedFlowSave>).detail;
+            if (name !== flowName || projectPath !== activeProjectPath || refusedIn !== environmentId || !('files' in content)) return;
+            const deleted = content.deleted_files ?? [];
+            setFileDrafts(Object.fromEntries([...content.files.map((file) => [file.name, file.content]), ...deleted.map((file) => [file, null])]));
+            setFileSaveError({
+                files: [...content.files.map((file) => file.name), ...deleted],
+                problems: problems ?? flowProblems(message).map((problem) => ({ message: problem, file: null })),
+            });
+            setEditorMode('files');
+        };
+        window.addEventListener(FLOW_SAVE_RESTORED_EVENT, restoreRefused);
+        return () => window.removeEventListener(FLOW_SAVE_RESTORED_EVENT, restoreRefused);
+    }, [activeProjectPath, environmentId, flowName, setEditorMode]);
 
     // After a save conflict, the way out: drop the unsaved edits and load the flow as saved.
     const reloadSavedFlow = useCallback(async () => {

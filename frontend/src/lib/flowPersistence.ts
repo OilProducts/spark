@@ -1,6 +1,6 @@
 import { useStore, type SaveErrorKind } from '@/store'
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
-import { fetchPreviewValidated, saveFlowValidated, type FlowSaveContent } from '@/lib/attractorClient'
+import { fetchFlowPayloadValidated, fetchPreviewValidated, saveFlowValidated, type FlowFile, type FlowSaveContent } from '@/lib/attractorClient'
 import { recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 import { duplicateDecisionsInFlow } from '@/lib/canonicalFlowModel'
 import { flowProblemsFromDetail, type FlowProblem } from '@/features/editor/model/flowLoadFailure'
@@ -12,11 +12,13 @@ interface SaveFlowErrorDetail {
 }
 
 const FALLBACK_SAVE_FAILURE_MESSAGE = 'Flow save failed before confirmation from backend.'
-let lastSaveRequest: { name: string; content: FlowSaveContent; projectPath: string | null; environmentId: string | null } | null = null
+let lastSaveRequest: { name: string; content: FlowSaveContent; projectPath: string | null; environmentId: string | null; opened: FlowOpening | undefined } | null = null
 const persistedBaselineByScope = new Map<string, string>()
-// Which opening of each flow (its baseline primed from the server) is the latest.
-const openedByScope = new Map<string, number>()
-let openings = 0
+// One opening of a flow in the editor, from its load until the editor leaves it or loads it anew. A save
+// belongs to the opening it was made in: only that one shows its state, and a later one never gets it.
+// `files` are the flow's files as it loaded, until a save lands over them; `edited` once it saves edits.
+type FlowOpening = { files: string | null; closed: boolean; edited: boolean }
+const openedByScope = new Map<string, FlowOpening>()
 
 // Flows belong to a project in an environment; the same name elsewhere is a different flow.
 const activeProjectPath = () => useStore.getState().activeProjectPath
@@ -56,19 +58,32 @@ function buildErrorMessage(status: string | undefined, error: string | undefined
 }
 
 export async function retryLastSaveContent(): Promise<boolean> {
-    if (!lastSaveRequest) return false
-    return saveFlowContent(lastSaveRequest.name, lastSaveRequest.content, lastSaveRequest.projectPath, lastSaveRequest.environmentId)
+    const request = lastSaveRequest
+    // Never over the flow as it opened anew.
+    if (!request || openedByScope.get(getSaveScopeKey(request.name, request.projectPath, request.environmentId)) !== request.opened) return false
+    return saveFlowContent(request.name, request.content, request.projectPath, request.environmentId)
 }
 
+/** Starts an opening of the flow, loaded as `content` from `files`. */
 export function primeFlowSaveBaseline(
     name: string,
     content: FlowSaveContent,
+    files: FlowFile[] | null = null,
     projectPath = activeProjectPath(),
     environmentId = getActiveEnvironmentId(),
 ): void {
     const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
     persistedBaselineByScope.set(scopeKey, JSON.stringify(content))
-    openedByScope.set(scopeKey, ++openings)
+    openedByScope.set(scopeKey, { files: files && JSON.stringify(files), closed: false, edited: false })
+    if (refusedSaves.has(scopeKey)) refusedSavesChanged()
+}
+
+/** Ends the flow's opening as the editor leaves it: a save made in it is no longer shown there. */
+export function closeFlowOpening(name: string, projectPath: string | null, environmentId: string | null): void {
+    const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
+    const opening = openedByScope.get(scopeKey)
+    if (!opening) return
+    opening.closed = true
     if (refusedSaves.has(scopeKey)) refusedSavesChanged()
 }
 
@@ -81,20 +96,23 @@ export function resetFlowSaveBaselines(): void {
 }
 
 // Saves refused while their flow wasn't shown (another flow or environment open, or the flow opened
-// anew since), by scope, with the content saved before their edits. Their environment shows each until
-// it is dismissed or saved: once the flow has opened still as those edits found it, Retry may send them;
-// once it is saved since, nothing does, so the newer version stays.
-// ponytail: kept for this page's life; flow saves carry no revision, so Retry still replaces a version
-// saved elsewhere after the flow opened. Send the base revision if that matters.
+// anew since), by scope, with the files their edits were made over. Their environment shows each until
+// it is dismissed or recovered: once the flow has opened with those files and no edits since, its edits
+// may be sent again, or, refused as invalid files, opened in the editor to correct; a flow saved since
+// keeps its newer version.
+// ponytail: kept for this page's life. Edits made over a save that landed in their opening have no known
+// files, so they are only reported: read the files after each save if they need recovering too. Saves
+// carry no revision, so a save elsewhere between recovery's check and its save is still replaced.
 export type RefusedFlowSave = {
     name: string
     projectPath: string | null
     environmentId: string | null
     content: FlowSaveContent
     message: string
+    problems: FlowProblem[] | null
     retryable: boolean
-    expectedBaseline: string | null
-    opened: number | undefined
+    baseFiles: string | null
+    opened: FlowOpening | undefined
 }
 const refusedSaves = new Map<string, RefusedFlowSave>()
 const refusedSaveListeners = new Set<() => void>()
@@ -106,6 +124,8 @@ function refusedSavesChanged() {
 
 /** Dispatched once a refused save's edits are saved, so an editor showing the flow as it was reloads it. */
 export const FLOW_SAVE_RECOVERED_EVENT = 'spark:flow-save-recovered'
+/** Dispatched with a refused save whose files' edits the editor showing its flow opens to correct. */
+export const FLOW_SAVE_RESTORED_EVENT = 'spark:flow-save-restored'
 
 export function subscribeRefusedFlowSaves(listener: () => void): () => void {
     refusedSaveListeners.add(listener)
@@ -116,17 +136,51 @@ export function refusedFlowSaves(): RefusedFlowSave[] {
     return refusedSavesSnapshot
 }
 
-/** `hidden` until the flow opens again; then whether it is still as the refused edits found it. */
+/** `hidden` until the flow is open anew; then whether it opened with the refused edits' files and is unedited since. */
 export function refusedFlowSaveStatus(refused: RefusedFlowSave): 'hidden' | 'unchanged' | 'changed' {
-    const scopeKey = getSaveScopeKey(refused.name, refused.projectPath, refused.environmentId)
-    if (openedByScope.get(scopeKey) === refused.opened) return 'hidden'
-    return (persistedBaselineByScope.get(scopeKey) ?? null) === refused.expectedBaseline ? 'unchanged' : 'changed'
+    const current = openedByScope.get(getSaveScopeKey(refused.name, refused.projectPath, refused.environmentId))
+    if (!current || current === refused.opened || current.closed) return 'hidden'
+    return !current.edited && refused.baseFiles !== null && current.files === refused.baseFiles ? 'unchanged' : 'changed'
 }
 
-/** Sends a refused save's edits again, only while its flow, opened since, is still as they found it. */
-export async function retryRefusedFlowSave(refused: RefusedFlowSave): Promise<boolean> {
-    if (!refused.retryable || refusedFlowSaveStatus(refused) !== 'unchanged') return false
-    return saveFlowContent(refused.name, refused.content, refused.projectPath, refused.environmentId)
+/**
+ * Recovers a refused save while its flow, open anew, is unchanged since: sends its edits again or, refused
+ * as invalid files, opens them in the editor to correct. Edits waiting to save go first, as the newer ones;
+ * then the flow's files are read again, so a save landed meanwhile, from here or elsewhere, is kept.
+ */
+export function retryRefusedFlowSave(refused: RefusedFlowSave): Promise<boolean> {
+    const { name, projectPath, environmentId } = refused
+    const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
+    sendPendingFlowSaves()
+    const current = () => refusedSaves.get(scopeKey) === refused && refusedFlowSaveStatus(refused) === 'unchanged'
+    const update = (changes: Partial<RefusedFlowSave>) => {
+        if (refusedSaves.get(scopeKey) !== refused) return false
+        refusedSaves.set(scopeKey, { ...refused, ...changes })
+        refusedSavesChanged()
+        return false
+    }
+    return queueSave(scopeKey, environmentId, async () => {
+        if (!current()) return false
+        let files: FlowFile[]
+        try {
+            files = (await fetchFlowPayloadValidated(name, projectPath, undefined, environmentId)).files
+        } catch (error) {
+            return update({ message: `Couldn’t read the saved flow to recover these edits: ${error instanceof Error ? error.message : String(error)}` })
+        }
+        // Saved since, by any editor: never replaced.
+        if (JSON.stringify(files) !== refused.baseFiles) return update({ baseFiles: null })
+        if (!current()) return false
+        if (!refused.retryable) {
+            if (!('files' in refused.content)) return false
+            dismissRefusedFlowSave(refused)
+            window.dispatchEvent(new CustomEvent(FLOW_SAVE_RESTORED_EVENT, { detail: refused }))
+            return true
+        }
+        if (!(await persistFlowContent(name, refused.content, projectPath, environmentId, openedByScope.get(scopeKey), refused))) return false
+        dismissRefusedFlowSave(refused)
+        window.dispatchEvent(new CustomEvent(FLOW_SAVE_RECOVERED_EVENT, { detail: { name, projectPath, environmentId } }))
+        return true
+    })
 }
 
 export function dismissRefusedFlowSave(refused: RefusedFlowSave): void {
@@ -184,10 +238,13 @@ export function saveFlowContent(
     environmentId = getActiveEnvironmentId(),
 ): Promise<boolean> {
     const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
+    const opened = openedByScope.get(scopeKey)
+    return queueSave(scopeKey, environmentId, () => persistFlowContent(name, content, projectPath, environmentId, opened))
+}
+
+function queueSave(scopeKey: string, environmentId: string | null, run: () => Promise<boolean>): Promise<boolean> {
     const previous = lastSaveByScope.get(scopeKey)
-    const save = previous
-        ? previous.catch(() => false).then(() => persistFlowContent(name, content, projectPath, environmentId))
-        : persistFlowContent(name, content, projectPath, environmentId)
+    const save = previous ? previous.catch(() => false).then(run) : run()
     lastSaveByScope.set(scopeKey, save)
     inFlightSaves.set(save, environmentId)
     void save.finally(() => {
@@ -202,31 +259,37 @@ async function persistFlowContent(
     content: FlowSaveContent,
     projectPath: string | null,
     environmentId: string | null,
+    opened: FlowOpening | undefined,
+    recovery?: RefusedFlowSave,
 ): Promise<boolean> {
     const scopeKey = getSaveScopeKey(name, projectPath, environmentId)
     const serialized = JSON.stringify(content)
-    const expectedBaseline = persistedBaselineByScope.get(scopeKey) ?? null
-    const opened = openedByScope.get(scopeKey)
-    // The save state shown is this flow's, in the editor that sent the save: never another flow's or
-    // environment's, nor this flow's once opened anew, as it then shows what is saved, not these edits.
+    // The save state shown is this flow's, in the opening of it that made the save: never another flow's
+    // or environment's, nor this flow's once left or opened anew, nor a recovery's, which its notice shows.
     const shown = () => {
         const state = useStore.getState()
-        return getActiveEnvironmentId() === environmentId && state.activeFlow === name && state.activeProjectPath === projectPath
-            && openedByScope.get(scopeKey) === opened ? state : null
+        return !recovery && getActiveEnvironmentId() === environmentId && state.activeFlow === name && state.activeProjectPath === projectPath
+            && openedByScope.get(scopeKey) === opened && !opened?.closed ? state : null
     }
     // Retry repeats the save whose failure is shown; one refused out of sight is kept for its environment.
     const fail = (message: string, kind: SaveErrorKind, problems: FlowProblem[] | null = null) => {
         const state = shown()
+        const retryable = resolveSaveRemediation('error', kind)?.allowRetry ?? false
         if (state) {
-            lastSaveRequest = { name, content, projectPath, environmentId }
+            lastSaveRequest = { name, content, projectPath, environmentId, opened }
             if (kind === 'conflict') state.markSaveConflict(message)
             else state.markSaveFailure(message, kind, problems)
         } else {
-            const retryable = resolveSaveRemediation('error', kind)?.allowRetry ?? false
-            refusedSaves.set(scopeKey, { name, projectPath, environmentId, content, message, retryable, expectedBaseline, opened })
+            refusedSaves.set(scopeKey, recovery
+                ? { ...recovery, message, problems, retryable }
+                : { name, projectPath, environmentId, content, message, problems, retryable, baseFiles: opened?.files ?? null, opened })
             refusedSavesChanged()
         }
         return false
+    }
+    // Made before the flow opened anew, these edits would replace what it shows unseen: its notice keeps them.
+    if (openedByScope.get(scopeKey) !== opened) {
+        return fail('These edits weren’t sent: the flow opened again first.', 'unknown')
     }
     if (persistedBaselineByScope.get(scopeKey) === serialized) {
         recordFlowLoadDebug('save:skipped', name, {
@@ -237,6 +300,11 @@ async function persistFlowContent(
         const state = shown()
         if (state?.saveState === 'error' || state?.saveState === 'conflict') state.resetSaveState()
         return true
+    }
+    // Edits made in the flow's opening are newer than any refused before it opened.
+    if (opened && !recovery && !opened.edited) {
+        opened.edited = true
+        if (refusedSaves.has(scopeKey)) refusedSavesChanged()
     }
     const draftErrors = [...invalidDrafts.values()].filter((draft) => draft.environmentId === environmentId).map((draft) => draft.message)
     if (draftErrors.length > 0) {
@@ -306,14 +374,13 @@ async function persistFlowContent(
             saveStatus: status,
         })
         persistedBaselineByScope.set(scopeKey, serialized)
+        if (opened) opened.files = null
         shown()?.markSaveSuccess()
+        // A refused save's edits are carried by a later save made in the same opening of the flow.
         const refused = refusedSaves.get(scopeKey)
-        if (refused) {
-            // Its edits are saved: sent again, or carried by a later save of the flow before it opened anew.
-            const recovered = JSON.stringify(refused.content) === serialized
-            if (recovered || openedByScope.get(scopeKey) === refused.opened) refusedSaves.delete(scopeKey)
+        if (refused && !recovery && refused.opened === opened) {
+            refusedSaves.delete(scopeKey)
             refusedSavesChanged()
-            if (recovered) window.dispatchEvent(new CustomEvent(FLOW_SAVE_RECOVERED_EVENT, { detail: { name, projectPath, environmentId } }))
         }
         return true
     } catch (error) {

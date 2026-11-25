@@ -708,26 +708,28 @@ export function HistoryRoutingController() {
 }
 
 /**
- * Flow saves this environment refused while their flow wasn't shown, until dismissed or saved. Retry
- * shows once the flow has opened still as the edits found it; a flow saved since keeps its newer version.
+ * Flow saves this environment refused while their flow wasn't shown, until dismissed or recovered. Once
+ * the flow is open again unchanged since, Retry sends the edits, or Edit files opens file edits refused as
+ * invalid to correct; a flow saved since keeps its newer version.
  */
 export function RefusedFlowSaveNotices() {
     const [environmentId] = useState(getActiveEnvironmentId)
     const refused = useSyncExternalStore(subscribeRefusedFlowSaves, refusedFlowSaves)
     return refused.filter((save) => save.environmentId === environmentId).map((save) => {
         const status = refusedFlowSaveStatus(save)
-        const retry = save.retryable && status === 'unchanged'
-        const next = status === 'changed' ? 'It was saved since, so these edits weren’t saved over the newer version.'
-            : retry ? 'It is unchanged since: Retry saves these edits.'
-                // A flow never opened here, such as one whose creation was refused, has nothing to reopen.
-                : status === 'hidden' && save.retryable && save.expectedBaseline !== null ? 'Open the flow to try again.' : ''
+        const draft = !save.retryable && 'files' in save.content
+        const recover = (save.retryable || draft) && status === 'unchanged'
+        const next = status === 'changed' ? 'It may have been saved since, so these edits weren’t saved over it.'
+            : recover ? (draft ? 'It is unchanged since: Edit files opens these edits to correct them.' : 'It is unchanged since: Retry saves these edits.')
+                // Edits with no known files to compare, such as a refused creation's, can't be recovered.
+                : status === 'hidden' && (save.retryable || draft) && save.baseFiles !== null ? 'Open the flow to try again.' : ''
         return (
             <AppNotice
                 key={`${save.projectPath}\n${save.name}`}
                 data-testid="refused-flow-save"
                 title={`Couldn’t save ${save.name}`}
                 onDismiss={() => dismissRefusedFlowSave(save)}
-                actions={retry ? <Button type="button" variant="outline" size="xs" onClick={() => void retryRefusedFlowSave(save)}>Retry save</Button> : undefined}
+                actions={recover ? <Button type="button" variant="outline" size="xs" onClick={() => void retryRefusedFlowSave(save)}>{draft ? 'Edit files' : 'Retry save'}</Button> : undefined}
             >
                 {`${save.message} ${next}`.trim()}
             </AppNotice>

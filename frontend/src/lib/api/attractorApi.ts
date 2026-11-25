@@ -952,8 +952,9 @@ export async function fetchFlowPayloadValidated(
     flowName: string,
     projectPath: string | null,
     init?: RequestInit,
+    environmentId: string | null = getActiveEnvironmentId(),
 ): Promise<FlowPayloadResponse> {
-    const url = attractorUrl(`/api/flows/${encodeFlowPath(flowName)}${projectQuery(projectPath)}`)
+    const url = attractorUrl(`/api/flows/${encodeFlowPath(flowName)}${projectQuery(projectPath)}`, environmentId)
     return fetchJsonWithValidation(url, init, '/attractor/api/flows/{name}', parseFlowPayloadResponse)
 }
 
