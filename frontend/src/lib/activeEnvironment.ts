@@ -231,11 +231,8 @@ function dropRemovedDestination(previous: EnvironmentLink[], listed = true) {
         // runs only while it is the one chosen. A switch elsewhere awaiting approval carries on.
         outdated = reverifySequence
         if (state.selectedEnvironmentId === active) switchSequence += 1
-        // Those checks would have found this Spark's own mismatch, which this listing's refresh confirms afresh; failures
-        // they found for the old link no longer apply.
-        const local = state.localDescriptor
-        if (local && !speaksThisBundle(local)) applyActiveCheck(stalePage(local))
-        else if (gone) applyActiveCheck(unlinked(active))
+        // Failures they found for the old link no longer apply; this Spark's own mismatch still wins.
+        if (gone) applyActiveCheck(unlinked(active))
         else if (now && state.activeCheck.status !== 'ready') applyActiveCheck(relinked(now.label || now.environment_id))
     }
     const pending = state.selectedEnvironmentId
@@ -284,6 +281,27 @@ const stalePage = (local: EnvironmentDescriptor, remote: EnvironmentDescriptor |
     ({ status: 'incompatible', error: describeStalePage(local), remoteDescriptor: remote })
 const unlinked = (name: string): Check => ({ status: 'refused', remoteDescriptor: null, error: `This Spark no longer links ${name}. Link it again in Settings with a new pairing code from ${name}, then Retry.` })
 const relinked = (name: string): Check => ({ status: 'refused', remoteDescriptor: null, error: `${name} was linked anew since it was last checked. Retry to check the current link.` })
+/** This Spark's own mismatch, once it reports one, wins over whatever a check of a linked environment found. */
+const overStalePage = (check: Check): Check => {
+    const local = state.localDescriptor
+    return local && !speaksThisBundle(local) ? stalePage(local, check.remoteDescriptor) : check
+}
+
+/**
+ * Records this Spark's descriptor as it answers. One no longer speaking this bundle's versions fails at once the linked
+ * environment mounted, its live connection closed, and one chosen whose check concluded, even awaiting approval,
+ * whatever their checks still running find; a check of the one chosen still running finds it too.
+ */
+function recordLocalDescriptor(local: EnvironmentDescriptor) {
+    updateState({ localDescriptor: local })
+    if (speaksThisBundle(local)) return
+    const { activeEnvironmentId: active, selectedEnvironmentId: selected } = state
+    if (active !== null) applyActiveCheck(stalePage(local, state.activeCheck.remoteDescriptor))
+    if (selected !== null && selected !== active && state.status !== 'checking') {
+        switchSequence += 1
+        updateState(stalePage(local, state.remoteDescriptor))
+    }
+}
 
 // The environment that answered a descriptor request: the one its descriptor names, or the other one the proxy refused
 // with a 502 naming it in `answered_as`. None answered one the proxy refused naming none, such as a gateway's.
@@ -301,14 +319,14 @@ const answeredAs = (result: PromiseSettledResult<EnvironmentDescriptor>): string
  */
 async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     const name = linkLabelFor(environmentId)
-    // This machine's descriptor is asked for alongside. A refused credential, another identity or a peer speaking other
-    // versions doesn't wait for it, which then explains a mismatch only if already in.
+    // This machine's descriptor is asked for alongside. A refused credential, another identity, a link this Spark no
+    // longer has or a peer speaking other versions doesn't wait for it, which then explains a mismatch only if already in.
     const localRequest = fetchEnvironmentDescriptor(null)
     let localSoFar = null as EnvironmentDescriptor | null
-    // Shown as it answers: a listing that finds the link gone before the peer answers tells this Spark's mismatch by it.
+    // Recorded as it answers, which shows this Spark's own mismatch whatever this check concludes, or concluded already.
     localRequest.then((local) => {
         localSoFar = local
-        updateState({ localDescriptor: local })
+        recordLocalDescriptor(local)
     }, () => {})
     const localAnswer = Promise.allSettled([localRequest])
     const [authenticated] = await Promise.allSettled([fetchEnvironmentDescriptor(environmentId, '/workspace/api/environment')])
@@ -329,6 +347,7 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     }
     // This Spark's proxy answers both with a 404 once it no longer links the environment.
     const missing = status === 404 && found.status === 'rejected' && found.reason instanceof ApiHttpError && found.reason.status === 404
+    if (missing) return unlinked(name)
     const remote = found.status === 'fulfilled' ? found.value : null
     const incompatible = (peer: EnvironmentDescriptor, local: EnvironmentDescriptor | null): Check =>
         ({ status: 'incompatible', error: describeCompatibilityMismatch(name, local, peer), remoteDescriptor: peer })
@@ -336,9 +355,6 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     const [localResult] = await localAnswer
     const local = localResult.status === 'fulfilled' ? localResult.value : null
     if (local && !speaksThisBundle(local)) return stalePage(local, remote)
-    // A mismatch this Spark reported before wins over the link found gone, as it does in the listing.
-    const known = state.localDescriptor
-    if (missing) return known && !speaksThisBundle(known) ? stalePage(known) : unlinked(name)
     if (localResult.status === 'rejected') {
         throw new Error(`Could not verify this Spark server’s version: ${errorText(localResult.reason)}`)
     }
@@ -347,35 +363,25 @@ async function checkRemoteEnvironment(environmentId: string): Promise<Check> {
     return { status: 'ready', error: null, remoteDescriptor: remote }
 }
 
-/** Silently loads this machine's descriptor and linked environments for the top-level switcher. */
+/** Silently loads this machine's descriptor and linked environments for the top-level switcher, each applied as it answers. */
 export async function refreshLocalEnvironments(): Promise<void> {
     const seq = ++refreshSequence
-    const [descriptorResult, linksResult] = await Promise.allSettled([
-        fetchEnvironmentDescriptor(null),
-        fetchLocalEnvironmentLinks(),
-    ])
-    if (seq !== refreshSequence) return
-    const patch: Partial<ActiveEnvironmentState> = {}
-    if (descriptorResult.status === 'fulfilled') {
-        patch.localDescriptor = descriptorResult.value
+    const descriptor = fetchEnvironmentDescriptor(null).then(recordLocalDescriptor, () => {})
+    const links = await fetchLocalEnvironmentLinks().catch(() => null)
+    if (seq === refreshSequence) {
+        // A listing tells whether the row a switch awaits is current; one it can't tell for doesn't go ahead.
+        const unknown = unconfirmed && !links
+        unconfirmed = false
+        if (links) {
+            const previous = state.links
+            updateState({ links, linksLoaded: true })
+            dropRemovedDestination(previous)
+        } else if (unknown) {
+            switchSequence += 1
+            showActiveEnvironment()
+        }
     }
-    if (linksResult.status === 'fulfilled') {
-        patch.links = linksResult.value
-        patch.linksLoaded = true
-    }
-    const previous = state.links
-    // A listing tells whether the row a switch awaits is current; one it can't tell for doesn't go ahead.
-    const unknown = unconfirmed && !patch.links
-    unconfirmed = false
-    if (Object.keys(patch).length > 0) {
-        updateState(patch)
-    }
-    if (patch.links) {
-        dropRemovedDestination(previous)
-    } else if (unknown) {
-        switchSequence += 1
-        showActiveEnvironment()
-    }
+    await descriptor
 }
 
 /** Resolves once no change made in Settings leaves the row switch `seq` awaits in doubt, or another switch came first. */
@@ -442,7 +448,8 @@ function commitEnvironment(seq: number, environmentId: string | null, check: Che
  * no conclusive answer, such as a gateway's while the peer is down, leaves a final failure as it was, so the workspace
  * and its live connection stay closed until a check passes or the user switches environments.
  */
-function applyActiveCheck(check: Check) {
+function applyActiveCheck(found: Check) {
+    const check = overStalePage(found)
     if (check.status === 'unreachable' && isFinalCheck(state.activeCheck)) return
     updateState(state.selectedEnvironmentId === state.activeEnvironmentId ? { activeCheck: check, ...check } : { activeCheck: check })
 }
@@ -476,11 +483,12 @@ export async function selectEnvironment(
     // Retrying the mounted environment keeps it hidden behind its error until the check passes.
     if (environmentId !== active) updateState({ selectedEnvironmentId: environmentId, status: 'checking', error: null })
     const since = reverifySequence
-    const check = await checkRemoteEnvironment(environmentId).catch((error: unknown) => unreachable(errorText(error)))
+    const found = await checkRemoteEnvironment(environmentId).catch((error: unknown) => unreachable(errorText(error)))
     await listingSettles(seq)
     if (seq !== switchSequence) return false
     // An automatic check sent after this Retry that concluded first, such as one finding the link gone, decides.
     if (environmentId === active && outdated > since) return false
+    const check = overStalePage(found)
     if (environmentId === active && check.status !== 'unreachable') {
         // A Retry's conclusive check outdates the mounted environment's automatic ones still running, as one sent with
         // a credential pairing again since replaced. One with no conclusive answer leaves theirs to land, such as a

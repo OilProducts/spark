@@ -851,23 +851,31 @@ describe('Same-window multi-environment switching', () => {
         await waitFor(() => expect(winLive()).toBeDefined())
     })
 
-    it('shows this Spark upgraded under the page, with reload guidance and its live connection closed, though a reconnect\'s check then finds both descriptors of the remote gone', async () => {
+    it('shows this Spark upgraded under the page, with reload guidance and its live connection closed, as soon as the switcher\'s refresh reports it, though Retry then finds both descriptors of the remote gone before this Spark answers', async () => {
         const routes: Record<string, Route> = {}
-        const { remoteShell } = await mountWindows(routes)
+        const { user, remoteShell, checks } = await mountWindows(routes)
         const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
         // This Spark, upgraded under the page, reports it to the switcher's next refresh.
         routes['/environment'] = upgradedLocal
         act(() => { window.dispatchEvent(new Event('focus')) })
-        await waitFor(() => expect(getActiveEnvironmentState().localDescriptor?.ui_api_version).toBe(3))
+        const gate = await screen.findByTestId('remote-environment-gate')
+        await waitFor(() => expect(gate).toHaveTextContent('Reload the page'))
+        expect(winLive()).toBeUndefined()
 
-        // Another tab removed the link, which this tab's listing doesn't show yet: the failed connection's check finds
-        // both descriptors missing at this Spark's proxy.
+        // Another tab removed the link, which this tab's listing doesn't show yet: Retry finds both descriptors missing at
+        // this Spark's proxy while this Spark's descriptor is still on its way.
+        const local = deferred<void>()
+        routes['/environment'] = () => local.promise.then(upgradedLocal)
         const noLink = () => json({ detail: 'No link to environment "env-win".' }, 404)
         routes[WIN_AUTH] = noLink
         routes[WIN_PUBLIC] = noLink
-        act(() => winLive()!.onerror?.(new Event('error')))
-        const gate = await screen.findByTestId('remote-environment-gate')
-        await waitFor(() => expect(gate).toHaveTextContent('Reload the page'))
+        const before = checks()
+        await user.click(within(gate).getByRole('button', { name: 'Retry' }))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+        await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+        expect(gate).toHaveTextContent('Reload the page')
+        expect(gate).not.toHaveTextContent('This Spark no longer links')
+        await act(async () => local.resolve())
         const tried = connects()
         await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
         expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'incompatible', activeCheck: { status: 'incompatible' } })
@@ -908,6 +916,74 @@ describe('Same-window multi-environment switching', () => {
         await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
         expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'incompatible', activeCheck: { status: 'incompatible' } })
         expect(gate).toHaveTextContent('this Spark now runs UI API v3')
+        expect(gate).not.toHaveTextContent('This Spark no longer links')
+        expect(remoteShell).not.toBeVisible()
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+    })
+
+    it('shows this Spark upgraded under the page, with reload guidance and its live connection closed, when a reconnect\'s check, which the remote answers 503, gets this Spark\'s upgraded descriptor after a listing found the remote unlinked', async () => {
+        let links = [WIN_LINK]
+        const routes: Record<string, Route> = { [LINKS]: () => json({ links }) }
+        const { remoteShell, checks } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+
+        // The failed connection's check gets Windows' 503 and waits on this Spark's descriptor.
+        const local = deferred<void>()
+        routes['/environment'] = () => local.promise.then(upgradedLocal)
+        routes[WIN_AUTH] = () => json({ detail: 'connection refused' }, 503)
+        const before = checks()
+        act(() => winLive()!.onerror?.(new Event('error')))
+        await waitFor(() => expect(checks()).toBe(before + 1))
+
+        // Another tab removes the link: this tab's listing shows it, though this Spark gives it no descriptor.
+        routes['/environment'] = () => json({ detail: 'unavailable' }, 503)
+        links = []
+        act(() => { window.dispatchEvent(new Event('focus')) })
+        const gate = await screen.findByTestId('remote-environment-gate')
+        await waitFor(() => expect(gate).toHaveTextContent('This Spark no longer links'))
+        const tried = connects()
+
+        // The check, outdated by that listing, then gets this Spark's upgraded descriptor.
+        await act(async () => local.resolve())
+        await waitFor(() => expect(gate).toHaveTextContent('Reload the page'))
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'incompatible', activeCheck: { status: 'incompatible' } })
+        expect(gate).toHaveTextContent('this Spark now runs UI API v3')
+        expect(gate).not.toHaveTextContent('This Spark no longer links')
+        expect(remoteShell).not.toBeVisible()
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+    })
+
+    it('shows the unlinked gate, and stops reconnecting, as soon as a reconnect\'s check finds both descriptors of the remote gone, though this Spark\'s descriptor has not answered, and this Spark upgraded under the page once it does', async () => {
+        const routes: Record<string, Route> = {}
+        const { backend, remoteShell } = await mountWindows(routes)
+        const connects = () => MockEventSource.instances.filter((source) => source.url.startsWith(`${WIN}/workspace/api/live/events`)).length
+        const localAsked = () => backend.requests.filter((request) => request.url === '/environment').length
+        const local = deferred<void>()
+        routes['/environment'] = () => local.promise.then(upgradedLocal)
+        const noLink = () => json({ detail: 'No link to environment "env-win".' }, 404)
+        routes[WIN_AUTH] = noLink
+        routes[WIN_PUBLIC] = noLink
+        const asked = localAsked()
+        act(() => winLive()!.onerror?.(new Event('error')))
+
+        // This Spark's descriptor is still on its way.
+        const gate = await screen.findByTestId('remote-environment-gate')
+        await waitFor(() => expect(gate).toHaveTextContent('This Spark no longer links'))
+        expect(localAsked()).toBe(asked + 1)
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'refused', activeCheck: { status: 'refused' } })
+        expect(remoteShell).not.toBeVisible()
+        const tried = connects()
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 1200)))
+        expect(connects()).toBe(tried)
+        expect(winLive()).toBeUndefined()
+
+        await act(async () => local.resolve())
+        await waitFor(() => expect(gate).toHaveTextContent('Reload the page'))
+        await act(() => new Promise((resolve) => window.setTimeout(resolve, 600)))
+        expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: 'env-win', status: 'incompatible', activeCheck: { status: 'incompatible' } })
         expect(gate).not.toHaveTextContent('This Spark no longer links')
         expect(remoteShell).not.toBeVisible()
         expect(connects()).toBe(tried)
@@ -1636,6 +1712,56 @@ describe('Same-window multi-environment switching', () => {
             act(() => { window.dispatchEvent(new Event('focus')) })
             await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
             expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready', links: [WIN_RELINKED] })
+            expect(workspaceMounted()).toBe(shell)
+            expect(shell).toBeVisible()
+            expect(draftField()).toHaveValue('http://draft.example')
+            expect(backend.sentTo('env-win')).toEqual([WIN_AUTH])
+        })
+
+        it.each([
+            ['at another origin', { ...WIN_LINK, origin: 'http://env-win-new:8000' }],
+            ['at the same origin, later', { ...WIN_LINK, created_at: '2026-11-25T00:00:00Z' }],
+        ])('drops a switch awaiting approval once a listing shows its destination linked anew %s, though this Spark\'s descriptor has not answered, never mounting the new link under the old one\'s check', async (_how, replacement) => {
+            let links = [WIN_LINK]
+            const routes: Record<string, Route> = { [LINKS]: () => json({ links }) }
+            const { user, backend, shell } = await renderWithDraft(routes)
+            await requestSwitch(user)
+            await screen.findByRole('alertdialog', { name: 'Discard unsaved settings?' })
+
+            // This tab's next listing shows the new link while this Spark's descriptor is still on its way.
+            const local = deferred<void>()
+            routes['/environment'] = () => local.promise.then(() => json(LOCAL_ENV))
+            const asked = backend.requests.filter((request) => request.url === '/environment').length
+            links = [replacement]
+            act(() => { window.dispatchEvent(new Event('focus')) })
+            await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+            expect(backend.requests.filter((request) => request.url === '/environment').length).toBeGreaterThan(asked)
+            expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready', links: [replacement] })
+            expect(draftField()).toHaveValue('http://draft.example')
+
+            await act(async () => local.resolve())
+            await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+            expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: null, status: 'ready' })
+            expect(workspaceMounted()).toBe(shell)
+            expect(shell).toBeVisible()
+            expect(draftField()).toHaveValue('http://draft.example')
+            expect(backend.sentTo('env-win')).toEqual([WIN_AUTH])
+        })
+
+        it('drops a switch awaiting approval once this Spark reports it was upgraded under the page, with reload guidance, keeping this workspace and its draft', async () => {
+            const routes: Record<string, Route> = {}
+            const { user, backend, shell } = await renderWithDraft(routes)
+            await requestSwitch(user)
+            await screen.findByRole('alertdialog', { name: 'Discard unsaved settings?' })
+
+            routes['/environment'] = upgradedLocal
+            act(() => { window.dispatchEvent(new Event('focus')) })
+            await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+            const gate = await screen.findByTestId('remote-environment-gate')
+            expect(gate).toHaveTextContent('Reload the page')
+            expect(getActiveEnvironmentState()).toMatchObject({ activeEnvironmentId: null, selectedEnvironmentId: 'env-win', status: 'incompatible' })
+
+            await user.click(within(gate).getByRole('button', { name: 'Return to this machine' }))
             expect(workspaceMounted()).toBe(shell)
             expect(shell).toBeVisible()
             expect(draftField()).toHaveValue('http://draft.example')
