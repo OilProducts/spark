@@ -18,6 +18,13 @@ const { maxFiles, maxFileBytes, maxMessageBytes } = CONVERSATION_ATTACHMENT_LIMI
 /** Images the server serves inline and the providers take natively. */
 export const PREVIEWABLE_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 
+// Entries you removed: a send that captured them before then leaves them out, and nothing puts them back.
+// ponytail: one id per removal, kept for the page's life.
+const removedLocalIds = new Set<string>()
+
+/** A send's entries, less any you have removed since. */
+export const keptAttachments = (entries: ComposerAttachment[]) => entries.filter((entry) => !removedLocalIds.has(entry.localId))
+
 function readDraft(conversationId: string): ComposerAttachment[] {
     return useStore.getState().homeConversationSessionsById[conversationId]?.attachments ?? EMPTY
 }
@@ -135,6 +142,7 @@ export function useComposerAttachments({
         updateDraft(activeConversationId, (draft) => draft.filter((item) => item.localId !== localId))
         release(removed)
         removed.forEach((entry) => {
+            removedLocalIds.add(entry.localId)
             if (entry.attachment) {
                 // ponytail: a failed delete is left for the server's 24-hour cleanup.
                 void deleteConversationAttachmentValidated(activeConversationId, entry.attachment.id, entry.projectPath).catch(() => undefined)
@@ -152,9 +160,21 @@ export function useComposerAttachments({
     }
 }
 
+/** A draft with a refused send's entries, less any removed, back ahead of those added since. */
+const withRefused = (draft: ComposerAttachment[], entries: ComposerAttachment[]) => [
+    ...keptAttachments(entries).filter((entry) => !draft.some((item) => item.localId === entry.localId)),
+    ...draft,
+]
+
+/** Whether a refused send's entries fit back in its chat's draft within one message's limits. */
+export function refusedAttachmentsFit(conversationId: string, entries: ComposerAttachment[]): boolean {
+    const merged = withRefused(readDraft(conversationId), entries)
+    return merged.length <= maxFiles && merged.reduce((sum, entry) => sum + entry.file.size, 0) <= maxMessageBytes
+}
+
 /** Puts a refused send's entries back in the chat they were sent in, ahead of any added since. */
 export function restoreRefusedAttachments(conversationId: string, entries: ComposerAttachment[]) {
-    updateDraft(conversationId, (draft) => [...entries.filter((entry) => !draft.some((item) => item.localId === entry.localId)), ...draft])
+    updateDraft(conversationId, (draft) => withRefused(draft, entries))
 }
 
 /** Drops sent entries from a chat's draft; their uploads now belong to the turn. */

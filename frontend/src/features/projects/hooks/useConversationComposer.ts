@@ -26,12 +26,16 @@ import type { AppState } from '@/state/store-types'
 import type { PendingConversationTurnState, PendingUserMessage } from '../model/conversationState'
 import type { NormalizedConversationRecord } from '../model/projectsHomeState'
 import type { ComposerAttachment } from '../model/types'
-import { clearSentAttachments, restoreRefusedAttachments } from './useComposerAttachments'
+import { clearSentAttachments, keptAttachments, refusedAttachmentsFit, restoreRefusedAttachments } from './useComposerAttachments'
 
 // Prevents duplicate turn submits while a turn waits for an in-flight settings save to commit. A chat
 // is one in its environment's chats as shown: the same conversation ID elsewhere, or once a switch away
 // and back starts them anew, is another chat.
 const awaitingSettingsTurn = new Set<string>()
+
+// The projects' loads each project's refused sends went back in. One goes back per load, so a chat no list
+// names, opened again for its send, never takes the place of another's.
+const putBackIn = new WeakMap<AppState['projectRegistry'], Set<string>>()
 
 /**
  * Applies what a refused turn puts back once its environment is shown and `ready`, such as with its project's
@@ -322,15 +326,25 @@ export function useConversationComposer({
             if (isShown(environmentId)) useStore.getState().updateHomeProjectSession(activeProjectPath, { chatDraft: draft })
         }
         // A send that doesn't go puts its text, files and `error` back in the chat it was sent in while that is
-        // open, now or once it opens again, ahead of anything added since; another chat, or a new one, opened
-        // meanwhile keeps its own draft. A chat no list names, as before its first send, opens again for them as
-        // its environment's projects load, where no chat is yet one you chose.
+        // open, now or once it opens again, ahead of anything added since, once its files fit there with those
+        // added since; another chat, or a new one, opened meanwhile keeps its own draft. A chat no list names, as
+        // before its first send, opens again for them as its environment's projects load, where no chat is yet
+        // one you chose, unless another refused send of the project went back in that load.
         // ponytail: held for the page's life if a listed chat never opens again, as when it is deleted.
         const putBack = (error: string) => {
             const openChat = () => useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId
-            const loading = (state: AppState, previous?: AppState) => previous !== undefined && !projectShown(previous) && projectShown(state)
-            whenShownAndReady(environmentId, (state, previous) => projectShown(state)
-                && (openChat() === conversationId || (!listed && loading(state, previous))), () => {
+            const reopens = (state: AppState, previous?: AppState) => !listed && previous !== undefined
+                && !projectShown(previous) && !putBackIn.get(state.projectRegistry)?.has(activeProjectPath)
+            let held = false
+            whenShownAndReady(environmentId, (state, previous) => {
+                if (!projectShown(state) || (openChat() !== conversationId && !reopens(state, previous))) return false
+                if (refusedAttachmentsFit(conversationId, sending)) return true
+                if (!held) setPanelError(`${error} It comes back once its files fit this chat's draft.`)
+                held = true
+                return false
+            }, () => {
+                const { projectRegistry } = useStore.getState()
+                putBackIn.set(projectRegistry, (putBackIn.get(projectRegistry) ?? new Set()).add(activeProjectPath))
                 if (openChat() !== conversationId) useStore.getState().updateProjectSessionState(activeProjectPath, { conversationId })
                 setDraft([chatDraft, currentDraft()].filter(Boolean).join('\n\n'))
                 if (sending.length > 0) restoreRefusedAttachments(conversationId, sending)
@@ -353,13 +367,16 @@ export function useConversationComposer({
             if (!live()) putBack('The message was not sent: its chat settings did not save.')
             return
         }
-        // Switched away while settings saved: the message still goes, but nothing here shows it.
-        if (live()) setPanelError(null)
         const messageToSend = parsedCommand?.kind === 'switch_and_send'
             ? parsedCommand.message
             : parsedCommand?.kind === 'switch_mode' ? '' : trimmed
+        // Files removed while its settings saved stay out of it, and with them gone it may carry nothing.
+        const kept = keptAttachments(sending)
+        if (!messageToSend && kept.length === 0) return
+        // Switched away while settings saved: the message still goes, but nothing here shows it.
+        if (live()) setPanelError(null)
         const chatMode = parsedCommand?.chatMode ?? null
-        const sentAttachments = sending.map((entry) => entry.attachment!)
+        const sentAttachments = kept.map((entry) => entry.attachment!)
         const attachmentIds = sentAttachments.map((attachment) => attachment.id)
         // The server records the message under this id, so the pending entry is
         // replaced in place and a resent request cannot add a second turn.
@@ -392,7 +409,7 @@ export function useConversationComposer({
             chat_mode: chatMode,
         }, environmentId), () => {
             // Accepted: clear what was sent, keeping anything attached meanwhile.
-            clearSentAttachments(conversationId, sending.map((entry) => entry.localId))
+            clearSentAttachments(conversationId, kept.map((entry) => entry.localId))
         })
         if (refusal !== null) {
             updatePendingMessages((messages) => messages.filter((message) => message.id !== clientTurnId))
