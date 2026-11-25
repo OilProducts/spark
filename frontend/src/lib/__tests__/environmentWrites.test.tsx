@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ClientPreferencesController } from '@/features/settings/ClientPreferencesController'
 import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
 import { useConversationComposer } from '@/features/projects/hooks/useConversationComposer'
+import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState'
+import { defaultProjectChoice } from '@/features/projects/model/projectChoices'
 import { useProjectConversationCache } from '@/features/projects/hooks/useProjectConversationCache'
 import { useProjectsHomeController } from '@/features/projects/hooks/useProjectsHomeController'
 import { useProjectRegistryBootstrap } from '@/features/projects/hooks/useProjectRegistryBootstrap'
@@ -906,6 +908,43 @@ it.each([[0, 4, 5], [1, 5, 4], [0, 5, 6]])('keeps a restored chat open and sendi
     expect(next.result.current.surfaceProps.chatDraft).toBe('Hello there')
     expect(next.result.current.surfaceProps.panelError).toBe('unavailable')
     next.unmount()
+})
+
+it('makes a project the last used when its saves answer after a switch away and back, keeping the chat open since and the newer use', async () => {
+    const project = (path: string, usedAt: string, active: string | null) => ({ project_id: path, project_path: path, display_name: path, is_favorite: false, active_conversation_id: active, last_accessed_at: usedAt })
+    const saves: ReturnType<typeof deferred<unknown>>[] = []
+    answer = (url, method) => {
+        if (method === 'GET' && url.endsWith('/workspace/api/projects')) return [project(PROJECT, '2026-09-01T00:00:00Z', 'conversation-2'), project('/tmp/other', '2026-10-01T00:00:00Z', null)]
+        if (method === 'PATCH' && url.endsWith('/projects/state')) {
+            saves.push(deferred<unknown>())
+            return saves.at(-1)!.promise
+        }
+        return {}
+    }
+    const show = async (environmentId: string | null) => {
+        await switchEnvironment(environmentId)
+        resetStoreForEnvironmentSwitch(environmentId === null)
+    }
+    const registry = () => useStore.getState().projectRegistry
+    // Two runs start in the project; another environment shows, then this one again.
+    const used = [markProjectUsed(PROJECT), markProjectUsed(PROJECT)]
+    await waitFor(() => expect(saves).toHaveLength(2))
+    await show('env-r')
+    await show(null)
+    // The projects load before the saves answer, listing the chat open since.
+    const loaded = renderHook(() => useProjectRegistryBootstrap({ hydrateProjectRegistry: useStore.getState().hydrateProjectRegistry }))
+    await waitFor(() => expect(Object.keys(registry())).toEqual([PROJECT, '/tmp/other']))
+    expect(defaultProjectChoice(registry())).toBe('/tmp/other')
+
+    // The later save answers first; the earlier one's older use doesn't replace it, and neither opens the chat it names.
+    saves[1].resolve(project(PROJECT, '2026-11-02T00:00:00Z', 'conversation-1'))
+    await used[1]
+    saves[0].resolve(project(PROJECT, '2026-11-01T00:00:00Z', 'conversation-1'))
+    await used[0]
+    expect(defaultProjectChoice(registry())).toBe(PROJECT)
+    expect(registry()[PROJECT]?.lastAccessedAt).toBe('2026-11-02T00:00:00Z')
+    expect(useStore.getState().projectSessionsByPath[PROJECT]?.conversationId).toBe('conversation-2')
+    loaded.unmount()
 })
 
 it('leaves this environment\'s chats and selection as they are when a chat delete\'s refresh finishes after a switch', async () => {

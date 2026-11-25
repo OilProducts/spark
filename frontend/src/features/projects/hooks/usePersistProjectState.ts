@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 
 import { getActiveEnvironmentId } from '@/lib/activeEnvironment'
+import { normalizeProjectPath } from '@/lib/projectPaths'
 import { updateProjectStateValidated } from '@/lib/workspaceClient'
 import { homeSessionStart, opensByItself } from '@/state/homeSessionSlice'
 import { useStore } from '@/store'
@@ -15,19 +16,30 @@ type PersistProjectStatePatch = {
   is_favorite?: boolean | null
 }
 
+const usedAt = (at: string | null | undefined) => Date.parse(at ?? '') || 0
+
 /**
- * Saves a project's state; its answer shows only while the environment it was saved in is shown, and not
- * once a switch away and back has loaded its projects anew, so it can't move the chat opened since. The
- * answer to the app's own choice of a chat, such as a project's latest once its list loads, leaves whichever
- * chat is open by then, such as a refused chat opened again in its place.
+ * Saves a project's state; its answer shows only while the environment it was saved in is shown. An answer
+ * that lands once a switch away and back has loaded the projects anew, or that answers the app's own choice
+ * of a chat, such as a project's latest once its list loads, leaves whichever chat is open by then, such as
+ * a refused chat opened again in its place, and any newer use or pin; it updates only a project still listed,
+ * since a lone entry in a list not yet loaded would stop that list's load.
  */
 async function sendProjectState(projectPath: string, patch: PersistProjectStatePatch, upsert: UpsertProjectRegistryEntry) {
   const environmentId = getActiveEnvironmentId()
   const session = homeSessionStart()
   const byItself = opensByItself()
-  const project = await updateProjectStateValidated({ project_path: projectPath, ...patch })
-  if (getActiveEnvironmentId() !== environmentId || homeSessionStart() !== session) return
-  upsert({ ...toHydratedProjectRecord(project), ...(byItself ? { activeConversationId: null } : {}) })
+  const project = toHydratedProjectRecord(await updateProjectStateValidated({ project_path: projectPath, ...patch }))
+  if (getActiveEnvironmentId() !== environmentId) return
+  if (!byItself && homeSessionStart() === session) return upsert(project)
+  const stored = useStore.getState().projectRegistry[normalizeProjectPath(project.directoryPath)]
+  if (!stored) return
+  upsert({
+    ...project,
+    activeConversationId: null,
+    lastAccessedAt: usedAt(stored.lastAccessedAt) > usedAt(project.lastAccessedAt) ? stored.lastAccessedAt ?? null : project.lastAccessedAt,
+    isFavorite: patch.is_favorite === undefined ? stored.isFavorite : project.isFavorite,
+  })
 }
 
 export function usePersistProjectState(upsertProjectRegistryEntry: UpsertProjectRegistryEntry) {
